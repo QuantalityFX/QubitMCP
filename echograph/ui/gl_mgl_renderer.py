@@ -69,7 +69,15 @@ from echograph.rigging.groom_deform import (
     build_groom_deform_runtime,
     deform_groom_curves,
     evaluate_groom_deform_runtime,
+    rebase_deformed_points_to_bind_space,
 )
+from echograph.rigging.xpbd_strand import (
+    XPBDStrandConfig,
+    build_strand_runtime,
+    reset_strand_runtime,
+    step_strand_runtime,
+)
+from echograph.rigging.xpbd_strand_gpu import XPBDStrandGPUBackend
 from echograph.services import runtime_logging
 
 # OpenGL constants (avoid optional PyOpenGL dependency).
@@ -4188,7 +4196,7 @@ class MGLRendererMixin:
 
         return candidates[0]
 
-    def _mgl_groom_deform_eval_payload(self, payload: dict, owner: str):
+    def _mgl_groom_deform_eval_payload(self, payload: dict, owner: str, *, allow_cached: bool = False):
         if np is None or not isinstance(payload, dict):
             return None
         cfg = payload.get("groom_deform")
@@ -4219,6 +4227,10 @@ class MGLRendererMixin:
             int(point_id_active),
         )
         if payload.get("_groom_deform_frame") == signature:
+            if bool(allow_cached):
+                cached_result = payload.get("_groom_deform_cached_result")
+                if isinstance(cached_result, tuple) and len(cached_result) == 4:
+                    return cached_result
             return None
         perf = payload.get("_groom_deform_perf")
         if not isinstance(perf, dict):
@@ -4281,7 +4293,9 @@ class MGLRendererMixin:
                 payload["_groom_deform_debug"] = dict(debug or {})
                 payload["_groom_deform_sample_owner"] = str(sample_owner or "")
                 payload["_groom_deform_sample_seconds"] = float(sample_seconds)
-                return points, line_points, root_points, debug
+                result = (points, line_points, root_points, debug)
+                payload["_groom_deform_cached_result"] = result
+                return result
             except Exception as exc:
                 perf["runtime_eval_errors"] = int(perf.get("runtime_eval_errors", 0) or 0) + 1
                 try:
@@ -4325,7 +4339,9 @@ class MGLRendererMixin:
         payload["_groom_deform_debug"] = dict(debug or {})
         payload["_groom_deform_sample_owner"] = str(sample_owner or "")
         payload["_groom_deform_sample_seconds"] = float(sample_seconds)
-        return curves, line_points, root_points, debug
+        result = (curves, line_points, root_points, debug)
+        payload["_groom_deform_cached_result"] = result
+        return result
 
     @staticmethod
     def _mgl_curve_arrays_from_curves(curves):
@@ -4352,6 +4368,38 @@ class MGLRendererMixin:
             edge_arr = np.zeros((0, 2), dtype=np.int64)
         return point_arr, edge_arr, root_indices
 
+    @staticmethod
+    def _mgl_curve_points_aligned_to_roots(curves, root_targets=None):
+        if np is None:
+            return None
+        targets = None
+        if root_targets is not None:
+            try:
+                targets = np.asarray(root_targets, dtype="f4").reshape(-1, 3)
+            except Exception:
+                targets = None
+        rows = []
+        curve_index = 0
+        for curve in list(curves or []):
+            if not isinstance(curve, list) or len(curve) < 1:
+                continue
+            try:
+                pts = np.asarray(curve, dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            if pts.size == 0:
+                continue
+            if targets is not None and curve_index < int(targets.shape[0]):
+                pts = pts + (targets[curve_index] - pts[0]).reshape(1, 3)
+            rows.append(pts.astype("f4", copy=False))
+            curve_index += 1
+        if not rows:
+            return None
+        try:
+            return np.concatenate(rows, axis=0).astype("f4", copy=False)
+        except Exception:
+            return None
+
     def _mgl_update_groom_deform_guides(self) -> None:
         if np is None:
             return
@@ -4367,6 +4415,13 @@ class MGLRendererMixin:
             if not bool(getattr(item, "visible", True)):
                 continue
             payload = getattr(item, "payload", None) or {}
+            if (
+                isinstance(payload.get("groom_guide_sim"), dict)
+                or str(payload.get("source_kind") or "").strip().lower() == "groom_guide_sim"
+            ):
+                continue
+            if isinstance(payload.get("_groom_guide_pose_sim"), dict):
+                continue
             if not isinstance(payload.get("groom_deform"), dict):
                 continue
             owner = str(payload.get("owner") or "").strip()
@@ -4375,6 +4430,21 @@ class MGLRendererMixin:
             if result is None:
                 continue
             curves_or_points, line_points, root_points, _debug = result
+            try:
+                if isinstance(curves_or_points, np.ndarray):
+                    current_point_arr = np.asarray(curves_or_points, dtype="f4").reshape(-1, 3)
+                else:
+                    current_point_arr, _current_edges, _current_roots = self._mgl_curve_arrays_from_curves(curves_or_points)
+                if current_point_arr is not None and current_point_arr.size:
+                    payload["_groom_deform_current_points"] = np.asarray(current_point_arr, dtype="f4").reshape(-1, 3).copy()
+            except Exception:
+                pass
+            try:
+                current_root_arr = np.asarray(root_points, dtype="f4").reshape(-1, 3)
+                if current_root_arr.size:
+                    payload["_groom_deform_current_root_points"] = current_root_arr.copy()
+            except Exception:
+                pass
             try:
                 line_arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
             except Exception:
@@ -4525,6 +4595,1969 @@ class MGLRendererMixin:
                 item.payload = payload
             except Exception:
                 continue
+
+    def _mgl_groom_guide_gpu_context_debug(self) -> dict:
+        data = {
+            "moderngl_available": moderngl is not None,
+            "numpy_available": np is not None,
+            "context_available": self._mgl_ctx is not None,
+            "compute_shader_api": bool(self._mgl_ctx is not None and hasattr(self._mgl_ctx, "compute_shader")),
+        }
+        ctx = self._mgl_ctx
+        if ctx is not None:
+            try:
+                data["moderngl_version_code"] = int(getattr(ctx, "version_code", 0) or 0)
+            except Exception:
+                data["moderngl_version_code"] = 0
+            try:
+                info = getattr(ctx, "info", None) or {}
+                for source_key, target_key in (
+                    ("GL_VENDOR", "gl_vendor"),
+                    ("GL_RENDERER", "gl_renderer"),
+                    ("GL_VERSION", "gl_version"),
+                    ("GL_SHADING_LANGUAGE_VERSION", "glsl_version"),
+                ):
+                    if source_key in info:
+                        data[target_key] = str(info.get(source_key) or "")
+            except Exception as exc:
+                data["moderngl_info_error"] = repr(exc)
+        try:
+            qt_context = self.context()
+            try:
+                current_qt_context = QtGui.QOpenGLContext.currentContext()
+            except Exception:
+                current_qt_context = None
+            data["qt_context_is_current"] = bool(
+                qt_context is not None
+                and (current_qt_context is qt_context or current_qt_context == qt_context)
+            )
+            qt_format = qt_context.format() if qt_context is not None else None
+            if qt_format is not None:
+                data["qt_context_version"] = f"{int(qt_format.majorVersion())}.{int(qt_format.minorVersion())}"
+                data["qt_context_profile"] = str(qt_format.profile())
+        except Exception as exc:
+            data["qt_context_error"] = repr(exc)
+        data["backend_cached"] = bool(getattr(self, "_mgl_groom_guide_sim_gpu_backend_obj", None) is not None)
+        data["backend_init_error"] = str(getattr(self, "_mgl_groom_guide_sim_gpu_init_error", "") or "")
+        return data
+
+    def _mgl_groom_guide_gpu_diag_log(self, event: str, *, owner: str = "", node_kind: str = "", **fields) -> None:
+        try:
+            owner_key = str(owner or "").strip().lower()
+            states = getattr(self, "_mgl_groom_guide_gpu_diag_states", None)
+            state = states.get(owner_key) if isinstance(states, dict) and owner_key else None
+            record = {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "event": str(event or ""),
+                "owner": str(owner or ""),
+                "node_kind": str(node_kind or (state or {}).get("node_kind") or ""),
+                "session": str((state or {}).get("session") or ""),
+            }
+            record.update(fields)
+            log_dir = Path(__file__).resolve().parents[2] / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / "groom_guide_gpu_diagnostics.log").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True, default=str))
+                handle.write("\n")
+        except Exception:
+            pass
+
+    def set_groom_guide_gpu_diagnostics(self, *, owner: str = "", node_kind: str = "", enabled: bool = False) -> None:
+        owner_text = str(owner or "").strip()
+        owner_key = owner_text.lower()
+        states = getattr(self, "_mgl_groom_guide_gpu_diag_states", None)
+        if not isinstance(states, dict):
+            states = {}
+            self._mgl_groom_guide_gpu_diag_states = states
+        previous = states.get(owner_key) if owner_key else None
+        if bool(enabled):
+            state = {
+                "enabled": True,
+                "node_kind": str(node_kind or ""),
+                "session": f"{int(time.time() * 1000)}-{owner_key or 'guide'}",
+            }
+            if owner_key:
+                states[owner_key] = state
+            self._mgl_groom_guide_gpu_diag_log(
+                "diagnostics_started",
+                owner=owner_text,
+                node_kind=str(node_kind or ""),
+                context=self._mgl_groom_guide_gpu_context_debug(),
+            )
+            return
+        if owner_key:
+            states[owner_key] = {
+                "enabled": False,
+                "node_kind": str(node_kind or (previous or {}).get("node_kind") or ""),
+                "session": str((previous or {}).get("session") or ""),
+            }
+        self._mgl_groom_guide_gpu_diag_log(
+            "diagnostics_stopped",
+            owner=owner_text,
+            node_kind=str(node_kind or ""),
+            context=self._mgl_groom_guide_gpu_context_debug(),
+        )
+
+    def _mgl_groom_guide_gpu_diag_enabled(self, owner: str, settings=None, payload=None) -> bool:
+        owner_key = str(owner or "").strip().lower()
+        states = getattr(self, "_mgl_groom_guide_gpu_diag_states", None)
+        if isinstance(states, dict) and owner_key in states:
+            return bool((states.get(owner_key) or {}).get("enabled", False))
+        if isinstance(settings, dict) and bool(settings.get("debug_log", False)):
+            return True
+        if isinstance(payload, dict):
+            if bool(payload.get("debug_log", False)):
+                return True
+            for key in ("groom_guide_pose", "groom_guide_sim"):
+                cfg = payload.get(key)
+                cfg_settings = cfg.get("settings") if isinstance(cfg, dict) else None
+                if isinstance(cfg_settings, dict) and bool(cfg_settings.get("debug_log", False)):
+                    return True
+        return False
+
+    def _mgl_groom_guide_gpu_diag_throttled(
+        self,
+        key: str,
+        event: str,
+        *,
+        owner: str = "",
+        node_kind: str = "",
+        settings=None,
+        payload=None,
+        interval: float = 1.0,
+        **fields,
+    ) -> None:
+        if not self._mgl_groom_guide_gpu_diag_enabled(owner, settings=settings, payload=payload):
+            return
+        times = getattr(self, "_mgl_groom_guide_gpu_diag_times", None)
+        if not isinstance(times, dict):
+            times = {}
+            self._mgl_groom_guide_gpu_diag_times = times
+        throttle_key = f"{str(owner or '').strip().lower()}:{str(key or event)}"
+        now = time.monotonic()
+        try:
+            if now - float(times.get(throttle_key, 0.0) or 0.0) < max(0.0, float(interval)):
+                return
+        except Exception:
+            pass
+        times[throttle_key] = now
+        self._mgl_groom_guide_gpu_diag_log(event, owner=owner, node_kind=node_kind, **fields)
+
+    @staticmethod
+    def _mgl_groom_guide_sim_config(settings) -> XPBDStrandConfig:
+        src = settings if isinstance(settings, dict) else {}
+
+        def _float(name: str, default: float, min_value: float, max_value: float) -> float:
+            try:
+                value = float(src.get(name, default))
+            except Exception:
+                value = float(default)
+            if not math.isfinite(value):
+                value = float(default)
+            return max(float(min_value), min(float(max_value), value))
+
+        def _int(name: str, default: int, min_value: int, max_value: int) -> int:
+            try:
+                value = int(round(float(src.get(name, default))))
+            except Exception:
+                value = int(default)
+            return max(int(min_value), min(int(max_value), value))
+
+        scene_units_per_meter = _float("scene_units_per_meter", 100.0, 0.001, 100000.0)
+        return XPBDStrandConfig(
+            fps=_float("fps", 24.0, 1.0, 240.0),
+            frame_count=1,
+            substeps=_int("substeps", 4, 1, 64),
+            iterations=_int("iterations", 8, 0, 128),
+            gravity=(0.0, _float("gravity_y", -9.81, -100.0, 100.0) * scene_units_per_meter, 0.0),
+            wind=(
+                _float("wind_x", 0.0, -100.0, 100.0) * scene_units_per_meter,
+                _float("wind_y", 0.0, -100.0, 100.0) * scene_units_per_meter,
+                _float("wind_z", 0.0, -100.0, 100.0) * scene_units_per_meter,
+            ),
+            damping=_float("damping", 0.04, 0.0, 0.999),
+            stretch_stiffness=_float("stretch", 1.0, 0.0, 1.0),
+            bend_stiffness=_float("bend", 0.35, 0.0, 1.0),
+            root_pin_stiffness=_float("root_pin", 1.0, 0.0, 1.0),
+            max_velocity=_float("max_velocity", 250.0, 0.0, 100000.0) * scene_units_per_meter,
+            store_frames=False,
+        )
+
+    @staticmethod
+    def _mgl_groom_guide_sim_settings_signature(settings) -> str:
+        try:
+            return json.dumps(settings if isinstance(settings, dict) else {}, sort_keys=True, default=str)
+        except Exception:
+            return str(settings)
+
+    def _mgl_groom_guide_sim_upload_wire(self, item: MGLSceneItem, line_arr, owner: str) -> bool:
+        if np is None:
+            return False
+        try:
+            line_arr = np.asarray(line_arr, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return False
+        if line_arr.size == 0:
+            return False
+        payload = getattr(item, "payload", None) or {}
+        if bool(getattr(self, "_mgl_wire_instanced_disabled", False)):
+            self._mgl_wire_instanced_disabled = False
+        if self._mgl_update_instanced_wire_item_from_points(item, line_arr):
+            return True
+        try:
+            verts = self._mgl_wire_vertex_data_from_line_points(line_arr)
+        except Exception:
+            return False
+        if verts.size == 0:
+            return False
+        vbo = payload.get("wire_vbo")
+        if vbo is None and len(getattr(item, "resources", []) or []) >= 2:
+            vbo = item.resources[1]
+        if vbo is None:
+            return False
+        try:
+            size = int(getattr(vbo, "size", int(verts.nbytes)) or int(verts.nbytes))
+            if size != int(verts.nbytes):
+                return False
+            vbo.write(verts.tobytes())
+            payload["wire_instanced"] = False
+            payload["wire_vertex_count"] = int(verts.shape[0] // 10)
+            payload["line_segment_count"] = int(line_arr.shape[0] // 2)
+            item.payload = payload
+            return True
+        except Exception as exc:
+            try:
+                self._mgl_log_throttled(
+                    "_mgl_groom_guide_sim_upload_error_" + str(owner or "unknown"),
+                    "groom_guide_sim: upload failed owner=" + str(owner or "") + " err=" + repr(exc),
+                    1.0,
+                )
+            except Exception:
+                pass
+            return False
+
+    @staticmethod
+    def _mgl_groom_guide_sim_device(settings) -> str:
+        src = settings if isinstance(settings, dict) else {}
+        raw = str(src.get("device", src.get("solver_device", "auto")) or "auto").strip().lower()
+        raw = raw.replace("-", "_").replace(" ", "_")
+        if raw in {"cpu", "python"}:
+            return "cpu"
+        if raw in {"gpu", "graphics", "graphics_card", "opengl", "compute"}:
+            return "gpu"
+        return "auto"
+
+    def _mgl_groom_guide_sim_gpu_backend(
+        self,
+        *,
+        owner: str = "",
+        node_kind: str = "",
+        settings=None,
+        payload=None,
+    ):
+        if self._mgl_ctx is None:
+            self._mgl_groom_guide_gpu_diag_throttled(
+                "backend_no_context",
+                "gpu_backend_unavailable",
+                owner=owner,
+                node_kind=node_kind,
+                settings=settings,
+                payload=payload,
+                interval=2.0,
+                reason="ModernGL context is missing.",
+                context=self._mgl_groom_guide_gpu_context_debug(),
+            )
+            return None
+        backend = getattr(self, "_mgl_groom_guide_sim_gpu_backend_obj", None)
+        if backend is not None:
+            self._mgl_groom_guide_gpu_diag_throttled(
+                "backend_cached",
+                "gpu_backend_ready",
+                owner=owner,
+                node_kind=node_kind,
+                settings=settings,
+                payload=payload,
+                interval=5.0,
+                cached=True,
+                context=self._mgl_groom_guide_gpu_context_debug(),
+            )
+            return backend
+        now = time.monotonic()
+        try:
+            retry_at = float(getattr(self, "_mgl_groom_guide_sim_gpu_retry_at", 0.0) or 0.0)
+        except Exception:
+            retry_at = 0.0
+        if now < retry_at:
+            self._mgl_groom_guide_gpu_diag_throttled(
+                "backend_retry_wait",
+                "gpu_backend_retry_wait",
+                owner=owner,
+                node_kind=node_kind,
+                settings=settings,
+                payload=payload,
+                interval=0.5,
+                retry_in_seconds=max(0.0, retry_at - now),
+                error=str(getattr(self, "_mgl_groom_guide_sim_gpu_init_error", "") or ""),
+                context=self._mgl_groom_guide_gpu_context_debug(),
+            )
+            return None
+        if self._mgl_groom_guide_gpu_diag_enabled(owner, settings=settings, payload=payload):
+            self._mgl_groom_guide_gpu_diag_log(
+                "gpu_backend_init_attempt",
+                owner=owner,
+                node_kind=node_kind,
+                context=self._mgl_groom_guide_gpu_context_debug(),
+            )
+        try:
+            backend = XPBDStrandGPUBackend(self._mgl_ctx)
+        except Exception as exc:
+            self._mgl_groom_guide_sim_gpu_retry_at = now + 2.0
+            self._mgl_groom_guide_sim_gpu_init_error = repr(exc)
+            if self._mgl_groom_guide_gpu_diag_enabled(owner, settings=settings, payload=payload):
+                self._mgl_groom_guide_gpu_diag_log(
+                    "gpu_backend_init_failed",
+                    owner=owner,
+                    node_kind=node_kind,
+                    error=repr(exc),
+                    context=self._mgl_groom_guide_gpu_context_debug(),
+                )
+            try:
+                self._mgl_log_throttled(
+                    "_mgl_groom_guide_sim_gpu_init_failed",
+                    "groom_guide_sim: GPU compute unavailable, using CPU fallback err=" + repr(exc),
+                    2.0,
+                )
+            except Exception:
+                pass
+            return None
+        self._mgl_groom_guide_sim_gpu_backend_obj = backend
+        self._mgl_groom_guide_sim_gpu_retry_at = 0.0
+        self._mgl_groom_guide_sim_gpu_init_error = ""
+        if self._mgl_groom_guide_gpu_diag_enabled(owner, settings=settings, payload=payload):
+            self._mgl_groom_guide_gpu_diag_log(
+                "gpu_backend_init_succeeded",
+                owner=owner,
+                node_kind=node_kind,
+                context=self._mgl_groom_guide_gpu_context_debug(),
+            )
+        return backend
+
+    def _mgl_groom_guide_sim_release_gpu_runtime(self, item: MGLSceneItem, payload: dict) -> None:
+        runtime = payload.pop("_groom_guide_sim_gpu_runtime", None) if isinstance(payload, dict) else None
+        if isinstance(payload, dict):
+            payload.pop("_groom_guide_sim_gpu_runtime_sig", None)
+            payload.pop("_groom_guide_sim_gpu_segment_buffer", None)
+        backend = getattr(self, "_mgl_groom_guide_sim_gpu_backend_obj", None)
+        if backend is not None and runtime is not None:
+            try:
+                backend.release_runtime(runtime)
+            except Exception:
+                pass
+        for resource in list(getattr(item, "resources", []) or []):
+            try:
+                if hasattr(resource, "release"):
+                    resource.release()
+            except Exception:
+                pass
+        try:
+            item.resources = []
+        except Exception:
+            pass
+        if isinstance(payload, dict):
+            for key in ("vao", "wire_vbo", "wire_segment_vbo"):
+                payload.pop(key, None)
+            payload["wire_instanced"] = False
+            item.payload = payload
+
+    def _mgl_groom_guide_sim_use_gpu_wire(self, item: MGLSceneItem, gpu_runtime: dict, owner: str) -> bool:
+        if self._mgl_ctx is None or np is None or moderngl is None:
+            return False
+        prog = getattr(self, "_mgl_wire_instanced_prog", None)
+        if prog is None:
+            return False
+        if bool(getattr(self, "_mgl_wire_instanced_disabled", False)):
+            # A failed non-sim wire upload can disable instanced wires globally.
+            # Guide simulation depends on this path for GPU drawing, so retry it.
+            self._mgl_wire_instanced_disabled = False
+        segment_buffer = gpu_runtime.get("segment_buffer") if isinstance(gpu_runtime, dict) else None
+        if segment_buffer is None:
+            return False
+        try:
+            segment_count = int(gpu_runtime.get("segment_count", 0) or 0)
+        except Exception:
+            segment_count = 0
+        if segment_count <= 0:
+            return False
+        corner_vbo = self._mgl_get_wire_corner_vbo()
+        if corner_vbo is None:
+            return False
+        payload = item.payload or {}
+        vao = payload.get("vao")
+        same_buffer = bool(
+            payload.get("wire_instanced", False)
+            and payload.get("_groom_guide_sim_gpu_segment_buffer") is segment_buffer
+            and vao is not None
+        )
+        old_resources = list(getattr(item, "resources", []) or [])
+        if not same_buffer:
+            try:
+                vao = self._mgl_ctx.vertex_array(
+                    prog,
+                    [
+                        (corner_vbo, "2f", "in_corner"),
+                        (segment_buffer, "3f 3f /i", "in_start", "in_end"),
+                    ],
+                )
+            except Exception as exc:
+                try:
+                    self._mgl_log_throttled(
+                        "_mgl_groom_guide_sim_gpu_vao_failed_" + str(owner or "unknown"),
+                        "groom_guide_sim: GPU wire VAO failed owner=" + str(owner or "") + " err=" + repr(exc),
+                        1.0,
+                    )
+                except Exception:
+                    pass
+                return False
+        backend = getattr(self, "_mgl_groom_guide_sim_gpu_backend_obj", None)
+        runtime_resources = backend.runtime_resources(gpu_runtime) if backend is not None else [segment_buffer]
+        new_resources = [vao]
+        for resource in runtime_resources:
+            if resource is not None and not any(resource is existing for existing in new_resources):
+                new_resources.append(resource)
+        if not same_buffer:
+            for resource in old_resources:
+                if resource is corner_vbo or any(resource is existing for existing in new_resources):
+                    continue
+                try:
+                    if hasattr(resource, "release"):
+                        resource.release()
+                except Exception:
+                    pass
+        payload["vao"] = vao
+        payload["wire_vbo"] = segment_buffer
+        payload["wire_segment_vbo"] = segment_buffer
+        payload["wire_instanced"] = True
+        payload["wire_vertex_count"] = int(segment_count * 6)
+        payload["wire_instance_count"] = int(segment_count)
+        payload["line_segment_count"] = int(segment_count)
+        payload["mode"] = moderngl.TRIANGLES
+        payload["_groom_guide_sim_gpu_segment_buffer"] = segment_buffer
+        perf = payload.get("_groom_guide_sim_perf")
+        if not isinstance(perf, dict):
+            perf = {}
+            payload["_groom_guide_sim_perf"] = perf
+        perf["last_upload_path"] = "gpu_ssbo"
+        perf["last_compact_upload_bytes"] = 0
+        perf["line_segment_count"] = int(segment_count)
+        item.payload = payload
+        item.resources = new_resources
+        return True
+
+    @staticmethod
+    def _mgl_groom_guide_pose_curves_from_points(points, template_curves):
+        if np is None:
+            return []
+        try:
+            arr = np.asarray(points, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return []
+        out = []
+        cursor = 0
+        for curve in list(template_curves or []):
+            count = len(curve) if isinstance(curve, list) else 0
+            if count <= 0:
+                out.append([])
+                continue
+            rows = arr[cursor : cursor + count]
+            if int(rows.shape[0]) != int(count):
+                return []
+            out.append([[float(row[0]), float(row[1]), float(row[2])] for row in rows])
+            cursor += count
+        return out if cursor == int(arr.shape[0]) else []
+
+    @staticmethod
+    def _mgl_groom_guide_pose_copy_curves(curves):
+        out = []
+        for curve in list(curves or []):
+            rows = []
+            if isinstance(curve, list):
+                for point in curve:
+                    try:
+                        seq = list(point)
+                        if len(seq) >= 3:
+                            rows.append([float(seq[0]), float(seq[1]), float(seq[2])])
+                    except Exception:
+                        continue
+            if rows:
+                out.append(rows)
+        return out
+
+    def _mgl_groom_guide_pose_find_item(self, owner_hint: str = ""):
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return None
+        try:
+            items = list(scene.iter_by_tag("scene-groom-guides"))
+        except Exception:
+            items = []
+        candidates = []
+        hint = str(owner_hint or "").strip().lower()
+        for item in items:
+            if not bool(getattr(item, "visible", True)):
+                continue
+            payload = getattr(item, "payload", None) or {}
+            is_pose = (
+                isinstance(payload.get("groom_guide_pose"), dict)
+                or str(payload.get("source_kind") or "").strip().lower() == "groom_guide_pose"
+            )
+            if not is_pose:
+                continue
+            candidates.append(item)
+            if not hint:
+                continue
+            owner = str(payload.get("owner") or "").strip().lower()
+            name = str(getattr(item, "name", "") or "").strip().lower()
+            if hint in {owner, name} or (owner and hint == owner) or (name and hint in name):
+                return item
+        return candidates[0] if candidates else None
+
+    def _mgl_groom_guide_pose_update_root_item(self, owner: str, root_points) -> None:
+        if np is None:
+            return
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        try:
+            root_arr = np.asarray(root_points, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return
+        if root_arr.size == 0:
+            return
+        try:
+            items = list(scene.iter_by_tag("scene-groom-guide-points"))
+        except Exception:
+            items = []
+        owner_key = str(owner or "").strip().lower()
+        for root_item in items:
+            payload = getattr(root_item, "payload", None) or {}
+            is_pose = (
+                isinstance(payload.get("groom_guide_pose"), dict)
+                or str(payload.get("source_kind") or "").strip().lower() == "groom_guide_pose"
+            )
+            if not is_pose:
+                continue
+            if str(payload.get("owner") or "").strip().lower() != owner_key:
+                continue
+            vbo = payload.get("point_vbo")
+            if vbo is None and len(getattr(root_item, "resources", []) or []) >= 2:
+                vbo = root_item.resources[1]
+            if vbo is None:
+                continue
+            try:
+                color = payload.get("color") or (1.0, 0.92, 0.1, 0.95)
+                rgba = np.asarray(tuple(float(v) for v in tuple(color)[:4]), dtype="f4").reshape(1, 4)
+                color_rows = np.repeat(rgba, int(root_arr.shape[0]), axis=0)
+                point_data = np.concatenate((root_arr, color_rows), axis=1).astype("f4", copy=False)
+                size = int(getattr(vbo, "size", int(point_data.nbytes)) or int(point_data.nbytes))
+                if size != int(point_data.nbytes):
+                    continue
+                vbo.write(point_data.tobytes())
+                payload["point_count"] = int(root_arr.shape[0])
+                payload["root_points"] = root_arr
+                root_item.payload = payload
+            except Exception:
+                continue
+
+    def _mgl_groom_guide_call_with_current_context(self, operation: str, callback):
+        made_current = False
+        try:
+            target_context = self.context()
+        except Exception:
+            target_context = None
+        try:
+            try:
+                current_context = QtGui.QOpenGLContext.currentContext()
+            except Exception:
+                current_context = None
+            same_context = bool(
+                target_context is not None
+                and (current_context is target_context or current_context == target_context)
+            )
+            if not same_context:
+                self.makeCurrent()
+                made_current = True
+            try:
+                active_context = QtGui.QOpenGLContext.currentContext()
+            except Exception:
+                active_context = None
+            if target_context is not None and not (
+                active_context is target_context or active_context == target_context
+            ):
+                raise RuntimeError("The viewport OpenGL context could not be made current.")
+            return callback()
+        except Exception as exc:
+            return {"ok": False, "detail": f"{str(operation or 'GPU operation')} failed: {exc!r}"}
+        finally:
+            if made_current:
+                try:
+                    self.doneCurrent()
+                except Exception:
+                    pass
+
+    def start_groom_guide_pose_sim(self, *, node_item=None, settings=None):
+        return self._mgl_groom_guide_call_with_current_context(
+            "Guide Pose GPU initialization",
+            lambda: self._mgl_start_groom_guide_pose_sim_current(node_item=node_item, settings=settings),
+        )
+
+    def _mgl_start_groom_guide_pose_sim_current(self, *, node_item=None, settings=None):
+        if np is None:
+            return {"ok": False, "detail": "NumPy is unavailable."}
+        model = getattr(node_item, "model", None)
+        owner_hint = str(getattr(model, "name", "") or "").strip()
+        item = self._mgl_groom_guide_pose_find_item(owner_hint)
+        if item is None:
+            return {"ok": False, "detail": "View the Guide Pose node first."}
+        payload = getattr(item, "payload", None) or {}
+        owner = str(payload.get("owner") or owner_hint or "").strip()
+        pose_cfg = dict(payload.get("groom_guide_pose")) if isinstance(payload.get("groom_guide_pose"), dict) else {}
+        sim_settings = dict(settings if isinstance(settings, dict) else pose_cfg.get("settings") if isinstance(pose_cfg.get("settings"), dict) else {})
+        frame = int(self._mgl_timeline_frame_index())
+        sim_settings["start_frame"] = int(frame)
+        try:
+            fps = max(1.0e-6, float(sim_settings.get("fps", self._mgl_timeline_fps_value()) or self._mgl_timeline_fps_value()))
+        except Exception:
+            fps = 24.0
+        try:
+            duration = max(0.0, float(sim_settings.get("settle_seconds", 0.0) or 0.0))
+        except Exception:
+            duration = 0.0
+        sim_settings["fps"] = float(fps)
+        sim_settings["warmup_frames"] = max(0, min(10000, int(round(duration * fps))))
+
+        bind_curves = None
+        for source in (pose_cfg, payload.get("groom_deform") if isinstance(payload.get("groom_deform"), dict) else {}, payload):
+            if not isinstance(source, dict):
+                continue
+            for key in ("pose_curves", "bind_curves", "curves"):
+                value = source.get(key)
+                if isinstance(value, list) and value:
+                    bind_curves = self._mgl_groom_guide_pose_copy_curves(value)
+                    break
+            if bind_curves:
+                break
+        if not bind_curves:
+            return {"ok": False, "detail": "Guide Pose has no curve template."}
+
+        initial_points = None
+        root_targets = None
+        current_curves = None
+        deform_result = None
+        initial_state_source = "live_deform"
+        pose_state = str(pose_cfg.get("pose_state") or "").strip().lower()
+        captured_curves = pose_cfg.get("pose_curves")
+        if pose_state == "captured" and isinstance(captured_curves, list) and captured_curves:
+            current_curves = self._mgl_groom_guide_pose_copy_curves(captured_curves)
+            for key in ("_groom_deform_current_points",):
+                try:
+                    candidate = np.asarray(payload.get(key), dtype="f4").reshape(-1, 3)
+                except Exception:
+                    candidate = None
+                if candidate is not None and candidate.size:
+                    initial_points = candidate.copy()
+                    initial_state_source = "captured_viewport_points"
+                    break
+            if initial_points is None:
+                try:
+                    initial_points, _captured_edges, _captured_roots = self._mgl_curve_arrays_from_curves(current_curves)
+                    initial_state_source = "captured_pose_curves"
+                except Exception:
+                    initial_points = None
+            for key in ("_groom_deform_current_root_points", "root_points"):
+                try:
+                    candidate_roots = np.asarray(payload.get(key), dtype="f4").reshape(-1, 3)
+                except Exception:
+                    candidate_roots = None
+                if candidate_roots is not None and candidate_roots.size:
+                    root_targets = candidate_roots.copy()
+                    break
+        if initial_points is None and isinstance(payload.get("groom_deform"), dict):
+            with profile_scope("render.3d.mgl.groom_guide_pose.eval_start_frame"):
+                deform_result = self._mgl_groom_deform_eval_payload(payload, owner, allow_cached=True)
+        if deform_result is not None:
+            curves_or_points, _line_points, root_points, _debug = deform_result
+            try:
+                root_targets = np.asarray(root_points, dtype="f4").reshape(-1, 3)
+            except Exception:
+                root_targets = None
+            if isinstance(curves_or_points, np.ndarray):
+                try:
+                    initial_points = np.asarray(curves_or_points, dtype="f4").reshape(-1, 3)
+                except Exception:
+                    initial_points = None
+                if initial_points is not None:
+                    current_curves = self._mgl_groom_guide_pose_curves_from_points(initial_points, bind_curves)
+            else:
+                current_curves = self._mgl_groom_guide_pose_copy_curves(curves_or_points)
+                if current_curves:
+                    initial_points, _edge_arr, _root_indices = self._mgl_curve_arrays_from_curves(current_curves)
+        if not current_curves:
+            current_curves = self._mgl_groom_guide_pose_copy_curves(bind_curves)
+        if initial_points is None:
+            initial_points = self._mgl_curve_points_aligned_to_roots(current_curves, root_targets)
+        try:
+            initial_points = np.asarray(initial_points, dtype="f4").reshape(-1, 3)
+        except Exception:
+            initial_points = None
+        if initial_points is None or initial_points.size == 0:
+            return {"ok": False, "detail": "Could not read the current guide positions from the viewport."}
+        template_points, _template_edges, root_indices = self._mgl_curve_arrays_from_curves(current_curves)
+        if template_points is None or int(template_points.shape[0]) != int(initial_points.shape[0]):
+            current_curves = self._mgl_groom_guide_pose_curves_from_points(initial_points, bind_curves)
+            template_points, _template_edges, root_indices = self._mgl_curve_arrays_from_curves(current_curves)
+        if not current_curves or template_points is None or int(template_points.shape[0]) != int(initial_points.shape[0]):
+            return {"ok": False, "detail": "Guide Pose curve counts do not match the current viewport guides."}
+        if root_targets is None or int(getattr(root_targets, "shape", [0])[0]) <= 0:
+            try:
+                roots = np.asarray(root_indices, dtype=np.int64).reshape(-1)
+                root_targets = initial_points[roots].astype("f4", copy=False) if roots.size else None
+            except Exception:
+                root_targets = None
+
+        config = self._mgl_groom_guide_sim_config(sim_settings)
+        deform_skin_mats = self._mgl_groom_guide_pose_skin_matrices(payload, owner)
+        old_state = payload.pop("_groom_guide_pose_sim", None)
+        if isinstance(old_state, dict):
+            self._mgl_groom_guide_pose_release_state(item, old_state)
+            payload = item.payload or payload
+        state = {
+            "node_item": node_item,
+            "settings": sim_settings,
+            "owner": owner,
+            "frame": int(frame),
+            "duration": float(duration),
+            "fps": float(fps),
+            "step_dt": 1.0 / max(float(fps), 1.0e-6),
+            "started_wall": time.monotonic(),
+            "last_wall": time.monotonic(),
+            "accum": 1.0 / max(float(fps), 1.0e-6),
+            "sim_elapsed": 0.0,
+            "template_curves": self._mgl_groom_guide_pose_copy_curves(current_curves),
+            "initial_curves": self._mgl_groom_guide_pose_curves_from_points(initial_points, current_curves),
+            "root_targets": root_targets,
+            "deform_skin_mats": deform_skin_mats,
+            "device": "cpu",
+            "debug": {
+                "start_frame": int(frame),
+                "duration": float(duration),
+                "initial_state_source": str(initial_state_source),
+            },
+        }
+        device = self._mgl_groom_guide_sim_device(sim_settings)
+        diagnostics_enabled = self._mgl_groom_guide_gpu_diag_enabled(owner, settings=sim_settings, payload=payload)
+        if diagnostics_enabled:
+            self._mgl_groom_guide_gpu_diag_log(
+                "guide_pose_sim_requested",
+                owner=owner,
+                node_kind="groom_guide_pose",
+                requested_device=device,
+                frame=int(frame),
+                duration_seconds=float(duration),
+                curve_count=int(len(current_curves)),
+                point_count=int(initial_points.shape[0]),
+                root_count=int(getattr(root_targets, "shape", [0])[0]) if root_targets is not None else 0,
+                initial_state_source=str(initial_state_source),
+                settings=dict(sim_settings),
+                context=self._mgl_groom_guide_gpu_context_debug(),
+            )
+        gpu_fallback_reason = ""
+        if device != "cpu":
+            backend = self._mgl_groom_guide_sim_gpu_backend(
+                owner=owner,
+                node_kind="groom_guide_pose",
+                settings=sim_settings,
+                payload=payload,
+            )
+            if backend is not None:
+                try:
+                    with profile_scope("render.3d.mgl.groom_guide_pose.gpu_build_runtime"):
+                        gpu_runtime = backend.build_runtime(
+                            current_curves,
+                            config,
+                            initial_points=initial_points,
+                            root_targets=root_targets,
+                        )
+                    state["gpu_backend"] = backend
+                    state["gpu_runtime"] = gpu_runtime
+                    state["device"] = "gpu"
+                    wire_bound = self._mgl_groom_guide_sim_use_gpu_wire(item, gpu_runtime, owner)
+                    debug = dict(state.get("debug") or {})
+                    debug["device"] = "gpu"
+                    debug["wire_path"] = "gpu_ssbo" if wire_bound else "gpu_wire_pending"
+                    state["debug"] = debug
+                    payload = item.payload or payload
+                    if diagnostics_enabled:
+                        self._mgl_groom_guide_gpu_diag_log(
+                            "guide_pose_gpu_runtime_ready",
+                            owner=owner,
+                            node_kind="groom_guide_pose",
+                            point_count=int(gpu_runtime.get("point_count", 0) or 0),
+                            segment_count=int(gpu_runtime.get("segment_count", 0) or 0),
+                            root_count=int(gpu_runtime.get("root_count", 0) or 0),
+                            wire_path=str(debug.get("wire_path") or ""),
+                        )
+                except Exception as exc:
+                    gpu_fallback_reason = repr(exc)
+                    if diagnostics_enabled:
+                        self._mgl_groom_guide_gpu_diag_log(
+                            "guide_pose_gpu_runtime_build_failed",
+                            owner=owner,
+                            node_kind="groom_guide_pose",
+                            error=repr(exc),
+                            context=self._mgl_groom_guide_gpu_context_debug(),
+                        )
+                    try:
+                        self._mgl_log_throttled(
+                            "_mgl_groom_guide_pose_gpu_start_failed_" + str(owner or "unknown"),
+                            "groom_guide_pose: GPU start failed, using CPU fallback owner="
+                            + str(owner or "")
+                            + " err="
+                            + repr(exc),
+                            1.0,
+                        )
+                    except Exception:
+                        pass
+            else:
+                gpu_fallback_reason = str(
+                    getattr(self, "_mgl_groom_guide_sim_gpu_init_error", "")
+                    or "GPU backend is unavailable for the current OpenGL context."
+                )
+        else:
+            gpu_fallback_reason = "The node requested the CPU device."
+        if not isinstance(state.get("gpu_runtime"), dict):
+            debug = dict(state.get("debug") or {})
+            debug["gpu_fallback_reason"] = str(gpu_fallback_reason or "GPU runtime was not created.")
+            state["debug"] = debug
+            if diagnostics_enabled:
+                self._mgl_groom_guide_gpu_diag_log(
+                    "guide_pose_cpu_fallback",
+                    owner=owner,
+                    node_kind="groom_guide_pose",
+                    requested_device=device,
+                    reason=str(gpu_fallback_reason or "GPU runtime was not created."),
+                    context=self._mgl_groom_guide_gpu_context_debug(),
+                )
+            try:
+                with profile_scope("render.3d.mgl.groom_guide_pose.build_runtime"):
+                    runtime = build_strand_runtime(current_curves, config, initial_points=initial_points)
+                reset_strand_runtime(runtime, points=initial_points, root_targets=root_targets)
+                state["runtime"] = runtime
+                state["device"] = "cpu"
+                debug = dict(state.get("debug") or {})
+                debug["device"] = "cpu"
+                state["debug"] = debug
+            except Exception as exc:
+                return {"ok": False, "detail": "Guide Pose runtime failed: " + repr(exc)}
+
+        pose_cfg["settings"] = dict(sim_settings)
+        pose_cfg["pose_state"] = "simulating"
+        payload["groom_guide_pose"] = pose_cfg
+        payload["_groom_guide_pose_sim"] = state
+        item.payload = payload
+        self._mgl_groom_guide_pose_update_root_item(owner, root_targets)
+        try:
+            self.update()
+        except Exception:
+            pass
+        device_label = "GPU" if state.get("device") == "gpu" else "CPU fallback"
+        return {
+            "ok": True,
+            "detail": f"Sim Pose running from frame {int(frame)} for {float(duration):.2f}s ({device_label}).",
+        }
+
+    def _mgl_groom_guide_pose_release_state(self, item: MGLSceneItem, state: dict) -> None:
+        backend = state.get("gpu_backend")
+        runtime = state.get("gpu_runtime")
+        if backend is not None and isinstance(runtime, dict):
+            try:
+                backend.release_runtime(runtime)
+            except Exception:
+                pass
+
+    def _mgl_groom_guide_pose_skin_matrices(self, payload: dict, owner: str):
+        cfg = payload.get("groom_deform") if isinstance(payload, dict) else None
+        if not isinstance(cfg, dict):
+            return None
+        rig_context = cfg.get("rig_context")
+        if not isinstance(rig_context, dict):
+            return None
+        skeleton = rig_context.get("skeleton")
+        if skeleton is None:
+            return None
+        try:
+            sample_owner = self._mgl_groom_deform_sample_owner(payload, owner)
+            sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(rig_context, sample_owner)
+            evaluation = self._mgl_evaluate_rig_cached(
+                skeleton,
+                rig_context.get("clip"),
+                float(sample_seconds),
+                loop=bool(rig_context.get("loop", True)),
+                include_debug_data=False,
+            )
+            return np.asarray(evaluation.skin_matrices, dtype="f4").reshape(-1, 4, 4).copy()
+        except Exception:
+            return None
+
+    def _mgl_groom_guide_pose_rebase_bind_curves(
+        self,
+        payload: dict,
+        owner: str,
+        points,
+        template_curves,
+        skin_mats=None,
+    ):
+        cfg = payload.get("groom_deform") if isinstance(payload, dict) else None
+        if not isinstance(cfg, dict):
+            return None, "no groom deform payload"
+        rig_context = cfg.get("rig_context")
+        bind_curves = cfg.get("bind_curves")
+        guide_bindings = cfg.get("guide_bindings")
+        if not isinstance(rig_context, dict) or not isinstance(bind_curves, list) or not isinstance(guide_bindings, list):
+            return None, "groom deform bind data is incomplete"
+        if skin_mats is None:
+            skin_mats = self._mgl_groom_guide_pose_skin_matrices(payload, owner)
+        if skin_mats is None:
+            return None, "could not evaluate skin matrices at the pose frame"
+        try:
+            runtime = build_groom_deform_runtime(
+                bind_curves,
+                guide_bindings,
+                rig_context,
+                mode=str(cfg.get("mode") or "skinned_cv"),
+            )
+            bind_points = rebase_deformed_points_to_bind_space(
+                runtime,
+                points,
+                skin_mats,
+                mode=str(cfg.get("mode") or "skinned_cv"),
+            )
+            curves = self._mgl_groom_guide_pose_curves_from_points(bind_points, template_curves)
+            if not curves:
+                return None, "rebased point topology does not match the pose curves"
+            return curves, ""
+        except Exception as exc:
+            return None, repr(exc)
+
+    def clear_groom_guide_pose_sim(self, *, node_item=None):
+        return self._mgl_groom_guide_call_with_current_context(
+            "Guide Pose GPU cleanup",
+            lambda: self._mgl_clear_groom_guide_pose_sim_current(node_item=node_item),
+        )
+
+    def groom_guide_pose_sim_status(self, owner_hint: str = ""):
+        item = self._mgl_groom_guide_pose_find_item(owner_hint)
+        if item is None:
+            return {"loaded": False, "active": False, "device": "", "elapsed": 0.0, "duration": 0.0}
+        payload = getattr(item, "payload", None) or {}
+        state = payload.get("_groom_guide_pose_sim")
+        if not isinstance(state, dict):
+            return {"loaded": True, "active": False, "device": "", "elapsed": 0.0, "duration": 0.0}
+        return {
+            "loaded": True,
+            "active": True,
+            "device": str(state.get("device") or ""),
+            "elapsed": float(state.get("sim_elapsed", 0.0) or 0.0),
+            "duration": float(state.get("duration", 0.0) or 0.0),
+            "frame": int(state.get("frame", 0) or 0),
+        }
+
+    def stop_groom_guide_pose_sim(self, *, node_item=None):
+        return self._mgl_groom_guide_call_with_current_context(
+            "Guide Pose stop",
+            lambda: self._mgl_stop_groom_guide_pose_sim_current(node_item=node_item),
+        )
+
+    def _mgl_stop_groom_guide_pose_sim_current(self, *, node_item=None):
+        model = getattr(node_item, "model", None)
+        owner_hint = str(getattr(model, "name", "") or "").strip()
+        item = self._mgl_groom_guide_pose_find_item(owner_hint)
+        if item is None:
+            return {"ok": False, "detail": "Guide Pose is not loaded in the viewport."}
+        payload = getattr(item, "payload", None) or {}
+        state = payload.get("_groom_guide_pose_sim")
+        if not isinstance(state, dict):
+            return {"ok": False, "detail": "Guide Pose simulation is not running."}
+        debug = dict(state.get("debug") or {})
+        debug["manual_stop"] = True
+        state["debug"] = debug
+        owner = str(state.get("owner") or payload.get("owner") or owner_hint).strip()
+        if self._mgl_groom_guide_gpu_diag_enabled(owner, settings=state.get("settings"), payload=payload):
+            self._mgl_groom_guide_gpu_diag_log(
+                "guide_pose_sim_stop_requested",
+                owner=owner,
+                node_kind="groom_guide_pose",
+                active_device=str(state.get("device") or ""),
+                sim_elapsed=float(state.get("sim_elapsed", 0.0) or 0.0),
+            )
+        self._mgl_finish_groom_guide_pose_sim(item, state)
+        try:
+            self.update()
+        except Exception:
+            pass
+        return {"ok": True, "detail": "Sim Pose stopped. Current guide pose captured."}
+
+    def _mgl_clear_groom_guide_pose_sim_current(self, *, node_item=None):
+        model = getattr(node_item, "model", None)
+        owner_hint = str(getattr(model, "name", "") or "").strip()
+        item = self._mgl_groom_guide_pose_find_item(owner_hint)
+        if item is None:
+            return {"ok": False, "detail": "Guide Pose is not loaded in the viewport."}
+        payload = getattr(item, "payload", None) or {}
+        state = payload.pop("_groom_guide_pose_sim", None)
+        if isinstance(state, dict):
+            self._mgl_groom_guide_pose_release_state(item, state)
+        pose_cfg = dict(payload.get("groom_guide_pose")) if isinstance(payload.get("groom_guide_pose"), dict) else {}
+        if pose_cfg:
+            pose_cfg["pose_state"] = "cleared"
+            payload["groom_guide_pose"] = pose_cfg
+        item.payload = payload
+        try:
+            self.update()
+        except Exception:
+            pass
+        return {"ok": True, "detail": "Guide Pose simulation cleared."}
+
+    def _mgl_groom_guide_pose_upload_final_wire(self, item: MGLSceneItem, line_arr, owner: str, old_resources) -> None:
+        payload = item.payload or {}
+        for key in ("vao", "wire_vbo", "wire_segment_vbo", "_groom_guide_sim_gpu_segment_buffer"):
+            payload.pop(key, None)
+        payload["wire_instanced"] = False
+        item.payload = payload
+        try:
+            item.resources = []
+        except Exception:
+            pass
+        self._mgl_groom_guide_sim_upload_wire(item, line_arr, owner)
+        new_resources = list(getattr(item, "resources", []) or [])
+        for resource in list(old_resources or []):
+            if resource is None or any(resource is existing for existing in new_resources):
+                continue
+            try:
+                if hasattr(resource, "release"):
+                    resource.release()
+            except Exception:
+                pass
+
+    def _mgl_finish_groom_guide_pose_sim(self, item: MGLSceneItem, state: dict) -> None:
+        payload = item.payload or {}
+        owner = str(state.get("owner") or payload.get("owner") or "").strip()
+        template_curves = state.get("template_curves") if isinstance(state.get("template_curves"), list) else []
+        points = None
+        line_arr = None
+        root_arr = None
+        debug = dict(state.get("debug") or {})
+        old_resources = list(getattr(item, "resources", []) or [])
+        gpu_runtime = state.get("gpu_runtime")
+        backend = state.get("gpu_backend")
+        if backend is not None and isinstance(gpu_runtime, dict):
+            try:
+                points4 = backend.read_points(gpu_runtime)
+                points = np.asarray(points4, dtype="f4").reshape(-1, 4)[:, :3]
+                line_arr = np.asarray(backend.read_line_points(gpu_runtime), dtype="f4").reshape(-1, 3)
+                root_arr = np.asarray(state.get("root_targets"), dtype="f4").reshape(-1, 3)
+                debug["device"] = "gpu"
+            except Exception as exc:
+                debug["finish_error"] = repr(exc)
+        if points is None:
+            runtime = state.get("runtime") if isinstance(state.get("runtime"), dict) else None
+            if runtime is not None:
+                try:
+                    config = self._mgl_groom_guide_sim_config(state.get("settings") or {})
+                    points, line_points, root_points, cpu_debug = step_strand_runtime(
+                        runtime,
+                        config,
+                        root_targets=state.get("root_targets"),
+                        steps=0,
+                    )
+                    line_arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+                    root_arr = np.asarray(root_points, dtype="f4").reshape(-1, 3)
+                    debug.update(dict(cpu_debug or {}))
+                    debug["device"] = "cpu"
+                except Exception as exc:
+                    debug["finish_error"] = repr(exc)
+        if points is None or line_arr is None or int(getattr(line_arr, "size", 0)) == 0:
+            if self._mgl_groom_guide_gpu_diag_enabled(owner, settings=state.get("settings"), payload=payload):
+                self._mgl_groom_guide_gpu_diag_log(
+                    "guide_pose_finish_failed",
+                    owner=owner,
+                    node_kind="groom_guide_pose",
+                    active_device=str(state.get("device") or ""),
+                    debug=dict(debug),
+                )
+            payload.pop("_groom_guide_pose_sim", None)
+            item.payload = payload
+            self._mgl_groom_guide_pose_release_state(item, state)
+            return
+        pose_curves = self._mgl_groom_guide_pose_curves_from_points(points, template_curves)
+        if not pose_curves:
+            pose_curves = self._mgl_groom_guide_pose_copy_curves(template_curves)
+        deform_bind_curves, rebase_error = self._mgl_groom_guide_pose_rebase_bind_curves(
+            payload,
+            owner,
+            points,
+            template_curves,
+            skin_mats=state.get("deform_skin_mats"),
+        )
+        if not deform_bind_curves:
+            deform_bind_curves = self._mgl_groom_guide_pose_copy_curves(pose_curves)
+            debug["deform_bind_rebased"] = False
+            debug["deform_bind_rebase_error"] = str(rebase_error or "")
+        else:
+            debug["deform_bind_rebased"] = True
+        initial_curves = state.get("initial_curves") if isinstance(state.get("initial_curves"), list) else template_curves
+        settings = dict(state.get("settings") or {})
+        frame = int(state.get("frame", self._mgl_timeline_frame_index()) or 0)
+        outcome = None
+        node_item = state.get("node_item")
+        if node_item is not None:
+            try:
+                from nodes.groom_guide_pose import spec as _groom_guide_pose_spec  # type: ignore
+
+                store = getattr(_groom_guide_pose_spec, "store_interactive_pose_result", None)
+                if callable(store):
+                    outcome = store(
+                        node_item,
+                        pose_curves,
+                        line_points=line_arr,
+                        root_points=root_arr,
+                        initial_curves=initial_curves,
+                        deform_bind_curves=deform_bind_curves,
+                        settings=settings,
+                        source_payload=payload,
+                        frame=frame,
+                        debug=debug,
+                    )
+            except Exception as exc:
+                debug["store_error"] = repr(exc)
+        if outcome is not None and isinstance(getattr(outcome, "asset", None), dict):
+            asset = outcome.asset
+            payload["groom_guide_pose"] = dict(asset.get("groom_guide_pose")) if isinstance(asset.get("groom_guide_pose"), dict) else payload.get("groom_guide_pose", {})
+            if isinstance(asset.get("groom_deform"), dict):
+                payload["groom_deform"] = dict(asset.get("groom_deform"))
+            if isinstance(asset.get("curves"), list):
+                payload["curves"] = list(asset.get("curves") or [])
+            payload["root_indices"] = list(asset.get("root_indices") or payload.get("root_indices") or [])
+            payload["root_points"] = np.asarray(asset.get("root_points") or root_arr, dtype="f4").reshape(-1, 3)
+            payload["source_kind"] = "groom_guide_pose"
+            payload["path"] = str(asset.get("guides_path") or payload.get("path") or "")
+        else:
+            pose_cfg = dict(payload.get("groom_guide_pose")) if isinstance(payload.get("groom_guide_pose"), dict) else {}
+            pose_cfg["settings"] = dict(settings)
+            pose_cfg["pose_state"] = "captured"
+            pose_cfg["pose_curves"] = self._mgl_groom_guide_pose_copy_curves(pose_curves)
+            pose_cfg["bind_curves"] = self._mgl_groom_guide_pose_copy_curves(pose_curves)
+            pose_cfg["deform_bind_curves"] = self._mgl_groom_guide_pose_copy_curves(deform_bind_curves)
+            payload["groom_guide_pose"] = pose_cfg
+            if isinstance(payload.get("groom_deform"), dict):
+                payload["groom_deform"] = dict(payload.get("groom_deform") or {})
+                payload["groom_deform"]["bind_curves"] = self._mgl_groom_guide_pose_copy_curves(deform_bind_curves)
+            payload["curves"] = self._mgl_groom_guide_pose_copy_curves(pose_curves)
+            payload["root_points"] = root_arr
+        for key in (
+            "_groom_deform_frame",
+            "_groom_deform_cached_result",
+            "_groom_deform_runtime",
+            "_groom_deform_runtime_sig",
+        ):
+            payload.pop(key, None)
+        payload.pop("_groom_guide_pose_sim", None)
+        payload["line_points"] = line_arr
+        payload["_groom_deform_current_points"] = np.asarray(points, dtype="f4").reshape(-1, 3).copy()
+        payload["_groom_deform_current_root_points"] = np.asarray(root_arr, dtype="f4").reshape(-1, 3).copy()
+        item.payload = payload
+        self._mgl_groom_guide_pose_upload_final_wire(item, line_arr, owner, old_resources)
+        if self._mgl_groom_guide_gpu_diag_enabled(owner, settings=settings, payload=payload):
+            self._mgl_groom_guide_gpu_diag_log(
+                "guide_pose_sim_finished",
+                owner=owner,
+                node_kind="groom_guide_pose",
+                active_device=str(state.get("device") or debug.get("device") or ""),
+                frame=int(frame),
+                sim_elapsed=float(state.get("sim_elapsed", 0.0) or 0.0),
+                point_count=int(getattr(points, "shape", [0])[0]),
+                line_point_count=int(getattr(line_arr, "shape", [0])[0]),
+                debug=dict(debug),
+            )
+        self._mgl_groom_guide_pose_release_state(item, state)
+        self._mgl_groom_guide_pose_update_root_item(owner, root_arr)
+        try:
+            bmin = line_arr.min(axis=0).astype("f4")
+            bmax = line_arr.max(axis=0).astype("f4")
+            if owner:
+                self._mgl_scene_bounds_by_owner[owner] = (bmin, bmax)
+                self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin, bmax)
+        except Exception:
+            pass
+
+    def _mgl_update_groom_guide_pose_sims(self) -> None:
+        if np is None:
+            return
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        try:
+            items = list(scene.iter_by_tag("scene-groom-guides"))
+        except Exception:
+            items = []
+        active = False
+        now = time.monotonic()
+        for item in items:
+            if not bool(getattr(item, "visible", True)):
+                continue
+            payload = getattr(item, "payload", None) or {}
+            state = payload.get("_groom_guide_pose_sim")
+            if not isinstance(state, dict):
+                continue
+            active = True
+            settings = dict(state.get("settings") or {})
+            config = self._mgl_groom_guide_sim_config(settings)
+            owner = str(state.get("owner") or payload.get("owner") or "").strip()
+            try:
+                duration = max(0.0, float(state.get("duration", 0.0) or 0.0))
+            except Exception:
+                duration = 0.0
+            try:
+                last_wall = float(state.get("last_wall", now) or now)
+            except Exception:
+                last_wall = now
+            try:
+                step_dt = max(1.0e-5, float(state.get("step_dt", 1.0 / max(float(settings.get("fps", 24.0) or 24.0), 1.0e-6))))
+            except Exception:
+                step_dt = 1.0 / 24.0
+            accum = max(0.0, float(state.get("accum", 0.0) or 0.0)) + max(0.0, min(0.25, now - last_wall))
+            step_count = min(12, int(accum / step_dt)) if step_dt > 0.0 else 1
+            if step_count <= 0 and duration > 0.0 and (now - float(state.get("started_wall", now) or now)) < duration:
+                state["accum"] = accum
+                state["last_wall"] = now
+                payload["_groom_guide_pose_sim"] = state
+                item.payload = payload
+                continue
+            step_count = max(1, int(step_count))
+            state["accum"] = max(0.0, accum - float(step_count) * step_dt)
+            state["last_wall"] = now
+            root_targets = state.get("root_targets")
+            try:
+                if isinstance(state.get("gpu_runtime"), dict) and state.get("gpu_backend") is not None:
+                    backend = state.get("gpu_backend")
+                    gpu_runtime = state.get("gpu_runtime")
+                    with profile_scope("render.3d.mgl.groom_guide_pose.gpu_step"):
+                        gpu_result = backend.step_runtime(
+                            gpu_runtime,
+                            config,
+                            root_targets=root_targets,
+                            steps=step_count,
+                            dt=step_dt,
+                        )
+                    gpu_wire_bound = False
+                    with profile_scope("render.3d.mgl.groom_guide_pose.gpu_wire"):
+                        gpu_wire_bound = self._mgl_groom_guide_sim_use_gpu_wire(item, gpu_runtime, owner)
+                    wire_path = "gpu_ssbo" if gpu_wire_bound else "gpu_readback_unavailable"
+                    if not gpu_wire_bound:
+                        try:
+                            with profile_scope("render.3d.mgl.groom_guide_pose.gpu_readback_wire"):
+                                line_arr = np.asarray(backend.read_line_points(gpu_runtime), dtype="f4").reshape(-1, 3)
+                            if line_arr.size and self._mgl_groom_guide_sim_upload_wire(item, line_arr, owner):
+                                payload = item.payload or payload
+                                payload["line_points"] = line_arr
+                                item.payload = payload
+                                wire_path = "gpu_readback_upload"
+                        except Exception as exc:
+                            self._mgl_groom_guide_gpu_diag_throttled(
+                                "pose_gpu_readback_error",
+                                "guide_pose_gpu_readback_failed",
+                                owner=owner,
+                                node_kind="groom_guide_pose",
+                                settings=settings,
+                                payload=payload,
+                                interval=0.5,
+                                error=repr(exc),
+                            )
+                            try:
+                                self._mgl_log_throttled(
+                                    "_mgl_groom_guide_pose_gpu_readback_error_" + str(owner or "unknown"),
+                                    "groom_guide_pose: GPU readback wire failed owner="
+                                    + str(owner or "")
+                                    + " err="
+                                    + repr(exc),
+                                    1.0,
+                                )
+                            except Exception:
+                                pass
+                    debug = dict(state.get("debug") or {})
+                    debug.update(dict(gpu_result.get("debug") or {}))
+                    debug["device"] = "gpu"
+                    debug["wire_path"] = wire_path
+                    state["debug"] = debug
+                    state["device"] = "gpu"
+                    self._mgl_groom_guide_gpu_diag_throttled(
+                        "pose_gpu_step",
+                        "guide_pose_gpu_step",
+                        owner=owner,
+                        node_kind="groom_guide_pose",
+                        settings=settings,
+                        payload=payload,
+                        interval=0.75,
+                        step_count=int(step_count),
+                        step_dt=float(step_dt),
+                        sim_elapsed=float(state.get("sim_elapsed", 0.0) or 0.0),
+                        wire_path=str(wire_path),
+                        runtime_debug=dict(gpu_result.get("debug") or {}),
+                    )
+                    try:
+                        self._mgl_groom_guide_pose_update_root_item(owner, gpu_result.get("root_points"))
+                    except Exception:
+                        pass
+                else:
+                    runtime = state.get("runtime") if isinstance(state.get("runtime"), dict) else None
+                    if runtime is None:
+                        raise RuntimeError("missing CPU pose runtime")
+                    with profile_scope("render.3d.mgl.groom_guide_pose.step"):
+                        points, line_points, root_points, debug = step_strand_runtime(
+                            runtime,
+                            config,
+                            root_targets=root_targets,
+                            steps=step_count,
+                            dt=step_dt,
+                        )
+                    line_arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+                    self._mgl_groom_guide_sim_upload_wire(item, line_arr, owner)
+                    payload = item.payload or payload
+                    payload["line_points"] = line_arr
+                    item.payload = payload
+                    fallback_reason = str((state.get("debug") or {}).get("gpu_fallback_reason") or "")
+                    cpu_debug = dict(debug or {})
+                    cpu_debug["device"] = "cpu"
+                    if fallback_reason:
+                        cpu_debug["gpu_fallback_reason"] = fallback_reason
+                    state["debug"] = cpu_debug
+                    state["device"] = "cpu"
+                    self._mgl_groom_guide_gpu_diag_throttled(
+                        "pose_cpu_step",
+                        "guide_pose_cpu_step",
+                        owner=owner,
+                        node_kind="groom_guide_pose",
+                        settings=settings,
+                        payload=payload,
+                        interval=0.75,
+                        step_count=int(step_count),
+                        step_dt=float(step_dt),
+                        sim_elapsed=float(state.get("sim_elapsed", 0.0) or 0.0),
+                        fallback_reason=str((state.get("debug") or {}).get("gpu_fallback_reason") or ""),
+                    )
+                    self._mgl_groom_guide_pose_update_root_item(owner, root_points)
+            except Exception as exc:
+                if self._mgl_groom_guide_gpu_diag_enabled(owner, settings=settings, payload=payload):
+                    self._mgl_groom_guide_gpu_diag_log(
+                        "guide_pose_runtime_failed",
+                        owner=owner,
+                        node_kind="groom_guide_pose",
+                        active_device=str(state.get("device") or ""),
+                        error=repr(exc),
+                        runtime_debug=dict(state.get("debug") or {}),
+                        context=self._mgl_groom_guide_gpu_context_debug(),
+                    )
+                try:
+                    self._mgl_log_throttled(
+                        "_mgl_groom_guide_pose_runtime_error_" + str(owner or "unknown"),
+                        "groom_guide_pose: runtime failed owner=" + str(owner or "") + " err=" + repr(exc),
+                        1.0,
+                    )
+                except Exception:
+                    pass
+                payload.pop("_groom_guide_pose_sim", None)
+                item.payload = payload
+                self._mgl_groom_guide_pose_release_state(item, state)
+                continue
+            state["sim_elapsed"] = float(state.get("sim_elapsed", 0.0) or 0.0) + float(step_count) * step_dt
+            payload = item.payload or payload
+            payload["_groom_guide_pose_sim"] = state
+            item.payload = payload
+            started_wall = float(state.get("started_wall", now) or now)
+            if duration <= 0.0 or (now - started_wall) >= duration:
+                self._mgl_finish_groom_guide_pose_sim(item, state)
+        if active:
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    def _mgl_update_groom_guide_sim_guides(self) -> None:
+        if np is None:
+            return
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        try:
+            items = list(scene.iter_by_tag("scene-groom-guides"))
+        except Exception:
+            items = []
+        roots_by_owner: Dict[str, Any] = {}
+        frame = int(self._mgl_timeline_frame_index())
+        for item in items:
+            if not bool(getattr(item, "visible", True)):
+                continue
+            payload = getattr(item, "payload", None) or {}
+            sim_cfg = payload.get("groom_guide_sim")
+            if not isinstance(sim_cfg, dict):
+                if str(payload.get("source_kind") or "").strip().lower() != "groom_guide_sim":
+                    continue
+                sim_cfg = {}
+            settings = sim_cfg.get("settings") if isinstance(sim_cfg.get("settings"), dict) else {}
+            if not bool(settings.get("enabled", True)):
+                continue
+            frame_settings_sig = self._mgl_groom_guide_sim_settings_signature(settings)
+            if (
+                payload.get("_groom_guide_sim_frame") == frame
+                and payload.get("_groom_guide_sim_frame_settings_sig") == frame_settings_sig
+            ):
+                continue
+            owner = str(payload.get("owner") or "").strip()
+            bind_curves = sim_cfg.get("bind_curves")
+            if not isinstance(bind_curves, list) or not bind_curves:
+                continue
+            start_curves = sim_cfg.get("start_curves")
+            if not isinstance(start_curves, list) or not start_curves:
+                start_curves = bind_curves
+
+            root_targets = None
+            initial_points = None
+            deform_line_points = None
+            deform_result = None
+            if isinstance(payload.get("groom_deform"), dict):
+                with profile_scope("render.3d.mgl.groom_guide_sim.eval_deform_roots"):
+                    deform_result = self._mgl_groom_deform_eval_payload(payload, owner, allow_cached=True)
+                if deform_result is not None:
+                    curves_or_points, deform_line_points, root_points, _deform_debug = deform_result
+                    try:
+                        root_targets = np.asarray(root_points, dtype="f4").reshape(-1, 3)
+                    except Exception:
+                        root_targets = None
+                    if isinstance(curves_or_points, np.ndarray):
+                        try:
+                            initial_points = np.asarray(curves_or_points, dtype="f4").reshape(-1, 3)
+                        except Exception:
+                            initial_points = None
+                    else:
+                        try:
+                            initial_points, _edge_arr, _root_indices = self._mgl_curve_arrays_from_curves(curves_or_points)
+                        except Exception:
+                            initial_points = None
+            if root_targets is None:
+                root_targets = payload.get("_groom_guide_sim_last_root_targets")
+            if initial_points is None:
+                initial_points = self._mgl_curve_points_aligned_to_roots(start_curves, root_targets)
+
+            try:
+                start_frame = max(0, int(float(settings.get("start_frame", 0) or 0)))
+            except Exception:
+                start_frame = 0
+            start_settings_sig = frame_settings_sig
+            start_state_sig = (id(bind_curves), int(len(bind_curves)), start_settings_sig, int(start_frame))
+            has_armed_start_state = bool(
+                payload.get("_groom_guide_sim_start_state_sig") == start_state_sig
+                and payload.get("_groom_guide_sim_start_points") is not None
+            )
+            if frame <= start_frame or not has_armed_start_state:
+                if frame < start_frame:
+                    lifecycle_event = "guide_sim_waiting_for_start_frame"
+                    lifecycle_mode = "posed_deform_before_start"
+                elif frame == start_frame:
+                    lifecycle_event = "guide_sim_arming_start_frame"
+                    lifecycle_mode = "deformed_start_state_armed"
+                else:
+                    lifecycle_event = "guide_sim_waiting_for_start_frame_visit"
+                    lifecycle_mode = "deform_only_start_frame_not_armed"
+                self._mgl_groom_guide_gpu_diag_throttled(
+                    "sim_waiting_for_start",
+                    lifecycle_event,
+                    owner=owner,
+                    node_kind="groom_guide_sim",
+                    settings=settings,
+                    payload=payload,
+                    interval=1.0,
+                    frame=int(frame),
+                    start_frame=int(start_frame),
+                    context=self._mgl_groom_guide_gpu_context_debug(),
+                )
+                if isinstance(payload.get("_groom_guide_sim_gpu_runtime"), dict):
+                    self._mgl_groom_guide_sim_release_gpu_runtime(item, payload)
+                    payload = item.payload or payload
+                for key in (
+                    "_groom_guide_sim_runtime",
+                    "_groom_guide_sim_runtime_sig",
+                    "_groom_guide_sim_last_frame",
+                ):
+                    payload.pop(key, None)
+                if frame < start_frame:
+                    for key in (
+                        "_groom_guide_sim_start_points",
+                        "_groom_guide_sim_start_root_targets",
+                        "_groom_guide_sim_start_state_sig",
+                    ):
+                        payload.pop(key, None)
+                else:
+                    if frame == start_frame:
+                        try:
+                            start_point_arr = np.asarray(initial_points, dtype="f4").reshape(-1, 3)
+                        except Exception:
+                            start_point_arr = None
+                        if start_point_arr is not None and start_point_arr.size:
+                            payload["_groom_guide_sim_start_points"] = start_point_arr.copy()
+                            payload["_groom_guide_sim_start_state_sig"] = start_state_sig
+                        try:
+                            start_root_arr = np.asarray(root_targets, dtype="f4").reshape(-1, 3)
+                        except Exception:
+                            start_root_arr = None
+                        if start_root_arr is not None and start_root_arr.size:
+                            payload["_groom_guide_sim_start_root_targets"] = start_root_arr.copy()
+                    elif payload.get("_groom_guide_sim_start_state_sig") != start_state_sig:
+                        for key in (
+                            "_groom_guide_sim_start_points",
+                            "_groom_guide_sim_start_root_targets",
+                            "_groom_guide_sim_start_state_sig",
+                        ):
+                            payload.pop(key, None)
+                line_arr = None
+                try:
+                    line_arr = np.asarray(deform_line_points, dtype="f4").reshape(-1, 3)
+                except Exception:
+                    line_arr = None
+                if line_arr is None or line_arr.size == 0:
+                    try:
+                        point_arr = np.asarray(initial_points, dtype="f4").reshape(-1, 3)
+                        _template_points, edge_arr, _root_indices = self._mgl_curve_arrays_from_curves(start_curves)
+                        edge_indices = np.asarray(edge_arr, dtype=np.int64).reshape(-1)
+                        line_arr = point_arr[edge_indices].astype("f4", copy=False)
+                    except Exception:
+                        line_arr = None
+                if line_arr is None or line_arr.size == 0:
+                    continue
+                with profile_scope("render.3d.mgl.groom_guide_sim.pre_start_wire"):
+                    if not self._mgl_groom_guide_sim_upload_wire(item, line_arr, owner):
+                        continue
+                payload = item.payload or payload
+                payload["line_points"] = line_arr
+                payload["_groom_guide_sim_frame"] = int(frame)
+                payload["_groom_guide_sim_frame_settings_sig"] = frame_settings_sig
+                payload["_groom_guide_sim_runtime_device"] = "waiting"
+                payload["_groom_guide_sim_debug"] = {
+                    "simulation_mode": lifecycle_mode,
+                    "start_frame": int(start_frame),
+                    "first_simulated_frame": int(start_frame + 1),
+                    "frame": int(frame),
+                    "start_state_armed": bool(frame == start_frame and payload.get("_groom_guide_sim_start_state_sig") == start_state_sig),
+                }
+                if root_targets is not None:
+                    try:
+                        root_arr = np.asarray(root_targets, dtype="f4").reshape(-1, 3)
+                        payload["_groom_guide_sim_last_root_targets"] = root_arr
+                        if owner and root_arr.size:
+                            roots_by_owner[owner.lower()] = root_arr
+                    except Exception:
+                        pass
+                item.payload = payload
+                continue
+
+            config = self._mgl_groom_guide_sim_config(settings)
+            settings_sig = start_settings_sig
+            used_armed_start_state = False
+            if payload.get("_groom_guide_sim_start_state_sig") == start_state_sig:
+                try:
+                    armed_points = np.asarray(payload.get("_groom_guide_sim_start_points"), dtype="f4").reshape(-1, 3)
+                except Exception:
+                    armed_points = None
+                if armed_points is not None and armed_points.size:
+                    try:
+                        current_point_count = int(np.asarray(initial_points, dtype="f4").reshape(-1, 3).shape[0])
+                    except Exception:
+                        current_point_count = 0
+                    if current_point_count <= 0 or int(armed_points.shape[0]) == current_point_count:
+                        initial_points = armed_points.copy()
+                        used_armed_start_state = True
+            runtime = payload.get("_groom_guide_sim_runtime")
+            runtime_sig = (id(bind_curves), int(len(bind_curves)), settings_sig)
+            last_frame = payload.get("_groom_guide_sim_last_frame")
+            try:
+                delta = int(frame) - int(last_frame)
+            except Exception:
+                delta = 0
+            try:
+                reset_jump = int(float(settings.get("reset_frame_jump", 12)))
+            except Exception:
+                reset_jump = 12
+            reset_jump = max(1, min(240, reset_jump))
+            needs_reset = (
+                not isinstance(runtime, dict)
+                or payload.get("_groom_guide_sim_runtime_sig") != runtime_sig
+                or last_frame is None
+                or delta < 0
+                or abs(delta) > reset_jump
+            )
+            device = self._mgl_groom_guide_sim_device(settings)
+            diagnostics_enabled = self._mgl_groom_guide_gpu_diag_enabled(owner, settings=settings, payload=payload)
+            self._mgl_groom_guide_gpu_diag_throttled(
+                "sim_evaluate",
+                "guide_sim_evaluate",
+                owner=owner,
+                node_kind="groom_guide_sim",
+                settings=settings,
+                payload=payload,
+                interval=1.0,
+                requested_device=device,
+                frame=int(frame),
+                start_frame=int(start_frame),
+                first_simulated_frame=int(start_frame + 1),
+                frame_delta=int(delta),
+                used_armed_start_state=bool(used_armed_start_state),
+                needs_cpu_reset=bool(needs_reset),
+                curve_count=int(len(bind_curves)),
+                point_count=int(getattr(initial_points, "shape", [0])[0]) if initial_points is not None else 0,
+                settings_snapshot=dict(settings),
+                context=self._mgl_groom_guide_gpu_context_debug(),
+            )
+            gpu_fallback_reason = ""
+            if device == "cpu" and isinstance(payload.get("_groom_guide_sim_gpu_runtime"), dict):
+                self._mgl_groom_guide_sim_release_gpu_runtime(item, payload)
+                payload = item.payload or payload
+            if device == "cpu":
+                gpu_fallback_reason = "The node requested the CPU device."
+            if device != "cpu":
+                backend = self._mgl_groom_guide_sim_gpu_backend(
+                    owner=owner,
+                    node_kind="groom_guide_sim",
+                    settings=settings,
+                    payload=payload,
+                )
+                if backend is not None:
+                    gpu_runtime = payload.get("_groom_guide_sim_gpu_runtime")
+                    gpu_runtime_sig = (id(bind_curves), int(len(bind_curves)), settings_sig, "gpu")
+                    gpu_needs_reset = (
+                        not isinstance(gpu_runtime, dict)
+                        or payload.get("_groom_guide_sim_gpu_runtime_sig") != gpu_runtime_sig
+                        or last_frame is None
+                        or delta < 0
+                        or abs(delta) > reset_jump
+                    )
+                    try:
+                        if gpu_needs_reset:
+                            with profile_scope("render.3d.mgl.groom_guide_sim.gpu_build_runtime"):
+                                gpu_runtime = backend.build_runtime(
+                                    bind_curves,
+                                    config,
+                                    initial_points=initial_points,
+                                    root_targets=root_targets,
+                                )
+                            payload["_groom_guide_sim_gpu_runtime"] = gpu_runtime
+                            payload["_groom_guide_sim_gpu_runtime_sig"] = gpu_runtime_sig
+                            item.payload = payload
+                            gpu_step_count = 1
+                            if diagnostics_enabled:
+                                self._mgl_groom_guide_gpu_diag_log(
+                                    "guide_sim_gpu_runtime_ready",
+                                    owner=owner,
+                                    node_kind="groom_guide_sim",
+                                    frame=int(frame),
+                                    point_count=int(gpu_runtime.get("point_count", 0) or 0),
+                                    segment_count=int(gpu_runtime.get("segment_count", 0) or 0),
+                                    root_count=int(gpu_runtime.get("root_count", 0) or 0),
+                                )
+                        else:
+                            gpu_step_count = max(1, min(reset_jump, int(delta) if delta else 1))
+                        with profile_scope("render.3d.mgl.groom_guide_sim.gpu_step"):
+                            gpu_result = backend.step_runtime(
+                                gpu_runtime,
+                                config,
+                                root_targets=root_targets,
+                                steps=gpu_step_count,
+                            )
+                        gpu_wire_bound = False
+                        with profile_scope("render.3d.mgl.groom_guide_sim.gpu_wire"):
+                            gpu_wire_bound = self._mgl_groom_guide_sim_use_gpu_wire(item, gpu_runtime, owner)
+                        if not gpu_wire_bound:
+                            with profile_scope("render.3d.mgl.groom_guide_sim.gpu_readback_wire"):
+                                line_arr = np.asarray(backend.read_line_points(gpu_runtime), dtype="f4").reshape(-1, 3)
+                            if line_arr.size == 0 or not self._mgl_groom_guide_sim_upload_wire(item, line_arr, owner):
+                                raise RuntimeError("GPU runtime produced no drawable guide wire.")
+                        payload = item.payload or payload
+                        debug = dict(gpu_result.get("debug") or {})
+                        debug["wire_path"] = "gpu_ssbo" if gpu_wire_bound else "gpu_readback_upload"
+                        payload["_groom_guide_sim_frame"] = int(frame)
+                        payload["_groom_guide_sim_frame_settings_sig"] = frame_settings_sig
+                        payload["_groom_guide_sim_last_frame"] = int(frame)
+                        payload["_groom_guide_sim_debug"] = debug
+                        payload["_groom_guide_sim_runtime_device"] = "gpu"
+                        payload.pop("_groom_guide_sim_gpu_error", None)
+                        self._mgl_groom_guide_gpu_diag_throttled(
+                            "sim_gpu_step",
+                            "guide_sim_gpu_step",
+                            owner=owner,
+                            node_kind="groom_guide_sim",
+                            settings=settings,
+                            payload=payload,
+                            interval=0.75,
+                            frame=int(frame),
+                            step_count=int(gpu_step_count),
+                            wire_path=str(debug.get("wire_path") or ""),
+                            runtime_debug=dict(debug),
+                        )
+                        if root_targets is not None:
+                            try:
+                                payload["_groom_guide_sim_last_root_targets"] = np.asarray(root_targets, dtype="f4").reshape(-1, 3)
+                            except Exception:
+                                pass
+                        try:
+                            root_arr = np.asarray(gpu_result.get("root_points"), dtype="f4").reshape(-1, 3)
+                            if owner and root_arr.size:
+                                roots_by_owner[owner.lower()] = root_arr
+                        except Exception:
+                            pass
+                        item.payload = payload
+                        continue
+                    except Exception as exc:
+                        gpu_fallback_reason = repr(exc)
+                        if diagnostics_enabled:
+                            self._mgl_groom_guide_gpu_diag_log(
+                                "guide_sim_gpu_runtime_failed",
+                                owner=owner,
+                                node_kind="groom_guide_sim",
+                                frame=int(frame),
+                                error=repr(exc),
+                                context=self._mgl_groom_guide_gpu_context_debug(),
+                            )
+                        try:
+                            self._mgl_log_throttled(
+                                "_mgl_groom_guide_sim_gpu_runtime_error_" + str(owner or "unknown"),
+                                "groom_guide_sim: GPU runtime failed, using CPU fallback owner="
+                                + str(owner or "")
+                                + " err="
+                                + repr(exc),
+                                1.0,
+                            )
+                        except Exception:
+                            pass
+                        self._mgl_groom_guide_sim_release_gpu_runtime(item, payload)
+                        payload = item.payload or payload
+                        payload["_groom_guide_sim_runtime_device"] = "cpu"
+                        payload["_groom_guide_sim_gpu_error"] = repr(exc)
+                        item.payload = payload
+                else:
+                    gpu_fallback_reason = str(
+                        getattr(self, "_mgl_groom_guide_sim_gpu_init_error", "")
+                        or "GPU backend is unavailable for the current OpenGL context."
+                    )
+                    payload["_groom_guide_sim_gpu_error"] = gpu_fallback_reason
+                    item.payload = payload
+            self._mgl_groom_guide_gpu_diag_throttled(
+                "sim_cpu_fallback",
+                "guide_sim_cpu_fallback",
+                owner=owner,
+                node_kind="groom_guide_sim",
+                settings=settings,
+                payload=payload,
+                interval=0.75,
+                frame=int(frame),
+                requested_device=device,
+                reason=str(gpu_fallback_reason or "GPU path did not complete."),
+                context=self._mgl_groom_guide_gpu_context_debug(),
+            )
+            try:
+                if needs_reset:
+                    with profile_scope("render.3d.mgl.groom_guide_sim.build_runtime"):
+                        runtime = build_strand_runtime(bind_curves, config, initial_points=initial_points)
+                    reset_strand_runtime(runtime, points=initial_points, root_targets=root_targets)
+                    payload["_groom_guide_sim_runtime"] = runtime
+                    payload["_groom_guide_sim_runtime_sig"] = runtime_sig
+                    step_count = 1
+                else:
+                    step_count = max(1, min(reset_jump, int(delta) if delta else 1))
+                with profile_scope("render.3d.mgl.groom_guide_sim.step"):
+                    points, line_points, root_points, debug = step_strand_runtime(
+                        runtime,
+                        config,
+                        root_targets=root_targets,
+                        steps=step_count,
+                    )
+            except Exception as exc:
+                if diagnostics_enabled:
+                    self._mgl_groom_guide_gpu_diag_log(
+                        "guide_sim_cpu_runtime_failed",
+                        owner=owner,
+                        node_kind="groom_guide_sim",
+                        frame=int(frame),
+                        error=repr(exc),
+                        fallback_reason=str(gpu_fallback_reason or ""),
+                    )
+                try:
+                    self._mgl_log_throttled(
+                        "_mgl_groom_guide_sim_runtime_error_" + str(owner or "unknown"),
+                        "groom_guide_sim: runtime failed owner=" + str(owner or "") + " err=" + repr(exc),
+                        1.0,
+                    )
+                except Exception:
+                    pass
+                continue
+
+            try:
+                line_arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            if line_arr.size == 0:
+                continue
+            with profile_scope("render.3d.mgl.groom_guide_sim.upload_wire"):
+                if not self._mgl_groom_guide_sim_upload_wire(item, line_arr, owner):
+                    continue
+            payload = item.payload or payload
+            payload["line_points"] = line_arr
+            payload["_groom_guide_sim_frame"] = int(frame)
+            payload["_groom_guide_sim_frame_settings_sig"] = frame_settings_sig
+            payload["_groom_guide_sim_last_frame"] = int(frame)
+            payload["_groom_guide_sim_debug"] = dict(debug or {})
+            payload["_groom_guide_sim_runtime_device"] = "cpu"
+            self._mgl_groom_guide_gpu_diag_throttled(
+                "sim_cpu_step",
+                "guide_sim_cpu_step",
+                owner=owner,
+                node_kind="groom_guide_sim",
+                settings=settings,
+                payload=payload,
+                interval=0.75,
+                frame=int(frame),
+                step_count=int(step_count),
+                fallback_reason=str(gpu_fallback_reason or ""),
+                runtime_debug=dict(debug or {}),
+            )
+            if root_targets is not None:
+                try:
+                    payload["_groom_guide_sim_last_root_targets"] = np.asarray(root_targets, dtype="f4").reshape(-1, 3)
+                except Exception:
+                    pass
+            try:
+                bmin = line_arr.min(axis=0).astype("f4")
+                bmax = line_arr.max(axis=0).astype("f4")
+                if owner:
+                    self._mgl_scene_bounds_by_owner[owner] = (bmin, bmax)
+                    self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin, bmax)
+            except Exception:
+                pass
+            try:
+                point_arr = np.asarray(points, dtype="f4").reshape(-1, 3)
+                runtime_dict = payload.get("_groom_guide_sim_runtime") if isinstance(payload.get("_groom_guide_sim_runtime"), dict) else {}
+                edge_indices = np.asarray(runtime_dict.get("line_point_indices"), dtype=np.int64).reshape(-1)
+                edge_arr = edge_indices.reshape(-1, 2) if edge_indices.size % 2 == 0 else np.zeros((0, 2), dtype=np.int64)
+                root_indices = [int(idx) for idx in np.asarray(runtime_dict.get("root_indices"), dtype=np.int64).reshape(-1)]
+                point_id_active = bool(getattr(self, "_point_id_display_enabled", False)) and not self._point_id_overlay_suspended()
+                if point_arr.size and (str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() or point_id_active):
+                    self._mgl_store_curve_topology_for_owner(
+                        owner,
+                        point_arr,
+                        edge_arr,
+                        line_arr,
+                        point_groups={"root": list(root_indices)},
+                        point_group_colors={"root": (1.0, 0.92, 0.1, 0.95)},
+                        model=payload.get("model"),
+                        source_owner=str(payload.get("source_owner") or ""),
+                        topology_kind="groom_guides",
+                        debug_log=bool(payload.get("debug_log", False)),
+                    )
+                    try:
+                        self._mgl_clear_mesh_selection_overlay_cache()
+                    except Exception:
+                        self._mesh_selection_overlay_cache = None
+            except Exception:
+                pass
+            item.payload = payload
+            try:
+                root_arr = np.asarray(root_points, dtype="f4").reshape(-1, 3)
+                if owner and root_arr.size:
+                    roots_by_owner[owner.lower()] = root_arr
+            except Exception:
+                pass
+
+        if not roots_by_owner:
+            return
+        try:
+            root_items = list(scene.iter_by_tag("scene-groom-guide-points"))
+        except Exception:
+            root_items = []
+        for item in root_items:
+            if not bool(getattr(item, "visible", True)):
+                continue
+            payload = getattr(item, "payload", None) or {}
+            if not isinstance(payload.get("groom_guide_sim"), dict):
+                continue
+            owner = str(payload.get("owner") or "").strip().lower()
+            root_arr = roots_by_owner.get(owner)
+            if root_arr is None:
+                continue
+            try:
+                root_arr = np.asarray(root_arr, dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            if root_arr.size == 0:
+                continue
+            vbo = payload.get("point_vbo")
+            if vbo is None and len(getattr(item, "resources", []) or []) >= 2:
+                vbo = item.resources[1]
+            if vbo is None:
+                continue
+            try:
+                color = payload.get("color") or (1.0, 0.92, 0.1, 0.95)
+                rgba = np.asarray(tuple(float(v) for v in tuple(color)[:4]), dtype="f4").reshape(1, 4)
+                color_rows = np.repeat(rgba, int(root_arr.shape[0]), axis=0)
+                point_data = np.concatenate((root_arr, color_rows), axis=1).astype("f4", copy=False)
+                size = int(getattr(vbo, "size", int(point_data.nbytes)) or int(point_data.nbytes))
+                if size != int(point_data.nbytes):
+                    continue
+                vbo.write(point_data.tobytes())
+                payload["point_count"] = int(root_arr.shape[0])
+                item.payload = payload
+            except Exception:
+                continue
+
+    def groom_guide_sim_runtime_status(self, owner_hint: str = ""):
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return {}
+        try:
+            items = list(scene.iter_by_tag("scene-groom-guides"))
+        except Exception:
+            items = []
+        hint = str(owner_hint or "").strip().lower()
+        first = None
+        for item in items:
+            payload = getattr(item, "payload", None) or {}
+            is_sim = (
+                isinstance(payload.get("groom_guide_sim"), dict)
+                or str(payload.get("source_kind") or "").strip().lower() == "groom_guide_sim"
+            )
+            if not is_sim:
+                continue
+            if first is None:
+                first = payload
+            owner = str(payload.get("owner") or "").strip().lower()
+            name = str(getattr(item, "name", "") or "").strip().lower()
+            if hint and hint not in {owner, name} and (not name or hint not in name):
+                continue
+            first = payload
+            break
+        payload = first if isinstance(first, dict) else {}
+        if not payload:
+            return {}
+        return {
+            "device": str(payload.get("_groom_guide_sim_runtime_device") or "pending"),
+            "gpu_error": str(payload.get("_groom_guide_sim_gpu_error") or ""),
+            "debug": dict(payload.get("_groom_guide_sim_debug") or {}),
+        }
 
     @staticmethod
     def _mgl_edge_vertices_from_mesh(
@@ -19003,6 +21036,14 @@ class MGLRendererMixin:
             self._mgl_update_groom_deform_guides()
         except Exception:
             pass
+        try:
+            self._mgl_update_groom_guide_pose_sims()
+        except Exception:
+            pass
+        try:
+            self._mgl_update_groom_guide_sim_guides()
+        except Exception:
+            pass
 
         try:
             if self._mgl_update_skinned_splat_proxies():
@@ -24066,6 +26107,70 @@ class MGLRendererMixin:
                 if kind in {"groom_guides", "groom guides", "hair_guides", "hair guides", "groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"}:
                     display_owner = str(asset.get("node") or asset.get("owner") or "Groom Guides").strip()
                     source_kind_key = str(asset.get("source_kind") or "").strip().lower()
+                    groom_guide_pose_cfg = dict(asset.get("groom_guide_pose")) if isinstance(asset.get("groom_guide_pose"), dict) else None
+                    if not isinstance(groom_guide_pose_cfg, dict) and source_kind_key == "groom_guide_pose":
+                        groom_guide_pose_cfg = {
+                            "settings": {},
+                            "source_node": str(asset.get("node") or "").strip(),
+                            "source_kind": source_kind_key,
+                            "source_owner": str(asset.get("source_owner") or "").strip(),
+                            "cache_path": str(asset.get("pose_cache_path") or asset.get("guides_path") or ""),
+                        }
+                    if isinstance(groom_guide_pose_cfg, dict):
+                        if not isinstance(groom_guide_pose_cfg.get("settings"), dict):
+                            groom_guide_pose_cfg["settings"] = {}
+                        if not isinstance(groom_guide_pose_cfg.get("bind_curves"), list):
+                            bind_curves_cfg = asset.get("bind_curves")
+                            if not isinstance(bind_curves_cfg, list):
+                                bind_curves_cfg = asset.get("curves")
+                            if isinstance(bind_curves_cfg, list):
+                                groom_guide_pose_cfg["bind_curves"] = list(bind_curves_cfg)
+                        if not isinstance(groom_guide_pose_cfg.get("pose_curves"), list):
+                            pose_curves_cfg = asset.get("curves")
+                            if not isinstance(pose_curves_cfg, list):
+                                pose_curves_cfg = groom_guide_pose_cfg.get("bind_curves")
+                            if isinstance(pose_curves_cfg, list):
+                                groom_guide_pose_cfg["pose_curves"] = list(pose_curves_cfg)
+                    groom_guide_sim_cfg = dict(asset.get("groom_guide_sim")) if isinstance(asset.get("groom_guide_sim"), dict) else None
+                    groom_guide_sim_asset_settings = asset.get("groom_guide_sim_settings")
+                    if not isinstance(groom_guide_sim_asset_settings, dict) and source_kind_key == "groom_guide_sim":
+                        groom_guide_sim_asset_settings = asset.get("settings")
+                    if not isinstance(groom_guide_sim_cfg, dict) and source_kind_key == "groom_guide_sim":
+                        groom_guide_sim_cfg = {
+                            "settings": (
+                                dict(groom_guide_sim_asset_settings)
+                                if isinstance(groom_guide_sim_asset_settings, dict)
+                                else {}
+                            ),
+                            "source_node": str(asset.get("node") or "").strip(),
+                            "source_kind": source_kind_key,
+                            "source_owner": str(asset.get("source_owner") or "").strip(),
+                            "cache_path": str(asset.get("sim_cache_path") or asset.get("guides_path") or ""),
+                        }
+                    if isinstance(groom_guide_sim_cfg, dict):
+                        groom_guide_sim_settings = (
+                            dict(groom_guide_sim_cfg.get("settings") or {})
+                            if isinstance(groom_guide_sim_cfg.get("settings"), dict)
+                            else {}
+                        )
+                        if isinstance(groom_guide_sim_asset_settings, dict):
+                            groom_guide_sim_settings.update(groom_guide_sim_asset_settings)
+                        groom_guide_sim_cfg["settings"] = groom_guide_sim_settings
+                        if not isinstance(groom_guide_sim_cfg.get("bind_curves"), list):
+                            bind_curves_cfg = asset.get("bind_curves")
+                            if not isinstance(bind_curves_cfg, list):
+                                bind_curves_cfg = asset.get("curves")
+                            if isinstance(bind_curves_cfg, list):
+                                groom_guide_sim_cfg["bind_curves"] = list(bind_curves_cfg)
+                        if not isinstance(groom_guide_sim_cfg.get("start_curves"), list):
+                            start_curves_cfg = asset.get("start_curves")
+                            if not isinstance(start_curves_cfg, list):
+                                pose_cfg = asset.get("groom_guide_pose") if isinstance(asset.get("groom_guide_pose"), dict) else {}
+                                start_curves_cfg = pose_cfg.get("pose_curves") or pose_cfg.get("bind_curves")
+                            if not isinstance(start_curves_cfg, list):
+                                start_curves_cfg = groom_guide_sim_cfg.get("bind_curves")
+                            if isinstance(start_curves_cfg, list):
+                                groom_guide_sim_cfg["start_curves"] = list(start_curves_cfg)
                     is_groom_deform_asset = (
                         source_kind_key == "groom_deform"
                         or kind in {"groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"}
@@ -24130,6 +26235,8 @@ class MGLRendererMixin:
                     debug_log_enabled = bool(
                         asset.get("debug_log", False)
                         or (isinstance(groom_deform_cfg, dict) and groom_deform_cfg.get("debug_log", False))
+                        or (isinstance(groom_guide_pose_cfg, dict) and (groom_guide_pose_cfg.get("settings") or {}).get("debug_log", False))
+                        or (isinstance(groom_guide_sim_cfg, dict) and (groom_guide_sim_cfg.get("settings") or {}).get("debug_log", False))
                     )
                     curves = asset.get("curves")
                     line_points = []
@@ -24155,7 +26262,9 @@ class MGLRendererMixin:
                         try:
                             guide_data = json.loads(Path(str(asset.get("guides_path"))).read_text(encoding="utf-8"))
                             rows = []
-                            curves = guide_data.get("curves") if isinstance(guide_data, dict) else None
+                            curves = None
+                            if isinstance(guide_data, dict):
+                                curves = guide_data.get("curves") or guide_data.get("pose_curves")
                             for curve in curves or []:
                                 if not isinstance(curve, list) or len(curve) < 2:
                                     continue
@@ -24245,8 +26354,14 @@ class MGLRendererMixin:
                             payload["overlay"] = True
                             payload["depth_test"] = False if isinstance(groom_deform_cfg, dict) else True
                             payload["debug_log"] = bool(debug_log_enabled)
+                            payload["source_kind"] = source_kind_key
                             payload["source_owner"] = source_mesh_owner
                             payload["material"] = {"transparency": 0.01}
+                            if isinstance(curves, list):
+                                payload["curves"] = list(curves)
+                            payload["root_points"] = list(root_points)
+                            payload["root_indices"] = list(root_indices)
+                            payload["line_points"] = line_arr
                             if source_model is not None:
                                 try:
                                     payload["model"] = np.asarray(source_model, dtype="f4").reshape(4, 4)
@@ -24263,6 +26378,10 @@ class MGLRendererMixin:
                             payload["line_segment_count"] = int(line_arr.shape[0] // 2)
                             if isinstance(groom_deform_cfg, dict):
                                 payload["groom_deform"] = dict(groom_deform_cfg)
+                            if isinstance(groom_guide_pose_cfg, dict):
+                                payload["groom_guide_pose"] = dict(groom_guide_pose_cfg)
+                            if isinstance(groom_guide_sim_cfg, dict):
+                                payload["groom_guide_sim"] = dict(groom_guide_sim_cfg)
                             wire_item.payload = payload
                             wire_item.order = 940 if isinstance(groom_deform_cfg, dict) else 40
                             scene.add(wire_item)
@@ -24293,10 +26412,15 @@ class MGLRendererMixin:
                                 payload = point_item.payload or {}
                                 payload["depth_test"] = False if isinstance(groom_deform_cfg, dict) else True
                                 payload["debug_log"] = bool(debug_log_enabled)
+                                payload["source_kind"] = source_kind_key
                                 payload["source_owner"] = source_mesh_owner
                                 payload["point_group"] = "root"
+                                if isinstance(groom_guide_pose_cfg, dict):
+                                    payload["groom_guide_pose"] = dict(groom_guide_pose_cfg)
                                 if isinstance(groom_deform_cfg, dict):
                                     payload["groom_deform"] = dict(groom_deform_cfg)
+                                if isinstance(groom_guide_sim_cfg, dict):
+                                    payload["groom_guide_sim"] = dict(groom_guide_sim_cfg)
                                 if source_model is not None:
                                     try:
                                         payload["model"] = np.asarray(source_model, dtype="f4").reshape(4, 4)

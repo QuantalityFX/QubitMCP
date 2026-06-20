@@ -827,6 +827,71 @@ def evaluate_groom_deform_runtime(
     )
 
 
+def rebase_deformed_points_to_bind_space(
+    runtime: Dict[str, Any],
+    deformed_points: Any,
+    skin_mats: Any,
+    *,
+    mode: str | None = None,
+) -> np.ndarray:
+    """Convert a posed world-space groom back to deform bind space."""
+    points = np.asarray(deformed_points, dtype="f4").reshape(-1, 3)
+    point_root_indices = np.asarray(runtime.get("point_root_indices"), dtype=np.int64).reshape(-1)
+    root_point_indices = np.asarray(runtime.get("root_point_indices"), dtype=np.int64).reshape(-1)
+    source_roots = np.asarray(runtime.get("source_roots"), dtype="f4").reshape(-1, 3)
+    point_count = int(runtime.get("point_count", 0) or 0)
+    root_count = int(runtime.get("root_count", 0) or 0)
+    if point_count <= 0 or root_count <= 0 or int(points.shape[0]) != point_count:
+        raise GroomDeformError("posed groom point count does not match the deform runtime.")
+    if int(point_root_indices.size) != point_count or int(root_point_indices.size) != root_count:
+        raise GroomDeformError("deform runtime root topology is invalid.")
+    if int(source_roots.shape[0]) != root_count:
+        raise GroomDeformError("deform runtime source roots are invalid.")
+
+    matrices = np.asarray(skin_mats, dtype="f4").reshape(-1, 4, 4)
+    joint_count = int(matrices.shape[0])
+    mode_key = str(mode or runtime.get("mode") or "skinned_cv").strip().lower()
+    rotate_offsets = mode_key in {"skinned_cv", "skinned", "root_frame", "root_rotate", "rotate"}
+    root_joint_indices = np.asarray(runtime.get("root_joint_indices"), dtype=np.int32)
+    root_joint_weights = np.asarray(runtime.get("root_joint_weights"), dtype="f4")
+    out = np.zeros_like(points, dtype="f4")
+
+    for root_index in range(root_count):
+        point_mask = point_root_indices == int(root_index)
+        if not bool(np.any(point_mask)):
+            continue
+        root_point = int(root_point_indices[root_index])
+        if root_point < 0 or root_point >= point_count:
+            raise GroomDeformError("deform runtime contains an invalid root point index.")
+        world_offsets = points[point_mask] - points[root_point].reshape(1, 3)
+        transform = np.eye(3, dtype="f4")
+        if (
+            rotate_offsets
+            and joint_count > 0
+            and root_joint_indices.ndim == 2
+            and root_joint_weights.shape == root_joint_indices.shape
+            and root_index < int(root_joint_indices.shape[0])
+        ):
+            weighted = np.zeros((3, 3), dtype="f4")
+            total = 0.0
+            for slot in range(int(root_joint_indices.shape[1])):
+                joint = int(root_joint_indices[root_index, slot])
+                weight = float(root_joint_weights[root_index, slot])
+                if joint < 0 or joint >= joint_count or weight <= 1.0e-8:
+                    continue
+                weighted += matrices[joint, :3, :3] * np.float32(weight)
+                total += weight
+            if total > 1.0e-8:
+                transform = weighted / np.float32(total)
+        try:
+            inverse_transform = np.linalg.inv(transform).astype("f4", copy=False)
+        except Exception:
+            inverse_transform = np.linalg.pinv(transform).astype("f4", copy=False)
+        bind_offsets = world_offsets @ inverse_transform.T
+        out[point_mask] = source_roots[root_index].reshape(1, 3) + bind_offsets
+    return out.astype("f4", copy=False)
+
+
 def deform_groom_curves(
     curves: Sequence[Sequence[Sequence[float]]],
     guide_bindings: Sequence[Dict[str, Any]],
@@ -935,5 +1000,6 @@ __all__ = [
     "curves_to_line_points",
     "deform_groom_curves",
     "evaluate_groom_deform_runtime",
+    "rebase_deformed_points_to_bind_space",
     "transfer_groom_root_skin_weights",
 ]

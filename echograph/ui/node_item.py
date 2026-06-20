@@ -472,6 +472,46 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _curve.register()
             except Exception:
                 pass
+        # Ensure Groom Guide Pose spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "groom_guide_pose",
+            "groom guide pose",
+            "groom_guides_pose",
+            "groom guides pose",
+            "guide_pose",
+            "guide pose",
+            "hair_guide_pose",
+            "hair guide pose",
+            "hair_pose",
+            "hair pose",
+        ):
+            try:
+                from nodes import groom_guide_pose as _groom_guide_pose  # type: ignore
+                if hasattr(_groom_guide_pose, "register"):
+                    _groom_guide_pose.register()
+            except Exception:
+                pass
+        # Ensure Groom Guide Sim spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "groom_guide_sim",
+            "groom guide sim",
+            "groom_guides_sim",
+            "groom guides sim",
+            "hair_guide_sim",
+            "hair guide sim",
+            "hair_guides_sim",
+            "hair guides sim",
+            "hair_sim",
+            "hair sim",
+            "guide_sim",
+            "guide sim",
+        ):
+            try:
+                from nodes import groom_guide_sim as _groom_guide_sim  # type: ignore
+                if hasattr(_groom_guide_sim, "register"):
+                    _groom_guide_sim.register()
+            except Exception:
+                pass
         # Ensure Copy To Points spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in (
             "copy_to_points",
@@ -976,6 +1016,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return "groom_guides"
         if kind in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"):
             return "groom_deform"
+        if kind in ("groom_guide_pose", "groom guide pose", "groom_guides_pose", "groom guides pose", "guide_pose", "guide pose", "hair_guide_pose", "hair guide pose", "hair_pose", "hair pose"):
+            return "groom_guide_pose"
+        if kind in ("groom_guide_sim", "groom guide sim", "groom_guides_sim", "groom guides sim", "hair_guide_sim", "hair guide sim", "hair_guides_sim", "hair guides sim", "hair_sim", "hair sim", "guide_sim", "guide sim"):
+            return "groom_guide_sim"
         if kind in ("fbx_import", "fbx import", "fbximport"):
             return "fbx"
         return None
@@ -1057,6 +1101,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self._set_param_value("debug_log", new_value, rebuild=False, notify_scene=True)
         except Exception:
             return False
+        if kind in {"groom_guide_pose", "groom_guide_sim"}:
+            win = None
+            try:
+                scene = self.scene()
+                views = scene.views() if scene is not None else []
+                win = views[0].window() if views else None
+            except Exception:
+                win = None
+            if win is None:
+                try:
+                    win = self.window()
+                except Exception:
+                    win = None
+            gl_view = getattr(win, "gl_view", None) if win is not None else None
+            toggle_diagnostics = getattr(gl_view, "set_groom_guide_gpu_diagnostics", None) if gl_view is not None else None
+            if callable(toggle_diagnostics):
+                try:
+                    toggle_diagnostics(
+                        owner=str(getattr(self.model, "name", "") or "").strip(),
+                        node_kind=kind,
+                        enabled=new_value == "1",
+                    )
+                except Exception:
+                    pass
         try:
             self.update()
         except Exception:
@@ -1260,6 +1328,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"match_normal", "pack", "path", "points_source", "copy_source"})
         elif kind in ("groom_guides", "groom guides", "hair_guides", "hair guides"):
             hidden.update({"mask", "source", "path", "guides_path", "threshold", "length", "seed", "guide_count", "segments", "debug_log"})
+        elif kind in ("groom_guide_pose", "groom guide pose", "groom_guides_pose", "groom guides pose", "guide_pose", "guide pose", "hair_guide_pose", "hair guide pose", "hair_pose", "hair pose"):
+            hidden.update({"guides", "source", "path", "guides_path", "pose_cache_path", "enabled", "start_frame", "settle_seconds", "warmup_frames", "fps", "substeps", "iterations", "stretch", "bend", "damping", "gravity_y", "wind_x", "wind_y", "wind_z", "scene_units_per_meter", "root_pin", "max_velocity", "device", "debug_log"})
+        elif kind in ("groom_guide_sim", "groom guide sim", "groom_guides_sim", "groom guides sim", "hair_guide_sim", "hair guide sim", "hair_guides_sim", "hair guides sim", "hair_sim", "hair sim", "guide_sim", "guide sim"):
+            hidden.update({"guides", "source", "path", "guides_path", "sim_cache_path", "enabled", "frames", "start_frame", "fps", "substeps", "iterations", "stretch", "bend", "damping", "gravity_y", "wind_x", "wind_y", "wind_z", "scene_units_per_meter", "root_pin", "max_velocity", "device", "debug_log"})
         elif kind in ("uv_unwrap", "normals", "normal", "smooth_normals", "smooth normals"):
             hidden.update({"source", "path"})
         elif kind == "texture":
@@ -2154,6 +2226,24 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = max(node_w, int(getattr(_groom_guides_spec, "GROOM_GUIDES_NODE_W", node_w)))
             except Exception:
                 pass
+        elif kind in ("groom_guide_pose", "groom guide pose", "groom_guides_pose", "groom guides pose", "guide_pose", "guide pose", "hair_guide_pose", "hair guide pose", "hair_pose", "hair pose"):
+            body_h = 242
+            node_w = max(self._BASE_W, 292)
+            try:
+                from nodes.groom_guide_pose import spec as _groom_guide_pose_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_groom_guide_pose_spec, "GROOM_GUIDE_POSE_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_groom_guide_pose_spec, "GROOM_GUIDE_POSE_NODE_W", node_w)))
+            except Exception:
+                pass
+        elif kind in ("groom_guide_sim", "groom guide sim", "groom_guides_sim", "groom guides sim", "hair_guide_sim", "hair guide sim", "hair_guides_sim", "hair guides sim", "hair_sim", "hair sim", "guide_sim", "guide sim"):
+            body_h = 242
+            node_w = max(self._BASE_W, 292)
+            try:
+                from nodes.groom_guide_sim import spec as _groom_guide_sim_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_groom_guide_sim_spec, "GROOM_GUIDE_SIM_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_groom_guide_sim_spec, "GROOM_GUIDE_SIM_NODE_W", node_w)))
+            except Exception:
+                pass
         elif kind in ("fx", "fx_trail"):
             # Match the FX embedded widget more closely so the bottom frame does not hang below it.
             body_h = 452
@@ -2770,6 +2860,28 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "normal",
                 "smooth_normals",
                 "smooth normals",
+                "groom_guide_pose",
+                "groom guide pose",
+                "groom_guides_pose",
+                "groom guides pose",
+                "guide_pose",
+                "guide pose",
+                "hair_guide_pose",
+                "hair guide pose",
+                "hair_pose",
+                "hair pose",
+                "groom_guide_sim",
+                "groom guide sim",
+                "groom_guides_sim",
+                "groom guides sim",
+                "hair_guide_sim",
+                "hair guide sim",
+                "hair_guides_sim",
+                "hair guides sim",
+                "hair_sim",
+                "hair sim",
+                "guide_sim",
+                "guide sim",
                 "groom_deform",
                 "groom deform",
                 "groomdeform",
@@ -3690,6 +3802,32 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "hair_guides",
             "hair guides",
         }
+        groom_guide_sim_kinds = {
+            "groom_guide_sim",
+            "groom guide sim",
+            "groom_guides_sim",
+            "groom guides sim",
+            "hair_guide_sim",
+            "hair guide sim",
+            "hair_guides_sim",
+            "hair guides sim",
+            "hair_sim",
+            "hair sim",
+            "guide_sim",
+            "guide sim",
+        }
+        groom_guide_pose_kinds = {
+            "groom_guide_pose",
+            "groom guide pose",
+            "groom_guides_pose",
+            "groom guides pose",
+            "guide_pose",
+            "guide pose",
+            "hair_guide_pose",
+            "hair guide pose",
+            "hair_pose",
+            "hair pose",
+        }
         groom_deform_kinds = {
             "groom_deform",
             "groom deform",
@@ -3768,6 +3906,40 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 collector = getattr(_scene_spec, "_collect_assets", None)
                 if callable(collector):
                     return list(collector(self) or [])
+            if scene_kind in groom_guide_sim_kinds:
+                try:
+                    from nodes.groom_guide_sim import spec as _groom_guide_sim_spec  # type: ignore
+
+                    build_asset = getattr(_groom_guide_sim_spec, "build_groom_guide_sim_scene_asset", None)
+                    outcome = build_asset(self) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                except Exception as exc:
+                    asset = None
+                    _scene_log(f"groom_guide_sim self build failed err={exc!r}")
+                if isinstance(asset, dict):
+                    _scene_log(
+                        "groom_guide_sim self add "
+                        + f"node={asset.get('node', '')!r} guides={asset.get('guide_count', '')!r}"
+                    )
+                    return [asset]
+                return []
+            if scene_kind in groom_guide_pose_kinds:
+                try:
+                    from nodes.groom_guide_pose import spec as _groom_guide_pose_spec  # type: ignore
+
+                    build_asset = getattr(_groom_guide_pose_spec, "build_groom_guide_pose_scene_asset", None)
+                    outcome = build_asset(self) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                except Exception as exc:
+                    asset = None
+                    _scene_log(f"groom_guide_pose self build failed err={exc!r}")
+                if isinstance(asset, dict):
+                    _scene_log(
+                        "groom_guide_pose self add "
+                        + f"node={asset.get('node', '')!r} guides={asset.get('guide_count', '')!r}"
+                    )
+                    return [asset]
+                return []
             if scene_kind in groom_deform_kinds:
                 try:
                     from nodes.groom_deform import spec as _groom_deform_spec  # type: ignore
@@ -4654,6 +4826,60 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     assets.append(asset)
                     _scene_log(
                         f"edge[{edge_idx}] add groom_guides node={asset.get('node', '')!r} "
+                        f"guides={asset.get('guide_count', '')!r}"
+                    )
+                continue
+            if kind in groom_guide_sim_kinds:
+                try:
+                    from nodes.groom_guide_sim import spec as _groom_guide_sim_spec  # type: ignore
+
+                    build_asset = getattr(_groom_guide_sim_spec, "build_groom_guide_sim_scene_asset", None)
+                    outcome = build_asset(src_item) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                except Exception as exc:
+                    asset = None
+                    _scene_log(f"edge[{edge_idx}] groom_guide_sim build failed node={src_name or kind} err={exc!r}")
+                if isinstance(asset, dict):
+                    asset_owner = str(asset.get("node") or src_name or kind).strip()
+                    xf = _lookup_xform(asset_owner)
+                    if not isinstance(xf, dict) and asset_owner != src_name:
+                        xf = _lookup_xform(src_name)
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    asset["visible"] = asset_owner not in hidden
+                    assets.append(asset)
+                    path_key = str(asset.get("guides_path") or asset.get("path") or "").strip()
+                    if path_key:
+                        seen.add(path_key)
+                    _scene_log(
+                        f"edge[{edge_idx}] add groom_guide_sim node={asset.get('node', '')!r} "
+                        f"guides={asset.get('guide_count', '')!r}"
+                    )
+                continue
+            if kind in groom_guide_pose_kinds:
+                try:
+                    from nodes.groom_guide_pose import spec as _groom_guide_pose_spec  # type: ignore
+
+                    build_asset = getattr(_groom_guide_pose_spec, "build_groom_guide_pose_scene_asset", None)
+                    outcome = build_asset(src_item) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                except Exception as exc:
+                    asset = None
+                    _scene_log(f"edge[{edge_idx}] groom_guide_pose build failed node={src_name or kind} err={exc!r}")
+                if isinstance(asset, dict):
+                    asset_owner = str(asset.get("node") or src_name or kind).strip()
+                    xf = _lookup_xform(asset_owner)
+                    if not isinstance(xf, dict) and asset_owner != src_name:
+                        xf = _lookup_xform(src_name)
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    asset["visible"] = asset_owner not in hidden
+                    assets.append(asset)
+                    path_key = str(asset.get("guides_path") or asset.get("path") or "").strip()
+                    if path_key:
+                        seen.add(path_key)
+                    _scene_log(
+                        f"edge[{edge_idx}] add groom_guide_pose node={asset.get('node', '')!r} "
                         f"guides={asset.get('guide_count', '')!r}"
                     )
                 continue
@@ -7216,6 +7442,33 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "groom guides",
                 "hair_guides",
                 "hair guides",
+                "groom_deform",
+                "groom deform",
+                "groomdeform",
+                "hair_deform",
+                "hair deform",
+                "groom_guide_pose",
+                "groom guide pose",
+                "groom_guides_pose",
+                "groom guides pose",
+                "guide_pose",
+                "guide pose",
+                "hair_guide_pose",
+                "hair guide pose",
+                "hair_pose",
+                "hair pose",
+                "groom_guide_sim",
+                "groom guide sim",
+                "groom_guides_sim",
+                "groom guides sim",
+                "hair_guide_sim",
+                "hair guide sim",
+                "hair_guides_sim",
+                "hair guides sim",
+                "hair_sim",
+                "hair sim",
+                "guide_sim",
+                "guide sim",
                 "mnaterial",
                 "material",
                 "fx",
@@ -7267,6 +7520,40 @@ class NodeItem(QtWidgets.QGraphicsObject):
             ):
                 # Allow space for floating icon above the bar
                 extra_top = 80.0
+            if kind in (
+                "groom_guides",
+                "groom guides",
+                "hair_guides",
+                "hair guides",
+                "groom_deform",
+                "groom deform",
+                "groomdeform",
+                "hair_deform",
+                "hair deform",
+                "groom_guide_pose",
+                "groom guide pose",
+                "groom_guides_pose",
+                "groom guides pose",
+                "guide_pose",
+                "guide pose",
+                "hair_guide_pose",
+                "hair guide pose",
+                "hair_pose",
+                "hair pose",
+                "groom_guide_sim",
+                "groom guide sim",
+                "groom_guides_sim",
+                "groom guides sim",
+                "hair_guide_sim",
+                "hair guide sim",
+                "hair_guides_sim",
+                "hair guides sim",
+                "hair_sim",
+                "hair sim",
+                "guide_sim",
+                "guide sim",
+            ):
+                extra_top = 96.0
         except Exception:
             pass
         return QtCore.QRectF(-m, -m - extra_top, self.width + 2 * m, self.height + 2 * m + extra_top)
@@ -7457,7 +7744,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
                 icon_pm = node_icons._instance_icon() or node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower == "modeler":
-                icon_pm = node_icons._uv_unwrap_icon() or node_icons._primitive_icon() or node_icons._output_icon()
+                icon_pm = node_icons._object_select_icon() or node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower == "primitive":
                 icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower in ("curve", "curve_primitive", "primitive_curve"):
@@ -7473,7 +7760,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower in ("mask", "paint_mask", "paint mask"):
                 icon_pm = node_icons._mask_node_icon() or node_icons._texture_node_icon() or node_icons._output_icon()
             elif kind_lower in ("groom_guides", "groom guides", "hair_guides", "hair guides"):
-                icon_pm = node_icons._mask_node_icon() or node_icons._instance_icon() or node_icons._output_icon()
+                icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
+            elif kind_lower in ("groom_guide_pose", "groom guide pose", "groom_guides_pose", "groom guides pose", "guide_pose", "guide pose", "hair_guide_pose", "hair guide pose", "hair_pose", "hair pose"):
+                icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
+            elif kind_lower in ("groom_guide_sim", "groom guide sim", "groom_guides_sim", "groom guides sim", "hair_guide_sim", "hair guide sim", "hair_guides_sim", "hair guides sim", "hair_sim", "hair sim", "guide_sim", "guide sim"):
+                icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
+            elif kind_lower in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"):
+                icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
             elif kind_lower in ("mnaterial", "material"):
                 icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
             elif kind_lower in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
@@ -7502,6 +7795,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     scale = 1.0
                 # Grow when zoomed out; clamp with larger max
                 size = int(max(40, min(128, 38 / max(scale, 0.001))))
+                if kind_lower in (
+                    "groom_guides", "groom guides", "hair_guides", "hair guides",
+                    "groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform",
+                    "groom_guide_pose", "groom guide pose", "groom_guides_pose", "groom guides pose",
+                    "guide_pose", "guide pose", "hair_guide_pose", "hair guide pose", "hair_pose", "hair pose",
+                    "groom_guide_sim", "groom guide sim", "groom_guides_sim", "groom guides sim",
+                    "hair_guide_sim", "hair guide sim", "hair_guides_sim", "hair guides sim",
+                    "hair_sim", "hair sim", "guide_sim", "guide sim",
+                ):
+                    size = int(max(46, min(147, size * 1.15)))
                 if kind_lower in ("render", "render_sequence", "render node"):
                     size = int(size * 1.40)
                 if kind_lower in ("video_player", "video player", "videoplayer"):

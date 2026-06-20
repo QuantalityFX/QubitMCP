@@ -263,7 +263,29 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Groom Guides plugin import failed:", e)
 
-    # 8.916) Groom Deform
+    # 8.916) Groom Guide Pose
+    try:
+        from nodes import groom_guide_pose
+        if hasattr(groom_guide_pose, "register"):
+            groom_guide_pose.register()
+            _safe_probe("groom_guide_pose")
+        else:
+            print("[EchoGraph] Groom Guide Pose module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Groom Guide Pose plugin import failed:", e)
+
+    # 8.917) Groom Guide Sim
+    try:
+        from nodes import groom_guide_sim
+        if hasattr(groom_guide_sim, "register"):
+            groom_guide_sim.register()
+            _safe_probe("groom_guide_sim")
+        else:
+            print("[EchoGraph] Groom Guide Sim module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Groom Guide Sim plugin import failed:", e)
+
+    # 8.918) Groom Deform
     try:
         from nodes import groom_deform
         if hasattr(groom_deform, "register"):

@@ -493,6 +493,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if QOpenGLWidget is not None:
             try:
                 fmt = QtGui.QSurfaceFormat()
+                fmt.setRenderableType(QtGui.QSurfaceFormat.OpenGL)
+                fmt.setProfile(QtGui.QSurfaceFormat.CoreProfile)
+                # Groom guide XPBD uses GLSL 4.30 compute shaders. Request the
+                # matching context up front instead of accepting Qt's 3.3 default.
+                fmt.setVersion(4, 3)
                 fmt.setDepthBufferSize(24)
                 fmt.setStencilBufferSize(8)
                 try:

@@ -3920,6 +3920,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["curve_thickness"] = float(entry.get("curve_thickness", 2.4) or 2.4)
             if is_groom_guides:
                 clean_entry["guides_path"] = str(entry.get("guides_path") or "").strip()
+                clean_entry["pose_cache_path"] = str(entry.get("pose_cache_path") or "").strip()
+                clean_entry["sim_cache_path"] = str(entry.get("sim_cache_path") or "").strip()
                 clean_entry["source_path"] = str(entry.get("source_path") or "").strip()
                 clean_entry["source_owner"] = str(entry.get("source_owner") or "").strip()
                 for key in ("rig_owner", "deformer_owner", "sample_owner"):
@@ -3961,6 +3963,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["line_points"] = list(entry.get("line_points") or [])
                 clean_entry["debug"] = dict(entry.get("debug") or {}) if isinstance(entry.get("debug"), dict) else {}
                 clean_entry["guide_bindings"] = list(entry.get("guide_bindings") or [])
+                clean_entry["start_curves"] = list(entry.get("start_curves") or [])
                 clean_entry["bind_curves"] = list(entry.get("bind_curves") or [])
                 if isinstance(entry.get("deform_rig_context"), dict):
                     clean_entry["deform_rig_context"] = dict(entry.get("deform_rig_context") or {})
@@ -3970,6 +3973,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     clean_entry["groom_deform"] = dict(entry.get("groom_deform") or {})
                 elif isinstance(entry.get("groom_deform_info"), dict):
                     clean_entry["groom_deform_info"] = dict(entry.get("groom_deform_info") or {})
+                if isinstance(entry.get("groom_guide_pose"), dict):
+                    clean_entry["groom_guide_pose"] = dict(entry.get("groom_guide_pose") or {})
+                if isinstance(entry.get("groom_guide_sim"), dict):
+                    clean_entry["groom_guide_sim"] = dict(entry.get("groom_guide_sim") or {})
+                if isinstance(entry.get("groom_guide_sim_settings"), dict):
+                    clean_entry["groom_guide_sim_settings"] = dict(entry.get("groom_guide_sim_settings") or {})
             if is_curve:
                 clean_entry["curve_type"] = str(entry.get("curve_type") or "line").strip().lower() or "line"
                 clean_entry["points"] = list(entry.get("points") or [])
@@ -4039,7 +4048,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         str(entry.get("sample_owner") or ""),
                         repr(list(entry.get("sample_owner_candidates") or [])),
                         len(list(entry.get("guide_bindings") or [])),
+                        len(list(entry.get("start_curves") or [])),
                         len(list(entry.get("bind_curves") or [])),
+                        repr(
+                            dict((entry.get("groom_guide_sim") or {}).get("settings") or {})
+                            if isinstance(entry.get("groom_guide_sim"), dict)
+                            else {}
+                        ),
                         bool(isinstance(entry.get("deform_rig_context"), dict)),
                         len(list(entry.get("root_indices") or [])),
                         len(list(entry.get("curves") or [])),

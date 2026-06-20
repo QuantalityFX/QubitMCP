@@ -41,6 +41,33 @@ _GROOM_DEFORM_KIND_ALIASES = {
     "hair_deform",
     "hair deform",
 }
+_GROOM_GUIDES_KIND_ALIASES = {"groom_guides", "groom guides", "hair_guides", "hair guides"}
+_GROOM_GUIDE_SIM_KIND_ALIASES = {
+    "groom_guide_sim",
+    "groom guide sim",
+    "groom_guides_sim",
+    "groom guides sim",
+    "hair_guide_sim",
+    "hair guide sim",
+    "hair_guides_sim",
+    "hair guides sim",
+    "hair_sim",
+    "hair sim",
+    "guide_sim",
+    "guide sim",
+}
+_GROOM_GUIDE_POSE_KIND_ALIASES = {
+    "groom_guide_pose",
+    "groom guide pose",
+    "groom_guides_pose",
+    "groom guides pose",
+    "guide_pose",
+    "guide pose",
+    "hair_guide_pose",
+    "hair guide pose",
+    "hair_pose",
+    "hair pose",
+}
 _FX_SPLAT_PHYSICS_KIND_ALIASES = {
     "fx_splat_physics",
     "fx splat physics",
@@ -1286,6 +1313,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "volume_selector",
             "fx",
             "fx_trail",
+            *_GROOM_GUIDE_SIM_KIND_ALIASES,
             *_FX_SPLAT_PHYSICS_KIND_ALIASES,
             *_FX_SPLAT_FX_KIND_ALIASES,
             *_SPLAT_COLORIZE_KIND_ALIASES,
@@ -1330,6 +1358,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "transforms",
             "fx",
             "fx_trail",
+            *_GROOM_GUIDE_SIM_KIND_ALIASES,
             *_FX_SPLAT_PHYSICS_KIND_ALIASES,
             *_FX_SPLAT_FX_KIND_ALIASES,
             *_SPLAT_COLORIZE_KIND_ALIASES,
@@ -1948,6 +1977,113 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"path={str(asset.get('path') or '')} "
                         + f"proxy={str(proxy.get('manifest') or proxy.get('status') or '')} "
                         + f"hide_source={bool(proxy.get('hide_source_mesh', False))}",
+                    )
+            continue
+        if kind in _GROOM_GUIDES_KIND_ALIASES:
+            try:
+                from nodes.groom_guides import spec as _groom_guides_spec  # type: ignore
+
+                build_asset = getattr(_groom_guides_spec, "build_groom_guides_scene_asset", None)
+                outcome = build_asset(src_item) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"groom_guides asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("guides_path") or asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    _scene_log(
+                        node_item,
+                        "groom_guides asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"guides={int(asset.get('guide_count', 0) or 0)}",
+                    )
+            continue
+        if kind in _GROOM_GUIDE_SIM_KIND_ALIASES:
+            try:
+                from nodes.groom_guide_sim import spec as _groom_guide_sim_spec  # type: ignore
+
+                build_asset = getattr(_groom_guide_sim_spec, "build_groom_guide_sim_scene_asset", None)
+                outcome = build_asset(src_item) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"groom_guide_sim asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("guides_path") or asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    debug = asset.get("debug") if isinstance(asset.get("debug"), dict) else {}
+                    _scene_log(
+                        node_item,
+                        "groom_guide_sim asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"guides={int(asset.get('guide_count', 0) or 0)} "
+                        + f"frames={int((debug.get('settings') or {}).get('frames', 0) if isinstance(debug.get('settings'), dict) else 0)}",
+                    )
+            continue
+        if kind in _GROOM_GUIDE_POSE_KIND_ALIASES:
+            try:
+                from nodes.groom_guide_pose import spec as _groom_guide_pose_spec  # type: ignore
+
+                build_asset = getattr(_groom_guide_pose_spec, "build_groom_guide_pose_scene_asset", None)
+                outcome = build_asset(src_item) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"groom_guide_pose asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("guides_path") or asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    debug = asset.get("debug") if isinstance(asset.get("debug"), dict) else {}
+                    settings = debug.get("settings") if isinstance(debug.get("settings"), dict) else {}
+                    _scene_log(
+                        node_item,
+                        "groom_guide_pose asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"guides={int(asset.get('guide_count', 0) or 0)} "
+                        + f"warmup={int(settings.get('warmup_frames', 0) or 0)}",
                     )
             continue
         if kind in _GROOM_DEFORM_KIND_ALIASES:

@@ -305,7 +305,7 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
     elif key in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
         icon_pm = node_icons._instance_icon() or node_icons._primitive_icon() or node_icons._output_icon()
     elif key == "modeler":
-        icon_pm = node_icons._uv_unwrap_icon() or node_icons._primitive_icon() or node_icons._output_icon()
+        icon_pm = node_icons._object_select_icon() or node_icons._primitive_icon() or node_icons._output_icon()
     elif key in ("primitive", "curve", "curve_primitive", "primitive_curve"):
         icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
     elif key == "html_preview":
@@ -323,9 +323,13 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
     elif key in ("mask", "paint_mask", "paint mask"):
         icon_pm = node_icons._mask_node_icon() or node_icons._texture_node_icon() or node_icons._output_icon()
     elif key in ("groom_guides", "groom guides", "hair_guides", "hair guides"):
-        icon_pm = node_icons._mask_node_icon() or node_icons._instance_icon() or node_icons._output_icon()
+        icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
+    elif key in ("groom_guide_pose", "groom guide pose", "groom_guides_pose", "groom guides pose", "guide_pose", "guide pose", "hair_guide_pose", "hair guide pose", "hair_pose", "hair pose"):
+        icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
+    elif key in ("groom_guide_sim", "groom guide sim", "groom_guides_sim", "groom guides sim", "hair_guide_sim", "hair guide sim", "hair_guides_sim", "hair guides sim", "hair_sim", "hair sim", "guide_sim", "guide sim"):
+        icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
     elif key in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"):
-        icon_pm = node_icons._mask_node_icon() or node_icons._instance_icon() or node_icons._output_icon()
+        icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
     elif key == "material":
         icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
     elif key in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
@@ -394,7 +398,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "qubit_deck_controller",
@@ -480,7 +484,8 @@ class CreateNodeDialog(QtWidgets.QDialog):
             btn.setText(_kind_label(kind))
             btn.setToolTip(kind)
             btn.setIcon(_kind_icon(kind))
-            btn.setIconSize(QtCore.QSize(18, 18))
+            icon_size = 21 if kind in {"groom_guides", "groom_deform", "groom_guide_pose", "groom_guide_sim"} else 18
+            btn.setIconSize(QtCore.QSize(icon_size, icon_size))
             btn.setMinimumHeight(28)
             btn.setMinimumWidth(117)
             btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)

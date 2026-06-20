@@ -1039,6 +1039,12 @@ class GroomGuidesWidget(QtWidgets.QWidget):
         view_row.addStretch(1)
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(72)
+        self._view_btn.setStyleSheet(
+            "QPushButton{background:#2563eb;color:#ffffff;border:1px solid #1d4ed8;"
+            "border-radius:4px;padding:3px 10px;font-weight:600;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+            "QPushButton:disabled{background:#334155;color:#94a3b8;border-color:#475569;}"
+        )
         self._view_btn.clicked.connect(self._on_view_clicked)
         view_row.addWidget(self._view_btn, 0)
         layout.addLayout(view_row)
@@ -1251,7 +1257,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
 
 
 GROOM_GUIDES_SPEC = Spec(
-    stripe_color="#f59e0b",
+    stripe_color="#7a5842",
     render_node_body=render_node_body,
     build_ports=build_ports,
 )

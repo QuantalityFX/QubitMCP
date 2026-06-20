@@ -672,6 +672,39 @@ def _with_delay_tag_reference(step: dict[str, object], raw: dict) -> dict[str, o
     return step
 
 
+def _hold_delay_tag_name_from_raw(raw: dict) -> str:
+    return _normalize_delay_tag_name(
+        _raw_first_value(
+            raw,
+            "hold_delay_tag",
+            "hold_delay_tag_name",
+            "hold_delay_tag_id",
+            "key_hold_delay_tag",
+            default="",
+        )
+    )
+
+
+def _with_hold_delay_tag_reference(step: dict[str, object], raw: dict) -> dict[str, object]:
+    if not isinstance(step, dict) or not isinstance(raw, dict):
+        return step
+    name = _hold_delay_tag_name_from_raw(raw)
+    if not name:
+        return step
+    enabled_raw = _raw_first_value(
+        raw,
+        "hold_delay_tag_enabled",
+        "use_hold_delay_tag",
+        "key_hold_delay_tag_enabled",
+        default=None,
+    )
+    if not _coerce_bool(enabled_raw, default=True):
+        return step
+    step["hold_delay_tag_enabled"] = True
+    step["hold_delay_tag"] = name
+    return step
+
+
 def _step_delay_tag_name(step: dict[str, object]) -> str:
     if not isinstance(step, dict):
         return ""
@@ -688,6 +721,33 @@ def _step_delay_tag_name(step: dict[str, object]) -> str:
     return name
 
 
+def _step_hold_delay_tag_name(step: dict[str, object]) -> str:
+    if not isinstance(step, dict):
+        return ""
+    name = _hold_delay_tag_name_from_raw(step)
+    if not name:
+        return ""
+    if _raw_has_value(
+        step,
+        "hold_delay_tag_enabled",
+        "use_hold_delay_tag",
+        "key_hold_delay_tag_enabled",
+    ):
+        enabled = _coerce_bool(
+            _raw_first_value(
+                step,
+                "hold_delay_tag_enabled",
+                "use_hold_delay_tag",
+                "key_hold_delay_tag_enabled",
+                default=True,
+            ),
+            default=True,
+        )
+        if not enabled:
+            return ""
+    return name
+
+
 def _step_delay_ms(step: dict[str, object], delay_tags: list[dict[str, object]] | None = None) -> int:
     tag_name = _step_delay_tag_name(step)
     if tag_name:
@@ -695,6 +755,21 @@ def _step_delay_ms(step: dict[str, object], delay_tags: list[dict[str, object]] 
         if tag_delay is not None:
             return tag_delay
     return _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS) if isinstance(step, dict) else _DEFAULT_DELAY_MS)
+
+
+def _step_hold_ms(
+    step: dict[str, object],
+    delay_tags: list[dict[str, object]] | None = None,
+    default: int = _DEFAULT_KEY_HOLD_MS,
+) -> int:
+    tag_name = _step_hold_delay_tag_name(step)
+    if tag_name:
+        tag_delay = _delay_tag_delay_ms(delay_tags, tag_name)
+        if tag_delay is not None:
+            return _coerce_action_hold_ms(tag_delay)
+    if isinstance(step, dict) and "hold_ms" in step:
+        return _coerce_action_hold_ms(step.get("hold_ms"))
+    return _coerce_action_hold_ms(default)
 
 
 def _refresh_step_delay_tag_values(
@@ -720,6 +795,22 @@ def _refresh_step_delay_tag_values(
                 step.pop("delay_tag", None)
                 step.pop("delay_tag_name", None)
                 step.pop("delay_tag_id", None)
+        hold_name = _step_hold_delay_tag_name(step)
+        if hold_name:
+            hold_tag = lookup.get(_normalize_token(hold_name))
+            if hold_tag is not None:
+                step["hold"] = True
+                step["hold_ms"] = _coerce_action_hold_ms(hold_tag.get("delay_ms", _DEFAULT_KEY_HOLD_MS))
+                step["hold_delay_tag_enabled"] = True
+                step["hold_delay_tag"] = _normalize_delay_tag_name(hold_tag.get("name", hold_name))
+            elif drop_missing:
+                step.pop("hold_delay_tag_enabled", None)
+                step.pop("use_hold_delay_tag", None)
+                step.pop("key_hold_delay_tag_enabled", None)
+                step.pop("hold_delay_tag", None)
+                step.pop("hold_delay_tag_name", None)
+                step.pop("hold_delay_tag_id", None)
+                step.pop("key_hold_delay_tag", None)
         refreshed.append(step)
     return refreshed
 
@@ -1596,17 +1687,20 @@ def _normalize_step(raw, index: int) -> dict[str, object] | None:
 
         key = str(raw.get("key", raw.get("hotkey", "")) or "").strip()
         step = {"action": action, "type": _ACTION_TYPE_KEY, "key": key, "delay_ms": delay_ms}
-        hold_flag = bool(raw.get("hold", False) or raw.get("press_and_hold", False))
+        hold_tag_name = _step_hold_delay_tag_name(raw)
+        hold_flag = bool(raw.get("hold", False) or raw.get("press_and_hold", False) or hold_tag_name)
         if hold_flag:
             step["hold"] = True
         if "hold_ms" in raw:
             step["hold_ms"] = _coerce_action_hold_ms(raw.get("hold_ms", raw.get("hold", _DEFAULT_KEY_HOLD_MS)))
+        elif hold_tag_name:
+            step["hold_ms"] = _DEFAULT_KEY_HOLD_MS
         loop_condition = _key_loop_condition_iteration(raw)
         if loop_condition is not None:
             step["loop_condition_enabled"] = True
             step["loop_condition_operator"] = _key_loop_condition_operator(raw)
             step["loop_condition_iteration"] = loop_condition
-        return _with_delay_tag_reference(step, raw)
+        return _with_hold_delay_tag_reference(_with_delay_tag_reference(step, raw), raw)
     if isinstance(raw, str):
         action = _default_action_label(_ACTION_TYPE_KEY)
         key = raw.strip()
@@ -2796,6 +2890,8 @@ class _ActionEditDialog(QtWidgets.QDialog):
         delay_tags: list[dict[str, object]] | None = None,
         delay_tag_enabled: bool = False,
         delay_tag_name: str = "",
+        hold_delay_tag_enabled: bool = False,
+        hold_delay_tag_name: str = "",
         parent=None,
     ):
         super().__init__(parent)
@@ -2809,7 +2905,7 @@ class _ActionEditDialog(QtWidgets.QDialog):
 
         self.setWindowTitle("Edit Sequence Action")
         self.setModal(True)
-        self.resize(620, 460)
+        self.resize(620, 500)
         _apply_dialog_style(self, parent)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -2841,6 +2937,8 @@ class _ActionEditDialog(QtWidgets.QDialog):
                 delay_ms,
                 hold,
                 hold_ms,
+                hold_delay_tag_enabled,
+                hold_delay_tag_name,
                 key_loop_condition_enabled,
                 key_loop_condition_operator,
                 key_loop_condition_iteration,
@@ -2953,12 +3051,61 @@ class _ActionEditDialog(QtWidgets.QDialog):
             "delay_tag": tag_name,
         }
 
+    def _populate_hold_delay_tag_combo(self, current_name: str = ""):
+        current = _normalize_delay_tag_name(current_name)
+        selected_idx = -1
+        self._hold_delay_tag_combo.clear()
+        for tag in self._delay_tags:
+            name = _normalize_delay_tag_name(tag.get("name", ""))
+            if not name:
+                continue
+            delay_ms = _coerce_delay_ms(tag.get("delay_ms", _DEFAULT_DELAY_MS))
+            self._hold_delay_tag_combo.addItem(f"{name} - {delay_ms} ms", name)
+            if current and _normalize_token(name) == _normalize_token(current):
+                selected_idx = self._hold_delay_tag_combo.count() - 1
+        if current and selected_idx < 0:
+            self._hold_delay_tag_combo.addItem(f"{current} - missing", current)
+            selected_idx = self._hold_delay_tag_combo.count() - 1
+        if selected_idx >= 0:
+            self._hold_delay_tag_combo.setCurrentIndex(selected_idx)
+
+    def _selected_hold_delay_tag_name(self) -> str:
+        return _normalize_delay_tag_name(self._hold_delay_tag_combo.currentData())
+
+    def _on_hold_toggled(self, checked: bool):
+        hold_enabled = bool(checked)
+        tag_available = bool(hold_enabled and self._hold_delay_tag_combo.count() > 0)
+        self._hold_delay_tag_check.setEnabled(tag_available)
+        tag_enabled = bool(tag_available and self._hold_delay_tag_check.isChecked())
+        self._hold_delay_tag_combo.setEnabled(tag_enabled)
+        self._hold_spin.setEnabled(bool(hold_enabled and not tag_enabled))
+        if tag_enabled:
+            self._on_hold_delay_tag_changed()
+
+    def _on_hold_delay_tag_toggled(self, checked: bool):
+        tag_enabled = bool(
+            checked and self._hold_check.isChecked() and self._hold_delay_tag_combo.count() > 0
+        )
+        self._hold_delay_tag_combo.setEnabled(tag_enabled)
+        self._hold_spin.setEnabled(bool(self._hold_check.isChecked() and not tag_enabled))
+        if tag_enabled:
+            self._on_hold_delay_tag_changed()
+
+    def _on_hold_delay_tag_changed(self):
+        if not self._hold_delay_tag_check.isChecked():
+            return
+        tag_delay = _delay_tag_delay_ms(self._delay_tags, self._selected_hold_delay_tag_name())
+        if tag_delay is not None:
+            self._hold_spin.setValue(int(_coerce_action_hold_ms(tag_delay)))
+
     def _build_key_page(
         self,
         key_text: str,
         delay_ms: int,
         hold: bool,
         hold_ms: int | None,
+        hold_delay_tag_enabled: bool,
+        hold_delay_tag_name: str,
         loop_condition_enabled: bool,
         loop_condition_operator: str,
         loop_condition_iteration: int,
@@ -2978,13 +3125,33 @@ class _ActionEditDialog(QtWidgets.QDialog):
 
         hold_default = hold_ms if hold_ms is not None else delay_ms
         self._hold_spin = QtWidgets.QSpinBox()
-        self._hold_spin.setRange(1, int(_MAX_ACTION_HOLD_MS))
+        self._hold_spin.setRange(0, int(_MAX_ACTION_HOLD_MS))
         self._hold_spin.setSingleStep(100)
         self._hold_spin.setSuffix(" ms")
         self._hold_spin.setValue(int(_coerce_action_hold_ms(hold_default)))
-        self._hold_spin.setEnabled(self._hold_check.isChecked())
-        self._hold_check.toggled.connect(self._hold_spin.setEnabled)
         form.addRow("Hold Time", self._hold_spin)
+
+        hold_tag_row = QtWidgets.QWidget(page)
+        hold_tag_layout = QtWidgets.QHBoxLayout(hold_tag_row)
+        hold_tag_layout.setContentsMargins(0, 0, 0, 0)
+        hold_tag_layout.setSpacing(6)
+        self._hold_delay_tag_check = QtWidgets.QCheckBox("Use delay tag")
+        self._hold_delay_tag_combo = QtWidgets.QComboBox()
+        self._hold_delay_tag_combo.setMinimumWidth(190)
+        self._populate_hold_delay_tag_combo(hold_delay_tag_name)
+        has_hold_delay_tag = bool(_normalize_delay_tag_name(hold_delay_tag_name))
+        self._hold_delay_tag_check.setChecked(
+            bool(hold_delay_tag_enabled and has_hold_delay_tag and self._hold_delay_tag_combo.count() > 0)
+        )
+        self._hold_check.toggled.connect(self._on_hold_toggled)
+        self._hold_delay_tag_check.toggled.connect(self._on_hold_delay_tag_toggled)
+        self._hold_delay_tag_combo.currentIndexChanged.connect(
+            lambda _idx: self._on_hold_delay_tag_changed()
+        )
+        hold_tag_layout.addWidget(self._hold_delay_tag_check, 0)
+        hold_tag_layout.addWidget(self._hold_delay_tag_combo, 1)
+        form.addRow("Hold Tag", hold_tag_row)
+        self._on_hold_toggled(self._hold_check.isChecked())
 
         condition_row = QtWidgets.QWidget(page)
         condition_layout = QtWidgets.QHBoxLayout(condition_row)
@@ -3376,6 +3543,18 @@ class _ActionEditDialog(QtWidgets.QDialog):
         if self._delay_tag_check.isChecked() and not self._selected_delay_tag_name():
             QtWidgets.QMessageBox.warning(self, "Keyboard Sequence", "Choose a delay tag or turn off Use delay tag.")
             return
+        if (
+            self._current_action_type() == _ACTION_TYPE_KEY
+            and self._hold_check.isChecked()
+            and self._hold_delay_tag_check.isChecked()
+            and not self._selected_hold_delay_tag_name()
+        ):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Keyboard Sequence",
+                "Choose a hold delay tag or turn off Use delay tag.",
+            )
+            return
         super().accept()
 
     def values(self) -> dict[str, object]:
@@ -3437,7 +3616,16 @@ class _ActionEditDialog(QtWidgets.QDialog):
         step.update(delay_payload)
         if hold:
             step["hold"] = True
-            step["hold_ms"] = _coerce_action_hold_ms(self._hold_spin.value())
+            hold_ms = _coerce_action_hold_ms(self._hold_spin.value())
+            if self._hold_delay_tag_check.isChecked():
+                hold_tag_name = self._selected_hold_delay_tag_name()
+                tag_delay = _delay_tag_delay_ms(self._delay_tags, hold_tag_name)
+                if tag_delay is not None:
+                    hold_ms = _coerce_action_hold_ms(tag_delay)
+                if hold_tag_name:
+                    step["hold_delay_tag_enabled"] = True
+                    step["hold_delay_tag"] = hold_tag_name
+            step["hold_ms"] = hold_ms
         if self._key_loop_condition_check.isChecked():
             step["loop_condition_enabled"] = True
             step["loop_condition_operator"] = _normalize_loop_condition_operator(self._key_loop_condition_operator_combo.currentData())
@@ -3916,7 +4104,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         button_row.addWidget(self._loop_btn, 0)
 
         self._delay_tags_btn = QtWidgets.QPushButton("Add Delay Tag")
-        self._delay_tags_btn.setToolTip("Add or edit named delay values used by action delay cells.")
+        self._delay_tags_btn.setToolTip("Add or edit named delay values used by action delays and key-hold times.")
         self._delay_tags_btn.clicked.connect(self._on_manage_delay_tags)
         button_row.addWidget(self._delay_tags_btn, 0)
 
@@ -4518,8 +4706,16 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                         key_text = str(step.get("key") or "").strip()
                         body = key_text if key_text else "Click to assign key"
                         if key_text and (bool(step.get("hold")) or "hold_ms" in step):
-                            hold_label = _coerce_action_hold_ms(step.get("hold_ms")) if "hold_ms" in step else _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
-                            body = f"{key_text} | Hold {hold_label} ms"
+                            hold_tag_name = _step_hold_delay_tag_name(step)
+                            hold_label = _step_hold_ms(
+                                step,
+                                self._delay_tags,
+                                _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS)),
+                            )
+                            if hold_tag_name:
+                                body = f"{key_text} | Hold {hold_tag_name} ({hold_label} ms)"
+                            else:
+                                body = f"{key_text} | Hold {hold_label} ms"
                         condition_label = _key_loop_condition_label(step)
                         if condition_label:
                             body = f"{body} | {condition_label}"
@@ -4648,8 +4844,14 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         initial_delay = _step_delay_ms(step, self._delay_tags)
         initial_delay_tag_name = _step_delay_tag_name(step)
         initial_delay_tag_enabled = bool(initial_delay_tag_name)
-        initial_hold = bool(step.get("hold")) or "hold_ms" in step
-        initial_hold_ms = _coerce_action_hold_ms(step.get("hold_ms")) if "hold_ms" in step else None
+        initial_hold_delay_tag_name = _step_hold_delay_tag_name(step)
+        initial_hold_delay_tag_enabled = bool(initial_hold_delay_tag_name)
+        initial_hold = bool(step.get("hold")) or "hold_ms" in step or initial_hold_delay_tag_enabled
+        initial_hold_ms = (
+            _step_hold_ms(step, self._delay_tags)
+            if "hold_ms" in step or initial_hold_delay_tag_enabled
+            else None
+        )
         initial_key_loop_condition = _key_loop_condition_iteration(step)
         initial_key_loop_condition_enabled = initial_key_loop_condition is not None
         initial_key_loop_condition_operator = _key_loop_condition_operator(step)
@@ -4692,6 +4894,8 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             self._delay_tags,
             initial_delay_tag_enabled,
             initial_delay_tag_name,
+            initial_hold_delay_tag_enabled,
+            initial_hold_delay_tag_name,
             parent,
         )
         self._position_action_dialog(dialog, index)
@@ -4784,6 +4988,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
 
     def _collect_runnable_steps(self) -> list[dict[str, object]]:
         runnable: list[dict[str, object]] = []
+        delay_tags = getattr(self, "_delay_tags", [])
         for index, step in enumerate(self._steps or []):
             action_type = _normalize_action_type(step.get("type", _ACTION_TYPE_KEY))
             action = str(step.get("action") or "").strip() or _default_action_label(action_type)
@@ -4796,7 +5001,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                     "type": action_type,
                     "x": _coerce_screen_coord(_raw_first_value(step, "x", "screen_x", default=0)),
                     "y": _coerce_screen_coord(_raw_first_value(step, "y", "screen_y", default=0)),
-                    "delay_ms": _step_delay_ms(step, self._delay_tags),
+                    "delay_ms": _step_delay_ms(step, delay_tags),
                     "coord_mode": _normalize_click_coord_mode(step.get("coord_mode", _CLICK_COORD_WINDOW if _normalize_window_metadata(step.get("window")) is not None else _CLICK_COORD_SCREEN)),
                 }
                 if action_type == _ACTION_TYPE_CLICK:
@@ -4822,7 +5027,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                                 "text": text_value,
                                 "text_source": _TEXT_SOURCE_LOOP_TABLE,
                                 "loop_text_rows": text_rows,
-                                "delay_ms": _step_delay_ms(step, self._delay_tags),
+                                "delay_ms": _step_delay_ms(step, delay_tags),
                             }
                         )
                 elif text_value != "":
@@ -4832,7 +5037,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                             "action": action,
                             "type": _ACTION_TYPE_TEXT,
                             "text": text_value,
-                            "delay_ms": _step_delay_ms(step, self._delay_tags),
+                            "delay_ms": _step_delay_ms(step, delay_tags),
                         }
                     )
                 continue
@@ -4845,7 +5050,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                         "type": action_type,
                         "loop_number": _coerce_loop_number(step.get("loop_number", 1), 1),
                         "loop_count": _coerce_loop_count(step.get("loop_count", 2), 2),
-                        "delay_ms": _step_delay_ms(step, self._delay_tags),
+                        "delay_ms": _step_delay_ms(step, delay_tags),
                     }
                 )
                 continue
@@ -4858,13 +5063,14 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                         "action": action,
                         "type": _ACTION_TYPE_KEY,
                         "key": key_text,
-                        "delay_ms": _step_delay_ms(step, self._delay_tags),
+                        "delay_ms": _step_delay_ms(step, delay_tags),
                     }
                 )
-                if bool(step.get("hold")):
+                hold_tag_name = _step_hold_delay_tag_name(step)
+                if bool(step.get("hold")) or hold_tag_name:
                     runnable[-1]["hold"] = True
-                if "hold_ms" in step:
-                    runnable[-1]["hold_ms"] = _coerce_action_hold_ms(step.get("hold_ms"))
+                if "hold_ms" in step or hold_tag_name:
+                    runnable[-1]["hold_ms"] = _step_hold_ms(step, delay_tags)
                 loop_condition = _key_loop_condition_iteration(step)
                 if loop_condition is not None:
                     runnable[-1]["loop_condition_enabled"] = True
