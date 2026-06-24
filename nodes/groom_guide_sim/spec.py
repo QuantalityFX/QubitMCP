@@ -59,7 +59,6 @@ GROOM_GUIDE_SIM_NODE_W = 292
 GROOM_GUIDE_SIM_BODY_H = 242
 
 HIDDEN_PARAMS = {
-    "guides",
     "source",
     "path",
     "guides_path",
@@ -219,6 +218,24 @@ def _ensure_hidden_params(model, names) -> None:
         pass
 
 
+def _ensure_visible_params(model, names) -> None:
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    for param in params:
+        if not isinstance(param, dict) or (param.get("name") or "").strip().lower() != "__ui_hidden_params":
+            continue
+        hidden = {part.strip().lower() for part in str(param.get("value") or "").split(",") if part.strip()}
+        for name in names or []:
+            hidden.discard(str(name or "").strip().lower())
+        param["value"] = ",".join(sorted(hidden))
+        break
+    try:
+        setattr(model, "params", params)
+    except Exception:
+        pass
+
+
 def _edge_dst_name(edge) -> str:
     return str(
         getattr(edge, "dst_port_name", None)
@@ -256,6 +273,17 @@ def _connected_input_item(node_item, names: set[str], kind_fallbacks: Optional[s
             if _node_kind(src) in allowed:
                 return src
     return getattr(edges[0], "src", None) if edges else None
+
+
+def _connected_named_input_item(node_item, names: set[str]):
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    for edge in _ordered_in_edges(scene, node_item):
+        if _edge_dst_name(edge).lower() in names:
+            return getattr(edge, "src", None)
+    return None
 
 
 def _node_kind(item) -> str:
@@ -307,6 +335,18 @@ def _guides_asset_from_item(item) -> tuple[Optional[dict[str, Any]], str]:
     asset = getattr(outcome, "asset", None)
     detail = str(getattr(outcome, "detail", "") or "")
     return (dict(asset), "") if isinstance(asset, dict) else (None, detail or "Groom Guides did not produce curves.")
+
+
+def _collider_asset_from_item(item) -> tuple[Optional[dict[str, Any]], str]:
+    try:
+        from nodes.groom_guide_pose import spec as pose_spec  # type: ignore
+
+        resolve = getattr(pose_spec, "_collider_asset_from_item", None)
+        if callable(resolve):
+            return resolve(item)
+    except Exception as exc:
+        return None, f"Collider build failed: {exc}"
+    return None, "Collider resolver is unavailable."
 
 
 def _sanitize_name(value: str) -> str:
@@ -419,6 +459,14 @@ def build_groom_guide_sim_scene_asset(node_item) -> GroomGuideSimBuildOutcome:
     guides_asset, error = _guides_asset_from_item(source_item)
     if not isinstance(guides_asset, dict):
         return GroomGuideSimBuildOutcome(None, "error", error or "Connect a guide source.", {})
+    collider_item = _connected_named_input_item(node_item, {"collider", "collision", "collision_mesh"})
+    collider_asset, collider_error = _collider_asset_from_item(collider_item)
+    if collider_item is not None and not isinstance(collider_asset, dict):
+        return GroomGuideSimBuildOutcome(None, "error", collider_error or "Collider input is not ready.", {})
+    if not isinstance(collider_asset, dict):
+        inherited_collider = guides_asset.get("groom_collider")
+        if isinstance(inherited_collider, dict):
+            collider_asset = inherited_collider
     curves = _copy_curves(guides_asset.get("curves") or [])
     if not curves:
         return GroomGuideSimBuildOutcome(None, "error", "Guides input has no curves.", {})
@@ -435,6 +483,8 @@ def build_groom_guide_sim_scene_asset(node_item) -> GroomGuideSimBuildOutcome:
             "start_frame": int(settings.get("start_frame", 0) or 0),
             "first_simulated_frame": int(settings.get("start_frame", 0) or 0) + 1,
             "solver_device": str(settings.get("device", "auto") or "auto"),
+            "collider_enabled": bool(isinstance(collider_asset, dict)),
+            "collider_node": str((collider_asset or {}).get("node") or ""),
         }
         start_frame = int(settings.get("start_frame", 0) or 0)
         detail = (
@@ -453,6 +503,8 @@ def build_groom_guide_sim_scene_asset(node_item) -> GroomGuideSimBuildOutcome:
         }
         detail = f"Simulation disabled; passing {len(sim_curves)} guide curve(s) through."
         status = "warning"
+    if isinstance(collider_asset, dict):
+        detail += f" Collider: {str(collider_asset.get('node') or 'Skinned Volume Mesh')}."
 
     root_indices = list(guides_asset.get("root_indices") or [])
     if len(root_indices) != len(sim_curves):
@@ -470,6 +522,8 @@ def build_groom_guide_sim_scene_asset(node_item) -> GroomGuideSimBuildOutcome:
         "points_per_curve": int(guides_asset.get("points_per_curve", 0) or 0),
         "settings": dict(settings),
         "cache_path": str(output_path),
+        "collider_enabled": bool(isinstance(collider_asset, dict)),
+        "collider_node": str((collider_asset or {}).get("node") or ""),
     }
     debug.update(sim_debug)
     payload = {
@@ -486,6 +540,10 @@ def build_groom_guide_sim_scene_asset(node_item) -> GroomGuideSimBuildOutcome:
         "curves": sim_curves,
         "line_points": line_points,
         "debug": dict(debug),
+        "collider": {
+            "node": str((collider_asset or {}).get("node") or ""),
+            "manifest": str(((collider_asset or {}).get("volume_mesh") or {}).get("manifest") or ""),
+        },
     }
     if isinstance(guides_asset.get("groom_deform"), dict):
         payload["groom_deform"] = dict(guides_asset.get("groom_deform") or {})
@@ -528,8 +586,11 @@ def build_groom_guide_sim_scene_asset(node_item) -> GroomGuideSimBuildOutcome:
             "cache_path": str(output_path),
             "start_curves": _copy_curves(bind_curves),
             "bind_curves": bind_curves,
+            "collider_node": str((collider_asset or {}).get("node") or ""),
         },
     }
+    if isinstance(collider_asset, dict):
+        asset["groom_collider"] = collider_asset
     if isinstance(guides_asset.get("groom_deform"), dict):
         asset["groom_deform"] = dict(guides_asset.get("groom_deform") or {})
         for key in ("rig_owner", "deformer_owner", "sample_owner", "sample_owner_candidates", "groom_deform_mode"):
@@ -546,6 +607,7 @@ def build_ports(node_item) -> None:
     _remove_param(node_item, "frames")
     for name, default in (
         ("guides", ""),
+        ("collider", ""),
         ("source", ""),
         ("path", ""),
         ("guides_path", ""),
@@ -570,13 +632,16 @@ def build_ports(node_item) -> None:
     ):
         _ensure_param(node_item, name, default)
     try:
-        setattr(getattr(node_item, "model", None), "_named_inputs", ["guides"])
+        setattr(getattr(node_item, "model", None), "_named_inputs", ["guides", "collider"])
+        setattr(node_item, "_default_named_input", "guides")
         setattr(node_item, "_show_default_input_with_named", False)
     except Exception:
         pass
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("guides")
+        node_item.ensure_input("collider")
     _ensure_hidden_params(getattr(node_item, "model", None), HIDDEN_PARAMS)
+    _ensure_visible_params(getattr(node_item, "model", None), ["guides", "collider"])
 
 
 def _resolve_window(node_item):
@@ -614,12 +679,25 @@ def _quick_status(node_item) -> GroomGuideSimBuildOutcome:
     guides_asset, error = _guides_asset_from_item(source_item)
     if not isinstance(guides_asset, dict):
         return GroomGuideSimBuildOutcome(None, "error", error or "Connect a guide source.", {"settings": dict(settings)})
+    collider_item = _connected_named_input_item(node_item, {"collider", "collision", "collision_mesh"})
+    collider_asset, collider_error = _collider_asset_from_item(collider_item)
+    if collider_item is not None and not isinstance(collider_asset, dict):
+        return GroomGuideSimBuildOutcome(None, "error", collider_error or "Collider input is not ready.", {"settings": dict(settings)})
+    if not isinstance(collider_asset, dict) and isinstance(guides_asset.get("groom_collider"), dict):
+        collider_asset = guides_asset.get("groom_collider")
     curves = _copy_curves(guides_asset.get("curves") or [])
     if not curves:
         return GroomGuideSimBuildOutcome(None, "error", "Guides input has no curves.", {"settings": dict(settings)})
     start_frame = int(settings.get("start_frame", 0) or 0)
     detail = f"Ready: {len(curves)} guide curve(s), armed at frame {start_frame}; first physics frame {start_frame + 1}."
-    return GroomGuideSimBuildOutcome({"guide_count": int(len(curves))}, "ok", detail, {"settings": dict(settings)})
+    if isinstance(collider_asset, dict):
+        detail += f" Collider: {str(collider_asset.get('node') or 'Skinned Volume Mesh')}."
+    return GroomGuideSimBuildOutcome(
+        {"guide_count": int(len(curves)), "collider_enabled": bool(isinstance(collider_asset, dict))},
+        "ok",
+        detail,
+        {"settings": dict(settings), "collider_enabled": bool(isinstance(collider_asset, dict))},
+    )
 
 
 class GroomGuideSimWidget(QtWidgets.QWidget):
@@ -829,9 +907,11 @@ class GroomGuideSimWidget(QtWidgets.QWidget):
                 runtime_status = {}
             device = str((runtime_status or {}).get("device") or "").strip().lower()
             if device == "gpu":
-                detail += " Viewport: GPU."
+                runtime_debug = (runtime_status or {}).get("debug") or {}
+                detail += " Viewport: GPU collision." if runtime_debug.get("collider_enabled") else " Viewport: GPU."
             elif device == "cpu":
-                detail += " Viewport: CPU fallback."
+                runtime_debug = (runtime_status or {}).get("debug") or {}
+                detail += " Viewport: CPU collision." if runtime_debug.get("collider_enabled") else " Viewport: CPU fallback."
             elif device == "waiting":
                 mode = str(((runtime_status or {}).get("debug") or {}).get("simulation_mode") or "")
                 if mode == "deformed_start_state_armed":
@@ -842,6 +922,9 @@ class GroomGuideSimWidget(QtWidgets.QWidget):
                     detail += " Viewport: deform only before Start Frame."
             elif device:
                 detail += f" Viewport: {device}."
+            collider_error = str((runtime_status or {}).get("collider_error") or "").strip()
+            if collider_error:
+                detail += f" Collider error: {collider_error}"
         self._status.setText(detail)
 
     def _on_view_clicked(self):

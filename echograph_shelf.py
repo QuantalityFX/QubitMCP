@@ -3861,6 +3861,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["material"] = dict(entry.get("material") or {})
             if isinstance(entry.get("fbx_rig_context"), dict):
                 clean_entry["fbx_rig_context"] = dict(entry.get("fbx_rig_context") or {})
+            if "fbx_sample_owner" in entry:
+                clean_entry["fbx_sample_owner"] = str(entry.get("fbx_sample_owner") or "").strip()
             if "hidden_submeshes" in entry:
                 clean_entry["hidden_submeshes"] = [
                     str(name).strip()
@@ -3977,6 +3979,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     clean_entry["groom_guide_pose"] = dict(entry.get("groom_guide_pose") or {})
                 if isinstance(entry.get("groom_guide_sim"), dict):
                     clean_entry["groom_guide_sim"] = dict(entry.get("groom_guide_sim") or {})
+                # The renderer builds animated mesh collisions from this
+                # context.  Do not discard it while sanitizing Scene assets.
+                if isinstance(entry.get("groom_collider"), dict):
+                    clean_entry["groom_collider"] = dict(entry.get("groom_collider") or {})
                 if isinstance(entry.get("groom_guide_sim_settings"), dict):
                     clean_entry["groom_guide_sim_settings"] = dict(entry.get("groom_guide_sim_settings") or {})
             if is_curve:
@@ -4021,6 +4027,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             for entry in clean:
                 xf = entry.get("xform") or {}
                 rig_ctx = entry.get("fbx_rig_context")
+                collider_cfg = entry.get("groom_collider") if isinstance(entry.get("groom_collider"), dict) else {}
+                collider_rig_ctx = collider_cfg.get("fbx_rig_context") if isinstance(collider_cfg, dict) else {}
                 def _round3(vals, default):
                     try:
                         return tuple(round(float(v), 6) for v in (vals or default))
@@ -4037,6 +4045,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         str(entry.get("node") or ""),
                         bool(entry.get("debug_log", False)),
                         str(entry.get("source_owner") or ""),
+                        str(entry.get("fbx_sample_owner") or ""),
                         str(entry.get("guides_path") or ""),
                         int(entry.get("guide_count", 0) or 0),
                         int(entry.get("points_per_curve", 0) or 0),
@@ -4055,6 +4064,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                             if isinstance(entry.get("groom_guide_sim"), dict)
                             else {}
                         ),
+                        str(collider_cfg.get("node") or ""),
+                        str(((collider_cfg.get("volume_mesh") or {}).get("manifest")) or ""),
+                        id((collider_rig_ctx or {}).get("skeleton")) if isinstance(collider_rig_ctx, dict) else None,
+                        id((collider_rig_ctx or {}).get("clip")) if isinstance(collider_rig_ctx, dict) else None,
                         bool(isinstance(entry.get("deform_rig_context"), dict)),
                         len(list(entry.get("root_indices") or [])),
                         len(list(entry.get("curves") or [])),

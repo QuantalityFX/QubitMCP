@@ -754,6 +754,8 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
 
         # --- Dest anchor (left side) ---
         d_name = getattr(self, "dst_port_name", None)
+        if not d_name:
+            d_name = getattr(self.dst, "_default_named_input", None)
         if d_name and hasattr(self.dst, "port_anchor"):
             try:
                 d = self.dst.port_anchor(d_name, side="in")

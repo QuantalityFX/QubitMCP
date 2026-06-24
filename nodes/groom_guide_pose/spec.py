@@ -66,12 +66,18 @@ GROOM_DEFORM_KIND_ALIASES = {
     "hair_deform",
     "hair deform",
 }
+SKINNED_VOLUME_MESH_KIND_ALIASES = {
+    "skinned_volume_mesh",
+    "skinned volume mesh",
+    "skinned_collision_mesh",
+    "skinned collision mesh",
+    "fbx_to_skinned_volume_mesh",
+}
 
 GROOM_GUIDE_POSE_NODE_W = 292
 GROOM_GUIDE_POSE_BODY_H = 264
 
 HIDDEN_PARAMS = {
-    "guides",
     "source",
     "path",
     "guides_path",
@@ -214,6 +220,24 @@ def _ensure_hidden_params(model, names) -> None:
         pass
 
 
+def _ensure_visible_params(model, names) -> None:
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    for param in params:
+        if not isinstance(param, dict) or (param.get("name") or "").strip().lower() != "__ui_hidden_params":
+            continue
+        hidden = {part.strip().lower() for part in str(param.get("value") or "").split(",") if part.strip()}
+        for name in names or []:
+            hidden.discard(str(name or "").strip().lower())
+        param["value"] = ",".join(sorted(hidden))
+        break
+    try:
+        setattr(model, "params", params)
+    except Exception:
+        pass
+
+
 def _edge_dst_name(edge) -> str:
     return str(
         getattr(edge, "dst_port_name", None)
@@ -251,6 +275,40 @@ def _connected_input_item(node_item, names: set[str], kind_fallbacks: Optional[s
             if _node_kind(src) in allowed:
                 return src
     return getattr(edges[0], "src", None) if edges else None
+
+
+def _connected_named_input_item(node_item, names: set[str]):
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    for edge in _ordered_in_edges(scene, node_item):
+        if _edge_dst_name(edge).lower() in names:
+            return getattr(edge, "src", None)
+    return None
+
+
+def _connected_collider_item(node_item):
+    """Resolve the Collider edge, including old unnamed graph connections.
+
+    Named ports are authoritative.  The unnamed fallback is deliberately
+    limited to a Skinned Volume Mesh so a legacy workflow can still use a
+    collider without accidentally treating the Guides input as a collider.
+    """
+    item = _connected_named_input_item(node_item, {"collider", "collision", "collision_mesh"})
+    if item is not None:
+        return item
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    for edge in _ordered_in_edges(scene, node_item):
+        if _edge_dst_name(edge):
+            continue
+        candidate = getattr(edge, "src", None)
+        if _node_kind(candidate) in SKINNED_VOLUME_MESH_KIND_ALIASES:
+            return candidate
+    return None
 
 
 def _node_kind(item) -> str:
@@ -291,6 +349,45 @@ def _guides_asset_from_item(item) -> tuple[Optional[dict[str, Any]], str]:
         detail = str(getattr(outcome, "detail", "") or "")
         return (dict(asset), "") if isinstance(asset, dict) else (None, detail or "Groom Guides did not produce curves.")
     return None, f"Unsupported guides input: {kind or '<none>'}."
+
+
+def _collider_asset_from_item(item) -> tuple[Optional[dict[str, Any]], str]:
+    if item is None:
+        return None, ""
+    kind = _node_kind(item)
+    if kind not in SKINNED_VOLUME_MESH_KIND_ALIASES:
+        return None, f"Unsupported collider input: {kind or '<none>'}."
+    try:
+        from nodes.skinned_volume_mesh import spec as volume_spec  # type: ignore
+
+        build = getattr(volume_spec, "build_skinned_volume_mesh_scene_asset", None)
+        outcome = build(item, generate=False) if callable(build) else None
+    except Exception as exc:
+        return None, f"Skinned Volume Mesh build failed: {exc}"
+    asset = getattr(outcome, "asset", None)
+    detail = str(getattr(outcome, "detail", "") or "")
+    if not isinstance(asset, dict):
+        return None, detail or "Skinned Volume Mesh did not produce a collider."
+    volume_mesh = asset.get("volume_mesh") if isinstance(asset.get("volume_mesh"), dict) else {}
+    rig_context = asset.get("fbx_rig_context")
+    if not volume_mesh.get("skin_npz") or not isinstance(rig_context, dict) or not list(rig_context.get("meshes") or []):
+        return None, detail or "Generate the Skinned Volume Mesh before using it as a collider."
+    return {
+        "type": "skinned_volume_mesh",
+        "node": str(asset.get("node") or _node_name(item) or "Skinned Volume Mesh"),
+        "source_path": str(asset.get("source_path") or ""),
+        "sample_owner": str(
+            asset.get("fbx_sample_owner")
+            or asset.get("sample_owner")
+            or asset.get("deformer_owner")
+            or asset.get("source_owner")
+            or asset.get("rig_owner")
+            or asset.get("node")
+            or ""
+        ).strip(),
+        "fbx_rig_context": rig_context,
+        "volume_mesh": dict(volume_mesh),
+    }, ""
 
 
 def _sanitize_name(value: str) -> str:
@@ -770,6 +867,7 @@ def _make_pose_outcome(
     pose_curves,
     *,
     source_item=None,
+    collider_asset: dict[str, Any] | None = None,
     cache_path: Path | None = None,
     line_points=None,
     root_points=None,
@@ -806,6 +904,8 @@ def _make_pose_outcome(
         "settings": dict(settings),
         "cache_path": cache_text,
         "interactive_pose": bool(interactive),
+        "collider_enabled": bool(isinstance(collider_asset, dict)),
+        "collider_node": str((collider_asset or {}).get("node") or ""),
     }
     if isinstance(debug_extra, dict):
         debug.update(dict(debug_extra))
@@ -825,6 +925,7 @@ def _make_pose_outcome(
             "deform_bind_curves": _copy_curves(deform_bind_curves),
             "simulate_seconds": float(settings.get("settle_seconds", 0.0) or 0.0),
             "simulate_frames": int(settings.get("warmup_frames", 0) or 0),
+            "collider_node": str((collider_asset or {}).get("node") or ""),
             "line_points": pose_line_points,
             "root_points": pose_root_points,
             "debug": dict(debug),
@@ -868,8 +969,11 @@ def _make_pose_outcome(
             "deform_bind_curves": _copy_curves(deform_bind_curves),
             "initial_curves": _copy_curves(initial_curves),
             "pose_state": "captured" if interactive else "live_deform",
+            "collider_node": str((collider_asset or {}).get("node") or ""),
         },
     }
+    if isinstance(collider_asset, dict):
+        asset["groom_collider"] = collider_asset
     deform_cfg = guides_asset.get("groom_deform") if isinstance(guides_asset.get("groom_deform"), dict) else None
     if isinstance(deform_cfg, dict):
         posed_deform = dict(deform_cfg)
@@ -902,6 +1006,7 @@ def _outcome_from_pose_cache(
     guides_asset: dict[str, Any],
     settings: dict[str, Any],
     cache_path: Path,
+    collider_asset: dict[str, Any] | None = None,
 ) -> GroomGuidePoseBuildOutcome | None:
     payload, error = _read_pose_cache(cache_path)
     if not isinstance(payload, dict):
@@ -932,6 +1037,7 @@ def _outcome_from_pose_cache(
         settings,
         pose_curves,
         source_item=source_item,
+        collider_asset=collider_asset,
         cache_path=cache_path,
         line_points=line_points,
         root_points=root_points,
@@ -1018,6 +1124,12 @@ def store_interactive_pose_result(
         {"guides", "guide", "source"},
         GUIDE_KIND_ALIASES | GROOM_DEFORM_KIND_ALIASES | KIND_ALIASES,
     )
+    collider_item = _connected_collider_item(node_item)
+    collider_asset, _collider_error = _collider_asset_from_item(collider_item)
+    if not isinstance(collider_asset, dict) and isinstance(source_payload, dict):
+        inherited_collider = source_payload.get("groom_collider")
+        if isinstance(inherited_collider, dict):
+            collider_asset = inherited_collider
     guides_asset, _error = _guides_asset_from_item(source_item)
     if not isinstance(guides_asset, dict):
         guides_asset = _source_asset_from_payload(source_payload)
@@ -1028,6 +1140,7 @@ def store_interactive_pose_result(
         current_settings,
         pose_curves,
         source_item=source_item,
+        collider_asset=collider_asset,
         cache_path=output_path,
         line_points=line_points,
         root_points=root_points,
@@ -1043,8 +1156,19 @@ def store_interactive_pose_result(
     _set_param(node_item, "path", cache_param, notify_scene=False)
     _set_param(node_item, "guides_path", cache_param, notify_scene=False)
     _set_param(node_item, "pose_cache_path", cache_param, notify_scene=False)
-    source_sig = _build_early_cache_signature(source_item, current_settings) if source_item is not None else ""
-    cache_sig = _build_cache_signature(source_item, guides_asset, current_settings, output_path) if source_item is not None else str(output_path)
+    source_sig = _build_early_cache_signature(source_item, current_settings, collider_item) if source_item is not None else ""
+    cache_sig = (
+        _build_cache_signature(
+            source_item,
+            guides_asset,
+            current_settings,
+            output_path,
+            collider_item=collider_item,
+            collider_asset=collider_asset,
+        )
+        if source_item is not None
+        else str(output_path)
+    )
     _store_cached_outcome(
         node_item,
         source_sig or cache_sig,
@@ -1233,12 +1357,13 @@ def _lightweight_graph_signature(item, *, depth: int = 0, seen: set[int] | None 
     }
 
 
-def _build_early_cache_signature(source_item, settings: dict[str, Any]) -> str:
+def _build_early_cache_signature(source_item, settings: dict[str, Any], collider_item=None) -> str:
     signature = {
         "schema": "qubit.groom_guide_pose.early_cache.v3",
         "frame_semantics": "literal_pose_frame_zero_based_no_owner_remap",
         "settings": settings,
         "source_graph": _lightweight_graph_signature(source_item),
+        "collider_graph": _lightweight_graph_signature(collider_item),
     }
     try:
         return json.dumps(signature, sort_keys=True, default=str)
@@ -1246,7 +1371,15 @@ def _build_early_cache_signature(source_item, settings: dict[str, Any]) -> str:
         return str(signature)
 
 
-def _build_cache_signature(source_item, guides_asset: dict[str, Any], settings: dict[str, Any], output_path: Path) -> str:
+def _build_cache_signature(
+    source_item,
+    guides_asset: dict[str, Any],
+    settings: dict[str, Any],
+    output_path: Path,
+    *,
+    collider_item=None,
+    collider_asset: dict[str, Any] | None = None,
+) -> str:
     deform_cfg = guides_asset.get("groom_deform") if isinstance(guides_asset.get("groom_deform"), dict) else {}
     signature = {
         "schema": "qubit.groom_guide_pose.cache.v3",
@@ -1266,6 +1399,9 @@ def _build_cache_signature(source_item, guides_asset: dict[str, Any], settings: 
         "rig_context_id": int(id(deform_cfg.get("rig_context"))) if isinstance(deform_cfg, dict) else 0,
         "bind_curve_count": len(deform_cfg.get("bind_curves") or []) if isinstance(deform_cfg, dict) else 0,
         "binding_count": len(deform_cfg.get("guide_bindings") or []) if isinstance(deform_cfg, dict) else 0,
+        "collider_kind": _node_kind(collider_item),
+        "collider_name": _node_name(collider_item),
+        "collider_manifest": str(((collider_asset or {}).get("volume_mesh") or {}).get("manifest") or ""),
     }
     try:
         return json.dumps(signature, sort_keys=True, default=str)
@@ -1375,22 +1511,44 @@ def build_groom_guide_pose_scene_asset(node_item) -> GroomGuidePoseBuildOutcome:
         {"guides", "guide", "source"},
         GUIDE_KIND_ALIASES | GROOM_DEFORM_KIND_ALIASES | KIND_ALIASES,
     )
-    early_cache_sig = _build_early_cache_signature(source_item, settings) if source_item is not None else ""
+    collider_item = _connected_collider_item(node_item)
+    collider_asset, collider_error = _collider_asset_from_item(collider_item)
+    if collider_item is not None and not isinstance(collider_asset, dict):
+        return GroomGuidePoseBuildOutcome(None, "error", collider_error or "Collider input is not ready.", {})
+    early_cache_sig = _build_early_cache_signature(source_item, settings, collider_item) if source_item is not None else ""
     cached = _interactive_cached_outcome(node_item, settings, early_cache_sig)
     if cached is not None:
         return cached
     guides_asset, error = _guides_asset_from_item(source_item)
     if not isinstance(guides_asset, dict):
         return GroomGuidePoseBuildOutcome(None, "error", error or "Connect Groom Deform.", {})
-    post_early_cache_sig = _build_early_cache_signature(source_item, settings) if source_item is not None else early_cache_sig
+    post_early_cache_sig = _build_early_cache_signature(source_item, settings, collider_item) if source_item is not None else early_cache_sig
     cached = _interactive_cached_outcome(node_item, settings, post_early_cache_sig or early_cache_sig)
     if cached is not None:
         return cached
     cache_path = _cache_path_from_params(node_item)
     if cache_path is not None:
-        cache_outcome = _outcome_from_pose_cache(node_item, source_item, guides_asset, settings, cache_path)
+        cache_outcome = _outcome_from_pose_cache(
+            node_item,
+            source_item,
+            guides_asset,
+            settings,
+            cache_path,
+            collider_asset=collider_asset,
+        )
         if cache_outcome is not None:
-            cache_sig = _build_cache_signature(source_item, guides_asset, settings, cache_path) if source_item is not None else str(cache_path)
+            cache_sig = (
+                _build_cache_signature(
+                    source_item,
+                    guides_asset,
+                    settings,
+                    cache_path,
+                    collider_item=collider_item,
+                    collider_asset=collider_asset,
+                )
+                if source_item is not None
+                else str(cache_path)
+            )
             _store_cached_outcome(
                 node_item,
                 post_early_cache_sig or cache_sig,
@@ -1424,6 +1582,7 @@ def build_groom_guide_pose_scene_asset(node_item) -> GroomGuidePoseBuildOutcome:
         settings,
         source_curves,
         source_item=source_item,
+        collider_asset=collider_asset,
         cache_path=None,
         line_points=line_points,
         root_points=root_points,
@@ -1446,6 +1605,7 @@ def build_ports(node_item) -> None:
     settle_default = max(0.0, min(600.0, float(warmup_default) / max(1.0e-6, float(fps_default))))
     for name, default in (
         ("guides", ""),
+        ("collider", ""),
         ("source", ""),
         ("path", ""),
         ("guides_path", ""),
@@ -1472,13 +1632,16 @@ def build_ports(node_item) -> None:
     ):
         _ensure_param(node_item, name, default)
     try:
-        setattr(getattr(node_item, "model", None), "_named_inputs", ["guides"])
+        setattr(getattr(node_item, "model", None), "_named_inputs", ["guides", "collider"])
+        setattr(node_item, "_default_named_input", "guides")
         setattr(node_item, "_show_default_input_with_named", False)
     except Exception:
         pass
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("guides")
+        node_item.ensure_input("collider")
     _ensure_hidden_params(getattr(node_item, "model", None), HIDDEN_PARAMS)
+    _ensure_visible_params(getattr(node_item, "model", None), ["guides", "collider"])
 
 
 def _quick_status(node_item) -> GroomGuidePoseBuildOutcome:
@@ -1499,6 +1662,10 @@ def _quick_status(node_item) -> GroomGuidePoseBuildOutcome:
     allowed = GUIDE_KIND_ALIASES | GROOM_DEFORM_KIND_ALIASES | KIND_ALIASES
     if kind not in allowed:
         return GroomGuidePoseBuildOutcome(None, "error", f"Unsupported guides input: {kind or '<none>'}.", {})
+    collider_item = _connected_collider_item(node_item)
+    collider_asset, collider_error = _collider_asset_from_item(collider_item)
+    if collider_item is not None and not isinstance(collider_asset, dict):
+        return GroomGuidePoseBuildOutcome(None, "error", collider_error or "Collider input is not ready.", {})
     try:
         cached = getattr(node_item, "_groom_guide_pose_cache_outcome", None)
     except Exception:
@@ -1518,6 +1685,8 @@ def _quick_status(node_item) -> GroomGuidePoseBuildOutcome:
             f"{float(settings.get('settle_seconds', 0.0) or 0.0):.2f}s."
         )
     )
+    if isinstance(collider_asset, dict):
+        detail += f" Collider: {str(collider_asset.get('node') or 'Skinned Volume Mesh')}."
     return GroomGuidePoseBuildOutcome(
         None,
         "ok",
@@ -1939,15 +2108,28 @@ class GroomGuidePoseWidget(QtWidgets.QWidget):
                 self._status.setText(detail or "Could not stop Sim Pose.")
             return
         self._commit_current_controls(notify_scene=False)
-        if not bool(runtime_status.get("loaded", False)):
-            outcome = build_groom_guide_pose_scene_asset(self._node_item)
-            if isinstance(outcome.asset, dict):
-                handler = getattr(win, "open_scene_assets", None)
-                if callable(handler):
-                    try:
-                        handler([dict(outcome.asset)], frame=False)
-                    except TypeError:
-                        handler([dict(outcome.asset)])
+        # Always rebuild the displayed asset before starting a new run.  The
+        # previous behavior only did this when no Guide Pose item was loaded,
+        # so a collider connected after View was absent from the active
+        # payload and the GPU path ran without collision.
+        outcome = build_groom_guide_pose_scene_asset(self._node_item)
+        if not isinstance(outcome.asset, dict):
+            self._status.setStyleSheet("color:#f87171;font-size:11px;")
+            self._status.setText(outcome.detail or "Could not build the Guide Pose asset for simulation.")
+            return
+        handler = getattr(win, "open_scene_assets", None)
+        if not callable(handler):
+            self._status.setStyleSheet("color:#f87171;font-size:11px;")
+            self._status.setText("Viewport asset refresh is unavailable.")
+            return
+        try:
+            handler([dict(outcome.asset)], frame=False)
+        except TypeError:
+            handler([dict(outcome.asset)])
+        except Exception as exc:
+            self._status.setStyleSheet("color:#f87171;font-size:11px;")
+            self._status.setText(f"Could not refresh the Guide Pose viewport asset: {exc}")
+            return
         start_handler = getattr(gl_view, "start_groom_guide_pose_sim", None) if gl_view is not None else None
         if not callable(start_handler):
             self._status.setStyleSheet("color:#f87171;font-size:11px;")

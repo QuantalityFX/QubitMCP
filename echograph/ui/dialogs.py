@@ -278,6 +278,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._anim_retarget_icon() or node_icons._transforms_icon() or node_icons._import_icon()
     elif key in ("skinned_splat_proxy", "skinned splat proxy", "skinnedsplatproxy", "fbx_to_skinned_splat_proxy", "fbx skinned splat proxy"):
         icon_pm = node_icons._ply_icon() or node_icons._fbx_icon() or node_icons._import_icon()
+    elif key in ("skinned_volume_mesh", "skinned volume mesh", "skinned_collision_mesh", "skinned collision mesh", "fbx_to_skinned_volume_mesh"):
+        icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
     elif key == "switch":
         icon_pm = node_icons._switch_icon()
     elif key == "chatbot":
@@ -398,7 +400,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "qubit_deck_controller",

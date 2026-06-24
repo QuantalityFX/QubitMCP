@@ -84,6 +84,7 @@ def register_defaults() -> None:
     register("GEN-X-VideoMocap", stripe_color="#14b8a6")
     register("anim_retarget", stripe_color="#ec4899")
     register("skinned_splat_proxy", stripe_color="#38bdf8")
+    register("skinned_volume_mesh", stripe_color="#14b8a6")
     register("modeler", stripe_color="#0ea5e9")
     register("copy_to_points", stripe_color="#06b6d4")
     register("curve", stripe_color="#22d3ee")

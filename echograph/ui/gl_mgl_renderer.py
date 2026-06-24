@@ -73,6 +73,7 @@ from echograph.rigging.groom_deform import (
 )
 from echograph.rigging.xpbd_strand import (
     XPBDStrandConfig,
+    build_mesh_collider,
     build_strand_runtime,
     reset_strand_runtime,
     step_strand_runtime,
@@ -2292,7 +2293,7 @@ class MGLRendererMixin:
         frame = self._mgl_timeline_frame_index()
         sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(
             context if isinstance(context, dict) else None,
-            payload.get("owner"),
+            payload.get("fbx_sample_owner") or payload.get("owner"),
         )
         skin_frame_key = (int(frame), round(float(sample_seconds), 6))
         if payload.get("_fbx_skin_frame", None) == skin_frame_key:
@@ -5092,6 +5093,124 @@ class MGLRendererMixin:
                 out.append(rows)
         return out
 
+    def _mgl_groom_guide_mesh_collider(self, payload: dict):
+        if np is None or not isinstance(payload, dict):
+            return None
+        collider_cfg = payload.get("groom_collider")
+        if not isinstance(collider_cfg, dict):
+            return None
+        rig_context = collider_cfg.get("fbx_rig_context")
+        if not isinstance(rig_context, dict):
+            payload["_groom_collider_error"] = "Collider has no rig context."
+            return None
+        skeleton = rig_context.get("skeleton")
+        if skeleton is None:
+            payload["_groom_collider_error"] = "Collider rig context has no skeleton."
+            return None
+        sample_owner = str(
+            collider_cfg.get("sample_owner")
+            or collider_cfg.get("source_owner")
+            or collider_cfg.get("node")
+            or payload.get("source_owner")
+            or payload.get("owner")
+            or ""
+        ).strip()
+        # A Guide Pose/Sim owns the playback semantics.  When it has a groom
+        # deformer, sample the collision mesh through that same owner mapping
+        # so retiming/composition offsets cannot make the body and guides use
+        # different animation frames.
+        if isinstance(payload.get("groom_deform"), dict):
+            try:
+                guide_sample_owner = self._mgl_groom_deform_sample_owner(
+                    payload,
+                    str(payload.get("owner") or "").strip(),
+                )
+            except Exception:
+                guide_sample_owner = ""
+            if guide_sample_owner:
+                sample_owner = str(guide_sample_owner)
+        sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(rig_context, sample_owner)
+        frame_key = (
+            int(self._mgl_timeline_frame_index()),
+            round(float(sample_seconds), 6),
+            int(id(rig_context)),
+        )
+        cached = payload.get("_groom_collider_runtime")
+        if isinstance(cached, dict) and cached.get("frame_key") == frame_key:
+            prepared = cached.get("collider")
+            if isinstance(prepared, dict):
+                return prepared
+        try:
+            evaluation = self._mgl_evaluate_rig_cached(
+                skeleton,
+                rig_context.get("clip"),
+                float(sample_seconds),
+                loop=bool(rig_context.get("loop", True)),
+                include_debug_data=False,
+            )
+            skin_mats = np.asarray(evaluation.skin_matrices, dtype="f4").reshape(-1, 4, 4)
+            joint_count = int(skin_mats.shape[0])
+            specs_cache = payload.get("_groom_collider_skin_specs")
+            if isinstance(specs_cache, dict) and specs_cache.get("rig_context_id") == int(id(rig_context)):
+                specs = list(specs_cache.get("specs") or [])
+            else:
+                specs = self._mgl_fbx_skin_specs_from_context(rig_context)
+                payload["_groom_collider_skin_specs"] = {
+                    "rig_context_id": int(id(rig_context)),
+                    "specs": specs,
+                }
+            vertices_all = []
+            triangles_all = []
+            vertex_offset = 0
+            for spec in specs:
+                bind_positions = np.asarray(spec.get("bind_positions"), dtype="f4").reshape(-1, 3)
+                triangles = np.asarray(spec.get("triangle_indices"), dtype=np.int64).reshape(-1, 3)
+                joint_indices = np.asarray(spec.get("joint_indices"), dtype=np.int32)
+                joint_weights = np.asarray(spec.get("joint_weights"), dtype="f4")
+                if bind_positions.size == 0 or triangles.size == 0:
+                    continue
+                deformed = np.zeros_like(bind_positions, dtype="f4")
+                weighted = np.zeros((bind_positions.shape[0],), dtype=bool)
+                if (
+                    joint_indices.ndim == 2
+                    and joint_weights.shape == joint_indices.shape
+                    and joint_indices.shape[0] == bind_positions.shape[0]
+                    and joint_count > 0
+                ):
+                    for slot in range(int(joint_indices.shape[1])):
+                        joints = joint_indices[:, slot]
+                        weights = joint_weights[:, slot]
+                        valid = (joints >= 0) & (joints < joint_count) & (weights > 1.0e-8)
+                        if not np.any(valid):
+                            continue
+                        transformed = self._mgl_fbx_transform_points_row_major(
+                            skin_mats[joints[valid]],
+                            bind_positions[valid],
+                        )
+                        deformed[valid] += transformed * weights[valid, None]
+                        weighted[valid] = True
+                if np.any(~weighted):
+                    deformed[~weighted] = bind_positions[~weighted]
+                vertices_all.append(deformed.astype("f4", copy=False))
+                triangles_all.append((triangles + int(vertex_offset)).astype(np.int64, copy=False))
+                vertex_offset += int(deformed.shape[0])
+            if not vertices_all or not triangles_all:
+                raise RuntimeError("Collider rig contains no skinned triangle mesh.")
+            prepared = build_mesh_collider(
+                np.concatenate(vertices_all, axis=0),
+                np.concatenate(triangles_all, axis=0),
+            )
+            payload["_groom_collider_runtime"] = {
+                "frame_key": frame_key,
+                "collider": prepared,
+                "node": sample_owner,
+            }
+            payload.pop("_groom_collider_error", None)
+            return prepared
+        except Exception as exc:
+            payload["_groom_collider_error"] = repr(exc)
+            return None
+
     def _mgl_groom_guide_pose_find_item(self, owner_hint: str = ""):
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
@@ -5325,6 +5444,13 @@ class MGLRendererMixin:
                 root_targets = None
 
         config = self._mgl_groom_guide_sim_config(sim_settings)
+        collider_requested = isinstance(payload.get("groom_collider"), dict)
+        collider = self._mgl_groom_guide_mesh_collider(payload)
+        if collider_requested and not isinstance(collider, dict):
+            return {
+                "ok": False,
+                "detail": "Collider initialization failed: " + str(payload.get("_groom_collider_error") or "unknown error"),
+            }
         deform_skin_mats = self._mgl_groom_guide_pose_skin_matrices(payload, owner)
         old_state = payload.pop("_groom_guide_pose_sim", None)
         if isinstance(old_state, dict):
@@ -5346,6 +5472,7 @@ class MGLRendererMixin:
             "initial_curves": self._mgl_groom_guide_pose_curves_from_points(initial_points, current_curves),
             "root_targets": root_targets,
             "deform_skin_mats": deform_skin_mats,
+            "collider": collider,
             "device": "cpu",
             "debug": {
                 "start_frame": int(frame),
@@ -5353,14 +5480,16 @@ class MGLRendererMixin:
                 "initial_state_source": str(initial_state_source),
             },
         }
-        device = self._mgl_groom_guide_sim_device(sim_settings)
+        requested_device = self._mgl_groom_guide_sim_device(sim_settings)
+        device = requested_device
         diagnostics_enabled = self._mgl_groom_guide_gpu_diag_enabled(owner, settings=sim_settings, payload=payload)
         if diagnostics_enabled:
             self._mgl_groom_guide_gpu_diag_log(
                 "guide_pose_sim_requested",
                 owner=owner,
                 node_kind="groom_guide_pose",
-                requested_device=device,
+                requested_device=requested_device,
+                collider_enabled=bool(isinstance(collider, dict)),
                 frame=int(frame),
                 duration_seconds=float(duration),
                 curve_count=int(len(current_curves)),
@@ -5469,7 +5598,7 @@ class MGLRendererMixin:
             self.update()
         except Exception:
             pass
-        device_label = "GPU" if state.get("device") == "gpu" else "CPU fallback"
+        device_label = "GPU" if state.get("device") == "gpu" else "CPU collision" if isinstance(collider, dict) else "CPU fallback"
         return {
             "ok": True,
             "detail": f"Sim Pose running from frame {int(frame)} for {float(duration):.2f}s ({device_label}).",
@@ -5846,6 +5975,8 @@ class MGLRendererMixin:
             state["accum"] = max(0.0, accum - float(step_count) * step_dt)
             state["last_wall"] = now
             root_targets = state.get("root_targets")
+            collider = self._mgl_groom_guide_mesh_collider(payload)
+            state["collider"] = collider
             try:
                 if isinstance(state.get("gpu_runtime"), dict) and state.get("gpu_backend") is not None:
                     backend = state.get("gpu_backend")
@@ -5857,6 +5988,7 @@ class MGLRendererMixin:
                             root_targets=root_targets,
                             steps=step_count,
                             dt=step_dt,
+                            collider=collider,
                         )
                     gpu_wire_bound = False
                     with profile_scope("render.3d.mgl.groom_guide_pose.gpu_wire"):
@@ -5928,6 +6060,7 @@ class MGLRendererMixin:
                             root_targets=root_targets,
                             steps=step_count,
                             dt=step_dt,
+                            collider=collider,
                         )
                     line_arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
                     self._mgl_groom_guide_sim_upload_wire(item, line_arr, owner)
@@ -6203,7 +6336,10 @@ class MGLRendererMixin:
                 or delta < 0
                 or abs(delta) > reset_jump
             )
-            device = self._mgl_groom_guide_sim_device(settings)
+            collider_requested = isinstance(payload.get("groom_collider"), dict)
+            collider = self._mgl_groom_guide_mesh_collider(payload)
+            requested_device = self._mgl_groom_guide_sim_device(settings)
+            device = requested_device
             diagnostics_enabled = self._mgl_groom_guide_gpu_diag_enabled(owner, settings=settings, payload=payload)
             self._mgl_groom_guide_gpu_diag_throttled(
                 "sim_evaluate",
@@ -6213,7 +6349,9 @@ class MGLRendererMixin:
                 settings=settings,
                 payload=payload,
                 interval=1.0,
-                requested_device=device,
+                requested_device=requested_device,
+                collider_enabled=bool(isinstance(collider, dict)),
+                collider_error=str(payload.get("_groom_collider_error") or ""),
                 frame=int(frame),
                 start_frame=int(start_frame),
                 first_simulated_frame=int(start_frame + 1),
@@ -6279,6 +6417,7 @@ class MGLRendererMixin:
                                 config,
                                 root_targets=root_targets,
                                 steps=gpu_step_count,
+                                collider=collider,
                             )
                         gpu_wire_bound = False
                         with profile_scope("render.3d.mgl.groom_guide_sim.gpu_wire"):
@@ -6386,6 +6525,7 @@ class MGLRendererMixin:
                         config,
                         root_targets=root_targets,
                         steps=step_count,
+                        collider=collider,
                     )
             except Exception as exc:
                 if diagnostics_enabled:
@@ -6556,6 +6696,7 @@ class MGLRendererMixin:
         return {
             "device": str(payload.get("_groom_guide_sim_runtime_device") or "pending"),
             "gpu_error": str(payload.get("_groom_guide_sim_gpu_error") or ""),
+            "collider_error": str(payload.get("_groom_collider_error") or ""),
             "debug": dict(payload.get("_groom_guide_sim_debug") or {}),
         }
 
@@ -26108,6 +26249,7 @@ class MGLRendererMixin:
                     display_owner = str(asset.get("node") or asset.get("owner") or "Groom Guides").strip()
                     source_kind_key = str(asset.get("source_kind") or "").strip().lower()
                     groom_guide_pose_cfg = dict(asset.get("groom_guide_pose")) if isinstance(asset.get("groom_guide_pose"), dict) else None
+                    groom_collider_cfg = dict(asset.get("groom_collider")) if isinstance(asset.get("groom_collider"), dict) else None
                     if not isinstance(groom_guide_pose_cfg, dict) and source_kind_key == "groom_guide_pose":
                         groom_guide_pose_cfg = {
                             "settings": {},
@@ -26382,6 +26524,8 @@ class MGLRendererMixin:
                                 payload["groom_guide_pose"] = dict(groom_guide_pose_cfg)
                             if isinstance(groom_guide_sim_cfg, dict):
                                 payload["groom_guide_sim"] = dict(groom_guide_sim_cfg)
+                            if isinstance(groom_collider_cfg, dict):
+                                payload["groom_collider"] = dict(groom_collider_cfg)
                             wire_item.payload = payload
                             wire_item.order = 940 if isinstance(groom_deform_cfg, dict) else 40
                             scene.add(wire_item)
@@ -26421,6 +26565,8 @@ class MGLRendererMixin:
                                     payload["groom_deform"] = dict(groom_deform_cfg)
                                 if isinstance(groom_guide_sim_cfg, dict):
                                     payload["groom_guide_sim"] = dict(groom_guide_sim_cfg)
+                                if isinstance(groom_collider_cfg, dict):
+                                    payload["groom_collider"] = dict(groom_collider_cfg)
                                 if source_model is not None:
                                     try:
                                         payload["model"] = np.asarray(source_model, dtype="f4").reshape(4, 4)
@@ -26567,6 +26713,11 @@ class MGLRendererMixin:
                 visible = bool(visibility_map.get(owner, True))
                 wire_only = bool(asset.get("wire_only"))
                 is_volume = bool(asset.get("volume"))
+                volume_mesh_cfg = asset.get("volume_mesh") if isinstance(asset.get("volume_mesh"), dict) else {}
+                is_skinned_volume_mesh = bool(
+                    kind in {"skinned_volume_mesh", "skinned volume mesh", "skinned_collision_mesh", "skinned collision mesh"}
+                    or str(volume_mesh_cfg.get("type") or "").strip().lower() == "skinned_volume_mesh"
+                )
                 render_proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else None
                 copy_to_points = asset.get("copy_to_points") if isinstance(asset.get("copy_to_points"), dict) else None
                 gpu_copy_instances = bool(copy_to_points.get("gpu_instances", False)) if isinstance(copy_to_points, dict) else False
@@ -26697,6 +26848,14 @@ class MGLRendererMixin:
                         fbx_rig_context = self._mgl_fbx_rig_context_for_path(path)
                     except Exception:
                         fbx_rig_context = None
+                rig_sample_owner = str(
+                    asset.get("fbx_sample_owner")
+                    or asset.get("sample_owner")
+                    or asset.get("deformer_owner")
+                    or asset.get("source_owner")
+                    or owner
+                    or ""
+                ).strip()
                 skinned_proxy_loaded = False
                 if isinstance(render_proxy, dict):
                     proxy_bounds = self._mgl_load_skinned_splat_proxy(
@@ -27070,14 +27229,24 @@ class MGLRendererMixin:
                 points = None
                 normals = None
                 uvs = None
-                if openmesh is not None and ext != ".fbx":
+                if openmesh is not None and ext != ".fbx" and not is_skinned_volume_mesh:
                     try:
                         mesh = openmesh.read_trimesh(str(path))
                     except Exception:
                         mesh = None
 
                 if mesh is None:
-                    if ext == ".fbx":
+                    if is_skinned_volume_mesh:
+                        mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(
+                            fbx_rig_context if isinstance(fbx_rig_context, dict) else None
+                        )
+                        if mesh_arrays is None:
+                            self._mgl_error = "Skinned Volume Mesh has no usable rig context."
+                            continue
+                        points = mesh_arrays.points
+                        normals = mesh_arrays.normals
+                        uvs = mesh_arrays.uvs
+                    elif ext == ".fbx":
                         try:
                             mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
                             points = mesh_arrays.points
@@ -27165,6 +27334,7 @@ class MGLRendererMixin:
                             "music_effects": music_effects,
                             "hidden_submeshes": list(hidden_submeshes),
                             "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                            "fbx_sample_owner": rig_sample_owner,
                             "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                             "selection_disabled": bool(asset.get("selection_disabled", False)),
                         },
@@ -27240,6 +27410,7 @@ class MGLRendererMixin:
                                 "music_effects": music_effects,
                                 "hidden_submeshes": list(hidden_submeshes),
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                                "fbx_sample_owner": rig_sample_owner,
                                 "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                                 "selection_disabled": bool(asset.get("selection_disabled", False)),
                             },

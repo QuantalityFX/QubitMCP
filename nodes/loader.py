@@ -516,6 +516,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Skinned Splat Proxy plugin import failed:", e)
 
+    # 13.96) Skinned Volume Mesh
+    try:
+        from nodes import skinned_volume_mesh
+        if hasattr(skinned_volume_mesh, "register"):
+            skinned_volume_mesh.register()
+            _safe_probe("skinned_volume_mesh")
+        else:
+            print("[EchoGraph] Skinned Volume Mesh module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Skinned Volume Mesh plugin import failed:", e)
+
     # 14) Export FBX
     try:
         from nodes import export_fbx

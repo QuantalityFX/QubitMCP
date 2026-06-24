@@ -222,6 +222,176 @@ def _coerce_points_array(points: Any, expected_count: int) -> Any | None:
     return arr
 
 
+def build_mesh_collider(
+    vertices: Any,
+    triangle_indices: Any,
+    *,
+    margin: float | None = None,
+) -> dict[str, Any]:
+    """Build a nearest-surface collider for a closed, outward-facing triangle mesh."""
+    if np is None:
+        raise XPBDStrandError("NumPy is required for strand mesh collision.")
+    try:
+        points = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
+        triangles = np.asarray(triangle_indices, dtype=np.int64).reshape(-1, 3)
+    except Exception as exc:
+        raise XPBDStrandError(f"Collider mesh arrays are invalid: {exc}") from exc
+    if points.shape[0] < 4 or triangles.shape[0] < 4:
+        raise XPBDStrandError("Collider mesh needs at least four vertices and four triangles.")
+    valid = np.all((triangles >= 0) & (triangles < int(points.shape[0])), axis=1)
+    triangles = triangles[valid]
+    if triangles.shape[0] < 4:
+        raise XPBDStrandError("Collider mesh has no usable triangle surface.")
+
+    tri_points = points[triangles]
+    face_normals = np.cross(tri_points[:, 1] - tri_points[:, 0], tri_points[:, 2] - tri_points[:, 0])
+    face_lengths = np.linalg.norm(face_normals, axis=1)
+    usable_faces = face_lengths > 1.0e-12
+    triangles = triangles[usable_faces]
+    tri_points = tri_points[usable_faces]
+    face_normals = face_normals[usable_faces]
+    face_lengths = face_lengths[usable_faces]
+    if triangles.shape[0] < 4:
+        raise XPBDStrandError("Collider mesh triangles are degenerate.")
+    face_normals /= face_lengths[:, None]
+
+    vertex_normals = np.zeros_like(points, dtype=np.float64)
+    for corner in range(3):
+        np.add.at(vertex_normals, triangles[:, corner], face_normals)
+    normal_lengths = np.linalg.norm(vertex_normals, axis=1)
+    usable_vertices = normal_lengths > 1.0e-12
+    if not np.any(usable_vertices):
+        raise XPBDStrandError("Collider mesh has no usable surface normals.")
+    vertex_normals[usable_vertices] /= normal_lengths[usable_vertices, None]
+    surface_vertices = points[usable_vertices]
+    surface_normals = vertex_normals[usable_vertices]
+
+    if margin is None:
+        sample = tri_points[: min(20000, int(tri_points.shape[0]))]
+        edge_lengths = np.concatenate(
+            (
+                np.linalg.norm(sample[:, 1] - sample[:, 0], axis=1),
+                np.linalg.norm(sample[:, 2] - sample[:, 1], axis=1),
+                np.linalg.norm(sample[:, 0] - sample[:, 2], axis=1),
+            )
+        )
+        positive_edges = edge_lengths[edge_lengths > 1.0e-12]
+        diagonal = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+        edge_margin = float(np.median(positive_edges)) * 0.2 if positive_edges.size else 0.0
+        collision_margin = max(diagonal * 1.0e-6, edge_margin)
+    else:
+        collision_margin = max(0.0, _finite_float(margin, 0.0))
+
+    tree = None
+    face_tree = None
+    try:
+        from scipy.spatial import cKDTree
+
+        tree = cKDTree(surface_vertices)
+        face_tree = cKDTree(tri_points.mean(axis=1))
+    except Exception:
+        tree = None
+        face_tree = None
+    return {
+        "schema": "qubit.xpbd_strand.mesh_collider.v1",
+        "vertices": surface_vertices,
+        "normals": surface_normals,
+        "triangle_count": int(triangles.shape[0]),
+        "triangle_points": tri_points,
+        "face_normals": face_normals,
+        "margin": float(collision_margin),
+        "tree": tree,
+        "face_tree": face_tree,
+    }
+
+
+def project_points_from_mesh_collider(
+    points: Any,
+    inv_mass: Any,
+    collider: dict[str, Any] | None,
+) -> int:
+    """Project movable points out of a prepared closed mesh collider."""
+    if np is None or not isinstance(collider, dict):
+        return 0
+    try:
+        x = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        weights = np.asarray(inv_mass, dtype=np.float64).reshape(-1)
+        surface = np.asarray(collider.get("vertices"), dtype=np.float64).reshape(-1, 3)
+        normals = np.asarray(collider.get("normals"), dtype=np.float64).reshape(-1, 3)
+    except Exception:
+        return 0
+    if x.shape[0] == 0 or weights.shape[0] != x.shape[0] or surface.shape != normals.shape or surface.shape[0] == 0:
+        return 0
+    movable = np.flatnonzero(weights > 0.0)
+    if movable.size == 0:
+        return 0
+    query_points = x[movable]
+    face_tree = collider.get("face_tree")
+    triangle_points = collider.get("triangle_points")
+    face_normals = collider.get("face_normals")
+    signed_gap = None
+    contact_normals = None
+    if face_tree is not None and triangle_points is not None and face_normals is not None:
+        try:
+            from trimesh.triangles import closest_point as closest_points_on_triangles
+
+            tri_points = np.asarray(triangle_points, dtype=np.float64).reshape(-1, 3, 3)
+            tri_normals = np.asarray(face_normals, dtype=np.float64).reshape(-1, 3)
+            candidate_count = min(12, int(tri_points.shape[0]))
+            signed_chunks = []
+            normal_chunks = []
+            for start in range(0, int(query_points.shape[0]), 4096):
+                query_chunk = query_points[start : start + 4096]
+                try:
+                    _distance, candidates = face_tree.query(query_chunk, k=candidate_count, workers=-1)
+                except TypeError:
+                    _distance, candidates = face_tree.query(query_chunk, k=candidate_count)
+                candidates = np.asarray(candidates, dtype=np.int64)
+                if candidates.ndim == 1:
+                    candidates = candidates.reshape(-1, 1)
+                candidate_triangles = tri_points[candidates].reshape(-1, 3, 3)
+                repeated_points = np.repeat(query_chunk, candidates.shape[1], axis=0)
+                closest = closest_points_on_triangles(candidate_triangles, repeated_points)
+                delta = repeated_points - closest
+                distances_sq = np.einsum("ij,ij->i", delta, delta).reshape(query_chunk.shape[0], candidates.shape[1])
+                best_slot = np.argmin(distances_sq, axis=1)
+                best_triangles = candidates[np.arange(query_chunk.shape[0]), best_slot]
+                best_closest = closest.reshape(query_chunk.shape[0], candidates.shape[1], 3)[
+                    np.arange(query_chunk.shape[0]), best_slot
+                ]
+                best_normals = tri_normals[best_triangles]
+                signed_chunks.append(np.einsum("ij,ij->i", query_chunk - best_closest, best_normals))
+                normal_chunks.append(best_normals)
+            signed_gap = np.concatenate(signed_chunks, axis=0)
+            contact_normals = np.concatenate(normal_chunks, axis=0)
+        except Exception:
+            signed_gap = None
+            contact_normals = None
+    tree = collider.get("tree")
+    if signed_gap is None or contact_normals is None:
+        if tree is not None:
+            try:
+                _distance, nearest = tree.query(query_points, k=1, workers=-1)
+            except TypeError:
+                _distance, nearest = tree.query(query_points, k=1)
+            nearest = np.asarray(nearest, dtype=np.int64).reshape(-1)
+        else:
+            nearest = np.empty((query_points.shape[0],), dtype=np.int64)
+            for index, point in enumerate(query_points):
+                nearest[index] = int(np.argmin(np.einsum("ij,ij->i", surface - point, surface - point)))
+        nearest = np.clip(nearest, 0, int(surface.shape[0]) - 1)
+        contact_points = surface[nearest]
+        contact_normals = normals[nearest]
+        signed_gap = np.einsum("ij,ij->i", query_points - contact_points, contact_normals)
+    margin = max(0.0, _finite_float(collider.get("margin"), 0.0))
+    penetrating = signed_gap < margin
+    if not np.any(penetrating):
+        return 0
+    correction = (margin - signed_gap[penetrating])[:, None] * contact_normals[penetrating]
+    x[movable[penetrating]] += correction
+    return int(np.count_nonzero(penetrating))
+
+
 def build_strand_runtime(
     curves: Sequence[Sequence[Sequence[float]]],
     config: XPBDStrandConfig | None = None,
@@ -341,6 +511,7 @@ def step_strand_runtime(
     root_targets: Any = None,
     steps: int = 1,
     dt: float | None = None,
+    collider: dict[str, Any] | None = None,
 ) -> tuple[Any, Any, Any, dict[str, Any]]:
     if np is None:
         raise XPBDStrandError("NumPy is required for XPBD strand simulation.")
@@ -372,6 +543,7 @@ def step_strand_runtime(
     accel = np.asarray(cfg.gravity, dtype=np.float64) + np.asarray(cfg.wind, dtype=np.float64)
     free_mask = inv_mass > 0.0
     targets = _runtime_root_targets(runtime, root_targets)
+    collision_count = 0
 
     for _frame in range(step_count):
         for _substep in range(int(cfg.substeps)):
@@ -409,6 +581,9 @@ def step_strand_runtime(
                     stiffness=cfg.bend_stiffness,
                     dt=sub_dt,
                 )
+                collision_count += project_points_from_mesh_collider(x, inv_mass, collider)
+            if int(cfg.iterations) <= 0:
+                collision_count += project_points_from_mesh_collider(x, inv_mass, collider)
             if roots_pinned and targets.shape[0] == roots.size:
                 x[roots] = targets
             v = (x - x_prev) / sub_dt
@@ -442,6 +617,8 @@ def step_strand_runtime(
             "iterations": int(cfg.iterations),
             "roots_pinned": bool(roots_pinned),
             "runtime_cached": True,
+            "collider_enabled": bool(isinstance(collider, dict)),
+            "collision_projection_count": int(collision_count),
         },
     )
 
@@ -519,6 +696,7 @@ def simulate_strands(
     config: XPBDStrandConfig | None = None,
     *,
     root_positions_by_frame: Sequence[Sequence[Sequence[float]]] | None = None,
+    collider: dict[str, Any] | None = None,
 ) -> XPBDStrandResult:
     if np is None:
         raise XPBDStrandError("NumPy is required for XPBD strand simulation.")
@@ -564,6 +742,7 @@ def simulate_strands(
         frames.append(_export_curves(x, spans))
 
     free_mask = inv_mass > 0.0
+    collision_count = 0
     for frame_idx in range(1, int(cfg.frame_count) + 1):
         root_targets = _root_targets_for_frame(root_positions_by_frame, frame_idx, rest_roots)
         for _substep in range(int(cfg.substeps)):
@@ -601,6 +780,9 @@ def simulate_strands(
                     stiffness=cfg.bend_stiffness,
                     dt=sub_dt,
                 )
+                collision_count += project_points_from_mesh_collider(x, inv_mass, collider)
+            if int(cfg.iterations) <= 0:
+                collision_count += project_points_from_mesh_collider(x, inv_mass, collider)
             if roots_pinned:
                 x[root_indices] = root_targets
             v = (x - x_prev) / sub_dt
@@ -637,6 +819,8 @@ def simulate_strands(
         "damping": float(cfg.damping),
         "gravity": [float(vv) for vv in cfg.gravity],
         "wind": [float(vv) for vv in cfg.wind],
+        "collider_enabled": bool(isinstance(collider, dict)),
+        "collision_projection_count": int(collision_count),
     }
     return XPBDStrandResult(curves=out_curves, line_points=line_points, frames=frames, debug=debug)
 
@@ -646,8 +830,10 @@ __all__ = [
     "XPBDStrandError",
     "XPBDStrandResult",
     "build_strand_runtime",
+    "build_mesh_collider",
     "curves_to_line_points",
     "reset_strand_runtime",
+    "project_points_from_mesh_collider",
     "root_indices_for_curves",
     "runtime_line_points",
     "runtime_root_points",

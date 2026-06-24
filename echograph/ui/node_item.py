@@ -464,6 +464,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _primitive.register()
             except Exception:
                 pass
+        # Ensure Skinned Volume Mesh spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "skinned_volume_mesh",
+            "skinned volume mesh",
+            "skinned_collision_mesh",
+            "skinned collision mesh",
+            "fbx_to_skinned_volume_mesh",
+        ):
+            try:
+                from nodes import skinned_volume_mesh as _skinned_volume_mesh  # type: ignore
+                if hasattr(_skinned_volume_mesh, "register"):
+                    _skinned_volume_mesh.register()
+            except Exception:
+                pass
         # Ensure Curve spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("curve", "curve_primitive", "primitive_curve"):
             try:
@@ -3193,6 +3207,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 display_pname = "Guides"
                             elif pname_key == "rig":
                                 display_pname = "Anim Retarget"
+                        elif kind in (
+                            "groom_guide_pose", "groom guide pose", "groom_guides_pose", "groom guides pose",
+                            "guide_pose", "guide pose", "hair_guide_pose", "hair guide pose", "hair_pose", "hair pose",
+                            "groom_guide_sim", "groom guide sim", "groom_guides_sim", "groom guides sim",
+                            "hair_guide_sim", "hair guide sim", "hair_guides_sim", "hair guides sim",
+                            "hair_sim", "hair sim", "guide_sim", "guide sim",
+                        ):
+                            if pname_key == "guides":
+                                display_pname = "Guides"
+                            elif pname_key == "collider":
+                                display_pname = "Collider"
                         lab = QtWidgets.QLabel(display_pname)
                     if kind == "note":
                         lab.setStyleSheet(self._note_param_label_style(completed=is_completed))
@@ -3233,8 +3258,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         and pname_key in ("type", "light_type")
                     )
                     input_label_only = (
-                        kind in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform")
-                        and pname_key in ("guides", "rig")
+                        (
+                            kind in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform")
+                            and pname_key in ("guides", "rig")
+                        )
+                        or (
+                            kind in (
+                                "groom_guide_pose", "groom guide pose", "groom_guides_pose", "groom guides pose",
+                                "guide_pose", "guide pose", "hair_guide_pose", "hair guide pose", "hair_pose", "hair pose",
+                                "groom_guide_sim", "groom guide sim", "groom_guides_sim", "groom guides sim",
+                                "hair_guide_sim", "hair guide sim", "hair_guides_sim", "hair guides sim",
+                                "hair_sim", "hair sim", "guide_sim", "guide sim",
+                            )
+                            and pname_key in ("guides", "collider")
+                        )
                     )
                     edit = None
                     if input_label_only:
@@ -7388,6 +7425,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "skinnedsplatproxy",
                 "fbx_to_skinned_splat_proxy",
                 "fbx skinned splat proxy",
+                "skinned_volume_mesh",
+                "skinned volume mesh",
+                "skinned_collision_mesh",
+                "skinned collision mesh",
+                "fbx_to_skinned_volume_mesh",
                 "output",
                 "python",
                 "switch",
@@ -7713,6 +7755,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._anim_retarget_icon() or node_icons._transforms_icon() or node_icons._import_icon()
             elif kind_lower in ("skinned_splat_proxy", "skinned splat proxy", "skinnedsplatproxy", "fbx_to_skinned_splat_proxy", "fbx skinned splat proxy"):
                 icon_pm = node_icons._ply_icon() or node_icons._fbx_icon() or node_icons._import_icon()
+            elif kind_lower in ("skinned_volume_mesh", "skinned volume mesh", "skinned_collision_mesh", "skinned collision mesh", "fbx_to_skinned_volume_mesh"):
+                icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
             elif kind_lower in ("html_preview", "html preview", "htmlpreview"):
                 icon_pm = node_icons._html_preview_icon() or node_icons._output_icon()
             elif kind_lower in ("image_collection", "imagecollection"):

@@ -14,6 +14,7 @@ from .xpbd_strand import XPBDStrandConfig, XPBDStrandError, build_strand_runtime
 
 
 _LOCAL_SIZE = 128
+_GPU_COLLIDER_MAX_SAMPLES = 16384
 
 
 _INTEGRATE_SHADER = """
@@ -126,6 +127,56 @@ void main() {
     }
     Pos[i] = pi4;
     Pos[j] = pj4;
+}
+"""
+
+
+_SOLVE_MESH_COLLISION_SHADER = """
+#version 430
+layout(local_size_x = 128) in;
+
+layout(std430, binding = 0) buffer PositionsBlock { vec4 Pos[]; };
+layout(std430, binding = 5) readonly buffer ColliderVerticesBlock { vec4 ColliderVertices[]; };
+layout(std430, binding = 6) readonly buffer ColliderNormalsBlock { vec4 ColliderNormals[]; };
+
+uniform int PointCount;
+uniform int ColliderCount;
+uniform float CollisionMargin;
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(PointCount) || ColliderCount <= 0) {
+        return;
+    }
+    vec4 p4 = Pos[id];
+    if (p4.w <= 0.0) {
+        return;
+    }
+
+    vec3 p = p4.xyz;
+    float best_distance_sq = 3.402823e+38;
+    vec3 surface_point = vec3(0.0);
+    vec3 surface_normal = vec3(0.0);
+    for (int collider_id = 0; collider_id < ColliderCount; ++collider_id) {
+        vec3 candidate = ColliderVertices[collider_id].xyz;
+        vec3 delta = p - candidate;
+        float distance_sq = dot(delta, delta);
+        if (distance_sq < best_distance_sq) {
+            best_distance_sq = distance_sq;
+            surface_point = candidate;
+            surface_normal = ColliderNormals[collider_id].xyz;
+        }
+    }
+    float normal_length = length(surface_normal);
+    if (normal_length <= 1.0e-8) {
+        return;
+    }
+    surface_normal /= normal_length;
+    float signed_gap = dot(p - surface_point, surface_normal);
+    if (signed_gap < CollisionMargin) {
+        p += (CollisionMargin - signed_gap) * surface_normal;
+        Pos[id] = vec4(p, p4.w);
+    }
 }
 """
 
@@ -284,6 +335,7 @@ class XPBDStrandGPUBackend:
         self._integrate = self._compile_compute("integrate", _INTEGRATE_SHADER)
         self._pin = self._compile_compute("pin_roots", _PIN_SHADER)
         self._solve = self._compile_compute("solve_distance", _SOLVE_DISTANCE_SHADER)
+        self._solve_mesh = self._compile_compute("solve_mesh_collision", _SOLVE_MESH_COLLISION_SHADER)
         self._finalize = self._compile_compute("finalize", _FINALIZE_SHADER)
         self._build_segments = self._compile_compute("build_segments", _BUILD_SEGMENTS_SHADER)
 
@@ -376,8 +428,10 @@ class XPBDStrandGPUBackend:
         root_targets: Any = None,
         steps: int = 1,
         dt: float | None = None,
+        collider: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._write_root_targets(runtime, root_targets)
+        collider_enabled = self.update_mesh_collider(runtime, collider)
 
         point_count = int(runtime.get("point_count", 0) or 0)
         root_count = int(runtime.get("root_count", 0) or 0)
@@ -419,6 +473,10 @@ class XPBDStrandGPUBackend:
                     self._solve_groups(runtime, runtime.get("bend_groups") or [], sub_dt, bend_stiffness, getattr(config, "bend_compliance", 0.0005))
                     if roots_pinned:
                         self._pin_roots(runtime)
+                if collider_enabled:
+                    self._apply_mesh_collision(runtime)
+                    if roots_pinned:
+                        self._pin_roots(runtime)
                 self._bind_point_buffers(runtime)
                 self._set(self._finalize, "PointCount", point_count)
                 self._set(self._finalize, "Dt", float(sub_dt))
@@ -444,8 +502,77 @@ class XPBDStrandGPUBackend:
                 "iterations": int(iterations),
                 "roots_pinned": bool(roots_pinned),
                 "runtime_cached": True,
+                "collider_enabled": bool(collider_enabled),
+                "collider_mode": "gpu_nearest_surface" if collider_enabled else "",
+                "collider_samples": int(runtime.get("collider_count", 0) or 0) if collider_enabled else 0,
             },
         }
+
+    def update_mesh_collider(self, runtime: dict[str, Any], collider: dict[str, Any] | None) -> bool:
+        """Upload the current animated surface for GPU point-to-mesh projection.
+
+        The collision pass samples the nearest outward-facing surface vertex.
+        Volume meshes at their default resolution are uploaded in full; very
+        dense meshes are deterministically capped to keep each solver step
+        realtime.
+        """
+        if not isinstance(runtime, dict) or not isinstance(collider, dict):
+            self._clear_mesh_collider(runtime)
+            return False
+        try:
+            vertices = np.asarray(collider.get("vertices"), dtype="f4").reshape(-1, 3)
+            normals = np.asarray(collider.get("normals"), dtype="f4").reshape(-1, 3)
+        except Exception:
+            self._clear_mesh_collider(runtime)
+            return False
+        if vertices.shape != normals.shape or int(vertices.shape[0]) <= 0:
+            self._clear_mesh_collider(runtime)
+            return False
+        valid = np.isfinite(vertices).all(axis=1) & np.isfinite(normals).all(axis=1)
+        normal_lengths = np.linalg.norm(normals, axis=1)
+        valid &= normal_lengths > np.float32(1.0e-8)
+        if not bool(np.any(valid)):
+            self._clear_mesh_collider(runtime)
+            return False
+        vertices = vertices[valid]
+        normals = normals[valid]
+        normal_lengths = normal_lengths[valid]
+        normals = normals / normal_lengths[:, None]
+        source_count = int(vertices.shape[0])
+        if source_count > _GPU_COLLIDER_MAX_SAMPLES:
+            sample_indices = np.linspace(0, source_count - 1, num=_GPU_COLLIDER_MAX_SAMPLES, dtype=np.int64)
+            vertices = vertices[sample_indices]
+            normals = normals[sample_indices]
+        count = int(vertices.shape[0])
+        if count <= 0:
+            self._clear_mesh_collider(runtime)
+            return False
+        vertices4 = np.zeros((count, 4), dtype="f4")
+        normals4 = np.zeros((count, 4), dtype="f4")
+        vertices4[:, :3] = vertices
+        normals4[:, :3] = normals
+        byte_count = int(vertices4.nbytes)
+        vertex_buffer = runtime.get("collider_vertex_buffer")
+        normal_buffer = runtime.get("collider_normal_buffer")
+        capacity = int(runtime.get("collider_buffer_bytes", 0) or 0)
+        if vertex_buffer is None or normal_buffer is None or capacity != byte_count:
+            self._release_resource(vertex_buffer)
+            self._release_resource(normal_buffer)
+            vertex_buffer = self._ctx.buffer(vertices4.tobytes())
+            normal_buffer = self._ctx.buffer(normals4.tobytes())
+            runtime["collider_vertex_buffer"] = vertex_buffer
+            runtime["collider_normal_buffer"] = normal_buffer
+            runtime["collider_buffer_bytes"] = byte_count
+        else:
+            vertex_buffer.write(vertices4.tobytes())
+            normal_buffer.write(normals4.tobytes())
+        runtime["collider_count"] = count
+        try:
+            runtime["collider_margin"] = max(0.0, float(collider.get("margin", 0.0) or 0.0))
+        except Exception:
+            runtime["collider_margin"] = 0.0
+        runtime["collider_source_count"] = source_count
+        return True
 
     def runtime_resources(self, runtime: dict[str, Any]) -> list[Any]:
         resources: list[Any] = []
@@ -457,6 +584,8 @@ class XPBDStrandGPUBackend:
             "root_target_buffer",
             "segment_index_buffer",
             "segment_buffer",
+            "collider_vertex_buffer",
+            "collider_normal_buffer",
         ):
             value = runtime.get(key)
             if value is not None and not any(value is existing for existing in resources):
@@ -581,6 +710,40 @@ class XPBDStrandGPUBackend:
             self._set(self._solve, "Dt", float(dt))
             self._run(self._solve, count)
             self._barrier()
+
+    def _apply_mesh_collision(self, runtime: dict[str, Any]) -> None:
+        count = int(runtime.get("collider_count", 0) or 0)
+        vertices = runtime.get("collider_vertex_buffer")
+        normals = runtime.get("collider_normal_buffer")
+        if count <= 0 or vertices is None or normals is None:
+            return
+        self._bind_point_buffers(runtime)
+        vertices.bind_to_storage_buffer(5)
+        normals.bind_to_storage_buffer(6)
+        self._set(self._solve_mesh, "PointCount", int(runtime.get("point_count", 0) or 0))
+        self._set(self._solve_mesh, "ColliderCount", count)
+        self._set(self._solve_mesh, "CollisionMargin", float(runtime.get("collider_margin", 0.0) or 0.0))
+        self._run(self._solve_mesh, int(runtime.get("point_count", 0) or 0))
+        self._barrier()
+
+    def _clear_mesh_collider(self, runtime: Any) -> None:
+        if not isinstance(runtime, dict):
+            return
+        self._release_resource(runtime.pop("collider_vertex_buffer", None))
+        self._release_resource(runtime.pop("collider_normal_buffer", None))
+        runtime.pop("collider_buffer_bytes", None)
+        runtime.pop("collider_count", None)
+        runtime.pop("collider_margin", None)
+        runtime.pop("collider_source_count", None)
+
+    @staticmethod
+    def _release_resource(resource: Any) -> None:
+        if resource is None:
+            return
+        try:
+            resource.release()
+        except Exception:
+            pass
 
     def _build_segment_buffer(self, runtime: dict[str, Any]) -> None:
         segment_count = int(runtime.get("segment_count", 0) or 0)
