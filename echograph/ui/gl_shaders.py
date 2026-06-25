@@ -814,8 +814,7 @@ void main() {
     float wp = max(1e-6, clip_pos.w);
     vec2 ndc_pos = clip_pos.xy / wp;
     vec2 ndc_out = ndc_pos + offset * in_side;
-    float ndc_z = clip_pos.z / wp;
-    gl_Position = vec4(ndc_out, ndc_z, 1.0);
+    gl_Position = vec4(ndc_out * wp, clip_pos.z, wp);
 }
 """,
 
@@ -859,8 +858,7 @@ void main() {
     float wp = max(1e-6, clip_pos.w);
     vec2 ndc_pos = clip_pos.xy / wp;
     vec2 ndc_out = ndc_pos + offset * in_corner.y;
-    float ndc_z = clip_pos.z / wp;
-    gl_Position = vec4(ndc_out, ndc_z, 1.0);
+    gl_Position = vec4(ndc_out * wp, clip_pos.z, wp);
 }
 """,
 
@@ -1043,6 +1041,7 @@ uniform int UseShadows;
 uniform float ShadowBias;
 uniform float ShadowDarkness;
 uniform vec2 ShadowMapSize;
+uniform float SplatAlphaDiscard;
 in vec2 v_uv;
 in vec4 v_col;
 in vec3 v_world_norm;
@@ -1163,7 +1162,7 @@ void main() {
     float a = exp(-r2 * 2.0);
     a *= v_col.a;
 
-    if (a < 1e-4) discard;
+    if (a < max(1e-4, SplatAlphaDiscard)) discard;
 
     vec3 base_rgb = v_col.rgb;
     vec3 rgb = base_rgb;

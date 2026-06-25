@@ -25,6 +25,8 @@ MIN_REMESH_QUALITY = 1
 MAX_REMESH_QUALITY = 100
 _MAX_VOLUME_CELLS = 1_250_000
 _MAX_OUTPUT_TRIANGLES = 300_000
+_SURFACE_MODE_VOLUME = "volume"
+_SURFACE_MODE_SOURCE = "source"
 
 
 class SkinnedVolumeMeshError(RuntimeError):
@@ -37,6 +39,10 @@ class SkinnedVolumeMeshSettings:
     remesh_quality: int = 2
     max_influences: int = 4
     fill_interior: bool = True
+    # ``volume`` is retained as the API default for existing callers.  The
+    # node opts into ``source`` when its collider must visibly match the
+    # original animated FBX (and therefore its splat proxy and groom roots).
+    surface_mode: str = _SURFACE_MODE_VOLUME
 
 
 @dataclass(frozen=True)
@@ -79,6 +85,27 @@ def build_skinned_volume_mesh_arrays(
     prepared = _prepare_source_meshes(skeleton, meshes)
     vertices = prepared["positions"]
     faces = prepared["triangles"]
+    if _surface_mode(settings) == _SURFACE_MODE_SOURCE:
+        joint_indices, joint_weights = _source_surface_skin_weights(
+            prepared["vertex_influences"],
+        )
+        vertex_count = int(vertices.shape[0])
+        return SkinnedVolumeMeshArrays(
+            bind_positions=vertices.astype("f4", copy=True),
+            triangle_indices=faces.astype(np.int32, copy=True),
+            joint_indices=joint_indices,
+            joint_weights=joint_weights,
+            # A source-surface collider is not projected from another mesh;
+            # retain explicit sentinel values rather than fabricating a
+            # nearest-triangle relation.
+            source_triangle_indices=np.full((vertex_count,), -1, dtype=np.int32),
+            source_barycentric=np.zeros((vertex_count, 3), dtype="f4"),
+            volume_occupancy=np.zeros((0, 0, 0), dtype=bool),
+            volume_origin=np.zeros((3,), dtype="f4"),
+            voxel_size=0.0,
+            source_mesh_names=tuple(prepared["mesh_names"]),
+            joint_names=tuple(str(joint.name) for joint in skeleton.joints),
+        )
     occupancy, origin, voxel_size = _voxelize(
         vertices,
         faces,
@@ -140,16 +167,18 @@ def build_skinned_volume_mesh(
     manifest_path = out_dir / f"{stem}.qskinned_volume.json"
 
     write_obj(mesh_obj_path, arrays.bind_positions, arrays.triangle_indices)
-    write_volume_npz(volume_path, arrays)
+    surface_mode = _surface_mode(settings)
+    write_volume_npz(volume_path, arrays, surface_mode=surface_mode)
     write_skin_npz(skin_npz_path, arrays, mesh_asset)
 
     occupied_count = int(np.count_nonzero(arrays.volume_occupancy))
+    is_source_surface = surface_mode == _SURFACE_MODE_SOURCE
     manifest = {
         "schema": _SCHEMA,
         "mesh_obj": mesh_obj_path.name,
         "volume": volume_path.name,
         "skin_npz": skin_npz_path.name,
-        "volume_format": "qubit_sparse_voxel_grid",
+        "volume_format": "source_surface" if is_source_surface else "qubit_sparse_voxel_grid",
         "source_fbx": str(source_fbx or ""),
         "skeleton_name": str(skeleton.name),
         "joint_names": list(arrays.joint_names),
@@ -160,7 +189,8 @@ def build_skinned_volume_mesh(
         "volume_shape": [int(value) for value in arrays.volume_occupancy.shape],
         "voxel_size": float(arrays.voxel_size),
         "generator": {
-            "method": "filled_voxel_surface_remesh",
+            "method": "source_surface_copy" if is_source_surface else "filled_voxel_surface_remesh",
+            "surface_mode": surface_mode,
             "settings": asdict(settings),
             "safety_limits": {
                 "max_resolution": MAX_VOLUME_RESOLUTION,
@@ -270,7 +300,12 @@ def write_obj(path: str | Path, vertices: np.ndarray, faces: np.ndarray) -> Path
     return out
 
 
-def write_volume_npz(path: str | Path, arrays: SkinnedVolumeMeshArrays) -> Path:
+def write_volume_npz(
+    path: str | Path,
+    arrays: SkinnedVolumeMeshArrays,
+    *,
+    surface_mode: str = _SURFACE_MODE_VOLUME,
+) -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -279,6 +314,7 @@ def write_volume_npz(path: str | Path, arrays: SkinnedVolumeMeshArrays) -> Path:
         occupancy=arrays.volume_occupancy.astype(np.uint8, copy=False),
         origin=arrays.volume_origin.astype("f4", copy=False),
         voxel_size=np.asarray(float(arrays.voxel_size), dtype="f4"),
+        surface_mode=np.asarray(_surface_mode_value(surface_mode)),
     )
     return out
 
@@ -321,6 +357,53 @@ def _validate_settings(settings: SkinnedVolumeMeshSettings) -> None:
     influences = int(settings.max_influences)
     if influences < 1 or influences > 16:
         raise SkinnedVolumeMeshError("max_influences must be between 1 and 16.")
+    _surface_mode(settings)
+
+
+def _surface_mode_value(value: object) -> str:
+    mode = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if mode in {"source", "source_surface", "fbx", "original", "exact"}:
+        return _SURFACE_MODE_SOURCE
+    if mode in {"", "volume", "voxel", "voxel_volume", "remesh", "remeshed"}:
+        return _SURFACE_MODE_VOLUME
+    raise SkinnedVolumeMeshError(
+        "surface_mode must be 'source' (match source geometry) or 'volume' (voxel remesh)."
+    )
+
+
+def _surface_mode(settings: SkinnedVolumeMeshSettings) -> str:
+    return _surface_mode_value(getattr(settings, "surface_mode", _SURFACE_MODE_VOLUME))
+
+
+def _source_surface_skin_weights(
+    vertex_influences: Sequence[Sequence[Tuple[int, float]]],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Preserve the source mesh's skinning without a transfer/projection pass."""
+    rows = list(vertex_influences or [])
+    width = max(
+        [
+            sum(1 for joint, weight in row if int(joint) >= 0 and float(weight) > 1.0e-8)
+            for row in rows
+        ]
+        + [1]
+    )
+    joint_indices = np.zeros((len(rows), width), dtype=np.uint16)
+    joint_weights = np.zeros((len(rows), width), dtype="f4")
+    for vertex_index, row in enumerate(rows):
+        valid = [
+            (int(joint), float(weight))
+            for joint, weight in row
+            if int(joint) >= 0 and float(weight) > 1.0e-8
+        ]
+        total = sum(weight for _joint, weight in valid)
+        if total <= 1.0e-8:
+            raise SkinnedVolumeMeshError(
+                "Source-surface collision requires every source vertex to have skin weights."
+            )
+        for slot, (joint, weight) in enumerate(valid):
+            joint_indices[vertex_index, slot] = np.uint16(joint)
+            joint_weights[vertex_index, slot] = np.float32(weight / total)
+    return joint_indices, joint_weights
 
 
 def _prepare_source_meshes(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -71,6 +72,12 @@ from echograph.rigging.groom_deform import (
     evaluate_groom_deform_runtime,
     rebase_deformed_points_to_bind_space,
 )
+from echograph.rigging.groom_guide_tube import (
+    build_tube_topology,
+    deform_tube_topology,
+    flatten_curves as flatten_groom_tube_curves,
+    line_points_to_curve_points as groom_tube_line_points_to_curve_points,
+)
 from echograph.rigging.xpbd_strand import (
     XPBDStrandConfig,
     build_mesh_collider,
@@ -95,6 +102,7 @@ _SCENE_SKELETON_SELECTED_YELLOW = (1.0, 0.86, 0.0, 1.0)
 _SCENE_SKELETON_HANDLE_RADIUS_SCALE = 1.92
 _SCENE_SKELETON_LINE_WIDTH_SCALE = 0.50
 _SCENE_SKELETON_SCREEN_HANDLE_RADIUS_SCALE = 3.0
+_SCENE_GROOM_ALIGNMENT_DIAGNOSTIC_REVISION = "groom-alignment-r6-triangle-surface"
 
 
 _THUMB_VERT = """
@@ -4155,6 +4163,14 @@ class MGLRendererMixin:
         for source in (cfg, payload):
             if not isinstance(source, dict):
                 continue
+            # The rig owner corresponds to the Anim Retarget node that owns
+            # this rig context and its timeline.  Prefer it so Guide Sim and
+            # the skinned collider always evaluate the same retarget frame.
+            for key in ("rig_owner", "animation_owner", "retarget_owner"):
+                _add_candidate(source.get(key))
+        for source in (cfg, payload):
+            if not isinstance(source, dict):
+                continue
             for key in ("sample_owner", "deformer_owner", "source_owner"):
                 _add_candidate(source.get(key))
         for source in (cfg, payload):
@@ -4162,11 +4178,6 @@ class MGLRendererMixin:
                 continue
             for value in list(source.get("sample_owner_candidates") or []):
                 _add_candidate(value)
-        for source in (cfg, payload):
-            if not isinstance(source, dict):
-                continue
-            for key in ("rig_owner", "animation_owner", "retarget_owner"):
-                _add_candidate(source.get(key))
         _add_candidate(owner)
         if not candidates:
             return str(owner or "").strip()
@@ -4401,6 +4412,468 @@ class MGLRendererMixin:
         except Exception:
             return None
 
+    @staticmethod
+    def _mgl_groom_guide_tube_settings(cfg: dict | None) -> dict:
+        src = cfg if isinstance(cfg, dict) else {}
+        settings = src.get("settings") if isinstance(src.get("settings"), dict) else src
+        out = dict(settings or {})
+        try:
+            out["enabled"] = bool(out.get("enabled", True))
+            out["root_radius"] = max(0.0, float(out.get("root_radius", 0.006) or 0.006))
+            out["tip_radius"] = max(0.0, float(out.get("tip_radius", 0.0015) or 0.0015))
+            out["sides"] = max(3, min(64, int(out.get("sides", 8) or 8)))
+            out["segment_subdivisions"] = max(1, min(16, int(out.get("segment_subdivisions", 1) or 1)))
+            out["cap_root"] = bool(out.get("cap_root", True))
+            out["cap_tip"] = bool(out.get("cap_tip", True))
+            out["smooth_normals"] = bool(out.get("smooth_normals", True))
+            out["show_source_guides"] = bool(out.get("show_source_guides", src.get("show_source_guides", False)))
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
+    def _mgl_groom_guide_tube_cfg_from_asset(asset: dict | None) -> dict | None:
+        if not isinstance(asset, dict):
+            return None
+        source_kind = str(asset.get("source_kind") or asset.get("asset_source_kind") or "").strip().lower()
+        schema = str(asset.get("schema") or "").strip().lower()
+        path_text = str(asset.get("tube_cache_path") or asset.get("guides_path") or asset.get("path") or "").strip()
+        path_name = ""
+        try:
+            path_name = Path(path_text).name.lower() if path_text else ""
+        except Exception:
+            path_name = ""
+        looks_like_tube = (
+            source_kind == "groom_guide_tube"
+            or schema == "qubit.groom_guide_tube.v1"
+            or "groom_guide_tube" in path_name
+        )
+        if not looks_like_tube:
+            return None
+
+        cache_data = None
+        settings = asset.get("settings") if isinstance(asset.get("settings"), dict) else None
+        if path_text:
+            try:
+                path = Path(path_text)
+                if path.exists() and path.is_file():
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        cache_data = data
+                        if isinstance(data.get("groom_guide_tube"), dict):
+                            cfg = dict(data.get("groom_guide_tube") or {})
+                            if "cache_path" not in cfg:
+                                cfg["cache_path"] = str(path)
+                            return cfg
+                        if not isinstance(settings, dict) and isinstance(data.get("settings"), dict):
+                            settings = dict(data.get("settings") or {})
+            except Exception:
+                cache_data = None
+        if not isinstance(settings, dict):
+            return None
+        source = cache_data if isinstance(cache_data, dict) else asset
+        return {
+            "schema": "qubit.groom_guide_tube.v1",
+            "enabled": bool(settings.get("enabled", True)),
+            "settings": dict(settings),
+            "source_node": str(source.get("source_node") or asset.get("source_node") or "").strip(),
+            "source_kind": str(source.get("source_kind") or asset.get("source_kind") or "").strip(),
+            "source_owner": str(source.get("source_owner") or asset.get("source_owner") or "").strip(),
+            "cache_path": path_text,
+            "show_source_guides": bool(settings.get("show_source_guides", False)),
+        }
+
+    @staticmethod
+    def _mgl_groom_guide_tube_signature(curves, settings: dict) -> tuple:
+        counts = []
+        for curve in curves or []:
+            try:
+                counts.append(int(len(curve)))
+            except Exception:
+                counts.append(0)
+        profile = settings.get("radius_profile")
+        try:
+            profile_key = json.dumps(profile, sort_keys=True, default=str)
+        except Exception:
+            profile_key = str(profile)
+        return (
+            tuple(counts),
+            round(float(settings.get("root_radius", 0.006) or 0.006), 8),
+            round(float(settings.get("tip_radius", 0.0015) or 0.0015), 8),
+            profile_key,
+            int(settings.get("sides", 8) or 8),
+            int(settings.get("segment_subdivisions", 1) or 1),
+            bool(settings.get("cap_root", True)),
+            bool(settings.get("cap_tip", True)),
+        )
+
+    @staticmethod
+    def _mgl_groom_guide_tube_color(settings: dict | None):
+        src = settings if isinstance(settings, dict) else {}
+        color = src.get("color") or src.get("base_color")
+        try:
+            if color is not None and len(color) >= 4:
+                return tuple(float(v) for v in tuple(color)[:4])
+            if color is not None and len(color) >= 3:
+                return (float(color[0]), float(color[1]), float(color[2]), 1.0)
+        except Exception:
+            pass
+        return (0.86, 0.68, 0.36, 1.0)
+
+    def _mgl_add_groom_guide_tube_item(
+        self,
+        *,
+        name: str,
+        curves,
+        cfg: dict,
+        visible: bool,
+        owner: str,
+        source_owner: str,
+        model,
+        path_key: str,
+    ) -> Optional[MGLSceneItem]:
+        if self._mgl_ctx is None or np is None:
+            return None
+        settings = self._mgl_groom_guide_tube_settings(cfg)
+        if not bool(settings.get("enabled", True)):
+            return None
+        try:
+            topology = build_tube_topology(
+                curves,
+                root_radius=float(settings.get("root_radius", 0.006) or 0.006),
+                tip_radius=float(settings.get("tip_radius", 0.0015) or 0.0015),
+                radius_profile=settings.get("radius_profile"),
+                sides=int(settings.get("sides", 8) or 8),
+                segment_subdivisions=int(settings.get("segment_subdivisions", 1) or 1),
+                cap_root=bool(settings.get("cap_root", True)),
+                cap_tip=bool(settings.get("cap_tip", True)),
+            )
+        except Exception as exc:
+            try:
+                self._mgl_log_throttled(
+                    "_mgl_groom_guide_tube_build_failed_" + str(owner or "unknown"),
+                    "groom_guide_tube: topology build failed owner=" + str(owner or "") + " err=" + repr(exc),
+                    1.0,
+                )
+            except Exception:
+                pass
+            return None
+        if not isinstance(topology, dict) or not bool(topology.get("ok", False)):
+            try:
+                self._mgl_log_throttled(
+                    "_mgl_groom_guide_tube_empty_" + str(owner or "unknown"),
+                    "groom_guide_tube: no tube topology owner="
+                    + str(owner or "")
+                    + " reason="
+                    + str((topology or {}).get("error") if isinstance(topology, dict) else ""),
+                    1.0,
+                )
+            except Exception:
+                pass
+            return None
+        points = np.asarray(topology.get("points"), dtype="f4").reshape(-1, 3)
+        normals = np.asarray(topology.get("normals"), dtype="f4").reshape(-1, 3)
+        uvs = np.asarray(topology.get("uvs"), dtype="f4").reshape(-1, 2)
+        indices = np.asarray(topology.get("indices"), dtype=np.uint32).reshape(-1)
+        if points.size == 0 or indices.size == 0:
+            return None
+        color = self._mgl_groom_guide_tube_color(settings)
+        colors = np.repeat(np.asarray(color, dtype="f4").reshape(1, 4), int(points.shape[0]), axis=0)
+        try:
+            entry = self._mgl_build_mesh_entry(points, normals, uvs=uvs, colors=colors, indices=indices)
+        except Exception as exc:
+            try:
+                self._mgl_log_throttled(
+                    "_mgl_groom_guide_tube_upload_failed_" + str(owner or "unknown"),
+                    "groom_guide_tube: mesh upload failed owner=" + str(owner or "") + " err=" + repr(exc),
+                    1.0,
+                )
+            except Exception:
+                pass
+            return None
+        if not isinstance(entry, dict) or entry.get("vao") is None:
+            return None
+        payload = {
+            "vao": entry.get("vao"),
+            "vbo": entry.get("vbo"),
+            "nbo": entry.get("nbo"),
+            "tbo": entry.get("tbo"),
+            "cbo": entry.get("cbo"),
+            "ibo": entry.get("ibo"),
+            "mesh_entry": entry,
+            "count": int(entry.get("count", indices.size) or indices.size),
+            "indices": indices,
+            "points": points,
+            "normals": normals,
+            "uvs": uvs,
+            "colors": colors,
+            "color": color,
+            "use_vertex_color": True,
+            "force_opaque_mesh": True,
+            "depth_test": True,
+            "two_sided": True,
+            "owner": owner,
+            "source_owner": source_owner,
+            "path": path_key,
+            "groom_guide_tube": dict(cfg),
+            "_groom_guide_tube_topology": topology,
+            "_groom_guide_tube_template_curves": [list(curve) for curve in (curves or [])],
+            "_groom_guide_tube_signature": self._mgl_groom_guide_tube_signature(curves, settings),
+            "_groom_guide_tube_update_count": 0,
+        }
+        if model is not None:
+            try:
+                payload["model"] = np.asarray(model, dtype="f4").reshape(4, 4)
+            except Exception:
+                pass
+        resources = [
+            entry.get("vao"),
+            entry.get("ibo"),
+            entry.get("cbo"),
+            entry.get("tbo"),
+            entry.get("nbo"),
+            entry.get("vbo"),
+        ]
+        item = MGLSceneItem(
+            name=name,
+            draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+            payload=payload,
+            resources=[res for res in resources if res is not None],
+            visible=bool(visible),
+            order=935,
+            tag="scene-groom-guide-tube",
+        )
+        return item
+
+    def _mgl_groom_guide_tube_find_driver_item(self, owner: str):
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return None
+        owner_key = str(owner or "").strip().lower()
+        try:
+            items = list(scene.iter_by_tag("scene-groom-guides"))
+        except Exception:
+            items = []
+        for item in items:
+            payload = getattr(item, "payload", None) or {}
+            item_owner = str(payload.get("owner") or getattr(item, "name", "") or "").strip().lower()
+            if owner_key and item_owner == owner_key:
+                return item
+        return None
+
+    def _mgl_groom_guide_tube_current_points(self, guide_payload: dict, template_curves):
+        if np is None or not isinstance(guide_payload, dict):
+            return None
+        is_sim_source = bool(
+            isinstance(guide_payload.get("groom_guide_sim"), dict)
+            or str(guide_payload.get("source_kind") or "").strip().lower() == "groom_guide_sim"
+        )
+
+        def _points_from_line_points(line_points):
+            try:
+                arr = groom_tube_line_points_to_curve_points(line_points, template_curves)
+                if arr is not None and getattr(arr, "size", 0):
+                    return np.asarray(arr, dtype="f4").reshape(-1, 3)
+            except Exception:
+                pass
+            return None
+
+        def _cached_points():
+            for key in ("_groom_deform_current_points", "_groom_guide_tube_current_points"):
+                try:
+                    arr = np.asarray(guide_payload.get(key), dtype="f4").reshape(-1, 3)
+                    if arr.size:
+                        return arr
+                except Exception:
+                    pass
+            return None
+
+        gpu_runtime = guide_payload.get("_groom_guide_sim_gpu_runtime")
+        backend = getattr(self, "_mgl_groom_guide_sim_gpu_backend_obj", None)
+        if backend is not None and isinstance(gpu_runtime, dict):
+            try:
+                arr = _points_from_line_points(backend.read_line_points(gpu_runtime))
+                if arr is not None:
+                    return arr
+            except Exception:
+                pass
+        arr = _points_from_line_points(guide_payload.get("line_points"))
+        if arr is not None:
+            return arr
+        if not is_sim_source:
+            cached = _cached_points()
+            if cached is not None:
+                return cached
+        if backend is not None and isinstance(gpu_runtime, dict):
+            try:
+                arr4 = np.asarray(backend.read_points(gpu_runtime), dtype="f4").reshape(-1, 4)
+                arr = arr4[:, :3].astype("f4", copy=True)
+                if arr.size:
+                    return arr
+            except Exception:
+                pass
+        runtime = guide_payload.get("_groom_guide_sim_runtime")
+        if isinstance(runtime, dict):
+            try:
+                arr = np.asarray(runtime.get("points"), dtype="f4").reshape(-1, 3)
+                if arr.size:
+                    return arr
+            except Exception:
+                pass
+        if is_sim_source:
+            cached = _cached_points()
+            if cached is not None:
+                return cached
+        try:
+            arr, _spans = flatten_groom_tube_curves(guide_payload.get("curves") or template_curves)
+            arr = np.asarray(arr, dtype="f4").reshape(-1, 3)
+            if arr.size:
+                return arr
+        except Exception:
+            pass
+        return None
+
+    def _mgl_groom_guide_tube_driver_signature(self, guide_item, guide_payload: dict) -> tuple:
+        if not isinstance(guide_payload, dict):
+            return ("missing",)
+        source_kind = str(guide_payload.get("source_kind") or "").strip().lower()
+        try:
+            frame = int(self._mgl_timeline_frame_index())
+        except Exception:
+            frame = 0
+
+        def _array_sig(value):
+            try:
+                if np is not None and isinstance(value, np.ndarray):
+                    return (id(value), tuple(int(v) for v in value.shape), str(value.dtype))
+                if hasattr(value, "shape"):
+                    shape = getattr(value, "shape", ())
+                    return (id(value), tuple(int(v) for v in shape))
+                if isinstance(value, (list, tuple)):
+                    return (id(value), len(value))
+            except Exception:
+                pass
+            return (id(value),)
+
+        line_points = guide_payload.get("line_points")
+        cached_points = None
+        for key in ("_groom_deform_current_points", "_groom_guide_tube_current_points"):
+            value = guide_payload.get(key)
+            if value is not None:
+                cached_points = (key, _array_sig(value))
+                break
+        runtime = guide_payload.get("_groom_guide_sim_runtime")
+        gpu_runtime = guide_payload.get("_groom_guide_sim_gpu_runtime")
+        return (
+            int(getattr(guide_item, "item_id", 0) or 0) if guide_item is not None else 0,
+            source_kind,
+            frame,
+            int(guide_payload.get("_groom_guide_sim_frame", frame) or frame),
+            repr(guide_payload.get("_groom_guide_sim_frame_settings_sig", "")),
+            str(guide_payload.get("_groom_guide_sim_runtime_device") or ""),
+            id(runtime) if isinstance(runtime, dict) else 0,
+            id(gpu_runtime) if isinstance(gpu_runtime, dict) else 0,
+            _array_sig(line_points),
+            cached_points,
+        )
+
+    def _mgl_update_groom_guide_tube_meshes(self) -> None:
+        if np is None:
+            return
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        try:
+            items = list(scene.iter_by_tag("scene-groom-guide-tube"))
+        except Exception:
+            items = []
+        for item in items:
+            if not bool(getattr(item, "visible", True)):
+                continue
+            payload = getattr(item, "payload", None) or {}
+            cfg = payload.get("groom_guide_tube") if isinstance(payload.get("groom_guide_tube"), dict) else {}
+            settings = self._mgl_groom_guide_tube_settings(cfg)
+            if not bool(settings.get("enabled", True)):
+                continue
+            owner = str(payload.get("owner") or "").strip()
+            guide_item = self._mgl_groom_guide_tube_find_driver_item(owner)
+            guide_payload = getattr(guide_item, "payload", None) or {}
+            template_curves = payload.get("_groom_guide_tube_template_curves")
+            if not isinstance(template_curves, list):
+                template_curves = []
+            topology = payload.get("_groom_guide_tube_topology") if isinstance(payload.get("_groom_guide_tube_topology"), dict) else None
+            signature = self._mgl_groom_guide_tube_signature(template_curves, settings)
+            force_update = False
+            if not isinstance(topology, dict) or payload.get("_groom_guide_tube_signature") != signature:
+                try:
+                    topology = build_tube_topology(
+                        template_curves,
+                        root_radius=float(settings.get("root_radius", 0.006) or 0.006),
+                        tip_radius=float(settings.get("tip_radius", 0.0015) or 0.0015),
+                        radius_profile=settings.get("radius_profile"),
+                        sides=int(settings.get("sides", 8) or 8),
+                        segment_subdivisions=int(settings.get("segment_subdivisions", 1) or 1),
+                        cap_root=bool(settings.get("cap_root", True)),
+                        cap_tip=bool(settings.get("cap_tip", True)),
+                    )
+                    if not isinstance(topology, dict) or not bool(topology.get("ok", False)):
+                        continue
+                    payload["_groom_guide_tube_topology"] = topology
+                    payload["_groom_guide_tube_signature"] = signature
+                    force_update = True
+                except Exception:
+                    continue
+            driver_signature = self._mgl_groom_guide_tube_driver_signature(guide_item, guide_payload)
+            if not bool(force_update) and payload.get("_groom_guide_tube_driver_signature") == driver_signature:
+                continue
+            current_points = self._mgl_groom_guide_tube_current_points(guide_payload, template_curves)
+            points, normals = deform_tube_topology(topology, current_points)
+            if points is None or normals is None:
+                continue
+            try:
+                points = np.asarray(points, dtype="f4").reshape(-1, 3)
+                normals = np.asarray(normals, dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            entry = payload.get("mesh_entry") if isinstance(payload.get("mesh_entry"), dict) else {}
+            vbo = entry.get("vbo") or payload.get("vbo")
+            nbo = entry.get("nbo") or payload.get("nbo")
+            try:
+                if vbo is None or nbo is None:
+                    continue
+                if int(getattr(vbo, "size", points.nbytes) or points.nbytes) != int(points.nbytes):
+                    continue
+                if int(getattr(nbo, "size", normals.nbytes) or normals.nbytes) != int(normals.nbytes):
+                    continue
+                vbo.write(points.tobytes())
+                nbo.write(normals.tobytes())
+            except Exception as exc:
+                try:
+                    self._mgl_log_throttled(
+                        "_mgl_groom_guide_tube_update_failed_" + str(owner or "unknown"),
+                        "groom_guide_tube: dynamic update failed owner=" + str(owner or "") + " err=" + repr(exc),
+                        1.0,
+                    )
+                except Exception:
+                    pass
+                continue
+            entry["points"] = points
+            entry["normals"] = normals
+            payload["points"] = points
+            payload["normals"] = normals
+            payload["mesh_entry"] = entry
+            payload["_groom_guide_tube_driver_signature"] = driver_signature
+            payload["_groom_guide_tube_update_count"] = int(payload.get("_groom_guide_tube_update_count", 0) or 0) + 1
+            item.payload = payload
+            try:
+                bmin = points.min(axis=0).astype("f4")
+                bmax = points.max(axis=0).astype("f4")
+                if owner:
+                    self._mgl_scene_bounds_by_owner[owner] = (bmin, bmax)
+                    self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin, bmax)
+            except Exception:
+                pass
+
     def _mgl_update_groom_deform_guides(self) -> None:
         if np is None:
             return
@@ -4500,6 +4973,10 @@ class MGLRendererMixin:
                 except Exception:
                     continue
             payload = item.payload or payload
+            payload["depth_test"] = True
+            payload["overlay"] = True
+            payload["material"] = {"transparency": 0.01}
+            item.order = 940
             try:
                 bmin = line_arr.min(axis=0).astype("f4")
                 bmax = line_arr.max(axis=0).astype("f4")
@@ -4593,6 +5070,10 @@ class MGLRendererMixin:
                     continue
                 vbo.write(point_data.tobytes())
                 payload["point_count"] = int(root_arr.shape[0])
+                payload["point_size"] = min(float(payload.get("point_size", 5.5) or 5.5), 5.5)
+                payload["depth_test"] = True
+                payload["material"] = {"transparency": 0.05}
+                item.order = 941
                 item.payload = payload
             except Exception:
                 continue
@@ -4801,6 +5282,11 @@ class MGLRendererMixin:
         if line_arr.size == 0:
             return False
         payload = getattr(item, "payload", None) or {}
+        payload["depth_test"] = True
+        payload["overlay"] = True
+        payload["material"] = {"transparency": 0.01}
+        item.order = 940
+        item.payload = payload
         if bool(getattr(self, "_mgl_wire_instanced_disabled", False)):
             self._mgl_wire_instanced_disabled = False
         if self._mgl_update_instanced_wire_item_from_points(item, line_arr):
@@ -5283,6 +5769,10 @@ class MGLRendererMixin:
                 vbo.write(point_data.tobytes())
                 payload["point_count"] = int(root_arr.shape[0])
                 payload["root_points"] = root_arr
+                payload["point_size"] = min(float(payload.get("point_size", 5.5) or 5.5), 5.5)
+                payload["depth_test"] = True
+                payload["material"] = {"transparency": 0.05}
+                root_item.order = 941
                 root_item.payload = payload
             except Exception:
                 continue
@@ -6124,7 +6614,7 @@ class MGLRendererMixin:
             except Exception:
                 pass
 
-    def _mgl_update_groom_guide_sim_guides(self) -> None:
+    def _mgl_update_groom_guide_sim_guides(self, *, force: bool = False) -> None:
         if np is None:
             return
         scene = getattr(self, "_mgl_scene", None)
@@ -6150,6 +6640,8 @@ class MGLRendererMixin:
                 continue
             frame_settings_sig = self._mgl_groom_guide_sim_settings_signature(settings)
             if (
+                not bool(force)
+                and
                 payload.get("_groom_guide_sim_frame") == frame
                 and payload.get("_groom_guide_sim_frame_settings_sig") == frame_settings_sig
             ):
@@ -6558,6 +7050,10 @@ class MGLRendererMixin:
                     continue
             payload = item.payload or payload
             payload["line_points"] = line_arr
+            payload["depth_test"] = True
+            payload["overlay"] = True
+            payload["material"] = {"transparency": 0.01}
+            item.order = 940
             payload["_groom_guide_sim_frame"] = int(frame)
             payload["_groom_guide_sim_frame_settings_sig"] = frame_settings_sig
             payload["_groom_guide_sim_last_frame"] = int(frame)
@@ -6660,6 +7156,10 @@ class MGLRendererMixin:
                     continue
                 vbo.write(point_data.tobytes())
                 payload["point_count"] = int(root_arr.shape[0])
+                payload["point_size"] = min(float(payload.get("point_size", 5.5) or 5.5), 5.5)
+                payload["depth_test"] = True
+                payload["material"] = {"transparency": 0.05}
+                item.order = 941
                 item.payload = payload
             except Exception:
                 continue
@@ -7386,8 +7886,14 @@ class MGLRendererMixin:
         except Exception:
             payload = {}
         try:
-            if str(getattr(item, "tag", "") or "") == "scene-groom-guides":
+            if bool(payload.get("force_opaque_mesh", False)) or str(getattr(item, "tag", "") or "") == "scene-groom-guide-tube":
                 return False
+        except Exception:
+            pass
+        try:
+            if str(getattr(item, "tag", "") or "") == "scene-groom-guides":
+                if bool(payload.get("overlay", False)):
+                    return self._mgl_material_is_transparent(payload.get("material"))
         except Exception:
             pass
         return self._mgl_material_is_transparent(payload.get("material"))
@@ -7546,6 +8052,7 @@ class MGLRendererMixin:
             "scene-light",
             "scene-groom-guides",
             "scene-groom-guide-points",
+            "scene-groom-guide-tube",
             "scene-curve",
             "scene-fx-trail",
             "retarget-handles",
@@ -8380,29 +8887,11 @@ class MGLRendererMixin:
         except Exception:
             scl = (1.0, 1.0, 1.0)
 
+        # Scene assets are authored in file/world space.  Do not infer a pivot
+        # from bounds; that silently recenters meshes/proxies with different
+        # local bounds and breaks overlay between FBX, splats, volume mesh, and
+        # guides.  Explicit Transform-node xforms still apply around origin.
         pivot = np.zeros(3, dtype=np.float32)
-        if xform_kind == "splat":
-            try:
-                piv_map = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
-                piv_override = self._mgl_casefold_get(piv_map, owner_key)
-                if isinstance(piv_override, (list, tuple)) and len(piv_override) >= 3:
-                    pivot = np.array([float(piv_override[0]), float(piv_override[1]), float(piv_override[2])], dtype=np.float32)
-                else:
-                    bounds_local = getattr(self, "_mgl_scene_splats_bounds_local", None)
-                    _matched_key, bounds = self._mgl_lookup_owner_entry(bounds_local, owner_key)
-                    if bounds is not None:
-                        bmin, bmax = bounds
-                        bmin = np.asarray(bmin, dtype=np.float32).reshape(-1)[:3]
-                        bmax = np.asarray(bmax, dtype=np.float32).reshape(-1)[:3]
-                        if bmin.shape[0] >= 3 and bmax.shape[0] >= 3:
-                            pivot = ((bmin + bmax) * 0.5).astype(np.float32)
-                    else:
-                        pivot = rows.mean(axis=0).astype(np.float32)
-            except Exception:
-                try:
-                    pivot = rows.mean(axis=0).astype(np.float32)
-                except Exception:
-                    pivot = np.zeros(3, dtype=np.float32)
 
         out = rows.astype(np.float32, copy=True)
         if xform_kind == "splat":
@@ -8463,7 +8952,7 @@ class MGLRendererMixin:
             "display_pos": [float(v) for v in pos],
             "display_rot": [float(v) for v in rot],
             "display_pivot": [float(v) for v in np.asarray(pivot, dtype=np.float32).reshape(-1)[:3]],
-            "display_transform": "splat_pivot_xform" if xform_kind == "splat" else "scale_only_no_translation",
+            "display_transform": "splat_origin_xform" if xform_kind == "splat" else "scale_only_no_translation",
         }
         return out, info
 
@@ -11530,7 +12019,7 @@ class MGLRendererMixin:
                                     px, py, pz = xf.get("pos", (0.0, 0.0, 0.0))
                                     rx, ry, rz = xf.get("rot", (0.0, 0.0, 0.0))
                                     sx, sy, sz = xf.get("scl", (1.0, 1.0, 1.0))
-                                    cx, cy, cz = self._mgl_owner_pivot_local(xf_owner, bmin, bmax)
+                                    cx = cy = cz = 0.0
 
                                     # Match _mgl_set_scene_asset_xform rotation convention for scene meshes.
                                     try:
@@ -13578,59 +14067,13 @@ class MGLRendererMixin:
         except Exception:
             pass
 
-        # pivot around asset bounds center if we have it
+        # Scene assets keep their authored origin.  Bounds are for framing,
+        # picking, and diagnostics only; they must not change object placement.
         cx = cy = cz = 0.0
-        offset_mode = False
-        try:
-            bounds_map = None
-            if use_splat_xform:
-                bounds_map = (
-                    getattr(self, "_mgl_scene_splats_bounds_local", None)
-                    or getattr(self, "_mgl_scene_splat_bounds_by_owner", None)
-                )
-            elif apply_to_scene_models:
-                bounds_map = (
-                    getattr(self, "_mgl_scene_mesh_bounds_by_owner", None)
-                    or getattr(self, "_mgl_scene_bounds_by_owner", None)
-                )
-            else:
-                bounds_map = getattr(self, "_mgl_scene_bounds_by_owner", None)
-
-            b = None
-            if isinstance(bounds_map, dict):
-                _, b = self._mgl_lookup_owner_entry(bounds_map, owner)
-            if b is not None:
-                bmin, bmax = b
-                cx, cy, cz = self._mgl_owner_pivot_local(owner, bmin, bmax)
-        except Exception:
-            pass
-        try:
-            offset_map = getattr(self, "_mgl_scene_xform_offset_by_owner", None)
-            if isinstance(offset_map, dict) and apply_to_scene_models and not use_splat_xform:
-                if owner in offset_map:
-                    offset_mode = True
-                else:
-                    lo = str(owner).strip().lower()
-                    for k in offset_map.keys():
-                        try:
-                            if str(k).strip().lower() == lo:
-                                offset_mode = True
-                                break
-                        except Exception:
-                            continue
-        except Exception:
-            offset_mode = False
 
         px, py, pz = x["pos"]
         rx, ry, rz = x["rot"]  # degrees
         sx, sy, sz = x["scl"]
-        if offset_mode:
-            try:
-                px = float(px) + cx
-                py = float(py) + cy
-                pz = float(pz) + cz
-            except Exception:
-                pass
 
         # IMPORTANT:
         # gl_view/gizmo stores rot_deg using its negated-angle convention.
@@ -13715,6 +14158,7 @@ class MGLRendererMixin:
                     "scene-light",
                     "scene-groom-guides",
                     "scene-groom-guide-points",
+                    "scene-groom-guide-tube",
                     "scene-curve",
                     "retarget-handles",
                     "retarget-selection",
@@ -13961,37 +14405,21 @@ class MGLRendererMixin:
                 rx = ry = rz = 0.0
                 sx = sy = sz = 1.0
 
-            # pivot = owner override -> LOCAL bounds center -> current center
-            try:
-                bmin = bmax = None
-                b = (bounds_local or {}).get(owner)
-                if b is not None:
-                    bmin, bmax = b
-                piv_map = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
-                piv_override = self._mgl_casefold_get(piv_map, owner)
-                if isinstance(piv_override, (list, tuple)) and len(piv_override) >= 3:
-                    pivot = np.array(
-                        [float(piv_override[0]), float(piv_override[1]), float(piv_override[2])],
-                        dtype=np.float32,
-                    )
-                elif bmin is not None and bmax is not None:
-                    pivot = ((bmin + bmax) * 0.5).astype(np.float32)
-                else:
-                    pivot = a15[:, :3].mean(axis=0).astype(np.float32)
-            except Exception:
-                pivot = a15[:, :3].mean(axis=0).astype(np.float32)
+            # Keep splats in the same authored coordinate space as meshes.
+            # Never derive placement from their bounds center.
+            pivot = np.zeros(3, dtype=np.float32)
 
-            # apply scale+rot around pivot to positions
+            # apply scale+rot around authored origin to positions
             if (sx, sy, sz) != (1.0, 1.0, 1.0) or (rx, ry, rz) != (0.0, 0.0, 0.0) or (px, py, pz) != (0.0, 0.0, 0.0):
                 out = np.array(a15, dtype=np.float32, copy=True)
 
-                # scale position around pivot
+                # scale position around origin
                 p = out[:, :3] - pivot[None, :]
                 p[:, 0] *= sx
                 p[:, 1] *= sy
                 p[:, 2] *= sz
 
-                # rotate position around pivot
+                # rotate position around origin
                 if (rx != 0.0) or (ry != 0.0) or (rz != 0.0):
                     # Match mesh convention: gl_view stores rot_deg with negated-angle convention.
                     qg = _quat_from_euler_deg(-rx, -ry, -rz)
@@ -14418,8 +14846,9 @@ class MGLRendererMixin:
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
         weight_debug = bool(payload.get("_fbx_skin_weight_debug", False))
         use_vertex_color = bool(weight_debug or payload.get("use_vertex_color", False))
-        material = self._mgl_normalize_material(payload.get("material"))
-        is_transparent_material = (not weight_debug) and self._mgl_material_is_transparent(material)
+        force_opaque_mesh = bool(payload.get("force_opaque_mesh", False)) or tag == "scene-groom-guide-tube"
+        material = None if force_opaque_mesh else self._mgl_normalize_material(payload.get("material"))
+        is_transparent_material = (not force_opaque_mesh) and (not weight_debug) and self._mgl_material_is_transparent(material)
         if scene_skeleton_handles:
             self._mgl_scene_skeleton_log_throttled(
                 f"draw_mesh_begin:{getattr(item, 'item_id', 0)}",
@@ -14562,6 +14991,88 @@ class MGLRendererMixin:
                 self._mgl_prog["UseVertexColor"].value = 0
             except Exception:
                 pass
+
+        force_prev_depth_mask = None
+        force_prev_depth_func = None
+        force_prev_wireframe = None
+        force_prev_polygon_offset = None
+        force_restore_cull = False
+
+        def _restore_force_opaque_mesh_state() -> None:
+            if not force_opaque_mesh:
+                return
+            if force_prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = force_prev_depth_mask
+                except Exception:
+                    pass
+            if force_prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = force_prev_depth_func
+                except Exception:
+                    pass
+            if force_prev_wireframe is not None:
+                try:
+                    self._mgl_ctx.wireframe = force_prev_wireframe
+                except Exception:
+                    pass
+            if force_prev_polygon_offset is not None:
+                try:
+                    self._mgl_ctx.polygon_offset = force_prev_polygon_offset
+                except Exception:
+                    pass
+            if force_restore_cull:
+                try:
+                    if bool(getattr(self, "_mgl_cull_enabled", False)):
+                        self._mgl_ctx.enable(moderngl.CULL_FACE)
+                    else:
+                        self._mgl_ctx.disable(moderngl.CULL_FACE)
+                except Exception:
+                    pass
+
+        if force_opaque_mesh:
+            try:
+                force_prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            except Exception:
+                force_prev_depth_mask = None
+            try:
+                force_prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+            except Exception:
+                force_prev_depth_func = None
+            try:
+                force_prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+            except Exception:
+                force_prev_wireframe = None
+            try:
+                force_prev_polygon_offset = getattr(self._mgl_ctx, "polygon_offset", None)
+            except Exception:
+                force_prev_polygon_offset = None
+            try:
+                self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_func = "<="
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = True
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.wireframe = False
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.polygon_offset = (0.0, 0.0)
+            except Exception:
+                pass
+            if bool(payload.get("two_sided", False)):
+                force_restore_cull = True
+                try:
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+                except Exception:
+                    pass
 
         if scene_skeleton_handles and vao is not None:
             prev_depth_mask = None
@@ -15041,7 +15552,7 @@ class MGLRendererMixin:
                         px, py, pz = x.get("pos", (0.0, 0.0, 0.0))
                         rx, ry, rz = x.get("rot", (0.0, 0.0, 0.0))
                         sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
-                        cx, cy, cz = self._mgl_owner_pivot_local(vol_owner, bmin, bmax)
+                        cx = cy = cz = 0.0
 
                         def T(tx, ty, tz):
                             m = np.eye(4, dtype=np.float32)
@@ -15181,6 +15692,7 @@ class MGLRendererMixin:
                 self._mgl_ctx.depth_mask = prev_depth_mask_material
             except Exception:
                 pass
+        _restore_force_opaque_mesh_state()
 
     def _mgl_draw_scene_fx_trail(self, item: MGLSceneItem, mvp) -> None:
         if self._mgl_ctx is None:
@@ -15412,15 +15924,56 @@ class MGLRendererMixin:
                 pass
             self._mgl_restore_mesh_selection_program_point_size(prev_program_point_size)
 
+    def _mgl_active_scene_camera_owner(self) -> str:
+        for attr_name in ("_camera_select_mode", "_camera_view_mode"):
+            try:
+                owner = str(getattr(self, attr_name, "") or "").strip()
+            except Exception:
+                owner = ""
+            if owner and owner.lower() != "default":
+                return owner
+        try:
+            owner_fn = getattr(self, "_camera_film_gate_owner", None)
+            if callable(owner_fn):
+                owner = str(owner_fn() or "").strip()
+                if owner and owner.lower() != "default":
+                    return owner
+        except Exception:
+            pass
+        try:
+            locked_fn = getattr(self, "_timeline_active_locked_camera_owner", None)
+            if callable(locked_fn):
+                owner = str(locked_fn() or "").strip()
+                if owner and owner.lower() != "default":
+                    return owner
+        except Exception:
+            pass
+        return ""
+
+    def _mgl_should_hide_scene_camera_proxy(self, tag: str, payload: dict) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if str(tag or "") != "scene-camera" and not bool(payload.get("scene_camera_proxy", False)):
+            return False
+        active_owner = self._mgl_active_scene_camera_owner()
+        if not active_owner:
+            return False
+        owner = str(payload.get("owner") or "").strip()
+        return bool(owner and owner.lower() == active_owner.lower())
+
     def _mgl_draw_scene_wire(self, item: MGLSceneItem, mvp) -> None:
         if self._mgl_wire_prog is None:
             return
         payload = item.payload or {}
+        if bool(payload.get("suppress_draw", False)):
+            return
         wire_instanced = bool(payload.get("wire_instanced", False))
         wire_prog = getattr(self, "_mgl_wire_instanced_prog", None) if wire_instanced else self._mgl_wire_prog
         if wire_prog is None:
             return
         tag = str(getattr(item, "tag", "") or "")
+        if self._mgl_should_hide_scene_camera_proxy(tag, payload):
+            return
         scene_skeleton_overlay = bool(tag == "scene-rig-joints" and payload.get("scene_skeleton_overlay", False))
         if scene_skeleton_overlay:
             self._mgl_scene_skeleton_log_throttled(
@@ -15491,7 +16044,7 @@ class MGLRendererMixin:
                         mvp_to_use = mvp
                 wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
                 wire_prog["Color"].value = color_rgba
-                wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
+                wire_prog["Viewport"].value = self._mgl_wire_viewport_size()
                 wire_prog["LineWidth"].value = float(
                     payload.get("line_width", getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0)))
                 )
@@ -16353,31 +16906,9 @@ class MGLRendererMixin:
             sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
         except Exception:
             return np.eye(4, dtype=np.float32)
-        try:
-            if bmin is None or bmax is None:
-                bounds_map = (
-                    getattr(self, "_mgl_scene_mesh_bounds_by_owner", None)
-                    or getattr(self, "_mgl_scene_bounds_by_owner", None)
-                )
-                if isinstance(bounds_map, dict):
-                    _, bounds = self._mgl_lookup_owner_entry(bounds_map, owner)
-                    if bounds is not None:
-                        bmin, bmax = bounds
-            cx, cy, cz = self._mgl_owner_pivot_local(owner, bmin, bmax)
-        except Exception:
-            cx = cy = cz = 0.0
-        try:
-            offset_map = getattr(self, "_mgl_scene_xform_offset_by_owner", None)
-            if isinstance(offset_map, dict):
-                owner_l = str(owner or "").strip().lower()
-                for key in offset_map.keys():
-                    if str(key or "").strip().lower() == owner_l:
-                        px = float(px) + float(cx)
-                        py = float(py) + float(cy)
-                        pz = float(pz) + float(cz)
-                        break
-        except Exception:
-            pass
+        # Mesh/model transforms use the file origin as pivot.  Bounds are not
+        # part of the model matrix.
+        cx = cy = cz = 0.0
 
         def T(tx, ty, tz):
             m = np.eye(4, dtype=np.float32)
@@ -16432,12 +16963,90 @@ class MGLRendererMixin:
         except Exception:
             return np.eye(4, dtype=np.float32)
 
+    def _mgl_scene_splat_display_model_matrix_for_owner(self, owner: str, *, apply_scale: bool = True):
+        """Return the exact local-to-scene transform used for a splat owner.
+
+        This mirrors the transform in ``_mgl_rebuild_scene_splats`` so guide
+        overlays, skinned volume meshes, and the proxy share one external
+        character transform.
+        """
+        if np is None:
+            return None
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            return None
+        splats = getattr(self, "_mgl_scene_splats", None)
+        _, splat_data = self._mgl_lookup_owner_entry(splats, owner_key)
+        if splat_data is None:
+            return None
+        try:
+            xform = self._mgl_get_scene_splat_xform(owner_key)
+            px, py, pz = (float(v) for v in xform.get("pos", (0.0, 0.0, 0.0))[:3])
+            rx, ry, rz = (float(v) for v in xform.get("rot", (0.0, 0.0, 0.0))[:3])
+            sx, sy, sz = (float(v) for v in xform.get("scl", (1.0, 1.0, 1.0))[:3])
+            if not bool(apply_scale):
+                sx = sy = sz = 1.0
+        except Exception:
+            return None
+
+        # Match _mgl_rebuild_scene_splats: the splat proxy transform pivots at
+        # authored origin, not at bounds/mean center.
+        cx = cy = cz = 0.0
+
+        def T(tx, ty, tz):
+            m = np.eye(4, dtype=np.float32)
+            m[3, 0] = float(tx)
+            m[3, 1] = float(ty)
+            m[3, 2] = float(tz)
+            return m
+
+        def S(sx0, sy0, sz0):
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = float(sx0)
+            m[1, 1] = float(sy0)
+            m[2, 2] = float(sz0)
+            return m
+
+        def Rx(a):
+            a = math.radians(float(a))
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[1, 1], m[1, 2] = c, s
+            m[2, 1], m[2, 2] = -s, c
+            return m
+
+        def Ry(a):
+            a = math.radians(float(a))
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0], m[0, 2] = c, -s
+            m[2, 0], m[2, 2] = s, c
+            return m
+
+        def Rz(a):
+            a = math.radians(float(a))
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0], m[0, 1] = c, s
+            m[1, 0], m[1, 1] = -s, c
+            return m
+
+        try:
+            # _mgl_rebuild_scene_splats scales, then rotates around the
+            # authored origin, and finally applies translation.  Matrices in
+            # this renderer are row-vector matrices, hence this multiplication
+            # order matches that vectorized splat operation exactly.
+            rotation = Rx(-rx) @ Ry(-ry) @ Rz(-rz)
+            return T(-cx, -cy, -cz) @ S(sx, sy, sz) @ rotation @ T(cx + px, cy + py, cz + pz)
+        except Exception:
+            return None
+
     def _mgl_scene_model_matrix_for_owner(self, owner: str, bmin=None, bmax=None):
         owner_key = str(owner or "").strip().lower()
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None and owner_key:
             try:
-                for tag in ("scene-model", "model", "scene-groom-guides", "scene-groom-guide-points"):
+                for tag in ("scene-model", "model", "scene-groom-guides", "scene-groom-guide-points", "scene-groom-guide-tube"):
                     for item in scene.iter_by_tag(tag):
                         payload = getattr(item, "payload", None) or {}
                         item_owner = str(payload.get("owner") or item.name or "").strip().lower()
@@ -18290,6 +18899,30 @@ class MGLRendererMixin:
         except Exception:
             return 2, 2
 
+    def _mgl_wire_viewport_size(self) -> Tuple[float, float]:
+        try:
+            ctx = getattr(self, "_mgl_ctx", None)
+            viewport = getattr(ctx, "viewport", None) if ctx is not None else None
+            if isinstance(viewport, (list, tuple)) and len(viewport) >= 4:
+                return float(max(1, int(viewport[2]))), float(max(1, int(viewport[3])))
+        except Exception:
+            pass
+        active = getattr(self, "_mgl_active_viewport_rect", None)
+        if not (isinstance(active, (list, tuple)) and len(active) >= 4):
+            try:
+                active = self._mgl_active_render_viewport()
+            except Exception:
+                active = None
+        if isinstance(active, (list, tuple)) and len(active) >= 4:
+            try:
+                return float(max(1, int(active[2]))), float(max(1, int(active[3])))
+            except Exception:
+                pass
+        try:
+            return float(max(1, int(self.width()))), float(max(1, int(self.height())))
+        except Exception:
+            return 1.0, 1.0
+
     def _mgl_active_render_viewport(self) -> Tuple[int, int, int, int]:
         vp_w, vp_h = self._mgl_render_size()
         full = (0, 0, max(2, int(vp_w)), max(2, int(vp_h)))
@@ -18323,6 +18956,36 @@ class MGLRendererMixin:
             return (int(x), int(y), int(w), int(h))
         except Exception:
             return full
+
+    def _mgl_apply_active_render_viewport_state(self) -> None:
+        try:
+            vp_w, vp_h = self._mgl_render_size()
+            active = getattr(self, "_mgl_active_viewport_rect", None)
+            if not (isinstance(active, (list, tuple)) and len(active) >= 4):
+                active = self._mgl_active_render_viewport()
+                self._mgl_active_viewport_rect = active
+            ax, ay, aw, ah = (int(v) for v in active[:4])
+            aw = max(2, int(aw))
+            ah = max(2, int(ah))
+            ax = max(0, int(ax))
+            ay = max(0, int(ay))
+            if self._mgl_ctx is not None:
+                self._mgl_ctx.viewport = (ax, ay, aw, ah)
+                try:
+                    if (ax, ay, aw, ah) == (0, 0, max(2, int(vp_w)), max(2, int(vp_h))):
+                        self._mgl_ctx.scissor = None
+                    else:
+                        self._mgl_ctx.scissor = (ax, ay, aw, ah)
+                except Exception:
+                    pass
+            try:
+                raw_gl = getattr(self, "_gl", None)
+                if raw_gl is not None:
+                    raw_gl.glViewport(ax, ay, aw, ah)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _mgl_screen_to_active_ndc(self, px: int, py: int, viewport_w: int, viewport_h: int):
         active = getattr(self, "_mgl_active_viewport_rect", None)
@@ -20618,6 +21281,10 @@ class MGLRendererMixin:
 
                 # do not multiply by _mgl_scale_multiplier here
                 self._mgl_splatq_prog["SplatWorldScale"].value = float(self._mgl_splat_world_scale)
+                try:
+                    self._mgl_splatq_prog["SplatAlphaDiscard"].value = 1.0e-4
+                except Exception:
+                    pass
                 # tick + gate sorting
                 self._mgl_splat_sort_tick = (self._mgl_splat_sort_tick + 1) % 1000000
                 force_sort = bool(getattr(self, "_mgl_splat_force_sort", False))
@@ -20698,6 +21365,72 @@ class MGLRendererMixin:
                         vertices=4,
                         instances=inst,
                     )
+                    if depth_on and bool(getattr(self, "_mgl_splat_depth_stamp_for_overlays", True)):
+                        raw_gl = getattr(self, "_gl", None)
+                        color_mask_disabled = False
+                        used_raw_color_mask = False
+                        try:
+                            if raw_gl is not None and hasattr(raw_gl, "glColorMask"):
+                                raw_gl.glColorMask(False, False, False, False)
+                                color_mask_disabled = True
+                                used_raw_color_mask = True
+                        except Exception:
+                            color_mask_disabled = False
+                            used_raw_color_mask = False
+                        if not color_mask_disabled:
+                            try:
+                                self._mgl_ctx.color_mask = (False, False, False, False)
+                                color_mask_disabled = True
+                            except Exception:
+                                color_mask_disabled = False
+                        if color_mask_disabled:
+                            try:
+                                cutoff = float(getattr(self, "_mgl_splat_depth_alpha_cutoff", 0.08) or 0.08)
+                            except Exception:
+                                cutoff = 0.08
+                            cutoff = max(1.0e-4, min(0.95, float(cutoff)))
+                            try:
+                                self._mgl_splatq_prog["SplatAlphaDiscard"].value = cutoff
+                            except Exception:
+                                pass
+                            try:
+                                self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                            except Exception:
+                                pass
+                            try:
+                                self._mgl_ctx.depth_func = "<="
+                            except Exception:
+                                pass
+                            try:
+                                self._mgl_ctx.depth_mask = True
+                            except Exception:
+                                try:
+                                    if raw_gl is not None and hasattr(raw_gl, "glDepthMask"):
+                                        raw_gl.glDepthMask(True)
+                                except Exception:
+                                    pass
+                            try:
+                                self._mgl_splatq_vao.render(
+                                    mode=moderngl.TRIANGLE_STRIP,
+                                    vertices=4,
+                                    instances=inst,
+                                )
+                            finally:
+                                try:
+                                    self._mgl_splatq_prog["SplatAlphaDiscard"].value = 1.0e-4
+                                except Exception:
+                                    pass
+                                try:
+                                    if used_raw_color_mask and raw_gl is not None and hasattr(raw_gl, "glColorMask"):
+                                        raw_gl.glColorMask(True, True, True, True)
+                                    else:
+                                        self._mgl_ctx.color_mask = (True, True, True, True)
+                                except Exception:
+                                    try:
+                                        if raw_gl is not None and hasattr(raw_gl, "glColorMask"):
+                                            raw_gl.glColorMask(True, True, True, True)
+                                    except Exception:
+                                        pass
                 finally:
                     # restore cull state
                     if had_cull:
@@ -21185,6 +21918,10 @@ class MGLRendererMixin:
             self._mgl_update_groom_guide_sim_guides()
         except Exception:
             pass
+        try:
+            self._mgl_update_groom_guide_tube_meshes()
+        except Exception:
+            pass
 
         try:
             if self._mgl_update_skinned_splat_proxies():
@@ -21273,6 +22010,10 @@ class MGLRendererMixin:
             pass
         if not items:
             return
+        try:
+            self._mgl_apply_active_render_viewport_state()
+        except Exception:
+            pass
         owners = []
         refract_owners = []
         for item in items:
@@ -21304,6 +22045,10 @@ class MGLRendererMixin:
                 owners=refract_owners[:12],
                 captured=bool(getattr(self, "_mgl_material_scene_valid", False)),
             )
+        try:
+            self._mgl_apply_active_render_viewport_state()
+        except Exception:
+            pass
         prev_depth_mask = None
         prev_depth_func = None
         prev_wireframe = None
@@ -21476,7 +22221,7 @@ class MGLRendererMixin:
                 pass
             self._mgl_wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
             self._mgl_wire_prog["Color"].value = tuple(float(v) for v in color)
-            self._mgl_wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
+            self._mgl_wire_prog["Viewport"].value = self._mgl_wire_viewport_size()
             self._mgl_wire_prog["LineWidth"].value = float(line_width)
             vao.render(moderngl.TRIANGLES)
         except Exception as exc:
@@ -22929,7 +23674,7 @@ class MGLRendererMixin:
             except Exception:
                 pass
             self._mgl_wire_prog["Color"].value = tuple(float(v) for v in color)
-            self._mgl_wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
+            self._mgl_wire_prog["Viewport"].value = self._mgl_wire_viewport_size()
             self._mgl_wire_prog["LineWidth"].value = float(line_width)
             for entry in list(entries or []):
                 vao = entry.get("vao") if isinstance(entry, dict) else None
@@ -25849,6 +26594,901 @@ class MGLRendererMixin:
             except Exception:
                 pass
 
+        def _scene_alignment_log() -> None:
+            """Record actual local/world bounds for groom alignment diagnosis.
+
+            The values are captured after scene transforms and splat rebuilding,
+            not from node metadata alone.  That distinguishes a bad source bind
+            space from a bad renderer model matrix in one Scene reload.
+            """
+            if np is None:
+                return
+            try:
+                guide_items = list(scene.iter_by_tag("scene-groom-guides"))
+            except Exception:
+                guide_items = []
+            try:
+                scene_assets = [entry for entry in list(assets or []) if isinstance(entry, dict)]
+            except Exception:
+                scene_assets = []
+            proxy_assets = []
+            volume_assets = []
+            for entry in scene_assets:
+                kind_key = str(entry.get("kind") or "").strip().lower()
+                proxy_cfg = entry.get("render_proxy") if isinstance(entry.get("render_proxy"), dict) else {}
+                proxy_type = str(proxy_cfg.get("type") or "").strip().lower()
+                volume_cfg = entry.get("volume_mesh") if isinstance(entry.get("volume_mesh"), dict) else {}
+                volume_type = str(volume_cfg.get("type") or "").strip().lower()
+                if proxy_type in {"skinned_splat", "skinned_gaussian_splat"}:
+                    proxy_assets.append(entry)
+                if kind_key in {"skinned_volume_mesh", "skinned volume mesh", "skinned_collision_mesh", "skinned collision mesh"} or volume_type == "skinned_volume_mesh":
+                    volume_assets.append(entry)
+            if not guide_items or (not proxy_assets and not volume_assets):
+                return
+
+            def _bounds_from_points(points):
+                try:
+                    values = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+                    if values.size == 0:
+                        return None
+                    return values.min(axis=0), values.max(axis=0)
+                except Exception:
+                    return None
+
+            def _bounds_record(bounds, model=None):
+                if not isinstance(bounds, (tuple, list)) or len(bounds) < 2:
+                    return {"local": None, "world": None, "model": None}
+                try:
+                    local_min = np.asarray(bounds[0], dtype=np.float32).reshape(-1)[:3]
+                    local_max = np.asarray(bounds[1], dtype=np.float32).reshape(-1)[:3]
+                    if local_min.size < 3 or local_max.size < 3:
+                        raise ValueError("incomplete bounds")
+                    matrix = np.eye(4, dtype=np.float32) if model is None else np.asarray(model, dtype=np.float32).reshape(4, 4)
+                    corners = np.array(
+                        [
+                            [x, y, z, 1.0]
+                            for x in (float(local_min[0]), float(local_max[0]))
+                            for y in (float(local_min[1]), float(local_max[1]))
+                            for z in (float(local_min[2]), float(local_max[2]))
+                        ],
+                        dtype=np.float32,
+                    )
+                    world = corners @ matrix
+                    w = world[:, 3:4]
+                    valid_w = np.abs(w[:, 0]) > 1.0e-8
+                    if bool(np.any(valid_w)):
+                        world[valid_w, :3] /= w[valid_w]
+                    world_min = world[:, :3].min(axis=0)
+                    world_max = world[:, :3].max(axis=0)
+                    return {
+                        "local": {"min": [round(float(v), 6) for v in local_min], "max": [round(float(v), 6) for v in local_max]},
+                        "world": {"min": [round(float(v), 6) for v in world_min], "max": [round(float(v), 6) for v in world_max]},
+                        "model": [round(float(v), 6) for v in matrix.reshape(-1)],
+                    }
+                except Exception:
+                    return {"local": None, "world": None, "model": None}
+
+            def _bounds_center_extent(record):
+                try:
+                    world = record.get("world") or {}
+                    lower = np.asarray(world.get("min"), dtype=np.float32).reshape(3)
+                    upper = np.asarray(world.get("max"), dtype=np.float32).reshape(3)
+                    return (lower + upper) * 0.5, upper - lower
+                except Exception:
+                    return None, None
+
+            # This capture deliberately works from the runtime scene items,
+            # including the wire VBO when it can be read.  Asset metadata and
+            # object matrices alone cannot prove which curve coordinates are
+            # actually being drawn after Guide Pose/Sim has evaluated.
+            def _points_array(value):
+                try:
+                    rows = np.asarray(value, dtype=np.float32).reshape(-1, 3)
+                    return rows if rows.size else None
+                except Exception:
+                    return None
+
+            def _matrix_array(value):
+                try:
+                    return np.asarray(value, dtype=np.float32).reshape(4, 4)
+                except Exception:
+                    return None
+
+            def _mapping(value):
+                return dict(value) if isinstance(value, dict) else {}
+
+            def _safe_int(value, default=0):
+                try:
+                    return int(value)
+                except Exception:
+                    return int(default)
+
+            def _safe_float(value, default=0.0):
+                try:
+                    result = float(value)
+                    return result if math.isfinite(result) else float(default)
+                except Exception:
+                    return float(default)
+
+            def _matrix_delta_record(left, right):
+                a = _matrix_array(left)
+                b = _matrix_array(right)
+                if a is None or b is None:
+                    return {"comparable": False}
+                return {
+                    "comparable": True,
+                    "max_abs": round(float(np.max(np.abs(a - b))), 9),
+                    "allclose_1e_6": bool(np.allclose(a, b, atol=1.0e-6)),
+                }
+
+            def _model_record(value):
+                matrix = _matrix_array(value)
+                if matrix is None:
+                    return {"present": False, "values": None, "translation": None, "basis_scale": None}
+                try:
+                    scale = np.linalg.norm(matrix[:3, :3], axis=1)
+                except Exception:
+                    scale = np.zeros((3,), dtype=np.float32)
+                return {
+                    "present": True,
+                    "values": [round(float(v), 7) for v in matrix.reshape(-1)],
+                    "translation": [round(float(v), 7) for v in matrix[3, :3]],
+                    "basis_scale": [round(float(v), 7) for v in scale],
+                }
+
+            def _transform_points(points, model):
+                rows = _points_array(points)
+                matrix = _matrix_array(model)
+                if rows is None or matrix is None:
+                    return None
+                try:
+                    hom = np.concatenate((rows, np.ones((int(rows.shape[0]), 1), dtype=np.float32)), axis=1)
+                    world = hom @ matrix
+                    w = world[:, 3:4]
+                    valid = np.abs(w[:, 0]) > 1.0e-8
+                    if bool(np.any(valid)):
+                        world[valid, :3] /= w[valid]
+                    return world[:, :3].astype("f4", copy=False)
+                except Exception:
+                    return None
+
+            def _points_digest(rows):
+                values = _points_array(rows)
+                if values is None:
+                    return None
+                try:
+                    raw = np.ascontiguousarray(values, dtype=np.float32).tobytes()
+                    # Avoid making a scene reload expensive for very dense hair.
+                    if len(raw) > 8 * 1024 * 1024:
+                        raw = raw[: 4 * 1024 * 1024] + raw[-4 * 1024 * 1024 :] + str(values.shape).encode("ascii")
+                    return hashlib.sha256(raw).hexdigest()
+                except Exception:
+                    return None
+
+            def _points_record(points, model=None, sample_limit=12):
+                rows = _points_array(points)
+                if rows is None:
+                    return {"count": 0, "summary": None, "samples": [], "sha256": None}
+                finite = np.all(np.isfinite(rows), axis=1)
+                valid = rows[finite]
+                count = int(rows.shape[0])
+                if valid.size:
+                    lower = valid.min(axis=0)
+                    upper = valid.max(axis=0)
+                    mean = valid.mean(axis=0)
+                else:
+                    lower = upper = mean = np.zeros((3,), dtype=np.float32)
+                sample_count = min(max(0, int(sample_limit)), count)
+                indices = (
+                    np.linspace(0, count - 1, num=sample_count, dtype=np.int64)
+                    if sample_count > 0
+                    else np.zeros((0,), dtype=np.int64)
+                )
+                samples = [
+                    {"index": int(index), "local": [round(float(v), 7) for v in rows[int(index)]]}
+                    for index in indices
+                ]
+                world = _transform_points(rows[indices], model) if indices.size else None
+                if world is not None:
+                    for index, world_point in enumerate(world):
+                        samples[index]["world"] = [round(float(v), 7) for v in world_point]
+                return {
+                    "count": count,
+                    "finite_count": int(np.count_nonzero(finite)),
+                    "summary": {
+                        "min": [round(float(v), 7) for v in lower],
+                        "max": [round(float(v), 7) for v in upper],
+                        "mean": [round(float(v), 7) for v in mean],
+                    },
+                    "samples": samples,
+                    "sha256": _points_digest(rows),
+                }
+
+            def _delta_record(left, right, left_model=None, right_model=None, sample_limit=8):
+                a = _points_array(left)
+                b = _points_array(right)
+                if a is None or b is None:
+                    return {
+                        "comparable": False,
+                        "left_count": 0 if a is None else int(a.shape[0]),
+                        "right_count": 0 if b is None else int(b.shape[0]),
+                    }
+                count = min(int(a.shape[0]), int(b.shape[0]))
+                if count <= 0:
+                    return {"comparable": False, "left_count": int(a.shape[0]), "right_count": int(b.shape[0])}
+                delta = a[:count] - b[:count]
+                lengths = np.linalg.norm(delta, axis=1)
+                result = {
+                    "comparable": True,
+                    "left_count": int(a.shape[0]),
+                    "right_count": int(b.shape[0]),
+                    "compared_count": int(count),
+                    "local_distance": {
+                        "min": round(float(lengths.min()), 7),
+                        "median": round(float(np.median(lengths)), 7),
+                        "mean": round(float(lengths.mean()), 7),
+                        "max": round(float(lengths.max()), 7),
+                    },
+                }
+                aw = _transform_points(a[:count], left_model)
+                bw = _transform_points(b[:count], right_model)
+                if aw is not None and bw is not None and aw.shape == bw.shape:
+                    world_lengths = np.linalg.norm(aw - bw, axis=1)
+                    result["world_distance"] = {
+                        "min": round(float(world_lengths.min()), 7),
+                        "median": round(float(np.median(world_lengths)), 7),
+                        "mean": round(float(world_lengths.mean()), 7),
+                        "max": round(float(world_lengths.max()), 7),
+                    }
+                sample_count = min(max(0, int(sample_limit)), count)
+                if sample_count:
+                    indices = np.linspace(0, count - 1, num=sample_count, dtype=np.int64)
+                    result["samples"] = [
+                        {
+                            "index": int(index),
+                            "left": [round(float(v), 7) for v in a[int(index)]],
+                            "right": [round(float(v), 7) for v in b[int(index)]],
+                            "distance": round(float(lengths[int(index)]), 7),
+                        }
+                        for index in indices
+                    ]
+                return result
+
+            def _wire_draw_points(item, payload):
+                """Read the positions actually stored in the draw buffer when possible."""
+                fallback = _points_array(payload.get("line_points"))
+                result = {
+                    "path": "payload_line_points_fallback" if fallback is not None else "unavailable",
+                    "wire_instanced": bool(payload.get("wire_instanced", False)),
+                    "buffer_size_bytes": None,
+                    "readback_error": None,
+                }
+                vbo = payload.get("wire_segment_vbo") or payload.get("wire_vbo")
+                if vbo is None:
+                    resources = list(getattr(item, "resources", []) or [])
+                    if len(resources) >= 2:
+                        vbo = resources[1]
+                try:
+                    byte_count = int(getattr(vbo, "size", 0) or 0) if vbo is not None else 0
+                except Exception:
+                    byte_count = 0
+                result["buffer_size_bytes"] = int(byte_count)
+                if vbo is None or byte_count <= 0:
+                    return fallback, result
+                if byte_count > 64 * 1024 * 1024:
+                    result["path"] = "readback_skipped_buffer_over_64mb"
+                    return fallback, result
+                try:
+                    raw = vbo.read()
+                    packed = np.frombuffer(raw, dtype=np.float32)
+                    if bool(payload.get("wire_instanced", False)) and packed.size % 6 == 0:
+                        points = packed.reshape(-1, 6).reshape(-1, 3).copy()
+                        result["path"] = "wire_segment_vbo_readback"
+                        return points, result
+                    if (not bool(payload.get("wire_instanced", False))) and packed.size % 60 == 0:
+                        expanded = packed.reshape(-1, 6, 10)
+                        endpoints = np.stack((expanded[:, 0, 3:6], expanded[:, 0, 6:9]), axis=1)
+                        result["path"] = "wire_expanded_vbo_readback"
+                        return endpoints.reshape(-1, 3).copy(), result
+                    result["path"] = "wire_vbo_unrecognized_layout"
+                    result["float_count"] = int(packed.size)
+                except Exception as exc:
+                    result["readback_error"] = repr(exc)
+                return fallback, result
+
+            def _curve_template(payload):
+                for key in ("groom_guide_sim", "groom_guide_pose", "groom_deform", "groom_guides"):
+                    cfg = payload.get(key)
+                    if not isinstance(cfg, dict):
+                        continue
+                    for curve_key in ("bind_curves", "start_curves", "pose_curves", "curves"):
+                        curves = cfg.get(curve_key)
+                        if isinstance(curves, list) and curves:
+                            return curves, key + "." + curve_key
+                curves = payload.get("curves")
+                return (curves, "payload.curves") if isinstance(curves, list) and curves else (None, "unavailable")
+
+            def _roots_from_line_points(line_points, curves):
+                rows = _points_array(line_points)
+                if rows is None or not isinstance(curves, list):
+                    return None
+                roots = []
+                segment_index = 0
+                for curve in curves:
+                    count = len(curve) if isinstance(curve, list) else 0
+                    if count >= 2:
+                        point_index = int(segment_index * 2)
+                        if point_index >= int(rows.shape[0]):
+                            return None
+                        roots.append(rows[point_index])
+                        segment_index += count - 1
+                if not roots:
+                    return None
+                return np.asarray(roots, dtype=np.float32).reshape(-1, 3)
+
+            def _runtime_roots(runtime):
+                if not isinstance(runtime, dict):
+                    return None
+                points = _points_array(runtime.get("points"))
+                if points is None:
+                    return None
+                try:
+                    indices = np.asarray(runtime.get("root_indices"), dtype=np.int64).reshape(-1)
+                    valid = indices[(indices >= 0) & (indices < int(points.shape[0]))]
+                    return points[valid] if valid.size else None
+                except Exception:
+                    return None
+
+            def _nearest_collider_samples(root_points, collider, model, sample_limit=12):
+                roots = _points_array(root_points)
+                surface = _points_array((collider or {}).get("vertices") if isinstance(collider, dict) else None)
+                if roots is None or surface is None:
+                    return []
+                sample_count = min(max(0, int(sample_limit)), int(roots.shape[0]))
+                if sample_count <= 0:
+                    return []
+                sample_indices = np.linspace(0, int(roots.shape[0]) - 1, num=sample_count, dtype=np.int64)
+                sampled = roots[sample_indices]
+                nearest_indices = None
+                nearest_distances = None
+                try:
+                    tree = collider.get("tree") if isinstance(collider, dict) else None
+                    if tree is not None:
+                        nearest_distances, nearest_indices = tree.query(sampled, k=1)
+                except Exception:
+                    nearest_indices = None
+                if nearest_indices is None:
+                    indices = []
+                    distances = []
+                    for point in sampled:
+                        squared = np.sum((surface - point) ** 2, axis=1)
+                        nearest = int(np.argmin(squared))
+                        indices.append(nearest)
+                        distances.append(float(np.sqrt(squared[nearest])))
+                    nearest_indices = np.asarray(indices, dtype=np.int64)
+                    nearest_distances = np.asarray(distances, dtype=np.float32)
+                nearest_points = surface[np.asarray(nearest_indices, dtype=np.int64)]
+                roots_world = _transform_points(sampled, model)
+                nearest_world = _transform_points(nearest_points, model)
+                rows = []
+                for index, root, closest, distance in zip(sample_indices, sampled, nearest_points, nearest_distances):
+                    entry = {
+                        "root_index": int(index),
+                        "root_local": [round(float(v), 7) for v in root],
+                        "nearest_collider_vertex_local": [round(float(v), 7) for v in closest],
+                        "nearest_vertex_distance_local": round(float(distance), 7),
+                    }
+                    local_index = len(rows)
+                    if roots_world is not None and nearest_world is not None:
+                        entry["root_world"] = [round(float(v), 7) for v in roots_world[local_index]]
+                        entry["nearest_collider_vertex_world"] = [round(float(v), 7) for v in nearest_world[local_index]]
+                        entry["nearest_vertex_distance_world"] = round(
+                            float(np.linalg.norm(roots_world[local_index] - nearest_world[local_index])), 7
+                        )
+                    rows.append(entry)
+                return rows
+
+            def _nearest_triangle_surface_samples(root_points, vertices, triangles, model, sample_limit=12):
+                """Measure roots against the rendered volume triangles, not vertices.
+
+                The test mesh here is the same topology used to draw the Scene
+                volume.  For the current volume size we evaluate every triangle
+                for each sampled root, so a non-zero result cannot be blamed on
+                a sparse nearest-vertex approximation.
+                """
+                roots = _points_array(root_points)
+                mesh_points = _points_array(vertices)
+                if roots is None or mesh_points is None:
+                    return {"available": False, "reason": "roots_or_volume_points_unavailable", "samples": []}
+                try:
+                    indices = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+                    valid = np.all((indices >= 0) & (indices < int(mesh_points.shape[0])), axis=1)
+                    indices = indices[valid]
+                except Exception as exc:
+                    return {"available": False, "reason": "invalid_volume_triangle_indices", "error": repr(exc), "samples": []}
+                if indices.size == 0:
+                    return {"available": False, "reason": "volume_has_no_triangles", "samples": []}
+                try:
+                    from trimesh.triangles import closest_point as closest_points_on_triangles
+                except Exception as exc:
+                    return {"available": False, "reason": "trimesh_closest_point_unavailable", "error": repr(exc), "samples": []}
+                sample_count = min(max(0, int(sample_limit)), int(roots.shape[0]))
+                if sample_count <= 0:
+                    return {"available": False, "reason": "no_root_samples", "samples": []}
+                sample_indices = np.linspace(0, int(roots.shape[0]) - 1, num=sample_count, dtype=np.int64)
+                tri_points = mesh_points[indices].astype(np.float64, copy=False)
+                tri_normals = np.cross(tri_points[:, 1] - tri_points[:, 0], tri_points[:, 2] - tri_points[:, 0])
+                normal_lengths = np.linalg.norm(tri_normals, axis=1)
+                valid_faces = normal_lengths > 1.0e-12
+                if not bool(np.any(valid_faces)):
+                    return {"available": False, "reason": "volume_triangles_are_degenerate", "samples": []}
+                tri_points = tri_points[valid_faces]
+                tri_normals = tri_normals[valid_faces] / normal_lengths[valid_faces, None]
+                original_indices = np.nonzero(valid)[0][valid_faces]
+                rows = []
+                for root_index in sample_indices:
+                    root = roots[int(root_index)].astype(np.float64, copy=False)
+                    repeated = np.repeat(root.reshape(1, 3), int(tri_points.shape[0]), axis=0)
+                    try:
+                        closest = closest_points_on_triangles(tri_points, repeated)
+                    except Exception as exc:
+                        return {
+                            "available": False,
+                            "reason": "trimesh_closest_point_failed",
+                            "error": repr(exc),
+                            "samples": rows,
+                        }
+                    delta = repeated - closest
+                    distances_sq = np.einsum("ij,ij->i", delta, delta)
+                    best = int(np.argmin(distances_sq))
+                    closest_local = closest[best].astype(np.float32, copy=False)
+                    root_world = _transform_points(root.reshape(1, 3), model)
+                    closest_world = _transform_points(closest_local.reshape(1, 3), model)
+                    entry = {
+                        "root_index": int(root_index),
+                        "triangle_index": int(original_indices[best]),
+                        "root_local": [round(float(v), 7) for v in root],
+                        "closest_surface_local": [round(float(v), 7) for v in closest_local],
+                        "surface_distance_local": round(float(math.sqrt(float(distances_sq[best]))), 9),
+                        "signed_surface_distance_local": round(float(np.dot(root - closest[best], tri_normals[best])), 9),
+                    }
+                    if root_world is not None and closest_world is not None:
+                        entry["root_world"] = [round(float(v), 7) for v in root_world[0]]
+                        entry["closest_surface_world"] = [round(float(v), 7) for v in closest_world[0]]
+                        entry["surface_distance_world"] = round(
+                            float(np.linalg.norm(root_world[0] - closest_world[0])), 9
+                        )
+                    rows.append(entry)
+                return {
+                    "available": True,
+                    "method": "all_volume_triangles_exact_closest_point",
+                    "triangle_count": int(tri_points.shape[0]),
+                    "samples": rows,
+                }
+
+            def _asset_record(entry):
+                return {
+                    "owner": str(entry.get("node") or entry.get("owner") or "").strip(),
+                    "kind": str(entry.get("kind") or "").strip(),
+                    "source_owner": str(entry.get("source_owner") or "").strip(),
+                    "scene_alignment_owner": str(entry.get("scene_alignment_owner") or "").strip(),
+                    "xform": entry.get("xform") if isinstance(entry.get("xform"), dict) else None,
+                    "source_xform": entry.get("source_xform") if isinstance(entry.get("source_xform"), dict) else None,
+                    "coordinate_space": str(entry.get("coordinate_space") or "").strip(),
+                    "transform_baked": bool(entry.get("transform_baked", False)),
+                }
+
+            def _scene_input_record(index, entry):
+                rig_context = entry.get("fbx_rig_context") if isinstance(entry.get("fbx_rig_context"), dict) else {}
+                skeleton = rig_context.get("skeleton") if isinstance(rig_context, dict) else None
+                proxy_cfg = _mapping(entry.get("render_proxy"))
+                volume_cfg = _mapping(entry.get("volume_mesh"))
+                groom_collider = _mapping(entry.get("groom_collider"))
+                return {
+                    "input_index": int(index),
+                    "node": str(entry.get("node") or entry.get("owner") or ""),
+                    "kind": str(entry.get("kind") or ""),
+                    "path": str(entry.get("path") or ""),
+                    "source_owner": str(entry.get("source_owner") or ""),
+                    "scene_alignment_owner": str(entry.get("scene_alignment_owner") or ""),
+                    "coordinate_space": str(entry.get("coordinate_space") or ""),
+                    "transform_baked": bool(entry.get("transform_baked", False)),
+                    "visible": bool(entry.get("visible", True)),
+                    "xform": entry.get("xform") if isinstance(entry.get("xform"), dict) else None,
+                    "source_xform": entry.get("source_xform") if isinstance(entry.get("source_xform"), dict) else None,
+                    "has": {
+                        "groom_deform": bool(isinstance(entry.get("groom_deform"), dict) or isinstance(entry.get("deform_rig_context"), dict)),
+                        "groom_guide_sim": bool(isinstance(entry.get("groom_guide_sim"), dict)),
+                        "groom_guide_pose": bool(isinstance(entry.get("groom_guide_pose"), dict)),
+                        "skinned_proxy": str(proxy_cfg.get("type") or ""),
+                        "skinned_volume": str(volume_cfg.get("type") or ""),
+                        "collider_node": str(groom_collider.get("node") or ""),
+                    },
+                    "rig_context": {
+                        "present": bool(rig_context),
+                        "mesh_count": _safe_int(len(rig_context.get("meshes") or [])) if isinstance(rig_context, dict) else 0,
+                        "joint_count": _safe_int(len(getattr(skeleton, "joints", []) or [])) if skeleton is not None else 0,
+                    },
+                }
+
+            components = []
+            guide_components = []
+            guide_diagnostics = []
+            for item in guide_items:
+                payload = getattr(item, "payload", None) or {}
+                owner = str(payload.get("owner") or getattr(item, "name", "") or "").strip()
+                bounds = _bounds_from_points(payload.get("line_points"))
+                model = payload.get("model")
+                record = {
+                    "type": "guides",
+                    "owner": owner,
+                    "source_owner": str(payload.get("source_owner") or "").strip(),
+                    "scene_alignment_owner": str(payload.get("scene_alignment_owner") or "").strip(),
+                    "source_model_space": str(payload.get("source_model_space") or "").strip(),
+                    "source_kind": str(payload.get("source_kind") or "").strip(),
+                    "bounds": _bounds_record(bounds, model),
+                }
+                components.append(record)
+                guide_components.append(record)
+
+                template_curves, template_source = _curve_template(payload)
+                try:
+                    curve_sizes = [len(curve) for curve in template_curves if isinstance(curve, list)] if isinstance(template_curves, list) else []
+                except Exception:
+                    curve_sizes = []
+                draw_line_points, draw_state = _wire_draw_points(item, payload)
+                payload_line_points = _points_array(payload.get("line_points"))
+                draw_roots = _roots_from_line_points(draw_line_points, template_curves)
+                payload_roots = _roots_from_line_points(payload_line_points, template_curves)
+                sim_runtime = payload.get("_groom_guide_sim_runtime")
+                sim_gpu_runtime = payload.get("_groom_guide_sim_gpu_runtime")
+                pose_state = payload.get("_groom_guide_pose_sim") if isinstance(payload.get("_groom_guide_pose_sim"), dict) else {}
+                pose_runtime = pose_state.get("runtime") if isinstance(pose_state, dict) else None
+                pose_gpu_runtime = pose_state.get("gpu_runtime") if isinstance(pose_state, dict) else None
+                cached_deform = payload.get("_groom_deform_cached_result")
+                cached_deform_roots = None
+                if isinstance(cached_deform, tuple) and len(cached_deform) >= 3:
+                    cached_deform_roots = cached_deform[2]
+                root_sources = []
+                for label, value in (
+                    ("draw_buffer_curve_roots", draw_roots),
+                    ("payload_line_curve_roots", payload_roots),
+                    ("guide_sim_runtime_roots", _runtime_roots(sim_runtime)),
+                    ("guide_sim_gpu_runtime_roots", _runtime_roots(sim_gpu_runtime)),
+                    ("guide_sim_target_roots", payload.get("_groom_guide_sim_last_root_targets")),
+                    ("guide_pose_runtime_roots", _runtime_roots(pose_runtime)),
+                    ("guide_pose_gpu_runtime_roots", _runtime_roots(pose_gpu_runtime)),
+                    ("guide_pose_target_roots", pose_state.get("root_targets") if isinstance(pose_state, dict) else None),
+                    ("deform_evaluated_roots", cached_deform_roots),
+                    ("deform_current_roots", payload.get("_groom_deform_current_root_points")),
+                    ("asset_root_points", payload.get("root_points")),
+                ):
+                    values = _points_array(value)
+                    if values is not None:
+                        root_sources.append((label, values))
+
+                root_source_map = {label: values for label, values in root_sources}
+                root_comparisons = []
+                for left_label, right_label in (
+                    ("draw_buffer_curve_roots", "payload_line_curve_roots"),
+                    ("draw_buffer_curve_roots", "guide_sim_runtime_roots"),
+                    ("draw_buffer_curve_roots", "guide_sim_target_roots"),
+                    ("draw_buffer_curve_roots", "deform_evaluated_roots"),
+                    ("guide_sim_runtime_roots", "guide_sim_target_roots"),
+                    ("guide_sim_target_roots", "deform_evaluated_roots"),
+                    ("guide_pose_runtime_roots", "guide_pose_target_roots"),
+                    ("guide_pose_target_roots", "deform_evaluated_roots"),
+                ):
+                    if left_label in root_source_map and right_label in root_source_map:
+                        root_comparisons.append(
+                            {
+                                "left": left_label,
+                                "right": right_label,
+                                "delta": _delta_record(
+                                    root_source_map[left_label],
+                                    root_source_map[right_label],
+                                    model,
+                                    model,
+                                ),
+                            }
+                        )
+
+                sim_cfg = payload.get("groom_guide_sim") if isinstance(payload.get("groom_guide_sim"), dict) else {}
+                pose_cfg = payload.get("groom_guide_pose") if isinstance(payload.get("groom_guide_pose"), dict) else {}
+                collider_cfg = payload.get("groom_collider") if isinstance(payload.get("groom_collider"), dict) else {}
+                collider_owner = str(
+                    payload.get("collider_owner")
+                    or collider_cfg.get("node")
+                    or collider_cfg.get("source_owner")
+                    or ""
+                ).strip()
+                collider_model = None
+                if collider_owner:
+                    try:
+                        collider_model = self._mgl_scene_model_matrix_for_owner(collider_owner)
+                    except Exception:
+                        collider_model = None
+                proxy_owner = str(payload.get("scene_alignment_owner") or "").strip()
+                try:
+                    proxy_model = self._mgl_scene_splat_display_model_matrix_for_owner(proxy_owner) if proxy_owner else None
+                except Exception:
+                    proxy_model = None
+                matrix_delta = _matrix_delta_record(model, collider_model)
+
+                collider_cache = payload.get("_groom_collider_runtime") if isinstance(payload.get("_groom_collider_runtime"), dict) else {}
+                collider_data = collider_cache.get("collider") if isinstance(collider_cache, dict) else None
+                collider_vertices = collider_data.get("vertices") if isinstance(collider_data, dict) else None
+                collider_record = {
+                    "declared_owner": collider_owner,
+                    "declared_config": {
+                        "node": str(collider_cfg.get("node") or ""),
+                        "source_owner": str(collider_cfg.get("source_owner") or ""),
+                        "sample_owner": str(collider_cfg.get("sample_owner") or ""),
+                    },
+                    "cache_present": bool(isinstance(collider_data, dict)),
+                    "cache_frame_key": list(collider_cache.get("frame_key") or []) if isinstance(collider_cache, dict) else [],
+                    "cache_sample_owner": str(collider_cache.get("node") or "") if isinstance(collider_cache, dict) else "",
+                    "error": str(payload.get("_groom_collider_error") or ""),
+                    "triangle_count": _safe_int(collider_data.get("triangle_count", 0) or 0) if isinstance(collider_data, dict) else 0,
+                    "margin": _safe_float(collider_data.get("margin", 0.0) or 0.0) if isinstance(collider_data, dict) else 0.0,
+                    "vertices": _points_record(
+                        collider_vertices,
+                        collider_model if collider_model is not None else model,
+                    ),
+                }
+                try:
+                    collider_topology = self._mgl_mesh_topology_for_owner(collider_owner) if collider_owner else None
+                except Exception:
+                    collider_topology = None
+                scene_volume_vertices = None
+                scene_volume_triangles = None
+                if isinstance(collider_topology, dict):
+                    scene_volume_vertices = collider_topology.get("points")
+                    scene_volume_triangles = collider_topology.get("triangles")
+                    collider_record["scene_mesh_topology"] = {
+                        "points": _points_record(scene_volume_vertices, collider_model),
+                        "triangle_count": int(np.asarray(collider_topology.get("triangles"), dtype=np.int64).reshape(-1, 3).shape[0]),
+                        "edge_count": int(np.asarray(collider_topology.get("edges"), dtype=np.int64).reshape(-1, 2).shape[0]),
+                    }
+                else:
+                    collider_record["scene_mesh_topology"] = None
+
+                nearest_root_source = None
+                nearest_root_values = None
+                for label in (
+                    "draw_buffer_curve_roots",
+                    "guide_sim_runtime_roots",
+                    "guide_sim_target_roots",
+                    "guide_pose_runtime_roots",
+                    "guide_pose_target_roots",
+                    "deform_evaluated_roots",
+                ):
+                    if label in root_source_map:
+                        nearest_root_source = label
+                        nearest_root_values = root_source_map[label]
+                        break
+
+                guide_diagnostics.append(
+                    {
+                        "owner": owner,
+                        "item": {
+                            "name": str(getattr(item, "name", "") or ""),
+                            "tag": str(getattr(item, "tag", "") or ""),
+                            "visible": bool(getattr(item, "visible", True)),
+                            "order": int(getattr(item, "order", 0) or 0),
+                        },
+                        "identity": {
+                            "source_kind": str(payload.get("source_kind") or ""),
+                            "source_owner": str(payload.get("source_owner") or ""),
+                            "scene_alignment_owner": str(payload.get("scene_alignment_owner") or ""),
+                            "source_model_space": str(payload.get("source_model_space") or ""),
+                            "coordinate_space": str(payload.get("coordinate_space") or ""),
+                            "transform_baked": bool(payload.get("transform_baked", False)),
+                            "source_xform": payload.get("source_xform") if isinstance(payload.get("source_xform"), dict) else None,
+                        },
+                        "timeline": {
+                            "frame": int(self._mgl_timeline_frame_index()),
+                            "deform_frame_signature": list(payload.get("_groom_deform_frame") or []) if isinstance(payload.get("_groom_deform_frame"), tuple) else str(payload.get("_groom_deform_frame") or ""),
+                            "deform_sample_owner": str(payload.get("_groom_deform_sample_owner") or ""),
+                            "deform_sample_seconds": payload.get("_groom_deform_sample_seconds"),
+                            "guide_sim_evaluated_frame": payload.get("_groom_guide_sim_frame"),
+                            "guide_sim_last_frame": payload.get("_groom_guide_sim_last_frame"),
+                        },
+                        "draw_space": {
+                            "guide_model": _model_record(model),
+                            "collider_model": _model_record(collider_model),
+                            "guide_vs_collider_matrix": matrix_delta,
+                            "proxy_display_model": _model_record(proxy_model),
+                            "guide_vs_proxy_matrix": _matrix_delta_record(model, proxy_model),
+                            "scene_guide_xform": self._mgl_get_scene_asset_xform(owner),
+                            "scene_collider_xform": self._mgl_get_scene_asset_xform(collider_owner) if collider_owner else None,
+                            "scene_proxy_xform": self._mgl_get_scene_splat_xform(proxy_owner),
+                        },
+                        "curve_template": {
+                            "source": template_source,
+                            "curve_count": int(len(curve_sizes)),
+                            "point_count": int(sum(curve_sizes)),
+                            "points_per_curve": {
+                                "min": int(min(curve_sizes)) if curve_sizes else 0,
+                                "max": int(max(curve_sizes)) if curve_sizes else 0,
+                                "first_16": [int(value) for value in curve_sizes[:16]],
+                            },
+                        },
+                        "wire": {
+                            "readback": draw_state,
+                            "payload_line_points": _points_record(payload_line_points, model),
+                            "actual_draw_line_points": _points_record(draw_line_points, model),
+                            "payload_vs_draw": _delta_record(payload_line_points, draw_line_points, model, model),
+                            "wire_vertex_count": _safe_int(payload.get("wire_vertex_count", 0) or 0),
+                            "wire_instance_count": _safe_int(payload.get("wire_instance_count", 0) or 0),
+                            "line_segment_count": _safe_int(payload.get("line_segment_count", 0) or 0),
+                            "perf": _mapping(payload.get("_groom_guide_sim_perf") or payload.get("_groom_deform_perf")),
+                        },
+                        "root_sources": [
+                            {"name": label, "points": _points_record(values, model)} for label, values in root_sources
+                        ],
+                        "root_comparisons": root_comparisons,
+                        "collider": collider_record,
+                        "nearest_collider_vertex_samples": {
+                            "root_source": nearest_root_source,
+                            "samples": _nearest_collider_samples(
+                                nearest_root_values,
+                                collider_data,
+                                collider_model if collider_model is not None else model,
+                            ),
+                        },
+                        "nearest_rendered_volume_vertex_samples": {
+                            "root_source": nearest_root_source,
+                            # This fallback runs even before the Guide Sim start
+                            # frame, when no collision cache exists yet.
+                            "samples": _nearest_collider_samples(
+                                nearest_root_values,
+                                {"vertices": scene_volume_vertices} if scene_volume_vertices is not None else None,
+                                collider_model if collider_model is not None else model,
+                            ),
+                        },
+                        "rendered_volume_triangle_surface_samples": {
+                            "root_source": nearest_root_source,
+                            "comparison": _nearest_triangle_surface_samples(
+                                nearest_root_values,
+                                scene_volume_vertices,
+                                scene_volume_triangles,
+                                collider_model if collider_model is not None else model,
+                            ),
+                        },
+                        "guide_sim": {
+                            "settings": _mapping(sim_cfg.get("settings")),
+                            "device": str(payload.get("_groom_guide_sim_runtime_device") or ""),
+                            "debug": _mapping(payload.get("_groom_guide_sim_debug")),
+                            "runtime": {
+                                "point_count": _safe_int((sim_runtime or {}).get("point_count", 0) or 0) if isinstance(sim_runtime, dict) else 0,
+                                "root_count": _safe_int((sim_runtime or {}).get("root_count", 0) or 0) if isinstance(sim_runtime, dict) else 0,
+                                "segment_count": _safe_int((sim_runtime or {}).get("segment_count", 0) or 0) if isinstance(sim_runtime, dict) else 0,
+                                "gpu_runtime_present": bool(isinstance(sim_gpu_runtime, dict)),
+                            },
+                        },
+                        "guide_pose": {
+                            "settings": _mapping(pose_cfg.get("settings")),
+                            "runtime_active": bool(isinstance(pose_state, dict) and pose_state),
+                            "device": str((pose_state or {}).get("device") or "") if isinstance(pose_state, dict) else "",
+                            "debug": _mapping((pose_state or {}).get("debug")) if isinstance(pose_state, dict) else {},
+                        },
+                        "groom_deform": {
+                            "mode": str((payload.get("groom_deform") or {}).get("mode") or "") if isinstance(payload.get("groom_deform"), dict) else "",
+                            "binding_count": int(len((payload.get("groom_deform") or {}).get("guide_bindings") or [])) if isinstance(payload.get("groom_deform"), dict) else 0,
+                            "debug": _mapping(payload.get("_groom_deform_debug")),
+                        },
+                    }
+                )
+
+            bounds_map = getattr(self, "_mgl_scene_mesh_bounds_by_owner", None)
+            for asset in volume_assets:
+                meta = _asset_record(asset)
+                owner = meta["owner"]
+                _, bounds = self._mgl_lookup_owner_entry(bounds_map, owner)
+                model = None
+                try:
+                    model = self._mgl_scene_model_matrix_for_owner(owner)
+                except Exception:
+                    model = None
+                components.append({"type": "skinned_volume_mesh", **meta, "bounds": _bounds_record(bounds, model)})
+
+            splat_local = getattr(self, "_mgl_scene_splats", None)
+            splat_world = getattr(self, "_mgl_scene_splats_world", None)
+            for asset in proxy_assets:
+                meta = _asset_record(asset)
+                owner = meta["owner"]
+                _, local_values = self._mgl_lookup_owner_entry(splat_local, owner)
+                _, world_values = self._mgl_lookup_owner_entry(splat_world, owner)
+                local_bounds = _bounds_from_points(local_values)
+                world_bounds = _bounds_from_points(world_values)
+                components.append(
+                    {
+                        "type": "skinned_splat_proxy",
+                        **meta,
+                        "splat_xform": self._mgl_get_scene_splat_xform(owner),
+                        "bounds": {
+                            "local": (
+                                {"min": [round(float(v), 6) for v in local_bounds[0]], "max": [round(float(v), 6) for v in local_bounds[1]]}
+                                if local_bounds is not None
+                                else None
+                            ),
+                            "world": (
+                                {"min": [round(float(v), 6) for v in world_bounds[0]], "max": [round(float(v), 6) for v in world_bounds[1]]}
+                                if world_bounds is not None
+                                else None
+                            ),
+                            "model": None,
+                        },
+                    }
+                )
+
+            comparisons = []
+            for guide in guide_components:
+                guide_center, guide_extent = _bounds_center_extent(guide.get("bounds") or {})
+                if guide_center is None or guide_extent is None:
+                    continue
+                alignment_key = str(guide.get("scene_alignment_owner") or "").strip().lower()
+                for target in components:
+                    if target.get("type") not in {"skinned_volume_mesh", "skinned_splat_proxy"}:
+                        continue
+                    target_keys = {
+                        str(target.get("owner") or "").strip().lower(),
+                        str(target.get("source_owner") or "").strip().lower(),
+                        str(target.get("scene_alignment_owner") or "").strip().lower(),
+                    }
+                    if alignment_key and alignment_key not in target_keys:
+                        continue
+                    target_center, target_extent = _bounds_center_extent(target.get("bounds") or {})
+                    if target_center is None or target_extent is None:
+                        continue
+                    comparisons.append(
+                        {
+                            "guide_owner": guide.get("owner"),
+                            "target_owner": target.get("owner"),
+                            "target_type": target.get("type"),
+                            "world_center_delta": [round(float(v), 6) for v in guide_center - target_center],
+                            "world_extent_ratio": [
+                                round(float(guide_extent[idx] / target_extent[idx]), 6) if abs(float(target_extent[idx])) > 1.0e-8 else None
+                                for idx in range(3)
+                            ],
+                        }
+                    )
+
+            record = {
+                "schema": "qubit.scene_groom_alignment_diagnostic.v2",
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "capture": {
+                    "purpose": "Locate the first stage where live guide roots diverge from the collider and draw buffer.",
+                    "running_revision": _SCENE_GROOM_ALIGNMENT_DIAGNOSTIC_REVISION,
+                    "timeline_frame": int(self._mgl_timeline_frame_index()),
+                    "sample_limit_per_array": 12,
+                    "wire_readback_limit_bytes": 64 * 1024 * 1024,
+                    "notes": [
+                        "Guide bounds are not used as an alignment verdict because hair occupies only part of the body.",
+                        "actual_draw_line_points come from the wire VBO when readback succeeds.",
+                        "nearest_collider_vertex_distance is a diagnostic proximity value, not a triangle-surface distance.",
+                    ],
+                },
+                "component_count": len(components),
+                "scene_input_assets": [
+                    _scene_input_record(index, entry) for index, entry in enumerate(scene_assets)
+                ],
+                "components": components,
+                "comparisons": comparisons,
+                "guide_diagnostics": guide_diagnostics,
+            }
+            root = Path(__file__).resolve().parents[2]
+            log_dir = root / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / "scene_alignment_debug.log").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+            # Keep the most recent capture formatted for direct inspection.  The
+            # JSONL history above remains useful for comparing separate runs.
+            with (log_dir / "scene_groom_alignment_diagnostic.json").open("w", encoding="utf-8") as handle:
+                json.dump(record, handle, indent=2, sort_keys=True, default=str)
+                handle.write("\n")
+
         def _normalize_asset_xform(raw):
             if not isinstance(raw, dict):
                 return None
@@ -26234,7 +27874,7 @@ class MGLRendererMixin:
                             except Exception:
                                 payload["line_width"] = 3.0
                             payload["overlay"] = True
-                            payload["depth_test"] = False
+                            payload["depth_test"] = True
                             payload["material"] = {"transparency": 0.01}
                             payload["curve"] = {
                                 "curve_type": str(asset.get("curve_type") or "line").strip().lower(),
@@ -26250,6 +27890,10 @@ class MGLRendererMixin:
                     source_kind_key = str(asset.get("source_kind") or "").strip().lower()
                     groom_guide_pose_cfg = dict(asset.get("groom_guide_pose")) if isinstance(asset.get("groom_guide_pose"), dict) else None
                     groom_collider_cfg = dict(asset.get("groom_collider")) if isinstance(asset.get("groom_collider"), dict) else None
+                    groom_guide_tube_cfg = dict(asset.get("groom_guide_tube")) if isinstance(asset.get("groom_guide_tube"), dict) else None
+                    if not isinstance(groom_guide_tube_cfg, dict):
+                        groom_guide_tube_cfg = self._mgl_groom_guide_tube_cfg_from_asset(asset)
+                    groom_guide_tube_settings = self._mgl_groom_guide_tube_settings(groom_guide_tube_cfg) if isinstance(groom_guide_tube_cfg, dict) else {}
                     if not isinstance(groom_guide_pose_cfg, dict) and source_kind_key == "groom_guide_pose":
                         groom_guide_pose_cfg = {
                             "settings": {},
@@ -26374,11 +28018,16 @@ class MGLRendererMixin:
                     source_mesh_owner = source_owner or display_owner
                     owner = display_owner
                     visible = bool(asset.get("visible", True))
+                    tube_enabled = bool(groom_guide_tube_settings.get("enabled", True)) if isinstance(groom_guide_tube_cfg, dict) else False
+                    show_source_guides = True
+                    if isinstance(groom_guide_tube_cfg, dict):
+                        show_source_guides = bool(groom_guide_tube_settings.get("show_source_guides", False))
                     debug_log_enabled = bool(
                         asset.get("debug_log", False)
                         or (isinstance(groom_deform_cfg, dict) and groom_deform_cfg.get("debug_log", False))
                         or (isinstance(groom_guide_pose_cfg, dict) and (groom_guide_pose_cfg.get("settings") or {}).get("debug_log", False))
                         or (isinstance(groom_guide_sim_cfg, dict) and (groom_guide_sim_cfg.get("settings") or {}).get("debug_log", False))
+                        or (isinstance(groom_guide_tube_cfg, dict) and groom_guide_tube_settings.get("debug_log", False))
                     )
                     curves = asset.get("curves")
                     line_points = []
@@ -26494,7 +28143,7 @@ class MGLRendererMixin:
                             payload["color"] = (0.0, 1.0, 0.55, 1.0)
                             payload["line_width"] = 3.0
                             payload["overlay"] = True
-                            payload["depth_test"] = False if isinstance(groom_deform_cfg, dict) else True
+                            payload["depth_test"] = True
                             payload["debug_log"] = bool(debug_log_enabled)
                             payload["source_kind"] = source_kind_key
                             payload["source_owner"] = source_mesh_owner
@@ -26518,6 +28167,9 @@ class MGLRendererMixin:
                                 "curve_count": int(len(curves) if isinstance(curves, list) else 0),
                             }
                             payload["line_segment_count"] = int(line_arr.shape[0] // 2)
+                            if isinstance(groom_guide_tube_cfg, dict):
+                                payload["groom_guide_tube"] = dict(groom_guide_tube_cfg)
+                                payload["suppress_draw"] = bool(tube_enabled and not show_source_guides)
                             if isinstance(groom_deform_cfg, dict):
                                 payload["groom_deform"] = dict(groom_deform_cfg)
                             if isinstance(groom_guide_pose_cfg, dict):
@@ -26527,7 +28179,7 @@ class MGLRendererMixin:
                             if isinstance(groom_collider_cfg, dict):
                                 payload["groom_collider"] = dict(groom_collider_cfg)
                             wire_item.payload = payload
-                            wire_item.order = 940 if isinstance(groom_deform_cfg, dict) else 40
+                            wire_item.order = 940
                             scene.add(wire_item)
                             _groom_guides_log(
                                 "load add_wire "
@@ -26545,16 +28197,16 @@ class MGLRendererMixin:
                             point_item = self._mgl_add_overlay_point_item_from_points(
                                 name=f"{display_owner}-guide-roots",
                                 points=root_arr,
-                                visible=visible,
+                                visible=bool(visible and show_source_guides),
                                 tag="scene-groom-guide-points",
                                 owner=owner,
                                 path_key=str(asset.get("guides_path") or f"groom://{owner}/roots"),
                                 color=(1.0, 0.92, 0.1, 0.95),
-                                point_size=9.0,
+                                point_size=5.5,
                             )
                             if point_item is not None:
                                 payload = point_item.payload or {}
-                                payload["depth_test"] = False if isinstance(groom_deform_cfg, dict) else True
+                                payload["depth_test"] = True
                                 payload["debug_log"] = bool(debug_log_enabled)
                                 payload["source_kind"] = source_kind_key
                                 payload["source_owner"] = source_mesh_owner
@@ -26574,7 +28226,7 @@ class MGLRendererMixin:
                                         pass
                                 payload["material"] = {"transparency": 0.05}
                                 point_item.payload = payload
-                                point_item.order = 941 if isinstance(groom_deform_cfg, dict) else 41
+                                point_item.order = 941
                                 scene.add(point_item)
                                 _groom_guides_log(
                                     "load add_roots "
@@ -26586,6 +28238,39 @@ class MGLRendererMixin:
                                 _groom_guides_log(f"load skip_roots owner={owner!r} reason=point_item_none roots={int(root_arr.shape[0])}")
                         else:
                             _groom_guides_log(f"load skip_roots owner={owner!r} reason=empty_root_points")
+                        if isinstance(groom_guide_tube_cfg, dict) and bool(tube_enabled):
+                            tube_item = self._mgl_add_groom_guide_tube_item(
+                                name=f"{display_owner}-guide-tube",
+                                curves=curves if isinstance(curves, list) else [],
+                                cfg=groom_guide_tube_cfg,
+                                visible=visible,
+                                owner=owner,
+                                source_owner=source_mesh_owner,
+                                model=source_model,
+                                path_key=str(asset.get("tube_cache_path") or asset.get("guides_path") or f"groom://{owner}/tube"),
+                            )
+                            if tube_item is not None:
+                                scene.add(tube_item)
+                                tube_payload = tube_item.payload or {}
+                                try:
+                                    tube_points = np.asarray(tube_payload.get("points"), dtype="f4").reshape(-1, 3)
+                                    if tube_points.size:
+                                        tbmin = tube_points.min(axis=0).astype("f4")
+                                        tbmax = tube_points.max(axis=0).astype("f4")
+                                        self._mgl_scene_bounds_by_owner[owner] = (tbmin, tbmax)
+                                        self._mgl_scene_mesh_bounds_by_owner[owner] = (tbmin, tbmax)
+                                        bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, tbmin, tbmax)
+                                        has_mesh_bounds = True
+                                except Exception:
+                                    pass
+                                _groom_guides_log(
+                                    "load add_tube "
+                                    + f"owner={owner!r} display_owner={display_owner!r} item={tube_item.name!r} "
+                                    + f"vertices={int(tube_payload.get('points', np.zeros((0, 3), dtype='f4')).shape[0]) if np is not None and hasattr(tube_payload.get('points'), 'shape') else 0} "
+                                    + f"has_model={bool(tube_payload.get('model') is not None)}"
+                                )
+                            else:
+                                _groom_guides_log(f"load skip_tube owner={owner!r} reason=tube_item_none")
                     else:
                         _groom_guides_log(f"load skip_wire owner={owner!r} reason=empty_line_points")
                     continue
@@ -26943,6 +28628,7 @@ class MGLRendererMixin:
                         if wire_item is not None:
                             payload = wire_item.payload or {}
                             payload["color"] = (0.95, 0.82, 0.27, 1.0)
+                            payload["scene_camera_proxy"] = True
                             wire_item.payload = payload
                             scene.add(wire_item)
                             if not first_mesh_path:
@@ -26983,6 +28669,7 @@ class MGLRendererMixin:
                     if camera_item is not None:
                         payload = camera_item.payload or {}
                         payload["color"] = (0.95, 0.82, 0.27, 1.0)
+                        payload["scene_camera_proxy"] = True
                         if "fov" in asset:
                             payload["fov"] = asset.get("fov")
                         camera_item.payload = payload
@@ -28114,7 +29801,7 @@ class MGLRendererMixin:
                     px, py, pz = x.get("pos", (0.0, 0.0, 0.0))
                     rx, ry, rz = x.get("rot", (0.0, 0.0, 0.0))
                     sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
-                    cx, cy, cz = self._mgl_owner_pivot_local(owner, bmin, bmax)
+                    cx = cy = cz = 0.0
                     rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
                     xform_space = str(getattr(self, "_mgl_xform_space", "world") or "world").lower()
                     if xform_space == "local":
@@ -28413,7 +30100,7 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
                 px, py, pz = x.get("pos", (0.0, 0.0, 0.0))
                 rx, ry, rz = x.get("rot", (0.0, 0.0, 0.0))
                 sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
-                cx, cy, cz = self._mgl_owner_pivot_local(owner, bmin, bmax)
+                cx = cy = cz = 0.0
                 rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
                 xform_space = str(getattr(self, "_mgl_xform_space", "world") or "world").lower()
                 if xform_space == "local":

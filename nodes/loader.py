@@ -285,6 +285,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Groom Guide Sim plugin import failed:", e)
 
+    # 8.9175) Groom Guide Tube
+    try:
+        from nodes import groom_guide_tube
+        if hasattr(groom_guide_tube, "register"):
+            groom_guide_tube.register()
+            _safe_probe("groom_guide_tube")
+        else:
+            print("[EchoGraph] Groom Guide Tube module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Groom Guide Tube plugin import failed:", e)
+
     # 8.918) Groom Deform
     try:
         from nodes import groom_deform

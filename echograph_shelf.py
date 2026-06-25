@@ -3774,6 +3774,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 "hair_deform",
                 "hair deform",
             }
+            is_skinned_volume_mesh = kind in {
+                "skinned_volume_mesh",
+                "skinned volume mesh",
+                "skinned_collision_mesh",
+                "skinned collision mesh",
+            }
             is_curve = kind in {"curve", "curve_primitive", "primitive_curve"}
             target_owner = str(entry.get("target_owner") or "").strip()
             _scene_log(
@@ -3833,6 +3839,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             }
             if "source_kind" in entry:
                 clean_entry["source_kind"] = str(entry.get("source_kind") or "").strip()
+            if "scene_alignment_owner" in entry:
+                clean_entry["scene_alignment_owner"] = str(entry.get("scene_alignment_owner") or "").strip()
             if isinstance(entry.get("render_proxy"), dict):
                 clean_entry["render_proxy"] = dict(entry.get("render_proxy") or {})
             if "xform_offset" in entry:
@@ -3863,6 +3871,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["fbx_rig_context"] = dict(entry.get("fbx_rig_context") or {})
             if "fbx_sample_owner" in entry:
                 clean_entry["fbx_sample_owner"] = str(entry.get("fbx_sample_owner") or "").strip()
+            if is_skinned_volume_mesh:
+                clean_entry["source_owner"] = str(entry.get("source_owner") or "").strip()
+                if isinstance(entry.get("volume_mesh"), dict):
+                    clean_entry["volume_mesh"] = dict(entry.get("volume_mesh") or {})
             if "hidden_submeshes" in entry:
                 clean_entry["hidden_submeshes"] = [
                     str(name).strip()
@@ -3924,6 +3936,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["guides_path"] = str(entry.get("guides_path") or "").strip()
                 clean_entry["pose_cache_path"] = str(entry.get("pose_cache_path") or "").strip()
                 clean_entry["sim_cache_path"] = str(entry.get("sim_cache_path") or "").strip()
+                clean_entry["tube_cache_path"] = str(entry.get("tube_cache_path") or "").strip()
                 clean_entry["source_path"] = str(entry.get("source_path") or "").strip()
                 clean_entry["source_owner"] = str(entry.get("source_owner") or "").strip()
                 for key in ("rig_owner", "deformer_owner", "sample_owner"):
@@ -3979,6 +3992,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     clean_entry["groom_guide_pose"] = dict(entry.get("groom_guide_pose") or {})
                 if isinstance(entry.get("groom_guide_sim"), dict):
                     clean_entry["groom_guide_sim"] = dict(entry.get("groom_guide_sim") or {})
+                if isinstance(entry.get("groom_guide_tube"), dict):
+                    clean_entry["groom_guide_tube"] = dict(entry.get("groom_guide_tube") or {})
                 # The renderer builds animated mesh collisions from this
                 # context.  Do not discard it while sanitizing Scene assets.
                 if isinstance(entry.get("groom_collider"), dict):
@@ -4045,8 +4060,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         str(entry.get("node") or ""),
                         bool(entry.get("debug_log", False)),
                         str(entry.get("source_owner") or ""),
+                        str(entry.get("scene_alignment_owner") or ""),
                         str(entry.get("fbx_sample_owner") or ""),
                         str(entry.get("guides_path") or ""),
+                        str(entry.get("tube_cache_path") or ""),
                         int(entry.get("guide_count", 0) or 0),
                         int(entry.get("points_per_curve", 0) or 0),
                         round(float(entry.get("length", 0.0) or 0.0), 6),
@@ -4062,6 +4079,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         repr(
                             dict((entry.get("groom_guide_sim") or {}).get("settings") or {})
                             if isinstance(entry.get("groom_guide_sim"), dict)
+                            else {}
+                        ),
+                        repr(
+                            dict(entry.get("groom_guide_tube") or {})
+                            if isinstance(entry.get("groom_guide_tube"), dict)
                             else {}
                         ),
                         str(collider_cfg.get("node") or ""),

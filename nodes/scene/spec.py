@@ -63,6 +63,18 @@ _GROOM_GUIDE_SIM_KIND_ALIASES = {
     "guide_sim",
     "guide sim",
 }
+_GROOM_GUIDE_TUBE_KIND_ALIASES = {
+    "groom_guide_tube",
+    "groom guide tube",
+    "groom_guides_tube",
+    "groom guides tube",
+    "hair_guide_tube",
+    "hair guide tube",
+    "hair_guides_tube",
+    "hair guides tube",
+    "guide_tube",
+    "guide tube",
+}
 _GROOM_GUIDE_POSE_KIND_ALIASES = {
     "groom_guide_pose",
     "groom guide pose",
@@ -2092,6 +2104,42 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"frames={int((debug.get('settings') or {}).get('frames', 0) if isinstance(debug.get('settings'), dict) else 0)}",
                     )
             continue
+        if kind in _GROOM_GUIDE_TUBE_KIND_ALIASES:
+            try:
+                from nodes.groom_guide_tube import spec as _groom_guide_tube_spec  # type: ignore
+
+                build_asset = getattr(_groom_guide_tube_spec, "build_groom_guide_tube_scene_asset", None)
+                outcome = build_asset(src_item) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"groom_guide_tube asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("guides_path") or asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    debug = asset.get("debug") if isinstance(asset.get("debug"), dict) else {}
+                    _scene_log(
+                        node_item,
+                        "groom_guide_tube asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"guides={int(asset.get('guide_count', 0) or 0)} "
+                        + f"tube_vertices={int(debug.get('tube_vertex_count', 0) or 0)}",
+                    )
+            continue
         if kind in _GROOM_GUIDE_POSE_KIND_ALIASES:
             try:
                 from nodes.groom_guide_pose import spec as _groom_guide_pose_spec  # type: ignore
@@ -3236,7 +3284,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         owner_name = str(entry.get("node") or "").strip()
         if owner_name and _apply_retime(entry, owner_name):
             continue
-        for alias_key in ("source_owner", "target_owner", "instance_source_name"):
+        for alias_key in ("scene_alignment_owner", "source_owner", "target_owner", "instance_source_name"):
             alias = str(entry.get(alias_key) or "").strip()
             if alias and _apply_retime(entry, alias):
                 break
@@ -4336,9 +4384,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     except Exception:
                         pass
 
-                    # compute a stable gizmo position:
-                    # 1) use stored xform pos if it's non-zero
-                    # 2) otherwise use bounds center
+                    # The gizmo represents the asset transform origin.  Do not
+                    # infer it from bounds; that would make the UI imply a
+                    # hidden pivot/centering operation that rendering no longer
+                    # performs.
                     pos = getattr(glv, "_xform_gizmo_pos", (0.0, 0.0, 0.0))
                     try:
                         renderer = getattr(glv, "_mgl_renderer", None) or glv
@@ -4364,44 +4413,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                             xf = get_xf(owner) or {}
 
                         xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
-                        if is_splat:
-                            pivot = None
-                            try:
-                                mins = maxs = None
-                                bounds_map = (
-                                    getattr(renderer, "_mgl_scene_splats_bounds_local", None)
-                                    or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
-                                )
-                                if _owner_in_map(bounds_map, owner):
-                                    mins, maxs = _owner_map_get(bounds_map, owner, (None, None)) or (None, None)
-                                pivot_fn = getattr(renderer, "_mgl_owner_pivot_local", None)
-                                if callable(pivot_fn):
-                                    raw_pivot = pivot_fn(owner, mins, maxs) if (mins is not None and maxs is not None) else pivot_fn(owner)
-                                    if isinstance(raw_pivot, (list, tuple)) and len(raw_pivot) >= 3:
-                                        pivot = (
-                                            float(raw_pivot[0]),
-                                            float(raw_pivot[1]),
-                                            float(raw_pivot[2]),
-                                        )
-                                if pivot is None and mins is not None and maxs is not None:
-                                    pivot = (
-                                        (float(mins[0]) + float(maxs[0])) * 0.5,
-                                        (float(mins[1]) + float(maxs[1])) * 0.5,
-                                        (float(mins[2]) + float(maxs[2])) * 0.5,
-                                    )
-                            except Exception:
-                                pivot = None
-                            if pivot is not None:
-                                pos = (
-                                    float(xf_pos[0] + pivot[0]),
-                                    float(xf_pos[1] + pivot[1]),
-                                    float(xf_pos[2] + pivot[2]),
-                                )
-                            else:
-                                pos = xf_pos
-                        else:
-                            # mesh: pos is already world pivot (even if zero)
-                            pos = xf_pos
+                        pos = xf_pos
                     except Exception:
                         pass
 
@@ -4658,6 +4670,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 kind = str(asset.get("kind") or "").strip().lower()
                 if kind == "fx_trail":
                     continue
+                is_groom_guides_asset = kind in _GROOM_GUIDES_KIND_ALIASES
                 name = str(asset.get("node") or "").strip()
                 if not name or name in seen:
                     continue
@@ -4670,17 +4683,33 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     rows.append({"name": name, "path": "", "kind": "light"})
                     continue
                 path = str(asset.get("path") or "").strip()
+                if is_groom_guides_asset and not path:
+                    # Guide Pose/Sim are curve assets, not model files.  Their
+                    # cache path is enough to identify and control them in the
+                    # Scene Outliner.
+                    path = str(
+                        asset.get("guides_path")
+                        or asset.get("sim_cache_path")
+                        or asset.get("pose_cache_path")
+                        or ""
+                    ).strip()
                 if not path and not bool(asset.get("_quick")):
                     continue
                 ext = Path(path).suffix.lower()
                 if not ext:
                     ext = str(asset.get("ext") or "").strip().lower()
-                if ext and ext not in SUPPORTED_EXTS:
+                if ext and ext not in SUPPORTED_EXTS and not is_groom_guides_asset:
                     continue
                 seen.add(name)
                 is_anim_retarget_asset = _is_anim_retarget_kind(kind)
                 has_skeleton = _asset_has_scene_skeleton(asset, kind)
-                row_kind = "anim_retarget" if is_anim_retarget_asset else "mesh"
+                row_kind = (
+                    "groom_guides"
+                    if is_groom_guides_asset
+                    else "anim_retarget"
+                    if is_anim_retarget_asset
+                    else "mesh"
+                )
                 rows.append({"name": name, "path": path, "kind": row_kind, "has_skeleton": bool(has_skeleton)})
                 if bool(has_skeleton):
                     rows.append(

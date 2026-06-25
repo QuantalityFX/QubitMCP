@@ -330,6 +330,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
     elif key in ("groom_guide_sim", "groom guide sim", "groom_guides_sim", "groom guides sim", "hair_guide_sim", "hair guide sim", "hair_guides_sim", "hair guides sim", "hair_sim", "hair sim", "guide_sim", "guide sim"):
         icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
+    elif key in ("groom_guide_tube", "groom guide tube", "groom_guides_tube", "groom guides tube", "hair_guide_tube", "hair guide tube", "hair_guides_tube", "hair guides tube", "guide_tube", "guide tube"):
+        icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
     elif key in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"):
         icon_pm = node_icons._groom_guides_icon() or node_icons._mask_node_icon() or node_icons._output_icon()
     elif key == "material":
@@ -400,7 +402,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "qubit_deck_controller",
@@ -486,7 +488,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
             btn.setText(_kind_label(kind))
             btn.setToolTip(kind)
             btn.setIcon(_kind_icon(kind))
-            icon_size = 21 if kind in {"groom_guides", "groom_deform", "groom_guide_pose", "groom_guide_sim"} else 18
+            icon_size = 21 if kind in {"groom_guides", "groom_deform", "groom_guide_pose", "groom_guide_sim", "groom_guide_tube"} else 18
             btn.setIconSize(QtCore.QSize(icon_size, icon_size))
             btn.setMinimumHeight(28)
             btn.setMinimumWidth(117)
