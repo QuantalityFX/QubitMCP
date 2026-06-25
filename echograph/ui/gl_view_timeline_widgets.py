@@ -274,6 +274,7 @@ class GraphGLTimelineWidgetsMixin:
             has_seed_spin = isinstance(getattr(self, "_timeline_texture_seed_spin", None), QtWidgets.QSpinBox)
             has_end_spin = isinstance(getattr(self, "_timeline_end_frame_spin", None), QtWidgets.QSpinBox)
             has_scroll = getattr(self, "_timeline_scrollbar", None) is not None
+            has_vscroll = getattr(self, "_timeline_composition_vscrollbar", None) is not None
             has_spacer = getattr(self, "_timeline_left_header_spacer", None) is not None
             has_rows = bool(getattr(self, "_timeline_track_rows", []))
             has_stack = getattr(self, "_timeline_tracks_stack", None) is not None
@@ -307,6 +308,7 @@ class GraphGLTimelineWidgetsMixin:
                 and has_seed_spin
                 and has_end_spin
                 and has_scroll
+                and has_vscroll
                 and has_spacer
                 and has_rows
                 and has_stack
@@ -359,6 +361,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_rows_host = None
             self._timeline_curves_canvas = None
             self._timeline_composition_canvas = None
+            self._timeline_composition_vscrollbar = None
             self._timeline_left_header_spacer = None
             self._timeline_area_widget = None
             self._timeline_axis_labels = []
@@ -460,6 +463,10 @@ class GraphGLTimelineWidgetsMixin:
                     "#GLTimelinePanel QScrollBar::handle:horizontal{background:rgba(148,163,184,170);min-width:30px;border-radius:4px;}",
                     "#GLTimelinePanel QScrollBar::add-line:horizontal,#GLTimelinePanel QScrollBar::sub-line:horizontal{width:0px;height:0px;}",
                     "#GLTimelinePanel QScrollBar::add-page:horizontal,#GLTimelinePanel QScrollBar::sub-page:horizontal{background:transparent;}",
+                    "#GLTimelinePanel QScrollBar:vertical{background:rgba(15,18,22,90);width:10px;border:1px solid rgba(51,65,85,150);border-radius:4px;}",
+                    "#GLTimelinePanel QScrollBar::handle:vertical{background:rgba(148,163,184,170);min-height:28px;border-radius:4px;}",
+                    "#GLTimelinePanel QScrollBar::add-line:vertical,#GLTimelinePanel QScrollBar::sub-line:vertical{width:0px;height:0px;}",
+                    "#GLTimelinePanel QScrollBar::add-page:vertical,#GLTimelinePanel QScrollBar::sub-page:vertical{background:transparent;}",
                 ))
             )
             root = QtWidgets.QVBoxLayout(panel)
@@ -2075,12 +2082,46 @@ class GraphGLTimelineWidgetsMixin:
                     count = max(1, len(blocks))
                     top = 6.0
                     bottom = 6.0
-                    gap = 4.0 if count <= 6 else 2.0
-                    avail = max(1.0, float(self.height()) - top - bottom - (gap * max(0, count - 1)))
-                    row_h = max(10.0, min(24.0, avail / float(count)))
-                    return blocks, top, row_h, gap
+                    gap = 4.0
+                    row_h = 24.0
+                    content_h = top + bottom + (float(count) * row_h) + (gap * max(0, count - 1))
+                    max_scroll = max(0, int(math.ceil(content_h - max(1.0, float(self.height())))))
+                    try:
+                        scroll_y = max(0, min(max_scroll, int(getattr(self._view, "_timeline_composition_scroll_y", 0) or 0)))
+                    except Exception:
+                        scroll_y = 0
+                    if scroll_y != getattr(self._view, "_timeline_composition_scroll_y", 0):
+                        try:
+                            self._view._timeline_composition_scroll_y = int(scroll_y)
+                        except Exception:
+                            pass
+                    self._sync_vscrollbar(max_scroll, scroll_y, content_h)
+                    return blocks, top, row_h, gap, float(scroll_y), content_h
 
-                def _block_rect(self, block, index: int):
+                def _sync_vscrollbar(self, max_scroll: int, value: int, content_h: float) -> None:
+                    bar = getattr(self._view, "_timeline_composition_vscrollbar", None)
+                    if bar is None:
+                        return
+                    try:
+                        comp = bool(self._view._timeline_is_composition_mode())
+                    except Exception:
+                        comp = True
+                    try:
+                        bar.blockSignals(True)
+                        bar.setRange(0, max(0, int(max_scroll)))
+                        bar.setSingleStep(18)
+                        bar.setPageStep(max(1, int(max(1.0, float(self.height())))))
+                        bar.setValue(max(0, min(int(max_scroll), int(value))))
+                        bar.setVisible(bool(comp and max_scroll > 0 and content_h > float(self.height())))
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            bar.blockSignals(False)
+                        except Exception:
+                            pass
+
+                def _block_rect(self, block, index: int, layout=None):
                     try:
                         start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
                     except Exception:
@@ -2095,9 +2136,11 @@ class GraphGLTimelineWidgetsMixin:
                     x2 = self._view._timeline_local_frame_to_tracks_x_float(float(clip_end) - float(start), clamp=False)
                     if x1 is None or x2 is None:
                         return QtCore.QRectF()
-                    blocks, top, row_h, gap = self._layout()
+                    if layout is None:
+                        layout = self._layout()
+                    blocks, top, row_h, gap, scroll_y, _content_h = layout
                     _ = blocks
-                    y = top + (float(index) * (row_h + gap))
+                    y = top - scroll_y + (float(index) * (row_h + gap))
                     left = min(float(x1), float(x2))
                     right = max(float(x1), float(x2))
                     if right - left < 8.0:
@@ -2107,9 +2150,10 @@ class GraphGLTimelineWidgetsMixin:
                 def _hit(self, posf):
                     x = float(posf.x())
                     y = float(posf.y())
-                    blocks, _top, _row_h, _gap = self._layout()
+                    layout = self._layout()
+                    blocks, _top, _row_h, _gap, _scroll_y, _content_h = layout
                     for idx, block in enumerate(blocks):
-                        rect = self._block_rect(block, idx)
+                        rect = self._block_rect(block, idx, layout=layout)
                         if rect.isNull():
                             continue
                         padded = QtCore.QRectF(rect).adjusted(-4.0, -3.0, 4.0, 3.0)
@@ -2133,23 +2177,26 @@ class GraphGLTimelineWidgetsMixin:
                         p.setRenderHint(QtGui.QPainter.Antialiasing, True)
                     except Exception:
                         pass
-                    blocks, top, row_h, gap = self._layout()
+                    layout = self._layout()
+                    blocks, top, row_h, gap, scroll_y, _content_h = layout
                     selected = str(getattr(self._view, "_timeline_composition_selected_owner", "") or "").strip().lower()
                     font = p.font()
                     try:
-                        font.setPointSize(max(7, min(10, int(row_h - 3))))
+                        font.setPointSize(9)
                         p.setFont(font)
                     except Exception:
                         pass
                     for idx, block in enumerate(blocks):
-                        y = top + (float(idx) * (row_h + gap))
+                        y = top - scroll_y + (float(idx) * (row_h + gap))
                         row_rect = QtCore.QRectF(0.0, y, float(self.width()), row_h)
+                        if row_rect.bottom() < 0.0 or row_rect.top() > float(self.height()):
+                            continue
                         bg = QtGui.QColor(15, 23, 42, 95 if idx % 2 else 60)
                         p.setPen(QtCore.Qt.NoPen)
                         p.setBrush(QtGui.QBrush(bg))
                         p.drawRoundedRect(row_rect.adjusted(1.0, 0.0, -1.0, 0.0), 3.0, 3.0)
 
-                        rect = self._block_rect(block, idx)
+                        rect = self._block_rect(block, idx, layout=layout)
                         if rect.isNull():
                             continue
                         visible_rect = rect.intersected(QtCore.QRectF(0.0, 0.0, float(self.width()), float(self.height())))
@@ -2181,6 +2228,43 @@ class GraphGLTimelineWidgetsMixin:
                         p.drawLine(int(round(visible_rect.left() + 4.0)), int(round(visible_rect.top() + 3.0)), int(round(visible_rect.left() + 4.0)), int(round(visible_rect.bottom() - 3.0)))
                         p.drawLine(int(round(visible_rect.right() - 4.0)), int(round(visible_rect.top() + 3.0)), int(round(visible_rect.right() - 4.0)), int(round(visible_rect.bottom() - 3.0)))
                     p.end()
+
+                def resizeEvent(self, ev):
+                    try:
+                        self._layout()
+                    except Exception:
+                        pass
+                    return super().resizeEvent(ev)
+
+                def showEvent(self, ev):
+                    try:
+                        self._layout()
+                    except Exception:
+                        pass
+                    return super().showEvent(ev)
+
+                def wheelEvent(self, ev):
+                    try:
+                        blocks, _top, _row_h, _gap, scroll_y, content_h = self._layout()
+                        _ = blocks
+                        max_scroll = max(0, int(math.ceil(float(content_h) - max(1.0, float(self.height())))))
+                        if max_scroll <= 0:
+                            return super().wheelEvent(ev)
+                        delta = ev.angleDelta().y()
+                        if int(delta) == 0:
+                            delta = ev.pixelDelta().y()
+                        step = -int(delta / 3) if int(delta) else 0
+                        if step == 0:
+                            step = -18 if int(delta) > 0 else 18
+                        new_value = max(0, min(max_scroll, int(scroll_y) + int(step)))
+                        self._view._timeline_composition_scroll_y = int(new_value)
+                        self._sync_vscrollbar(max_scroll, new_value, content_h)
+                        self.update()
+                        ev.accept()
+                        return
+                    except Exception:
+                        pass
+                    return super().wheelEvent(ev)
 
                 def mouseDoubleClickEvent(self, ev):
                     if ev.button() != QtCore.Qt.LeftButton:
@@ -2229,6 +2313,10 @@ class GraphGLTimelineWidgetsMixin:
                         "source_end": int(block.get("source_end_frame", 1) or 1),
                         "speed": float(block.get("speed_percent", 100.0) or 100.0),
                     }
+                    try:
+                        self.setCursor(QtCore.Qt.ClosedHandCursor if mode == "body" else QtCore.Qt.SizeHorCursor)
+                    except Exception:
+                        pass
                     self.update()
                     ev.accept()
 
@@ -2242,7 +2330,7 @@ class GraphGLTimelineWidgetsMixin:
                             elif hit[2] in {"left", "right"}:
                                 self.setCursor(QtCore.Qt.SizeHorCursor)
                             else:
-                                self.setCursor(QtCore.Qt.OpenHandCursor)
+                                self.setCursor(QtCore.Qt.ArrowCursor)
                         except Exception:
                             pass
                         return super().mouseMoveEvent(ev)
@@ -2312,6 +2400,10 @@ class GraphGLTimelineWidgetsMixin:
                     except Exception:
                         pass
                     self._drag = None
+                    try:
+                        self.setCursor(QtCore.Qt.ArrowCursor)
+                    except Exception:
+                        pass
                     self.update()
                     ev.accept()
 
@@ -2356,6 +2448,14 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_composition_canvas = composition_canvas
             tracks_stack.addWidget(composition_canvas)
             timeline_area_layout.addWidget(tracks_frame, 1)
+
+            composition_vscroll = QtWidgets.QScrollBar(QtCore.Qt.Vertical, panel)
+            composition_vscroll.setRange(0, 0)
+            composition_vscroll.setSingleStep(18)
+            composition_vscroll.setPageStep(120)
+            composition_vscroll.valueChanged.connect(self._timeline_on_composition_scroll_changed)
+            composition_vscroll.hide()
+            self._timeline_composition_vscrollbar = composition_vscroll
 
             playhead = QtWidgets.QFrame(tracks_frame)
             playhead.setObjectName("GLTimelinePlayhead")
@@ -2408,6 +2508,7 @@ class GraphGLTimelineWidgetsMixin:
             composition_canvas.installEventFilter(tracks_frame._timeline_tracks_filter)
 
             tracks_grid.addWidget(timeline_area, 0, 2, len(channels) + 1, 1)
+            tracks_grid.addWidget(composition_vscroll, 0, 3, len(channels) + 1, 1)
             tracks_grid.setColumnStretch(2, 1)
             root.addLayout(tracks_grid, 1)
 
@@ -2443,6 +2544,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_rows_host = None
             self._timeline_curves_canvas = None
             self._timeline_composition_canvas = None
+            self._timeline_composition_vscrollbar = None
             self._timeline_left_header_spacer = None
             self._timeline_area_widget = None
             self._timeline_axis_labels = []

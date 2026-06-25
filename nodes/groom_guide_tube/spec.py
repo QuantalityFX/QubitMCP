@@ -529,6 +529,10 @@ def build_groom_guide_tube_scene_asset(
         "debug": dict(debug),
         "groom_guide_tube": dict(tube_config),
     }
+    upstream_config_keys = ("groom_deform", "groom_guide_pose", "groom_guide_sim", "groom_collider", "groom_guide_sim_settings")
+    for key in upstream_config_keys:
+        if isinstance(guides_asset.get(key), dict):
+            payload[key] = dict(guides_asset.get(key) or {})
     if bool(write_cache):
         _write_cache(output_path, payload)
     if bool(update_params):
@@ -563,7 +567,7 @@ def build_groom_guide_tube_scene_asset(
         "debug": debug,
         "groom_guide_tube": dict(tube_config),
     }
-    for key in ("groom_deform", "groom_guide_pose", "groom_guide_sim", "groom_collider", "groom_guide_sim_settings"):
+    for key in upstream_config_keys:
         if isinstance(guides_asset.get(key), dict):
             asset[key] = dict(guides_asset.get(key) or {})
     detail = (

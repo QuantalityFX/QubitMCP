@@ -911,6 +911,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_composition_blocks: List[Dict[str, object]] = []
         self._timeline_composition_selected_owner = ""
         self._timeline_composition_canvas = None
+        self._timeline_composition_vscrollbar = None
+        self._timeline_composition_scroll_y = 0
         self._timeline_master_btn = None
         self._timeline_back_btn = None
         self._timeline_scene_assets: List[Dict[str, object]] = []

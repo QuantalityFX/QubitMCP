@@ -3842,7 +3842,17 @@ class GraphGLTimelineModelMixin:
         canvas = getattr(self, "_timeline_composition_canvas", None)
         if canvas is not None:
             try:
+                if comp:
+                    layout_fn = getattr(canvas, "_layout", None)
+                    if callable(layout_fn):
+                        layout_fn()
                 canvas.update()
+            except Exception:
+                pass
+        vscroll = getattr(self, "_timeline_composition_vscrollbar", None)
+        if vscroll is not None and not comp:
+            try:
+                vscroll.hide()
             except Exception:
                 pass
 
@@ -5768,6 +5778,18 @@ class GraphGLTimelineModelMixin:
         except Exception:
             self._timeline_view_start = 0
         self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
+
+    def _timeline_on_composition_scroll_changed(self, value: int) -> None:
+        try:
+            self._timeline_composition_scroll_y = max(0, int(value))
+        except Exception:
+            self._timeline_composition_scroll_y = 0
+        canvas = getattr(self, "_timeline_composition_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
 
     def _timeline_on_play_toggled(self, checked: bool) -> None:
         self._update_timeline_play_button()

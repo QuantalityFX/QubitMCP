@@ -6692,6 +6692,23 @@ class MGLRendererMixin:
                 payload.get("_groom_guide_sim_start_state_sig") == start_state_sig
                 and payload.get("_groom_guide_sim_start_points") is not None
             )
+            auto_armed_start_state = False
+            if frame > start_frame and not has_armed_start_state:
+                try:
+                    start_point_arr = np.asarray(initial_points, dtype="f4").reshape(-1, 3)
+                except Exception:
+                    start_point_arr = None
+                if start_point_arr is not None and start_point_arr.size:
+                    payload["_groom_guide_sim_start_points"] = start_point_arr.copy()
+                    payload["_groom_guide_sim_start_state_sig"] = start_state_sig
+                    has_armed_start_state = True
+                    auto_armed_start_state = True
+                try:
+                    start_root_arr = np.asarray(root_targets, dtype="f4").reshape(-1, 3)
+                except Exception:
+                    start_root_arr = None
+                if start_root_arr is not None and start_root_arr.size:
+                    payload["_groom_guide_sim_start_root_targets"] = start_root_arr.copy()
             if frame <= start_frame or not has_armed_start_state:
                 if frame < start_frame:
                     lifecycle_event = "guide_sim_waiting_for_start_frame"
@@ -6849,6 +6866,7 @@ class MGLRendererMixin:
                 first_simulated_frame=int(start_frame + 1),
                 frame_delta=int(delta),
                 used_armed_start_state=bool(used_armed_start_state),
+                auto_armed_start_state=bool(auto_armed_start_state),
                 needs_cpu_reset=bool(needs_reset),
                 curve_count=int(len(bind_curves)),
                 point_count=int(getattr(initial_points, "shape", [0])[0]) if initial_points is not None else 0,
@@ -6922,6 +6940,9 @@ class MGLRendererMixin:
                         payload = item.payload or payload
                         debug = dict(gpu_result.get("debug") or {})
                         debug["wire_path"] = "gpu_ssbo" if gpu_wire_bound else "gpu_readback_upload"
+                        if auto_armed_start_state:
+                            debug["auto_armed_start_state"] = True
+                            debug["auto_armed_frame"] = int(frame)
                         payload["_groom_guide_sim_frame"] = int(frame)
                         payload["_groom_guide_sim_frame_settings_sig"] = frame_settings_sig
                         payload["_groom_guide_sim_last_frame"] = int(frame)
@@ -7057,7 +7078,11 @@ class MGLRendererMixin:
             payload["_groom_guide_sim_frame"] = int(frame)
             payload["_groom_guide_sim_frame_settings_sig"] = frame_settings_sig
             payload["_groom_guide_sim_last_frame"] = int(frame)
-            payload["_groom_guide_sim_debug"] = dict(debug or {})
+            cpu_debug = dict(debug or {})
+            if auto_armed_start_state:
+                cpu_debug["auto_armed_start_state"] = True
+                cpu_debug["auto_armed_frame"] = int(frame)
+            payload["_groom_guide_sim_debug"] = cpu_debug
             payload["_groom_guide_sim_runtime_device"] = "cpu"
             self._mgl_groom_guide_gpu_diag_throttled(
                 "sim_cpu_step",
@@ -27888,9 +27913,51 @@ class MGLRendererMixin:
                 if kind in {"groom_guides", "groom guides", "hair_guides", "hair guides", "groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"}:
                     display_owner = str(asset.get("node") or asset.get("owner") or "Groom Guides").strip()
                     source_kind_key = str(asset.get("source_kind") or "").strip().lower()
-                    groom_guide_pose_cfg = dict(asset.get("groom_guide_pose")) if isinstance(asset.get("groom_guide_pose"), dict) else None
-                    groom_collider_cfg = dict(asset.get("groom_collider")) if isinstance(asset.get("groom_collider"), dict) else None
-                    groom_guide_tube_cfg = dict(asset.get("groom_guide_tube")) if isinstance(asset.get("groom_guide_tube"), dict) else None
+                    guide_cache_data = None
+                    for cache_key in ("guides_path", "tube_cache_path", "path"):
+                        path_text = str(asset.get(cache_key) or "").strip()
+                        if not path_text:
+                            continue
+                        try:
+                            path = Path(path_text)
+                            if path.exists() and path.is_file():
+                                data = json.loads(path.read_text(encoding="utf-8"))
+                                if isinstance(data, dict):
+                                    guide_cache_data = data
+                                    break
+                        except Exception:
+                            guide_cache_data = None
+                    if not source_kind_key and isinstance(guide_cache_data, dict):
+                        source_kind_key = str(guide_cache_data.get("source_kind") or guide_cache_data.get("asset_source_kind") or "").strip().lower()
+
+                    def _guide_cfg(name: str):
+                        value = asset.get(name)
+                        if isinstance(value, dict):
+                            return dict(value)
+                        if isinstance(guide_cache_data, dict):
+                            cached_value = guide_cache_data.get(name)
+                            if isinstance(cached_value, dict):
+                                return dict(cached_value)
+                        return None
+
+                    def _guide_value(name: str):
+                        value = asset.get(name)
+                        if value is not None:
+                            try:
+                                if isinstance(value, (list, tuple, dict, str)) and len(value) == 0 and isinstance(guide_cache_data, dict):
+                                    cached_value = guide_cache_data.get(name)
+                                    if cached_value is not None:
+                                        return cached_value
+                            except Exception:
+                                pass
+                            return value
+                        if isinstance(guide_cache_data, dict):
+                            return guide_cache_data.get(name)
+                        return None
+
+                    groom_guide_pose_cfg = _guide_cfg("groom_guide_pose")
+                    groom_collider_cfg = _guide_cfg("groom_collider")
+                    groom_guide_tube_cfg = _guide_cfg("groom_guide_tube")
                     if not isinstance(groom_guide_tube_cfg, dict):
                         groom_guide_tube_cfg = self._mgl_groom_guide_tube_cfg_from_asset(asset)
                     groom_guide_tube_settings = self._mgl_groom_guide_tube_settings(groom_guide_tube_cfg) if isinstance(groom_guide_tube_cfg, dict) else {}
@@ -27906,19 +27973,21 @@ class MGLRendererMixin:
                         if not isinstance(groom_guide_pose_cfg.get("settings"), dict):
                             groom_guide_pose_cfg["settings"] = {}
                         if not isinstance(groom_guide_pose_cfg.get("bind_curves"), list):
-                            bind_curves_cfg = asset.get("bind_curves")
+                            bind_curves_cfg = _guide_value("bind_curves")
                             if not isinstance(bind_curves_cfg, list):
-                                bind_curves_cfg = asset.get("curves")
+                                bind_curves_cfg = _guide_value("curves")
                             if isinstance(bind_curves_cfg, list):
                                 groom_guide_pose_cfg["bind_curves"] = list(bind_curves_cfg)
                         if not isinstance(groom_guide_pose_cfg.get("pose_curves"), list):
-                            pose_curves_cfg = asset.get("curves")
+                            pose_curves_cfg = _guide_value("curves")
                             if not isinstance(pose_curves_cfg, list):
                                 pose_curves_cfg = groom_guide_pose_cfg.get("bind_curves")
                             if isinstance(pose_curves_cfg, list):
                                 groom_guide_pose_cfg["pose_curves"] = list(pose_curves_cfg)
-                    groom_guide_sim_cfg = dict(asset.get("groom_guide_sim")) if isinstance(asset.get("groom_guide_sim"), dict) else None
+                    groom_guide_sim_cfg = _guide_cfg("groom_guide_sim")
                     groom_guide_sim_asset_settings = asset.get("groom_guide_sim_settings")
+                    if not isinstance(groom_guide_sim_asset_settings, dict) and isinstance(guide_cache_data, dict):
+                        groom_guide_sim_asset_settings = guide_cache_data.get("groom_guide_sim_settings")
                     if not isinstance(groom_guide_sim_asset_settings, dict) and source_kind_key == "groom_guide_sim":
                         groom_guide_sim_asset_settings = asset.get("settings")
                     if not isinstance(groom_guide_sim_cfg, dict) and source_kind_key == "groom_guide_sim":
@@ -27943,15 +28012,15 @@ class MGLRendererMixin:
                             groom_guide_sim_settings.update(groom_guide_sim_asset_settings)
                         groom_guide_sim_cfg["settings"] = groom_guide_sim_settings
                         if not isinstance(groom_guide_sim_cfg.get("bind_curves"), list):
-                            bind_curves_cfg = asset.get("bind_curves")
+                            bind_curves_cfg = _guide_value("bind_curves")
                             if not isinstance(bind_curves_cfg, list):
-                                bind_curves_cfg = asset.get("curves")
+                                bind_curves_cfg = _guide_value("curves")
                             if isinstance(bind_curves_cfg, list):
                                 groom_guide_sim_cfg["bind_curves"] = list(bind_curves_cfg)
                         if not isinstance(groom_guide_sim_cfg.get("start_curves"), list):
-                            start_curves_cfg = asset.get("start_curves")
+                            start_curves_cfg = _guide_value("start_curves")
                             if not isinstance(start_curves_cfg, list):
-                                pose_cfg = asset.get("groom_guide_pose") if isinstance(asset.get("groom_guide_pose"), dict) else {}
+                                pose_cfg = groom_guide_pose_cfg if isinstance(groom_guide_pose_cfg, dict) else {}
                                 start_curves_cfg = pose_cfg.get("pose_curves") or pose_cfg.get("bind_curves")
                             if not isinstance(start_curves_cfg, list):
                                 start_curves_cfg = groom_guide_sim_cfg.get("bind_curves")
@@ -27964,7 +28033,7 @@ class MGLRendererMixin:
                         or isinstance(asset.get("deform_rig_context"), dict)
                         or str(asset.get("groom_deform_mode") or "").strip() != ""
                     )
-                    groom_deform_cfg = dict(asset.get("groom_deform")) if isinstance(asset.get("groom_deform"), dict) else None
+                    groom_deform_cfg = _guide_cfg("groom_deform")
                     if not isinstance(groom_deform_cfg, dict):
                         groom_deform_cfg = dict(asset.get("groom_deform_info")) if isinstance(asset.get("groom_deform_info"), dict) else None
                     if not isinstance(groom_deform_cfg, dict) and bool(is_groom_deform_asset):
@@ -28029,7 +28098,9 @@ class MGLRendererMixin:
                         or (isinstance(groom_guide_sim_cfg, dict) and (groom_guide_sim_cfg.get("settings") or {}).get("debug_log", False))
                         or (isinstance(groom_guide_tube_cfg, dict) and groom_guide_tube_settings.get("debug_log", False))
                     )
-                    curves = asset.get("curves")
+                    curves = _guide_value("curves")
+                    if not isinstance(curves, list) or not curves:
+                        curves = _guide_value("pose_curves")
                     line_points = []
                     curve_points = []
                     curve_edges = []
@@ -28048,10 +28119,13 @@ class MGLRendererMixin:
                                 line_points.append(curve[idx + 1])
                                 curve_edges.append((offset + idx, offset + idx + 1))
                     if not line_points:
-                        line_points = asset.get("line_points")
-                    if not line_points and asset.get("guides_path"):
+                        line_points = _guide_value("line_points")
+                    if not line_points and (asset.get("guides_path") or asset.get("tube_cache_path") or asset.get("path") or isinstance(guide_cache_data, dict)):
                         try:
-                            guide_data = json.loads(Path(str(asset.get("guides_path"))).read_text(encoding="utf-8"))
+                            guide_data = guide_cache_data
+                            if not isinstance(guide_data, dict):
+                                path_text = str(asset.get("guides_path") or asset.get("tube_cache_path") or asset.get("path") or "").strip()
+                                guide_data = json.loads(Path(path_text).read_text(encoding="utf-8")) if path_text else {}
                             rows = []
                             curves = None
                             if isinstance(guide_data, dict):
