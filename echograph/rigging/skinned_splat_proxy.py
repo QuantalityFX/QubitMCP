@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 import numpy as np
 
 from .fbx_canonical import SkeletalMeshAsset, SkeletonAsset
+from .groom_guide_tube import build_tube_topology
 
 
 C0 = 0.28209479177387814
@@ -396,6 +397,165 @@ def build_skinned_splat_proxy_from_rig_context(
     )
 
 
+def build_guide_tube_splat_proxy(
+    source_asset: Dict[str, Any],
+    output_dir: str | Path,
+    *,
+    asset_name: str = "GuideTubeSplatProxy",
+    settings: SkinnedSplatProxySettings | None = None,
+) -> SkinnedSplatProxyResult:
+    if not isinstance(source_asset, dict):
+        raise SkinnedSplatProxyError("Guide Tube source asset is not valid.")
+    settings = settings or SkinnedSplatProxySettings()
+    _validate_settings(settings)
+
+    curves = source_asset.get("bind_curves")
+    if not isinstance(curves, list) or not curves:
+        curves = source_asset.get("start_curves")
+    if not isinstance(curves, list) or not curves:
+        curves = source_asset.get("curves")
+    if not isinstance(curves, list) or not curves:
+        raise SkinnedSplatProxyError("Guide Tube source has no curves to sample.")
+
+    tube_cfg = source_asset.get("groom_guide_tube") if isinstance(source_asset.get("groom_guide_tube"), dict) else {}
+    tube_settings = tube_cfg.get("settings") if isinstance(tube_cfg.get("settings"), dict) else tube_cfg
+    topology = build_tube_topology(
+        curves,
+        root_radius=float((tube_settings or {}).get("root_radius", 0.006) or 0.006),
+        tip_radius=float((tube_settings or {}).get("tip_radius", 0.0015) or 0.0015),
+        radius_profile=(tube_settings or {}).get("radius_profile"),
+        sides=int((tube_settings or {}).get("sides", 8) or 8),
+        segment_subdivisions=int((tube_settings or {}).get("segment_subdivisions", 1) or 1),
+        cap_root=bool((tube_settings or {}).get("cap_root", True)),
+        cap_tip=bool((tube_settings or {}).get("cap_tip", True)),
+    )
+    if not isinstance(topology, dict) or not bool(topology.get("ok", False)):
+        raise SkinnedSplatProxyError(str((topology or {}).get("error") or "Guide Tube topology could not be built."))
+
+    points = np.asarray(topology.get("points"), dtype="f4").reshape(-1, 3)
+    normals = np.asarray(topology.get("normals"), dtype="f4").reshape(-1, 3)
+    indices = np.asarray(topology.get("indices"), dtype=np.int32).reshape(-1, 3)
+    if int(points.shape[0]) <= 0 or int(indices.shape[0]) <= 0:
+        raise SkinnedSplatProxyError("Guide Tube topology has no sampleable triangles.")
+
+    tri_points = points[indices]
+    raw_normals = np.cross(tri_points[:, 1] - tri_points[:, 0], tri_points[:, 2] - tri_points[:, 0])
+    raw_area2 = np.linalg.norm(raw_normals, axis=1).astype("f4")
+    areas = (raw_area2 * np.float32(0.5)).astype("f4")
+    valid = areas > np.float32(_EPSILON)
+    if not bool(np.any(valid)):
+        raise SkinnedSplatProxyError("Guide Tube triangles have zero area.")
+    valid_indices = indices[valid]
+    valid_tri_points = tri_points[valid]
+    valid_areas = areas[valid]
+    valid_normals = raw_normals[valid] / np.maximum(raw_area2[valid].reshape(-1, 1), np.float32(_EPSILON))
+    feature_radii = np.asarray(
+        [
+            _triangle_feature_radius(valid_tri_points[i, 0], valid_tri_points[i, 1], valid_tri_points[i, 2], float(valid_areas[i]))
+            for i in range(int(valid_tri_points.shape[0]))
+        ],
+        dtype="f4",
+    )
+
+    sample_count = int(settings.sample_count)
+    rng = np.random.default_rng(int(settings.seed))
+    total_area = float(valid_areas.astype(np.float64).sum())
+    selected = rng.choice(
+        int(valid_areas.shape[0]),
+        size=sample_count,
+        replace=True,
+        p=(valid_areas.astype(np.float64) / max(total_area, _EPSILON)),
+    )
+    bary = _sample_barycentric(rng, sample_count)
+    selected_points = valid_tri_points[selected]
+    positions = (
+        selected_points[:, 0, :] * bary[:, 0:1]
+        + selected_points[:, 1, :] * bary[:, 1:2]
+        + selected_points[:, 2, :] * bary[:, 2:3]
+    ).astype("f4", copy=False)
+    sample_normals = valid_normals[selected].astype("f4", copy=False)
+    quats = _quats_from_z_to_normals(sample_normals)
+    selected_areas = valid_areas[selected].astype("f4", copy=False)
+    selected_feature_radii = feature_radii[selected].astype("f4", copy=False)
+    radii = _sample_radii(
+        settings,
+        total_area=total_area,
+        sample_count=sample_count,
+        selected_areas=selected_areas,
+        selected_feature_radii=selected_feature_radii,
+    )
+    scale3 = np.tile(_normalized_axis_scale(float(settings.normal_axis_scale)).reshape(1, 3), (sample_count, 1)).astype("f4", copy=False)
+
+    rgba = np.ones((sample_count, 4), dtype="f4")
+    if str(settings.color_mode or "").strip().lower() == "neutral":
+        rgba[:, :3] = np.asarray((0.78, 0.78, 0.78), dtype="f4")
+    else:
+        rgba[:, :3] = np.asarray((0.86, 0.68, 0.36), dtype="f4")
+    rgba[:, 3] = np.float32(max(0.0, min(1.0, float(settings.opacity))))
+    splats = np.concatenate([positions, rgba, radii, scale3, quats], axis=1).astype("f4", copy=False)
+    bind_radius_scale = np.concatenate([radii, scale3], axis=1).astype("f4", copy=False)
+
+    max_influences = max(1, int(settings.max_influences))
+    joint_indices = np.zeros((sample_count, max_influences), dtype=np.uint16)
+    joint_weights = np.zeros((sample_count, max_influences), dtype="f4")
+    joint_weights[:, 0] = np.float32(1.0)
+    source_vertex_indices = valid_indices[selected].astype(np.int32, copy=False)
+
+    arrays = SkinnedSplatProxyArrays(
+        splats=splats,
+        bind_positions=positions,
+        bind_quats=quats,
+        bind_radius_scale=bind_radius_scale,
+        joint_indices=joint_indices,
+        joint_weights=joint_weights,
+        source_mesh_index=np.zeros((sample_count,), dtype=np.int32),
+        source_triangle_index=selected.astype(np.int32, copy=False),
+        source_vertex_indices=source_vertex_indices,
+        source_barycentric=bary.astype("f4", copy=False),
+        source_triangle_area=selected_areas,
+        source_feature_radius=selected_feature_radii,
+        debug_color_rgba=rgba,
+        mesh_names=(str(source_asset.get("node") or "Guide Tube"),),
+        joint_names=("guide_tube_surface",),
+        total_source_area=total_area,
+    )
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = _safe_stem(asset_name)
+    splat_ply_path = out_dir / f"{stem}.ply"
+    skin_npz_path = out_dir / f"{stem}.skin.npz"
+    manifest_path = out_dir / f"{stem}.qguide_tube_splat.json"
+    write_gaussian_splat_ply(splat_ply_path, arrays.splats)
+    write_skinned_splat_skin_npz(skin_npz_path, arrays)
+
+    manifest = {
+        "schema": "qubit.guide_tube_splat_proxy.v1",
+        "proxy_type": "guide_tube_splat",
+        "splat_ply": _relative_or_name(splat_ply_path, manifest_path.parent),
+        "skin_npz": _relative_or_name(skin_npz_path, manifest_path.parent),
+        "source_kind": str(source_asset.get("source_kind") or "groom_guide_tube"),
+        "source_node": str(source_asset.get("node") or ""),
+        "sample_count": int(arrays.splats.shape[0]),
+        "total_source_area": float(total_area),
+        "generator": {
+            "method": "guide_tube_surface_barycentric",
+            "settings": asdict(settings),
+        },
+    }
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+    return SkinnedSplatProxyResult(
+        manifest_path=manifest_path,
+        splat_ply_path=splat_ply_path,
+        skin_npz_path=skin_npz_path,
+        arrays=arrays,
+        manifest=manifest,
+    )
+
+
 def _validate_settings(settings: SkinnedSplatProxySettings) -> None:
     if int(settings.sample_count) <= 0:
         raise SkinnedSplatProxyError("sample_count must be greater than zero.")
@@ -699,6 +859,7 @@ __all__ = [
     "build_skinned_splat_proxy",
     "build_skinned_splat_proxy_arrays",
     "build_skinned_splat_proxy_from_rig_context",
+    "build_guide_tube_splat_proxy",
     "joint_debug_color",
     "transfer_barycentric_skin_weights",
     "write_gaussian_splat_ply",

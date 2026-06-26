@@ -52,6 +52,16 @@ _FX_SPLAT_FX_KIND_ALIASES = {
     "splat glow",
     "splatglow",
 }
+_SPLAT_COLORIZE_KIND_ALIASES = {
+    "colorize",
+    "splat_colorize",
+    "splat colorize",
+    "fx_splat_colorize",
+    "fx splat colorize",
+    "gaussian_colorize",
+    "gaussian colorize",
+}
+_GUIDE_TUBE_SPLAT_PROXY_TYPES = {"guide_tube_splat", "groom_guide_tube_splat"}
 _ANIM_RETARGET_KIND_ALIASES = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
 _FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
 _COPY_TO_POINTS_KIND_ALIASES = {
@@ -382,6 +392,14 @@ def _source_asset_from_item(source_item) -> tuple[Optional[Dict[str, Any]], str]
             return getattr(outcome, "asset", None), str(getattr(outcome, "detail", "") or "")
         except Exception as exc:
             return None, f"FX Splat FX asset build failed: {exc}"
+    if kind in _SPLAT_COLORIZE_KIND_ALIASES:
+        try:
+            from nodes.fx import splat_colorize_spec as splat_colorize_spec  # type: ignore
+
+            outcome = splat_colorize_spec.build_splat_colorize_scene_asset(source_item)
+            return getattr(outcome, "asset", None), str(getattr(outcome, "detail", "") or "")
+        except Exception as exc:
+            return None, f"Splat Colorize asset build failed: {exc}"
     if kind in _SKINNED_SPLAT_PROXY_KIND_ALIASES:
         try:
             from nodes.skinned_splat_proxy import spec as proxy_spec  # type: ignore
@@ -486,6 +504,10 @@ def music_effects_config_from_model(
     }
 
 
+def _is_guide_tube_splat_proxy(render_proxy: Dict[str, Any]) -> bool:
+    return str((render_proxy or {}).get("type") or "").strip().lower() in _GUIDE_TUBE_SPLAT_PROXY_TYPES
+
+
 def build_music_effects_scene_asset(node_item) -> MusicEffectsBuildOutcome:
     model = getattr(node_item, "model", None)
     source_item = _connected_geometry_item(node_item)
@@ -542,7 +564,8 @@ def build_music_effects_scene_asset(node_item) -> MusicEffectsBuildOutcome:
         asset["music_effects_source_node"] = source_node_name
     render_proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else {}
     proxy_type = str(render_proxy.get("type") or "").strip().lower()
-    if effect_node_name and proxy_type not in {"skinned_splat", "skinned_gaussian_splat"}:
+    guide_tube_splat_proxy = _is_guide_tube_splat_proxy(render_proxy)
+    if effect_node_name and proxy_type not in {"skinned_splat", "skinned_gaussian_splat"} and not guide_tube_splat_proxy:
         asset["node"] = effect_node_name
     asset["music_effects"] = music_effects_config_from_model(
         model,
@@ -552,7 +575,11 @@ def build_music_effects_scene_asset(node_item) -> MusicEffectsBuildOutcome:
         analysis_frame_count=analysis_frame_count,
     )
     asset["music_effects_node"] = effect_node_name
-    asset["kind"] = "fx_music_effects"
+    if guide_tube_splat_proxy:
+        asset["kind"] = "groom_guides"
+        asset["source_kind"] = str(asset.get("source_kind") or "groom_guide_tube")
+    else:
+        asset["kind"] = "fx_music_effects"
     if _debug_enabled(model):
         asset["debug_log"] = True
     return MusicEffectsBuildOutcome(asset, status, detail)

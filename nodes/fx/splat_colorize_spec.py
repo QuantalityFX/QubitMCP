@@ -45,6 +45,13 @@ _SKINNED_SPLAT_PROXY_KIND_ALIASES = {
     "fbx_to_skinned_splat_proxy",
     "fbx skinned splat proxy",
 }
+_SPLAT_RENDER_PROXY_TYPES = {
+    "skinned_splat",
+    "skinned_gaussian_splat",
+    "guide_tube_splat",
+    "groom_guide_tube_splat",
+}
+_GUIDE_TUBE_SPLAT_PROXY_TYPES = {"guide_tube_splat", "groom_guide_tube_splat"}
 _FX_SPLAT_PHYSICS_KIND_ALIASES = {
     "fx_splat_physics",
     "fx splat physics",
@@ -174,9 +181,9 @@ def _source_asset_from_item(source_item) -> tuple[Optional[Dict[str, Any]], str]
         return None, detail or "Skinned Splat Proxy did not produce a valid asset."
     render_proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else None
     if not isinstance(render_proxy, dict):
-        return None, "Input asset does not contain a skinned splat render proxy."
-    if str(render_proxy.get("type") or "").strip().lower() not in {"skinned_splat", "skinned_gaussian_splat"}:
-        return None, "Input render proxy is not a skinned splat proxy."
+        return None, "Input asset does not contain a splat render proxy."
+    if str(render_proxy.get("type") or "").strip().lower() not in _SPLAT_RENDER_PROXY_TYPES:
+        return None, "Input render proxy is not a supported splat proxy."
     return dict(asset), detail
 
 
@@ -200,6 +207,10 @@ def _clean_metric(value: str) -> str:
     if metric not in {"thickness", "density", "radius", "area", "height_y"}:
         return "thickness"
     return metric
+
+
+def _is_guide_tube_splat_proxy(render_proxy: Dict[str, Any]) -> bool:
+    return str((render_proxy or {}).get("type") or "").strip().lower() in _GUIDE_TUBE_SPLAT_PROXY_TYPES
 
 
 def splat_colorize_config_from_model(model) -> Dict[str, Any]:
@@ -240,7 +251,11 @@ def build_splat_colorize_scene_asset(node_item) -> SplatColorizeBuildOutcome:
     render_proxy["splat_colorize"] = splat_colorize_config_from_model(model)
     asset["render_proxy"] = render_proxy
     asset["splat_colorize_node"] = str(getattr(model, "name", "") or "")
-    asset["kind"] = "colorize"
+    if _is_guide_tube_splat_proxy(render_proxy):
+        asset["kind"] = "groom_guides"
+        asset["source_kind"] = str(asset.get("source_kind") or "groom_guide_tube")
+    else:
+        asset["kind"] = "colorize"
     if _debug_enabled(model):
         asset["debug_log"] = True
     status = "ok"

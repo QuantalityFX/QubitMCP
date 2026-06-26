@@ -5868,7 +5868,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 if not isinstance(proxy, dict):
                     return False
                 proxy_type = str(proxy.get("type") or "").strip().lower()
-                return proxy_type in {"skinned_splat", "skinned_gaussian_splat"}
+                return proxy_type in {
+                    "skinned_splat",
+                    "skinned_gaussian_splat",
+                    "guide_tube_splat",
+                    "groom_guide_tube_splat",
+                }
 
             def _dict_lookup_casefold(d, key: str):
                 if not isinstance(d, dict):

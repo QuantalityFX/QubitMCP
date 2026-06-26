@@ -78,6 +78,7 @@ from echograph.rigging.groom_guide_tube import (
     flatten_curves as flatten_groom_tube_curves,
     line_points_to_curve_points as groom_tube_line_points_to_curve_points,
 )
+from echograph.rigging.skinned_splat_proxy import _quats_from_z_to_normals as _splat_quats_from_z_to_normals
 from echograph.rigging.xpbd_strand import (
     XPBDStrandConfig,
     build_mesh_collider,
@@ -3774,7 +3775,7 @@ class MGLRendererMixin:
         if np is None or not isinstance(render_proxy, dict):
             return None
         proxy_type = str(render_proxy.get("type") or "").strip().lower()
-        if proxy_type not in {"skinned_splat", "skinned_gaussian_splat"}:
+        if proxy_type not in {"skinned_splat", "skinned_gaussian_splat", "guide_tube_splat", "groom_guide_tube_splat"}:
             return None
 
         owner_key = str(owner or "").strip()
@@ -3870,6 +3871,14 @@ class MGLRendererMixin:
                     source_feature_radius = np.asarray(skin["source_feature_radius"], dtype=np.float32).reshape(-1)
                 except Exception:
                     source_feature_radius = np.zeros((0,), dtype=np.float32)
+                try:
+                    source_vertex_indices = np.asarray(skin["source_vertex_indices"], dtype=np.int64).reshape(-1, 3)
+                except Exception:
+                    source_vertex_indices = np.zeros((0, 3), dtype=np.int64)
+                try:
+                    source_barycentric = np.asarray(skin["source_barycentric"], dtype=np.float32).reshape(-1, 3)
+                except Exception:
+                    source_barycentric = np.zeros((0, 3), dtype=np.float32)
 
             count = min(
                 int(splats.shape[0]),
@@ -3894,6 +3903,14 @@ class MGLRendererMixin:
                 source_feature_radius = source_feature_radius[:count].astype(np.float32, copy=False)
             else:
                 source_feature_radius = np.zeros((0,), dtype=np.float32)
+            if int(source_vertex_indices.shape[0]) >= count:
+                source_vertex_indices = source_vertex_indices[:count].astype(np.int64, copy=False)
+            else:
+                source_vertex_indices = np.zeros((0, 3), dtype=np.int64)
+            if int(source_barycentric.shape[0]) >= count:
+                source_barycentric = source_barycentric[:count].astype(np.float32, copy=False)
+            else:
+                source_barycentric = np.zeros((0, 3), dtype=np.float32)
             if joint_indices.ndim != 2 or joint_weights.ndim != 2 or joint_indices.shape != joint_weights.shape:
                 raise RuntimeError("skinned proxy joint index/weight arrays must be matching 2D arrays")
 
@@ -3913,6 +3930,7 @@ class MGLRendererMixin:
                 self._mgl_scene_skinned_splat_proxies_by_owner = proxies
             proxies[owner_key] = {
                 "owner": owner_key,
+                "proxy_type": proxy_type,
                 "splat_ply": str(ply_path),
                 "skin_npz": str(skin_path),
                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
@@ -3923,6 +3941,8 @@ class MGLRendererMixin:
                 "bind_radius_scale": bind_radius_scale,
                 "source_triangle_area": source_triangle_area,
                 "source_feature_radius": source_feature_radius,
+                "source_vertex_indices": source_vertex_indices,
+                "source_barycentric": source_barycentric,
                 "bind_bounds": (bind_mins, bind_maxs),
                 "joint_indices": joint_indices,
                 "joint_weights": joint_weights,
@@ -4028,6 +4048,138 @@ class MGLRendererMixin:
             if not owner_key:
                 continue
             if isinstance(visibility, dict) and not bool(visibility.get(owner_key, True)):
+                continue
+            render_proxy = proxy.get("render_proxy") if isinstance(proxy.get("render_proxy"), dict) else {}
+            proxy_type = str(proxy.get("proxy_type") or render_proxy.get("type") or "").strip().lower()
+            if proxy_type in {"guide_tube_splat", "groom_guide_tube_splat"}:
+                guide_item = self._mgl_groom_guide_tube_find_driver_item(owner_key)
+                guide_payload = getattr(guide_item, "payload", None) or {}
+                template_curves = guide_payload.get("curves")
+                if not isinstance(template_curves, list) or not template_curves:
+                    template_curves = render_proxy.get("guide_template_curves")
+                if not isinstance(template_curves, list) or not template_curves:
+                    continue
+                cfg = guide_payload.get("groom_guide_tube") if isinstance(guide_payload.get("groom_guide_tube"), dict) else render_proxy.get("groom_guide_tube")
+                settings = self._mgl_groom_guide_tube_settings(cfg if isinstance(cfg, dict) else {})
+                topology_signature = self._mgl_groom_guide_tube_signature(template_curves, settings)
+                driver_signature = self._mgl_groom_guide_tube_driver_signature(guide_item, guide_payload)
+                signature = (
+                    "guide_tube_splat",
+                    int(frame),
+                    topology_signature,
+                    driver_signature,
+                    bool(timeline_fx_enabled),
+                )
+                if not force and proxy.get("last_signature") == signature:
+                    continue
+                topology = proxy.get("guide_tube_topology") if isinstance(proxy.get("guide_tube_topology"), dict) else None
+                if not isinstance(topology, dict) or proxy.get("guide_tube_topology_signature") != topology_signature:
+                    try:
+                        topology = build_tube_topology(
+                            template_curves,
+                            root_radius=float(settings.get("root_radius", 0.006) or 0.006),
+                            tip_radius=float(settings.get("tip_radius", 0.0015) or 0.0015),
+                            radius_profile=settings.get("radius_profile"),
+                            sides=int(settings.get("sides", 8) or 8),
+                            segment_subdivisions=int(settings.get("segment_subdivisions", 1) or 1),
+                            cap_root=bool(settings.get("cap_root", True)),
+                            cap_tip=bool(settings.get("cap_tip", True)),
+                        )
+                    except Exception:
+                        topology = None
+                    if not isinstance(topology, dict) or not bool(topology.get("ok", False)):
+                        continue
+                    proxy["guide_tube_topology"] = topology
+                    proxy["guide_tube_topology_signature"] = topology_signature
+                current_points = self._mgl_groom_guide_tube_current_points(guide_payload, template_curves)
+                tube_points, tube_normals = deform_tube_topology(topology, current_points)
+                if tube_points is None:
+                    continue
+                try:
+                    tube_points = np.asarray(tube_points, dtype="f4").reshape(-1, 3)
+                    tube_normals = np.asarray(tube_normals, dtype="f4").reshape(-1, 3)
+                    source_vertex_indices = np.asarray(proxy.get("source_vertex_indices"), dtype=np.int64).reshape(-1, 3)
+                    source_barycentric = np.asarray(proxy.get("source_barycentric"), dtype="f4").reshape(-1, 3)
+                except Exception:
+                    continue
+                base = np.asarray(proxy.get("base_splats"), dtype="f4")
+                count = min(int(base.shape[0]) if base.ndim == 2 else 0, int(source_vertex_indices.shape[0]), int(source_barycentric.shape[0]))
+                if count <= 0 or base.ndim != 2 or int(base.shape[1]) != 15:
+                    continue
+                source_vertex_indices = source_vertex_indices[:count]
+                source_barycentric = source_barycentric[:count]
+                if int(source_vertex_indices.size) <= 0:
+                    continue
+                if int(np.min(source_vertex_indices)) < 0 or int(np.max(source_vertex_indices)) >= int(tube_points.shape[0]):
+                    continue
+                try:
+                    tri_points = tube_points[source_vertex_indices]
+                    bary = source_barycentric.reshape(count, 3, 1)
+                    deformed = np.sum(tri_points * bary, axis=1).astype("f4", copy=False)
+                    if int(tube_normals.shape[0]) == int(tube_points.shape[0]):
+                        tri_normals = tube_normals[source_vertex_indices]
+                        sample_normals = np.sum(tri_normals * bary, axis=1).astype("f4", copy=False)
+                        normal_len = np.linalg.norm(sample_normals, axis=1).reshape(-1, 1)
+                        sample_normals = np.divide(
+                            sample_normals,
+                            np.maximum(normal_len, np.float32(1.0e-8)),
+                            out=np.zeros_like(sample_normals, dtype="f4"),
+                            where=normal_len > np.float32(1.0e-8),
+                        ).astype("f4", copy=False)
+                    else:
+                        sample_normals = None
+                except Exception:
+                    continue
+                physics_config = proxy.get("splat_physics") if isinstance(proxy, dict) else None
+                if isinstance(physics_config, dict):
+                    deformed = self._mgl_apply_splat_physics(proxy, deformed, int(frame))
+                current = base[:count].astype(np.float32, copy=True)
+                current[:, 0:3] = deformed
+                if sample_normals is not None:
+                    try:
+                        current[:, 11:15] = _splat_quats_from_z_to_normals(sample_normals)
+                    except Exception:
+                        pass
+                try:
+                    current = self._mgl_apply_splat_colorize_to_splats(proxy, current)
+                except Exception:
+                    pass
+                try:
+                    trail_splats = self._mgl_update_splat_trails(proxy, current, int(frame))
+                    if getattr(trail_splats, "size", 0):
+                        current = np.concatenate([current, trail_splats], axis=0).astype(np.float32, copy=False)
+                except Exception as exc:
+                    try:
+                        self._mgl_log_throttled(
+                            "_mgl_guide_tube_splat_trail_update_error_" + owner_key,
+                            "guide_tube_splat: trail update failed owner=" + owner_key + " err=" + repr(exc),
+                            1.0,
+                        )
+                    except Exception:
+                        pass
+                try:
+                    current, glow_values = self._mgl_apply_splat_fx_to_splats(
+                        proxy,
+                        current,
+                        int(frame),
+                        apply_colorize=False,
+                    )
+                    glow_map = getattr(self, "_mgl_scene_splat_glow_by_owner", None)
+                    if not isinstance(glow_map, dict):
+                        glow_map = {}
+                        self._mgl_scene_splat_glow_by_owner = glow_map
+                    glow_map[owner_key] = glow_values
+                except Exception:
+                    pass
+                proxy["current_splats"] = current
+                proxy["last_signature"] = signature
+                self._mgl_scene_splats[owner_key] = current
+                mins = current[:, :3].min(axis=0).astype("f4")
+                maxs = current[:, :3].max(axis=0).astype("f4")
+                self._mgl_scene_splats_bounds_local[owner_key] = (mins, maxs)
+                self._mgl_scene_splat_bounds_by_owner[owner_key] = (mins, maxs)
+                self._mgl_scene_bounds_by_owner[owner_key] = (mins, maxs)
+                changed = True
                 continue
             context = proxy.get("fbx_rig_context") if isinstance(proxy, dict) else None
             if not isinstance(context, dict):
@@ -5271,6 +5423,167 @@ class MGLRendererMixin:
             return json.dumps(settings if isinstance(settings, dict) else {}, sort_keys=True, default=str)
         except Exception:
             return str(settings)
+
+    @staticmethod
+    def _mgl_groom_guide_sim_frame_cache(payload: dict, cache_sig) -> dict:
+        if not isinstance(payload, dict):
+            return {}
+        cache = payload.get("_groom_guide_sim_frame_cache")
+        if not isinstance(cache, dict) or cache.get("sig") != cache_sig:
+            cache = {"sig": cache_sig, "frames": {}, "order": []}
+            payload["_groom_guide_sim_frame_cache"] = cache
+        frames = cache.get("frames")
+        if not isinstance(frames, dict):
+            frames = {}
+            cache["frames"] = frames
+        order = cache.get("order")
+        if not isinstance(order, list):
+            order = []
+            cache["order"] = order
+        return cache
+
+    @staticmethod
+    def _mgl_groom_guide_sim_cache_entry(cache: dict, frame: int) -> dict | None:
+        try:
+            frames = cache.get("frames") if isinstance(cache, dict) else None
+            entry = frames.get(int(frame)) if isinstance(frames, dict) else None
+            return entry if isinstance(entry, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _mgl_groom_guide_sim_store_frame_cache(
+        cache: dict,
+        frame: int,
+        *,
+        runtime: dict | None = None,
+        line_points=None,
+        root_points=None,
+        root_targets=None,
+        device: str = "",
+        max_frames: int = 360,
+    ) -> None:
+        if np is None or not isinstance(cache, dict):
+            return
+        frames = cache.get("frames")
+        order = cache.get("order")
+        if not isinstance(frames, dict) or not isinstance(order, list):
+            return
+        try:
+            frame_key = int(frame)
+        except Exception:
+            return
+        entry: dict[str, Any] = {"device": str(device or "")}
+        try:
+            arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+            if arr.size:
+                entry["line_points"] = arr.copy()
+        except Exception:
+            pass
+        try:
+            arr = np.asarray(root_points, dtype="f4").reshape(-1, 3)
+            if arr.size:
+                entry["root_points"] = arr.copy()
+        except Exception:
+            pass
+        try:
+            arr = np.asarray(root_targets, dtype="f4").reshape(-1, 3)
+            if arr.size:
+                entry["root_targets"] = arr.copy()
+        except Exception:
+            pass
+        if isinstance(runtime, dict):
+            try:
+                arr = np.asarray(runtime.get("points"), dtype=np.float64).reshape(-1, 3)
+                if arr.size:
+                    entry["points"] = arr.copy()
+            except Exception:
+                pass
+            try:
+                arr = np.asarray(runtime.get("velocities"), dtype=np.float64).reshape(-1, 3)
+                if arr.size:
+                    entry["velocities"] = arr.copy()
+            except Exception:
+                pass
+        if "line_points" not in entry and "points" not in entry:
+            return
+        frames[frame_key] = entry
+        try:
+            if frame_key in order:
+                order.remove(frame_key)
+            order.append(frame_key)
+            limit = max(8, int(max_frames))
+            while len(order) > limit:
+                old_key = order.pop(0)
+                frames.pop(old_key, None)
+        except Exception:
+            pass
+
+    def _mgl_groom_guide_sim_restore_frame_cache(
+        self,
+        item: MGLSceneItem,
+        payload: dict,
+        owner: str,
+        frame: int,
+        frame_settings_sig: str,
+        runtime_sig,
+        entry: dict,
+    ) -> Any:
+        if np is None or not isinstance(entry, dict):
+            return None
+        try:
+            line_arr = np.asarray(entry.get("line_points"), dtype="f4").reshape(-1, 3)
+        except Exception:
+            line_arr = np.zeros((0, 3), dtype="f4")
+        if line_arr.size == 0:
+            return None
+        if not self._mgl_groom_guide_sim_upload_wire(item, line_arr, owner):
+            return None
+        runtime = payload.get("_groom_guide_sim_runtime")
+        if isinstance(runtime, dict):
+            try:
+                points = np.asarray(entry.get("points"), dtype=np.float64).reshape(-1, 3)
+                if points.size:
+                    runtime["points"] = points.copy()
+            except Exception:
+                pass
+            try:
+                velocities = np.asarray(entry.get("velocities"), dtype=np.float64).reshape(-1, 3)
+                if velocities.size:
+                    runtime["velocities"] = velocities.copy()
+            except Exception:
+                pass
+            payload["_groom_guide_sim_runtime"] = runtime
+            payload["_groom_guide_sim_runtime_sig"] = runtime_sig
+        payload["line_points"] = line_arr
+        payload["depth_test"] = True
+        payload["overlay"] = True
+        payload["material"] = {"transparency": 0.01}
+        item.order = 940
+        payload["_groom_guide_sim_frame"] = int(frame)
+        payload["_groom_guide_sim_frame_settings_sig"] = frame_settings_sig
+        payload["_groom_guide_sim_last_frame"] = int(frame)
+        payload["_groom_guide_sim_runtime_device"] = "cache"
+        payload["_groom_guide_sim_debug"] = {
+            "simulation_mode": "cached_frame",
+            "cache_hit": True,
+            "frame": int(frame),
+            "source_device": str(entry.get("device") or ""),
+        }
+        try:
+            root_targets = np.asarray(entry.get("root_targets"), dtype="f4").reshape(-1, 3)
+            if root_targets.size:
+                payload["_groom_guide_sim_last_root_targets"] = root_targets.copy()
+        except Exception:
+            pass
+        item.payload = payload
+        try:
+            roots = np.asarray(entry.get("root_points"), dtype="f4").reshape(-1, 3)
+            if roots.size:
+                return roots
+        except Exception:
+            pass
+        return None
 
     def _mgl_groom_guide_sim_upload_wire(self, item: MGLSceneItem, line_arr, owner: str) -> bool:
         if np is None:
@@ -6845,6 +7158,27 @@ class MGLRendererMixin:
                 or delta < 0
                 or abs(delta) > reset_jump
             )
+            frame_cache_sig = (runtime_sig, start_state_sig)
+            frame_cache = self._mgl_groom_guide_sim_frame_cache(payload, frame_cache_sig)
+            cached_entry = self._mgl_groom_guide_sim_cache_entry(frame_cache, int(frame))
+            if cached_entry is not None and (needs_reset or delta != 1):
+                cached_roots = self._mgl_groom_guide_sim_restore_frame_cache(
+                    item,
+                    payload,
+                    owner,
+                    int(frame),
+                    frame_settings_sig,
+                    runtime_sig,
+                    cached_entry,
+                )
+                if cached_roots is not None:
+                    try:
+                        root_arr = np.asarray(cached_roots, dtype="f4").reshape(-1, 3)
+                        if owner and root_arr.size:
+                            roots_by_owner[owner.lower()] = root_arr
+                    except Exception:
+                        pass
+                continue
             collider_requested = isinstance(payload.get("groom_collider"), dict)
             collider = self._mgl_groom_guide_mesh_collider(payload)
             requested_device = self._mgl_groom_guide_sim_device(settings)
@@ -6930,13 +7264,20 @@ class MGLRendererMixin:
                                 collider=collider,
                             )
                         gpu_wire_bound = False
+                        gpu_cache_line_points = None
                         with profile_scope("render.3d.mgl.groom_guide_sim.gpu_wire"):
                             gpu_wire_bound = self._mgl_groom_guide_sim_use_gpu_wire(item, gpu_runtime, owner)
                         if not gpu_wire_bound:
                             with profile_scope("render.3d.mgl.groom_guide_sim.gpu_readback_wire"):
                                 line_arr = np.asarray(backend.read_line_points(gpu_runtime), dtype="f4").reshape(-1, 3)
+                                gpu_cache_line_points = line_arr
                             if line_arr.size == 0 or not self._mgl_groom_guide_sim_upload_wire(item, line_arr, owner):
                                 raise RuntimeError("GPU runtime produced no drawable guide wire.")
+                        else:
+                            try:
+                                gpu_cache_line_points = np.asarray(backend.read_line_points(gpu_runtime), dtype="f4").reshape(-1, 3)
+                            except Exception:
+                                gpu_cache_line_points = None
                         payload = item.payload or payload
                         debug = dict(gpu_result.get("debug") or {})
                         debug["wire_path"] = "gpu_ssbo" if gpu_wire_bound else "gpu_readback_upload"
@@ -6973,6 +7314,14 @@ class MGLRendererMixin:
                                 roots_by_owner[owner.lower()] = root_arr
                         except Exception:
                             pass
+                        self._mgl_groom_guide_sim_store_frame_cache(
+                            frame_cache,
+                            int(frame),
+                            line_points=gpu_cache_line_points,
+                            root_points=gpu_result.get("root_points"),
+                            root_targets=root_targets,
+                            device="gpu",
+                        )
                         item.payload = payload
                         continue
                     except Exception as exc:
@@ -7084,6 +7433,15 @@ class MGLRendererMixin:
                 cpu_debug["auto_armed_frame"] = int(frame)
             payload["_groom_guide_sim_debug"] = cpu_debug
             payload["_groom_guide_sim_runtime_device"] = "cpu"
+            self._mgl_groom_guide_sim_store_frame_cache(
+                frame_cache,
+                int(frame),
+                runtime=runtime,
+                line_points=line_arr,
+                root_points=root_points,
+                root_targets=root_targets,
+                device="cpu",
+            )
             self._mgl_groom_guide_gpu_diag_throttled(
                 "sim_cpu_step",
                 "guide_sim_cpu_step",
@@ -21899,7 +22257,9 @@ class MGLRendererMixin:
                         except Exception:
                             pass
                     pending.clear()
-                # Recompute splat render flag after visibility updates
+                # Recompute splat render flag after visibility updates.
+                # The splat renderer uses one combined GPU buffer for all owners, so hiding
+                # one owner still requires rebuilding that aggregate buffer.
                 try:
                     splat_map = getattr(self, "_mgl_scene_splats", None) or {}
                     visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
@@ -21910,14 +22270,14 @@ class MGLRendererMixin:
                                 any_visible = True
                                 break
                     self._mgl_render_splats = bool(any_visible)
-                    need_rebuild = False
-                    if self._mgl_render_splats:
-                        need_rebuild = bool(
-                            getattr(self, "_mgl_splats_need_rebuild", False)
-                            or getattr(self, "_mgl_splatq_vao", None) is None
-                            or not bool(getattr(self, "_mgl_splat_count", 0))
-                        )
-                    self._mgl_splats_visibility_dirty = bool(need_rebuild)
+                    if isinstance(splat_map, dict) and splat_map:
+                        if self._mgl_render_splats:
+                            self._mgl_splats_visibility_dirty = True
+                        else:
+                            self._mgl_splats_visibility_dirty = False
+                            self._mgl_disable_splats()
+                    else:
+                        self._mgl_splats_visibility_dirty = False
                 except Exception:
                     pass
         except Exception:
@@ -27913,6 +28273,21 @@ class MGLRendererMixin:
                 if kind in {"groom_guides", "groom guides", "hair_guides", "hair guides", "groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"}:
                     display_owner = str(asset.get("node") or asset.get("owner") or "Groom Guides").strip()
                     source_kind_key = str(asset.get("source_kind") or "").strip().lower()
+                    render_proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else None
+                    proxy_type = str((render_proxy or {}).get("type") or "").strip().lower() if isinstance(render_proxy, dict) else ""
+                    music_effects = asset.get("music_effects") if isinstance(asset.get("music_effects"), dict) else None
+                    if isinstance(render_proxy, dict) and isinstance(music_effects, dict) and proxy_type in {"guide_tube_splat", "groom_guide_tube_splat"}:
+                        render_proxy = dict(render_proxy)
+                        if not isinstance(render_proxy.get("splat_fx"), dict):
+                            converted_splat_fx = self._mgl_splat_fx_from_music_effects(music_effects)
+                            if isinstance(converted_splat_fx, dict):
+                                render_proxy["splat_fx"] = converted_splat_fx
+                        proxy_type = str(render_proxy.get("type") or "").strip().lower()
+                    guide_splat_proxy = bool(proxy_type in {"guide_tube_splat", "groom_guide_tube_splat"})
+                    hide_source_for_guide_splat = bool(
+                        guide_splat_proxy
+                        and bool(render_proxy.get("hide_source_mesh", True) if isinstance(render_proxy, dict) else True)
+                    )
                     guide_cache_data = None
                     for cache_key in ("guides_path", "tube_cache_path", "path"):
                         path_text = str(asset.get(cache_key) or "").strip()
@@ -28088,9 +28463,13 @@ class MGLRendererMixin:
                     owner = display_owner
                     visible = bool(asset.get("visible", True))
                     tube_enabled = bool(groom_guide_tube_settings.get("enabled", True)) if isinstance(groom_guide_tube_cfg, dict) else False
+                    if hide_source_for_guide_splat:
+                        tube_enabled = False
                     show_source_guides = True
                     if isinstance(groom_guide_tube_cfg, dict):
                         show_source_guides = bool(groom_guide_tube_settings.get("show_source_guides", False))
+                    if hide_source_for_guide_splat:
+                        show_source_guides = False
                     debug_log_enabled = bool(
                         asset.get("debug_log", False)
                         or (isinstance(groom_deform_cfg, dict) and groom_deform_cfg.get("debug_log", False))
@@ -28243,7 +28622,7 @@ class MGLRendererMixin:
                             payload["line_segment_count"] = int(line_arr.shape[0] // 2)
                             if isinstance(groom_guide_tube_cfg, dict):
                                 payload["groom_guide_tube"] = dict(groom_guide_tube_cfg)
-                                payload["suppress_draw"] = bool(tube_enabled and not show_source_guides)
+                                payload["suppress_draw"] = bool((tube_enabled or guide_splat_proxy) and not show_source_guides)
                             if isinstance(groom_deform_cfg, dict):
                                 payload["groom_deform"] = dict(groom_deform_cfg)
                             if isinstance(groom_guide_pose_cfg, dict):
@@ -28345,6 +28724,16 @@ class MGLRendererMixin:
                                 )
                             else:
                                 _groom_guides_log(f"load skip_tube owner={owner!r} reason=tube_item_none")
+                        if guide_splat_proxy and isinstance(render_proxy, dict):
+                            proxy_bounds = self._mgl_load_skinned_splat_proxy(owner, render_proxy, None)
+                            if proxy_bounds is not None:
+                                has_splats = True
+                                try:
+                                    pmin, pmax = proxy_bounds
+                                    bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, pmin, pmax)
+                                    has_mesh_bounds = True
+                                except Exception:
+                                    pass
                     else:
                         _groom_guides_log(f"load skip_wire owner={owner!r} reason=empty_line_points")
                     continue
@@ -28488,7 +28877,7 @@ class MGLRendererMixin:
                 ]
                 hidden_submesh_keys = {name.lower() for name in hidden_submeshes}
                 proxy_type = str((render_proxy or {}).get("type") or "").strip().lower() if isinstance(render_proxy, dict) else ""
-                if isinstance(render_proxy, dict) and isinstance(music_effects, dict) and proxy_type in {"skinned_splat", "skinned_gaussian_splat"}:
+                if isinstance(render_proxy, dict) and isinstance(music_effects, dict) and proxy_type in {"skinned_splat", "skinned_gaussian_splat", "guide_tube_splat", "groom_guide_tube_splat"}:
                     render_proxy = dict(render_proxy)
                     if not isinstance(render_proxy.get("splat_fx"), dict):
                         converted_splat_fx = self._mgl_splat_fx_from_music_effects(music_effects)
@@ -28498,7 +28887,7 @@ class MGLRendererMixin:
                 _seed_asset_xform(
                     owner,
                     asset.get("xform"),
-                    is_splat=bool(ext == ".ply" or proxy_type in {"skinned_splat", "skinned_gaussian_splat"}),
+                    is_splat=bool(ext == ".ply" or proxy_type in {"skinned_splat", "skinned_gaussian_splat", "guide_tube_splat", "groom_guide_tube_splat"}),
                 )
                 if isinstance(render_proxy, dict):
                     try:

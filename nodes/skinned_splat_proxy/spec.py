@@ -17,6 +17,7 @@ from nodes.util_graph import param_change_relevant as _param_change_relevant
 from echograph.rigging.skinned_splat_proxy import (
     SkinnedSplatProxyError,
     SkinnedSplatProxySettings,
+    build_guide_tube_splat_proxy,
     build_skinned_splat_proxy_from_rig_context,
 )
 
@@ -30,8 +31,22 @@ KIND_ALIASES = {
 }
 _FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
 _ANIM_RETARGET_KIND_ALIASES = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
+_GROOM_GUIDE_TUBE_KIND_ALIASES = {
+    "groom_guide_tube",
+    "groom guide tube",
+    "groom_guides_tube",
+    "groom guides tube",
+    "hair_guide_tube",
+    "hair guide tube",
+    "hair_guides_tube",
+    "hair guides tube",
+    "guide_tube",
+    "guide tube",
+}
 _DEFAULT_SAMPLE_COUNT = 50_000
 _DEFAULT_MAX_INFLUENCES = 4
+_SKINNED_SPLAT_PROXY_SCHEMA = "qubit.skinned_splat_proxy.v1"
+_GUIDE_TUBE_SPLAT_PROXY_SCHEMA = "qubit.guide_tube_splat_proxy.v1"
 
 
 @dataclass(frozen=True)
@@ -266,7 +281,7 @@ def _node_name(item) -> str:
 
 def _source_asset_from_item(source_item) -> tuple[Optional[Dict[str, Any]], str]:
     if source_item is None:
-        return None, "Connect this node after Anim Retarget or FBX Import."
+        return None, "Connect this node after Anim Retarget, FBX Import, or Groom Guide Tube."
     kind = _node_kind(source_item)
     model = getattr(source_item, "model", None)
 
@@ -301,6 +316,20 @@ def _source_asset_from_item(source_item) -> tuple[Optional[Dict[str, Any]], str]
             return None, f"FBX Import asset build failed: {exc}"
         if not isinstance(asset, dict):
             return None, "FBX Import did not produce a valid asset."
+        return dict(asset), ""
+
+    if kind in _GROOM_GUIDE_TUBE_KIND_ALIASES:
+        try:
+            from nodes.groom_guide_tube import spec as tube_spec  # type: ignore
+
+            build_asset = getattr(tube_spec, "build_groom_guide_tube_scene_asset", None)
+            outcome = build_asset(source_item) if callable(build_asset) else None
+        except Exception as exc:
+            return None, f"Groom Guide Tube asset build failed: {exc}"
+        asset = getattr(outcome, "asset", None)
+        detail = str(getattr(outcome, "detail", "") or "")
+        if not isinstance(asset, dict):
+            return None, detail or "Groom Guide Tube did not produce a valid asset."
         return dict(asset), ""
 
     return None, f"Unsupported input node kind: {kind or '<none>'}."
@@ -349,6 +378,76 @@ def _proxy_paths_exist(manifest: str, ply: str, skin: str) -> bool:
         return False
 
 
+def _read_proxy_manifest(manifest: str) -> Dict[str, Any]:
+    try:
+        data = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _manifest_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "y"}:
+        return True
+    if text in {"0", "false", "no", "off", "n"}:
+        return False
+    return bool(default)
+
+
+def _manifest_matches_settings(manifest_data: Dict[str, Any], settings: SkinnedSplatProxySettings) -> bool:
+    if not isinstance(manifest_data, dict):
+        return False
+    try:
+        if int(round(float(manifest_data.get("sample_count", settings.sample_count)))) != int(settings.sample_count):
+            return False
+    except Exception:
+        return False
+
+    generator = manifest_data.get("generator")
+    gen_settings = generator.get("settings") if isinstance(generator, dict) else None
+    if not isinstance(gen_settings, dict):
+        return True
+    try:
+        if int(round(float(gen_settings.get("sample_count", settings.sample_count)))) != int(settings.sample_count):
+            return False
+        if int(round(float(gen_settings.get("max_influences", settings.max_influences)))) != int(settings.max_influences):
+            return False
+        if abs(float(gen_settings.get("radius_scale", settings.radius_scale)) - float(settings.radius_scale)) > 1.0e-6:
+            return False
+        if _manifest_bool(gen_settings.get("adaptive_radius", settings.adaptive_radius), bool(settings.adaptive_radius)) != bool(settings.adaptive_radius):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _proxy_paths_match_settings(
+    manifest: str,
+    ply: str,
+    skin: str,
+    settings: SkinnedSplatProxySettings,
+    *,
+    schemas: set[str],
+    proxy_types: set[str] | None = None,
+) -> bool:
+    if not _proxy_paths_exist(manifest, ply, skin):
+        return False
+    manifest_data = _read_proxy_manifest(manifest)
+    if not manifest_data:
+        return False
+    schema = str(manifest_data.get("schema") or "").strip().lower()
+    if schema not in schemas:
+        return False
+    if proxy_types is not None:
+        proxy_type = str(manifest_data.get("proxy_type") or "").strip().lower()
+        if proxy_type not in proxy_types:
+            return False
+    return _manifest_matches_settings(manifest_data, settings)
+
+
 def _asset_name(node_item, source_asset: Dict[str, Any], settings: SkinnedSplatProxySettings) -> str:
     node_name = str(getattr(getattr(node_item, "model", None), "name", "") or "").strip()
     source_owner = str(source_asset.get("node") or "").strip()
@@ -368,14 +467,110 @@ def build_skinned_splat_proxy_scene_asset(
         _debug_log(model, "resolve_source_failed", error=source_error)
         return ProxyBuildOutcome(None, "error", source_error or "No supported input asset.")
 
+    settings = _settings_from_model(model)
+    source_kind = str(source_asset.get("source_kind") or source_asset.get("asset_source_kind") or "").strip().lower()
+    is_guide_tube_source = bool(
+        source_kind == "groom_guide_tube"
+        or isinstance(source_asset.get("groom_guide_tube"), dict)
+        or _node_kind(source_item) in _GROOM_GUIDE_TUBE_KIND_ALIASES
+    )
+    if is_guide_tube_source:
+        manifest, ply, skin = _existing_proxy_paths(model)
+        if not _proxy_paths_match_settings(
+            manifest,
+            ply,
+            skin,
+            settings,
+            schemas={_GUIDE_TUBE_SPLAT_PROXY_SCHEMA},
+            proxy_types={"guide_tube_splat", "groom_guide_tube_splat"},
+        ):
+            manifest = ""
+            ply = ""
+            skin = ""
+        auto_generate = _param_bool(model, "auto_generate", False)
+        should_generate = bool(generate) or (bool(auto_generate) and not _proxy_paths_exist(manifest, ply, skin))
+        generated = False
+        if should_generate:
+            try:
+                result = build_guide_tube_splat_proxy(
+                    source_asset,
+                    _proxy_output_dir(node_item),
+                    asset_name=_asset_name(node_item, source_asset, settings),
+                    settings=settings,
+                )
+            except SkinnedSplatProxyError as exc:
+                _debug_log(model, "generate_guide_tube_failed", error=str(exc))
+                return ProxyBuildOutcome(None, "error", str(exc))
+            except Exception as exc:
+                _debug_log(model, "generate_guide_tube_failed", error=repr(exc))
+                return ProxyBuildOutcome(None, "error", f"Guide Tube splat generation failed: {exc}")
+            manifest = str(result.manifest_path)
+            ply = str(result.splat_ply_path)
+            skin = str(result.skin_npz_path)
+            _set_param(node_item, "proxy_manifest", manifest, notify_scene=False)
+            _set_param(node_item, "proxy_ply", ply, notify_scene=False)
+            _set_param(node_item, "proxy_skin", skin, notify_scene=False)
+            _set_param(node_item, "path", str(source_asset.get("guides_path") or source_asset.get("tube_cache_path") or ""), notify_scene=False)
+            _set_param(node_item, "source", str(source_asset.get("guides_path") or source_asset.get("source_path") or ""), notify_scene=False)
+            generated = True
+            _debug_log(model, "generated_guide_tube", manifest=manifest, ply=ply, skin=skin, samples=int(result.arrays.splats.shape[0]))
+
+        asset = dict(source_asset)
+        proxy_owner = str(getattr(model, "name", "") or "").strip() or _asset_name(node_item, source_asset, settings)
+        source_owner = str(source_asset.get("node") or source_asset.get("source_owner") or "").strip()
+        asset["kind"] = "groom_guides"
+        asset["source_kind"] = "groom_guide_tube"
+        asset["node"] = proxy_owner
+        if source_owner:
+            asset["source_owner"] = source_owner
+        render_proxy = {
+            "type": "guide_tube_splat",
+            "status": "not_generated",
+            "hide_source_mesh": _param_bool(model, "hide_source_mesh", True),
+            "sample_count": int(settings.sample_count),
+            "max_influences": int(settings.max_influences),
+            "color_mode": str(settings.color_mode),
+            "guide_source_owner": source_owner,
+        }
+        if isinstance(source_asset.get("groom_guide_tube"), dict):
+            render_proxy["groom_guide_tube"] = dict(source_asset.get("groom_guide_tube") or {})
+        if _proxy_paths_exist(manifest, ply, skin):
+            render_proxy.update(
+                {
+                    "status": "ready",
+                    "manifest": manifest,
+                    "splat_ply": ply,
+                    "skin_npz": skin,
+                }
+            )
+            detail = "Guide Tube splat proxy ready." if not generated else "Guide Tube splat proxy generated."
+            status = "ok"
+        else:
+            detail = "Guide Tube splat proxy files are not generated yet."
+            status = "warning"
+        asset["render_proxy"] = render_proxy
+        asset["skinned_splat_proxy_node"] = str(getattr(model, "name", "") or "")
+        if manifest:
+            asset["skinned_splat_proxy_manifest"] = manifest
+        return ProxyBuildOutcome(asset, status, detail, generated=generated)
+
     rig_context = source_asset.get("fbx_rig_context")
     if not isinstance(rig_context, dict):
         detail = "Input asset does not contain an FBX rig context."
         _debug_log(model, "missing_rig_context", source=_node_name(source_item))
         return ProxyBuildOutcome(None, "error", detail)
 
-    settings = _settings_from_model(model)
     manifest, ply, skin = _existing_proxy_paths(model)
+    if not _proxy_paths_match_settings(
+        manifest,
+        ply,
+        skin,
+        settings,
+        schemas={_SKINNED_SPLAT_PROXY_SCHEMA},
+    ):
+        manifest = ""
+        ply = ""
+        skin = ""
     auto_generate = _param_bool(model, "auto_generate", False)
     should_generate = bool(generate) or (bool(auto_generate) and not _proxy_paths_exist(manifest, ply, skin))
 
@@ -480,8 +675,14 @@ def build_ports(node_item) -> None:
             "proxy_manifest",
             "proxy_ply",
             "proxy_skin",
+            "sample_count",
+            "max_influences",
             "seed",
             "color_mode",
+            "radius_scale",
+            "adaptive_radius",
+            "hide_source_mesh",
+            "auto_generate",
             "debug_log",
         ],
     )
@@ -513,12 +714,13 @@ class SkinnedSplatProxyWidget(QtWidgets.QWidget):
         self._node_item = node_item
         self._scene = None
         self._pending = False
+        self._generation_settings_dirty = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(4)
 
-        self._status = QtWidgets.QLabel("Connect Anim Retarget")
+        self._status = QtWidgets.QLabel("Connect Anim Retarget or Guide Tube")
         self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
         self._status.setWordWrap(True)
         layout.addWidget(self._status, 0)
@@ -610,6 +812,30 @@ class SkinnedSplatProxyWidget(QtWidgets.QWidget):
         self._pending = True
         QtCore.QTimer.singleShot(80, self._refresh_status)
 
+    def _show_generation_settings_dirty(self) -> None:
+        self._generation_settings_dirty = True
+        self._pending = False
+        self._status.setStyleSheet("color:#f59e0b;font-size:11px;")
+        self._status.setText("Proxy settings changed. Click Generate to rebuild splats.")
+        self._view_btn.setEnabled(False)
+
+    def _notify_scene_params_changed(self) -> None:
+        model = getattr(self._node_item, "model", None)
+        if model is None:
+            return
+        scene = self._scene
+        if scene is None:
+            try:
+                scene = self._node_item.scene()
+            except Exception:
+                scene = None
+        if scene is None:
+            return
+        try:
+            scene.set_node_params(str(getattr(model, "name", "") or ""), list(getattr(model, "params", None) or []), rebuild=False)
+        except Exception:
+            pass
+
     def _sync_from_params(self) -> None:
         model = getattr(self._node_item, "model", None)
         self._sample_spin.blockSignals(True)
@@ -639,6 +865,9 @@ class SkinnedSplatProxyWidget(QtWidgets.QWidget):
 
     def _refresh_status(self):
         self._pending = False
+        if self._generation_settings_dirty:
+            self._show_generation_settings_dirty()
+            return
         self._sync_from_params()
         outcome = build_skinned_splat_proxy_scene_asset(self._node_item, generate=False)
         self._view_btn.setEnabled(bool(outcome.asset and (outcome.asset.get("render_proxy") or {}).get("splat_ply")))
@@ -651,20 +880,20 @@ class SkinnedSplatProxyWidget(QtWidgets.QWidget):
         self._status.setText(outcome.detail)
 
     def _on_sample_count_changed(self, value: int):
-        _set_param(self._node_item, "sample_count", str(int(value)), notify_scene=True)
-        self._schedule_refresh()
+        _set_param(self._node_item, "sample_count", str(int(value)), notify_scene=False)
+        self._show_generation_settings_dirty()
 
     def _on_max_influences_changed(self, value: int):
-        _set_param(self._node_item, "max_influences", str(int(value)), notify_scene=True)
-        self._schedule_refresh()
+        _set_param(self._node_item, "max_influences", str(int(value)), notify_scene=False)
+        self._show_generation_settings_dirty()
 
     def _on_radius_scale_changed(self, value: float):
-        _set_param(self._node_item, "radius_scale", f"{float(value):.2f}", notify_scene=True)
-        self._schedule_refresh()
+        _set_param(self._node_item, "radius_scale", f"{float(value):.2f}", notify_scene=False)
+        self._show_generation_settings_dirty()
 
     def _on_adaptive_changed(self, _state: int):
-        _set_param(self._node_item, "adaptive_radius", "1" if self._adaptive_check.isChecked() else "0", notify_scene=True)
-        self._schedule_refresh()
+        _set_param(self._node_item, "adaptive_radius", "1" if self._adaptive_check.isChecked() else "0", notify_scene=False)
+        self._show_generation_settings_dirty()
 
     def _on_hide_changed(self, _state: int):
         _set_param(self._node_item, "hide_source_mesh", "1" if self._hide_check.isChecked() else "0", notify_scene=True)
@@ -695,6 +924,8 @@ class SkinnedSplatProxyWidget(QtWidgets.QWidget):
             outcome = build_skinned_splat_proxy_scene_asset(self._node_item, generate=True)
             if outcome.status == "ok":
                 self._status.setStyleSheet("color:#22c55e;font-size:11px;")
+                self._generation_settings_dirty = False
+                self._notify_scene_params_changed()
             else:
                 self._status.setStyleSheet("color:#ef4444;font-size:11px;")
             self._status.setText(outcome.detail)
