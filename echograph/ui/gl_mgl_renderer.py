@@ -4813,6 +4813,41 @@ class MGLRendererMixin:
                 return item
         return None
 
+    def _mgl_groom_guide_item_should_update(self, item, payload: dict | None = None) -> bool:
+        if bool(getattr(item, "visible", True)):
+            return True
+        payload = payload if isinstance(payload, dict) else (getattr(item, "payload", None) or {})
+        owner = str((payload or {}).get("owner") or getattr(item, "name", "") or "").strip()
+        if not owner:
+            return False
+        owner_l = owner.lower()
+        visibility = getattr(self, "_mgl_scene_visibility", None)
+        if isinstance(visibility, dict):
+            try:
+                if owner in visibility:
+                    return bool(visibility.get(owner))
+                for key, value in visibility.items():
+                    if str(key or "").strip().lower() == owner_l:
+                        return bool(value)
+            except Exception:
+                pass
+        proxies = getattr(self, "_mgl_scene_skinned_splat_proxies_by_owner", None)
+        if isinstance(proxies, dict):
+            for key, proxy in proxies.items():
+                if str(key or "").strip().lower() != owner_l or not isinstance(proxy, dict):
+                    continue
+                render_proxy = proxy.get("render_proxy") if isinstance(proxy.get("render_proxy"), dict) else {}
+                proxy_type = str(proxy.get("proxy_type") or render_proxy.get("type") or "").strip().lower()
+                if proxy_type not in {"guide_tube_splat", "groom_guide_tube_splat"}:
+                    continue
+                if isinstance(visibility, dict):
+                    try:
+                        return bool(visibility.get(key, visibility.get(owner, True)))
+                    except Exception:
+                        return True
+                return True
+        return False
+
     def _mgl_groom_guide_tube_current_points(self, guide_payload: dict, template_curves):
         if np is None or not isinstance(guide_payload, dict):
             return None
@@ -5038,9 +5073,9 @@ class MGLRendererMixin:
         except Exception:
             items = []
         for item in items:
-            if not bool(getattr(item, "visible", True)):
-                continue
             payload = getattr(item, "payload", None) or {}
+            if not self._mgl_groom_guide_item_should_update(item, payload):
+                continue
             if (
                 isinstance(payload.get("groom_guide_sim"), dict)
                 or str(payload.get("source_kind") or "").strip().lower() == "groom_guide_sim"
@@ -5425,6 +5460,26 @@ class MGLRendererMixin:
             return str(settings)
 
     @staticmethod
+    def _mgl_groom_guide_sim_root_targets_signature(root_targets, deform_signature=None) -> tuple:
+        try:
+            deform_key = repr(deform_signature) if deform_signature is not None else ""
+        except Exception:
+            deform_key = ""
+        if np is None:
+            return ("none", deform_key)
+        try:
+            arr = np.asarray(root_targets, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return ("invalid", deform_key)
+        if arr.size == 0:
+            return ("empty", deform_key)
+        try:
+            packed = np.ascontiguousarray(arr, dtype=np.float32)
+            return (int(packed.shape[0]), hashlib.sha256(packed.tobytes()).hexdigest(), deform_key)
+        except Exception:
+            return (int(arr.shape[0]), "", deform_key)
+
+    @staticmethod
     def _mgl_groom_guide_sim_frame_cache(payload: dict, cache_sig) -> dict:
         if not isinstance(payload, dict):
             return {}
@@ -5443,11 +5498,22 @@ class MGLRendererMixin:
         return cache
 
     @staticmethod
-    def _mgl_groom_guide_sim_cache_entry(cache: dict, frame: int) -> dict | None:
+    def _mgl_groom_guide_sim_cache_entry(cache: dict, frame: int, root_targets_sig=None) -> dict | None:
         try:
             frames = cache.get("frames") if isinstance(cache, dict) else None
             entry = frames.get(int(frame)) if isinstance(frames, dict) else None
-            return entry if isinstance(entry, dict) else None
+            if not isinstance(entry, dict):
+                return None
+            if root_targets_sig is not None:
+                stored_sig = entry.get("root_targets_sig")
+                if stored_sig is None:
+                    return None
+                try:
+                    if tuple(stored_sig) != tuple(root_targets_sig):
+                        return None
+                except Exception:
+                    return None
+            return entry
         except Exception:
             return None
 
@@ -5460,6 +5526,7 @@ class MGLRendererMixin:
         line_points=None,
         root_points=None,
         root_targets=None,
+        root_targets_sig=None,
         device: str = "",
         max_frames: int = 360,
     ) -> None:
@@ -5474,6 +5541,11 @@ class MGLRendererMixin:
         except Exception:
             return
         entry: dict[str, Any] = {"device": str(device or "")}
+        if root_targets_sig is not None:
+            try:
+                entry["root_targets_sig"] = tuple(root_targets_sig)
+            except Exception:
+                entry["root_targets_sig"] = root_targets_sig
         try:
             arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
             if arr.size:
@@ -6744,9 +6816,9 @@ class MGLRendererMixin:
         active = False
         now = time.monotonic()
         for item in items:
-            if not bool(getattr(item, "visible", True)):
-                continue
             payload = getattr(item, "payload", None) or {}
+            if not self._mgl_groom_guide_item_should_update(item, payload):
+                continue
             state = payload.get("_groom_guide_pose_sim")
             if not isinstance(state, dict):
                 continue
@@ -6940,9 +7012,9 @@ class MGLRendererMixin:
         roots_by_owner: Dict[str, Any] = {}
         frame = int(self._mgl_timeline_frame_index())
         for item in items:
-            if not bool(getattr(item, "visible", True)):
-                continue
             payload = getattr(item, "payload", None) or {}
+            if not self._mgl_groom_guide_item_should_update(item, payload):
+                continue
             sim_cfg = payload.get("groom_guide_sim")
             if not isinstance(sim_cfg, dict):
                 if str(payload.get("source_kind") or "").strip().lower() != "groom_guide_sim":
@@ -6994,6 +7066,15 @@ class MGLRendererMixin:
                 root_targets = payload.get("_groom_guide_sim_last_root_targets")
             if initial_points is None:
                 initial_points = self._mgl_curve_points_aligned_to_roots(start_curves, root_targets)
+            current_frame_initial_points = None
+            try:
+                current_frame_initial_points = np.asarray(initial_points, dtype="f4").reshape(-1, 3).copy()
+            except Exception:
+                current_frame_initial_points = None
+            root_targets_sig = self._mgl_groom_guide_sim_root_targets_signature(
+                root_targets,
+                payload.get("_groom_deform_frame"),
+            )
 
             try:
                 start_frame = max(0, int(float(settings.get("start_frame", 0) or 0)))
@@ -7160,7 +7241,7 @@ class MGLRendererMixin:
             )
             frame_cache_sig = (runtime_sig, start_state_sig)
             frame_cache = self._mgl_groom_guide_sim_frame_cache(payload, frame_cache_sig)
-            cached_entry = self._mgl_groom_guide_sim_cache_entry(frame_cache, int(frame))
+            cached_entry = self._mgl_groom_guide_sim_cache_entry(frame_cache, int(frame), root_targets_sig)
             if cached_entry is not None and (needs_reset or delta != 1):
                 cached_roots = self._mgl_groom_guide_sim_restore_frame_cache(
                     item,
@@ -7179,6 +7260,17 @@ class MGLRendererMixin:
                     except Exception:
                         pass
                 continue
+            reset_from_current_deform = False
+            if needs_reset and cached_entry is None and frame > start_frame and current_frame_initial_points is not None:
+                try:
+                    current_arr = np.asarray(current_frame_initial_points, dtype="f4").reshape(-1, 3)
+                    existing_count = int(np.asarray(initial_points, dtype="f4").reshape(-1, 3).shape[0])
+                    if current_arr.size and (existing_count <= 0 or int(current_arr.shape[0]) == existing_count):
+                        initial_points = current_arr.copy()
+                        reset_from_current_deform = True
+                        used_armed_start_state = False
+                except Exception:
+                    reset_from_current_deform = False
             collider_requested = isinstance(payload.get("groom_collider"), dict)
             collider = self._mgl_groom_guide_mesh_collider(payload)
             requested_device = self._mgl_groom_guide_sim_device(settings)
@@ -7201,6 +7293,7 @@ class MGLRendererMixin:
                 frame_delta=int(delta),
                 used_armed_start_state=bool(used_armed_start_state),
                 auto_armed_start_state=bool(auto_armed_start_state),
+                reset_from_current_deform=bool(reset_from_current_deform),
                 needs_cpu_reset=bool(needs_reset),
                 curve_count=int(len(bind_curves)),
                 point_count=int(getattr(initial_points, "shape", [0])[0]) if initial_points is not None else 0,
@@ -7284,6 +7377,8 @@ class MGLRendererMixin:
                         if auto_armed_start_state:
                             debug["auto_armed_start_state"] = True
                             debug["auto_armed_frame"] = int(frame)
+                        if reset_from_current_deform:
+                            debug["reset_from_current_deform"] = True
                         payload["_groom_guide_sim_frame"] = int(frame)
                         payload["_groom_guide_sim_frame_settings_sig"] = frame_settings_sig
                         payload["_groom_guide_sim_last_frame"] = int(frame)
@@ -7320,6 +7415,7 @@ class MGLRendererMixin:
                             line_points=gpu_cache_line_points,
                             root_points=gpu_result.get("root_points"),
                             root_targets=root_targets,
+                            root_targets_sig=root_targets_sig,
                             device="gpu",
                         )
                         item.payload = payload
@@ -7431,6 +7527,8 @@ class MGLRendererMixin:
             if auto_armed_start_state:
                 cpu_debug["auto_armed_start_state"] = True
                 cpu_debug["auto_armed_frame"] = int(frame)
+            if reset_from_current_deform:
+                cpu_debug["reset_from_current_deform"] = True
             payload["_groom_guide_sim_debug"] = cpu_debug
             payload["_groom_guide_sim_runtime_device"] = "cpu"
             self._mgl_groom_guide_sim_store_frame_cache(
@@ -7440,6 +7538,7 @@ class MGLRendererMixin:
                 line_points=line_arr,
                 root_points=root_points,
                 root_targets=root_targets,
+                root_targets_sig=root_targets_sig,
                 device="cpu",
             )
             self._mgl_groom_guide_gpu_diag_throttled(
@@ -7610,55 +7709,42 @@ class MGLRendererMixin:
             return np.zeros((0, 3), dtype="f4")
         tri_idx = tri_idx[:tri_count].reshape(-1, 3)
 
-        scale = 1.0 / max(abs(float(weld_eps)), 1.0e-8)
-        canon_root: Dict[Tuple[int, int, int], int] = {}
-        canon_idx = np.empty(pos_np.shape[0], dtype="i4")
-        for idx, pos in enumerate(pos_np):
-            key = (
-                int(round(float(pos[0]) * scale)),
-                int(round(float(pos[1]) * scale)),
-                int(round(float(pos[2]) * scale)),
-            )
-            root = canon_root.get(key)
-            if root is None:
-                root = int(idx)
-                canon_root[key] = root
-            canon_idx[idx] = int(root)
-
-        edge_keys = set()
-        line_pos: List[float] = []
-        for tri in tri_idx:
-            try:
-                a0 = int(canon_idx[int(tri[0])])
-                b0 = int(canon_idx[int(tri[1])])
-                c0 = int(canon_idx[int(tri[2])])
-            except Exception:
-                continue
-            for a, b in ((a0, b0), (b0, c0), (c0, a0)):
-                if a == b:
-                    continue
-                key = (a, b) if a < b else (b, a)
-                if key in edge_keys:
-                    continue
-                edge_keys.add(key)
-                try:
-                    pa = pos_np[key[0]]
-                    pb = pos_np[key[1]]
-                except Exception:
-                    continue
-                line_pos.extend(
-                    [
-                        float(pa[0]),
-                        float(pa[1]),
-                        float(pa[2]),
-                        float(pb[0]),
-                        float(pb[1]),
-                        float(pb[2]),
-                    ]
-                )
-        if not line_pos:
+        try:
+            valid = np.all((tri_idx >= 0) & (tri_idx < pos_np.shape[0]), axis=1)
+            tri_idx = tri_idx[valid]
+        except Exception:
+            tri_idx = np.zeros((0, 3), dtype="i4")
+        if tri_idx.size == 0:
             return np.zeros((0, 3), dtype="f4")
-        return np.asarray(line_pos, dtype="f4").reshape(-1, 3)
+        try:
+            scale = 1.0 / max(abs(float(weld_eps)), 1.0e-8)
+            quantized = np.rint(pos_np.astype(np.float64, copy=False) * float(scale)).astype(np.int64, copy=False)
+            _unique_rows, first_indices, inverse = np.unique(
+                quantized,
+                axis=0,
+                return_index=True,
+                return_inverse=True,
+            )
+            canon_idx = np.asarray(first_indices, dtype=np.int64)[np.asarray(inverse, dtype=np.int64)]
+            canon_tri = canon_idx[np.asarray(tri_idx, dtype=np.int64)]
+            edges = np.concatenate(
+                (
+                    canon_tri[:, [0, 1]],
+                    canon_tri[:, [1, 2]],
+                    canon_tri[:, [2, 0]],
+                ),
+                axis=0,
+            ).astype(np.int64, copy=False)
+            if edges.size == 0:
+                return np.zeros((0, 3), dtype="f4")
+            edges.sort(axis=1)
+            edges = edges[edges[:, 0] != edges[:, 1]]
+            if edges.size == 0:
+                return np.zeros((0, 3), dtype="f4")
+            edges = np.unique(edges, axis=0)
+            return pos_np[edges.reshape(-1)].reshape(-1, 3).astype("f4", copy=False)
+        except Exception:
+            return np.zeros((0, 3), dtype="f4")
 
     @staticmethod
     def _mgl_load_obj_edge_vertices(path: Path) -> NDArray:
@@ -17005,18 +17091,18 @@ class MGLRendererMixin:
             return None
         if points_all.size == 0 or triangles_all.size == 0:
             return None
-        edges = set()
-        for tri in triangles_all:
-            try:
-                a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
-            except Exception:
-                continue
-            for e0, e1 in ((a, b), (b, c), (c, a)):
-                if e0 == e1:
-                    continue
-                edges.add((min(e0, e1), max(e0, e1)))
         try:
-            edge_arr = np.asarray(sorted(edges), dtype=np.int64).reshape(-1, 2)
+            edge_arr = np.concatenate(
+                (
+                    triangles_all[:, [0, 1]],
+                    triangles_all[:, [1, 2]],
+                    triangles_all[:, [2, 0]],
+                ),
+                axis=0,
+            ).astype(np.int64, copy=False)
+            edge_arr.sort(axis=1)
+            edge_arr = edge_arr[edge_arr[:, 0] != edge_arr[:, 1]]
+            edge_arr = np.unique(edge_arr, axis=0).reshape(-1, 2)
         except Exception:
             edge_arr = np.zeros((0, 2), dtype=np.int64)
         try:

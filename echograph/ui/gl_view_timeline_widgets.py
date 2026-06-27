@@ -2067,6 +2067,21 @@ class GraphGLTimelineWidgetsMixin:
                         pass
                     return ev.pos()
 
+                def _event_global_pos(self, ev):
+                    try:
+                        return ev.globalPosition().toPoint()
+                    except Exception:
+                        pass
+                    try:
+                        return ev.globalPos()
+                    except Exception:
+                        pass
+                    try:
+                        return self.mapToGlobal(ev.pos())
+                    except Exception:
+                        pass
+                    return QtGui.QCursor.pos()
+
                 def _blocks(self):
                     try:
                         return [
@@ -2168,6 +2183,38 @@ class GraphGLTimelineWidgetsMixin:
                             mode = "body"
                         return block, idx, mode
                     return None
+
+                def _show_animation_menu(self, block, global_pos):
+                    if not isinstance(block, dict):
+                        return False
+                    owner = str(block.get("owner") or "").strip()
+                    if owner:
+                        try:
+                            self._view._timeline_select_composition_owner(owner)
+                        except Exception:
+                            pass
+                    menu = QtWidgets.QMenu(self)
+                    copy_act = menu.addAction("Copy Animation")
+                    paste_act = menu.addAction("Paste Animation")
+                    try:
+                        can_paste = getattr(self._view, "_timeline_can_paste_animation", None)
+                        paste_act.setEnabled(bool(callable(can_paste) and can_paste("composition_block")))
+                    except Exception:
+                        paste_act.setEnabled(False)
+                    copy_act.triggered.connect(
+                        lambda _checked=False, b=block: getattr(self._view, "_timeline_copy_composition_animation", lambda *_: False)(b)
+                    )
+                    paste_act.triggered.connect(
+                        lambda _checked=False, b=block: getattr(self._view, "_timeline_paste_composition_animation", lambda *_: False)(b)
+                    )
+                    try:
+                        menu.exec(global_pos)
+                    except Exception:
+                        try:
+                            menu.exec_(global_pos)
+                        except Exception:
+                            return False
+                    return True
 
                 def paintEvent(self, ev):
                     super().paintEvent(ev)
@@ -2281,6 +2328,18 @@ class GraphGLTimelineWidgetsMixin:
                     return super().mouseDoubleClickEvent(ev)
 
                 def mousePressEvent(self, ev):
+                    if ev.button() == QtCore.Qt.RightButton:
+                        posf = self._event_pos(ev)
+                        hit = self._hit(posf)
+                        if hit is None:
+                            return super().mousePressEvent(ev)
+                        block, _idx, _mode = hit
+                        self._drag = None
+                        if self._show_animation_menu(block, self._event_global_pos(ev)):
+                            self.update()
+                            ev.accept()
+                            return
+                        return super().mousePressEvent(ev)
                     if ev.button() != QtCore.Qt.LeftButton:
                         return super().mousePressEvent(ev)
                     posf = self._event_pos(ev)

@@ -323,7 +323,11 @@ def _source_asset_from_item(source_item) -> tuple[Optional[Dict[str, Any]], str]
             from nodes.groom_guide_tube import spec as tube_spec  # type: ignore
 
             build_asset = getattr(tube_spec, "build_groom_guide_tube_scene_asset", None)
-            outcome = build_asset(source_item) if callable(build_asset) else None
+            outcome = (
+                build_asset(source_item, compute_topology=False, write_cache=False, update_params=False)
+                if callable(build_asset)
+                else None
+            )
         except Exception as exc:
             return None, f"Groom Guide Tube asset build failed: {exc}"
         asset = getattr(outcome, "asset", None)

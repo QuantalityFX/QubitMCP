@@ -5599,6 +5599,85 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             return str(script_dir())
 
+    def _clone_timeline_sidecars_for_save_as(self, previous_path: str | None, new_path: str | None) -> None:
+        old_raw = str(previous_path or "").strip()
+        new_raw = str(new_path or "").strip()
+        if not old_raw or not new_raw or old_raw == new_raw:
+            return
+        try:
+            old_workflow = Path(old_raw)
+            new_workflow = Path(new_raw)
+            old_base = old_workflow.parent if old_workflow.suffix else old_workflow
+            new_base = new_workflow.parent if new_workflow.suffix else new_workflow
+            old_stem = old_workflow.stem if old_workflow.suffix else ""
+            new_stem = new_workflow.stem if new_workflow.suffix else ""
+        except Exception:
+            return
+        if not old_stem or not new_stem:
+            return
+        try:
+            safe_name = getattr(getattr(self, "gl_view", None), "_timeline_safe_name", None)
+            if callable(safe_name):
+                old_key = safe_name(old_stem)
+                new_key = safe_name(new_stem)
+            else:
+                old_key = re.sub(r"[^0-9A-Za-z_-]+", "_", old_stem).strip("_") or old_stem
+                new_key = re.sub(r"[^0-9A-Za-z_-]+", "_", new_stem).strip("_") or new_stem
+        except Exception:
+            old_key = old_stem
+            new_key = new_stem
+        old_projects = old_base / "projects"
+        new_dir = new_base / "projects" / new_key
+        if old_key == new_key and old_projects == new_base / "projects":
+            return
+
+        def _copy_missing(src: Path, dst: Path) -> None:
+            try:
+                if not src.is_file() or dst.exists():
+                    return
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(src.read_bytes())
+            except Exception:
+                pass
+
+        old_namespaced = old_projects / old_key
+        if old_namespaced.exists():
+            try:
+                for src in old_namespaced.rglob("*"):
+                    if not src.is_file():
+                        continue
+                    try:
+                        rel = src.relative_to(old_namespaced)
+                    except Exception:
+                        continue
+                    _copy_missing(src, new_dir / rel)
+            except Exception:
+                pass
+
+        if old_projects.exists():
+            patterns = (
+                "*_timeline.json",
+                "*__owner_*_timeline.json",
+                "*_timeline_range.json",
+                "*_timeline_composition.json",
+                "*_audio.json",
+            )
+            seen = set()
+            for pattern in patterns:
+                try:
+                    matches = list(old_projects.glob(pattern))
+                except Exception:
+                    matches = []
+                for src in matches:
+                    try:
+                        key = str(src.resolve())
+                    except Exception:
+                        key = str(src)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    _copy_missing(src, new_dir / src.name)
+
     def _current_panel_layout_preset(self) -> Dict[str, bool]:
         timeline_on = False
         audio_on = False
@@ -7236,6 +7315,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if not path:
             return
         try:
+            previous_path = self._current_path
             data = self.scene.to_dict()
             self._inject_panel_layout_into_workflow_data(data)
             self._inject_scene_restore_into_workflow_data(data)
@@ -7255,6 +7335,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
 
+            self._clone_timeline_sidecars_for_save_as(previous_path, path)
             self._current_path = path
             self._remember_recent(path)
             self._update_window_title()

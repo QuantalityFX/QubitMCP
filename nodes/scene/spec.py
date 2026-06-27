@@ -2109,7 +2109,11 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 from nodes.groom_guide_tube import spec as _groom_guide_tube_spec  # type: ignore
 
                 build_asset = getattr(_groom_guide_tube_spec, "build_groom_guide_tube_scene_asset", None)
-                outcome = build_asset(src_item) if callable(build_asset) else None
+                outcome = (
+                    build_asset(src_item, compute_topology=False)
+                    if callable(build_asset)
+                    else None
+                )
                 asset = getattr(outcome, "asset", None)
             except Exception as exc:
                 asset = None
@@ -3735,6 +3739,23 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     widget.update()
                 except Exception:
                     pass
+
+        def _event_global_pos(event, widget=None):
+            try:
+                return event.globalPosition().toPoint()
+            except Exception:
+                pass
+            try:
+                return event.globalPos()
+            except Exception:
+                pass
+            try:
+                if widget is not None:
+                    return widget.mapToGlobal(event.pos())
+            except Exception:
+                pass
+            return QtGui.QCursor.pos()
+
         class _OutlinerViewportFilter(QtCore.QObject):
             def eventFilter(self, obj, event):
                 try:
@@ -3745,6 +3766,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         if item is not None:
                             try:
                                 outliner.setCurrentItem(item)
+                            except Exception:
+                                pass
+                            try:
+                                if (
+                                    et == QtCore.QEvent.MouseButtonPress
+                                    and event.button() == QtCore.Qt.RightButton
+                                    and _show_outliner_animation_menu(item, _event_global_pos(event, outliner.viewport()))
+                                ):
+                                    return True
                             except Exception:
                                 pass
                             _outliner_log(
@@ -3981,6 +4011,84 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 return active is node_ref
             except Exception:
                 return True
+
+        def _activate_outliner_timeline_context():
+            win = card.window()
+            glv = getattr(win, "gl_view", None) if win is not None else None
+            node_ref = getattr(card, "_node_ref", None)
+            try:
+                if win is not None and node_ref is not None:
+                    setattr(win, "_active_scene_node", node_ref)
+                    setattr(win, "_active_scene_preview_context", None)
+            except Exception:
+                pass
+            if glv is None:
+                return None
+            try:
+                scene_name = str(getattr(node_ref, "name", "") or getattr(glv, "_timeline_scene_name", "") or "scene").strip()
+            except Exception:
+                scene_name = "scene"
+            project_path = None
+            try:
+                raw_path = str(getattr(win, "_current_path", "") or "").strip() if win is not None else ""
+                if raw_path:
+                    project_path = raw_path
+            except Exception:
+                project_path = None
+            try:
+                set_ctx = getattr(glv, "set_timeline_scene_context", None)
+                if callable(set_ctx):
+                    set_ctx(
+                        scene_name=scene_name or None,
+                        project_path=project_path,
+                        owner_name=None,
+                        apply_current_frame=False,
+                        load_audio=False,
+                    )
+            except Exception:
+                pass
+            return glv
+
+        def _show_outliner_animation_menu(item, global_pos) -> bool:
+            if item is None:
+                return False
+            try:
+                kind = str(item.data(QtCore.Qt.UserRole + 1) or "").strip().lower()
+            except Exception:
+                kind = ""
+            if kind not in {"skeleton", "camera"}:
+                return False
+            try:
+                owner = str(item.data(QtCore.Qt.UserRole) or "").strip()
+            except Exception:
+                owner = ""
+            if not owner:
+                return False
+            glv = _activate_outliner_timeline_context()
+            if glv is None:
+                return False
+            menu = QtWidgets.QMenu(outliner)
+            copy_act = menu.addAction("Copy Animation")
+            paste_act = menu.addAction("Paste Animation")
+            try:
+                can_paste = getattr(glv, "_timeline_can_paste_animation", None)
+                paste_act.setEnabled(bool(callable(can_paste) and can_paste("owner_keys")))
+            except Exception:
+                paste_act.setEnabled(False)
+            copy_act.triggered.connect(
+                lambda _checked=False, g=glv, o=owner: getattr(g, "_timeline_copy_owner_animation", lambda *_: False)(o)
+            )
+            paste_act.triggered.connect(
+                lambda _checked=False, g=glv, o=owner: getattr(g, "_timeline_paste_owner_animation", lambda *_: False)(o)
+            )
+            try:
+                menu.exec(global_pos)
+            except Exception:
+                try:
+                    menu.exec_(global_pos)
+                except Exception:
+                    return False
+            return True
 
         def _lookup_saved_xform(owner: str):
             try:
@@ -4933,6 +5041,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         if et == QtCore.QEvent.MouseButtonPress:
                             try:
                                 outliner.setCurrentItem(self._item)
+                            except Exception:
+                                pass
+                            try:
+                                if (
+                                    event.button() == QtCore.Qt.RightButton
+                                    and _show_outliner_animation_menu(self._item, _event_global_pos(event, obj))
+                                ):
+                                    return True
                             except Exception:
                                 pass
                             try:

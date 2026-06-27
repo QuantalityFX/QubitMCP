@@ -3775,9 +3775,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 fov_map[owner] = fov
             if aspect_width is not None and aspect_height is not None:
                 aspect_map[owner] = (int(aspect_width), int(aspect_height))
-            # Keep UI to two options max: default + first scene camera.
-            if len(clean) >= 1:
-                break
         self._scene_camera_entries = clean
         self._scene_camera_fov_by_owner = fov_map
         self._scene_camera_aspect_by_owner = aspect_map
@@ -3794,8 +3791,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             combo.blockSignals(True)
             combo.clear()
             combo.addItem("Default Camera", "default")
-            if self._scene_camera_entries:
-                ent = self._scene_camera_entries[0] or {}
+            for ent in self._scene_camera_entries or []:
+                if not isinstance(ent, dict):
+                    continue
                 owner = str(ent.get("owner") or "").strip()
                 if owner:
                     label = str(ent.get("label") or owner).strip() or owner

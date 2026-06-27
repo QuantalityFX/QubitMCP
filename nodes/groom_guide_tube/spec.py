@@ -508,32 +508,36 @@ def build_groom_guide_tube_scene_asset(
     }
     debug.update(topology_debug)
 
-    payload = {
-        "schema": "qubit.groom_guide_tube.v1",
-        "kind": "groom_guides",
-        "asset_source_kind": "groom_guide_tube",
-        "node": node_name,
-        "visible": True,
-        "tube_cache_path": str(output_path),
-        "source_guides_path": str(guides_asset.get("guides_path") or guides_asset.get("path") or ""),
-        "source_kind": input_source_kind,
-        "source_node": source_node,
-        "source_owner": source_owner,
-        "settings": dict(settings),
-        "guide_count": int(len(curves)),
-        "points_per_curve": int(guides_asset.get("points_per_curve", 0) or 0),
-        "root_indices": list(root_indices),
-        "guide_bindings": list(guides_asset.get("guide_bindings") or []),
-        "curves": curves,
-        "line_points": line_points,
-        "debug": dict(debug),
-        "groom_guide_tube": dict(tube_config),
-    }
     upstream_config_keys = ("groom_deform", "groom_guide_pose", "groom_guide_sim", "groom_collider", "groom_guide_sim_settings")
-    for key in upstream_config_keys:
-        if isinstance(guides_asset.get(key), dict):
-            payload[key] = dict(guides_asset.get(key) or {})
-    if bool(write_cache):
+    try:
+        cache_exists = output_path.exists()
+    except Exception:
+        cache_exists = False
+    if bool(write_cache) and not bool(cache_exists):
+        payload = {
+            "schema": "qubit.groom_guide_tube.v1",
+            "kind": "groom_guides",
+            "asset_source_kind": "groom_guide_tube",
+            "node": node_name,
+            "visible": True,
+            "tube_cache_path": str(output_path),
+            "source_guides_path": str(guides_asset.get("guides_path") or guides_asset.get("path") or ""),
+            "source_kind": input_source_kind,
+            "source_node": source_node,
+            "source_owner": source_owner,
+            "settings": dict(settings),
+            "guide_count": int(len(curves)),
+            "points_per_curve": int(guides_asset.get("points_per_curve", 0) or 0),
+            "root_indices": list(root_indices),
+            "guide_bindings": list(guides_asset.get("guide_bindings") or []),
+            "curves": curves,
+            "line_points": line_points,
+            "debug": dict(debug),
+            "groom_guide_tube": dict(tube_config),
+        }
+        for key in upstream_config_keys:
+            if isinstance(guides_asset.get(key), dict):
+                payload[key] = dict(guides_asset.get(key) or {})
         _write_cache(output_path, payload)
     if bool(update_params):
         _set_param(node_item, "source", str(guides_asset.get("guides_path") or guides_asset.get("source_path") or ""), notify_scene=False)

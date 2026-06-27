@@ -526,30 +526,35 @@ def build_groom_guide_sim_scene_asset(node_item) -> GroomGuideSimBuildOutcome:
         "collider_node": str((collider_asset or {}).get("node") or ""),
     }
     debug.update(sim_debug)
-    payload = {
-        "schema": "qubit.groom_guide_sim.v1",
-        "source_guides_path": str(guides_asset.get("guides_path") or guides_asset.get("path") or ""),
-        "source_kind": str(guides_asset.get("source_kind") or guides_asset.get("kind") or ""),
-        "settings": dict(settings),
-        "guide_count": int(len(sim_curves)),
-        "points_per_curve": int(guides_asset.get("points_per_curve", 0) or 0),
-        "root_indices": list(root_indices),
-        "guide_bindings": list(guides_asset.get("guide_bindings") or []),
-        "start_curves": _copy_curves(bind_curves),
-        "bind_curves": bind_curves,
-        "curves": sim_curves,
-        "line_points": line_points,
-        "debug": dict(debug),
-        "collider": {
-            "node": str((collider_asset or {}).get("node") or ""),
-            "manifest": str(((collider_asset or {}).get("volume_mesh") or {}).get("manifest") or ""),
-        },
-    }
-    if isinstance(guides_asset.get("groom_deform"), dict):
-        payload["groom_deform"] = dict(guides_asset.get("groom_deform") or {})
-    if isinstance(guides_asset.get("groom_guide_pose"), dict):
-        payload["groom_guide_pose"] = dict(guides_asset.get("groom_guide_pose") or {})
-    _write_cache(output_path, payload)
+    try:
+        cache_exists = output_path.exists()
+    except Exception:
+        cache_exists = False
+    if not bool(cache_exists):
+        payload = {
+            "schema": "qubit.groom_guide_sim.v1",
+            "source_guides_path": str(guides_asset.get("guides_path") or guides_asset.get("path") or ""),
+            "source_kind": str(guides_asset.get("source_kind") or guides_asset.get("kind") or ""),
+            "settings": dict(settings),
+            "guide_count": int(len(sim_curves)),
+            "points_per_curve": int(guides_asset.get("points_per_curve", 0) or 0),
+            "root_indices": list(root_indices),
+            "guide_bindings": list(guides_asset.get("guide_bindings") or []),
+            "start_curves": _copy_curves(bind_curves),
+            "bind_curves": bind_curves,
+            "curves": sim_curves,
+            "line_points": line_points,
+            "debug": dict(debug),
+            "collider": {
+                "node": str((collider_asset or {}).get("node") or ""),
+                "manifest": str(((collider_asset or {}).get("volume_mesh") or {}).get("manifest") or ""),
+            },
+        }
+        if isinstance(guides_asset.get("groom_deform"), dict):
+            payload["groom_deform"] = dict(guides_asset.get("groom_deform") or {})
+        if isinstance(guides_asset.get("groom_guide_pose"), dict):
+            payload["groom_guide_pose"] = dict(guides_asset.get("groom_guide_pose") or {})
+        _write_cache(output_path, payload)
     _set_param(node_item, "source", str(guides_asset.get("guides_path") or guides_asset.get("source_path") or ""), notify_scene=False)
     _set_param(node_item, "path", str(output_path), notify_scene=False)
     _set_param(node_item, "guides_path", str(output_path), notify_scene=False)

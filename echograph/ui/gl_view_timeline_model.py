@@ -43,6 +43,8 @@ class GraphGLTimelineModelMixin:
         self,
         scene_name: str | None = None,
         project_path: str | None = None,
+        legacy: bool = False,
+        create: bool = True,
     ) -> Path:
         scene = str(scene_name or getattr(self, "_timeline_scene_name", "") or "").strip()
         if not scene:
@@ -52,9 +54,18 @@ class GraphGLTimelineModelMixin:
                 scene = "scene"
         if not scene:
             scene = "scene"
-        base_dir = self._timeline_default_project_dir(project_path=project_path)
-        out_dir = Path(base_dir) / "projects"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        sidecar_dir = getattr(self, "_timeline_project_sidecar_dir", None)
+        if callable(sidecar_dir):
+            out_dir = sidecar_dir(
+                project_path=project_path,
+                legacy=bool(legacy),
+                create=bool(create),
+            )
+        else:
+            base_dir = self._timeline_default_project_dir(project_path=project_path)
+            out_dir = Path(base_dir) / "projects"
+            if bool(create):
+                out_dir.mkdir(parents=True, exist_ok=True)
         safe_scene = self._timeline_safe_name(scene)
         return out_dir / f"{safe_scene}_timeline_composition.json"
 
@@ -318,9 +329,17 @@ class GraphGLTimelineModelMixin:
             path = None
         saved_blocks: List[Dict[str, object]] = []
         raw = {}
-        if path is not None and Path(path).exists():
+        load_path = path
+        if path is not None and not Path(path).exists():
             try:
-                raw = json.loads(Path(path).read_text(encoding="utf-8"))
+                legacy_path = self._timeline_composition_file_path(legacy=True, create=False)
+                if str(legacy_path) != str(path) and Path(legacy_path).exists():
+                    load_path = legacy_path
+            except Exception:
+                load_path = path
+        if load_path is not None and Path(load_path).exists():
+            try:
+                raw = json.loads(Path(load_path).read_text(encoding="utf-8"))
             except Exception:
                 raw = {}
         if isinstance(raw, dict):
@@ -417,9 +436,17 @@ class GraphGLTimelineModelMixin:
         except Exception:
             path = None
         saved_blocks: List[Dict[str, object]] = []
-        if path is not None and Path(path).exists():
+        load_path = path
+        if path is not None and not Path(path).exists():
             try:
-                raw = json.loads(Path(path).read_text(encoding="utf-8"))
+                legacy_path = self._timeline_composition_file_path(legacy=True, create=False)
+                if str(legacy_path) != str(path) and Path(legacy_path).exists():
+                    load_path = legacy_path
+            except Exception:
+                load_path = path
+        if load_path is not None and Path(load_path).exists():
+            try:
+                raw = json.loads(Path(load_path).read_text(encoding="utf-8"))
             except Exception:
                 raw = {}
             if isinstance(raw, dict):
@@ -1450,20 +1477,41 @@ class GraphGLTimelineModelMixin:
         if not scene_name:
             scene_name = "scene"
         try:
-            base_dir = self._timeline_default_project_dir()
-        except Exception:
-            return []
-        out_dir = Path(base_dir) / "projects"
-        if not out_dir.exists():
-            return []
-        try:
             safe_scene = self._timeline_safe_name(scene_name)
         except Exception:
             return []
+        dirs = []
         try:
-            return sorted(out_dir.glob(f"{safe_scene}__owner_*_timeline.json"))
+            sidecar_dir = getattr(self, "_timeline_project_sidecar_dir", None)
+            if callable(sidecar_dir):
+                dirs.append(Path(sidecar_dir(legacy=False, create=False)))
+                legacy_dir = Path(sidecar_dir(legacy=True, create=False))
+                if str(legacy_dir) != str(dirs[0]):
+                    dirs.append(legacy_dir)
+            else:
+                base_dir = self._timeline_default_project_dir()
+                dirs.append(Path(base_dir) / "projects")
         except Exception:
             return []
+        paths = []
+        seen = set()
+        for out_dir in dirs:
+            if not out_dir.exists():
+                continue
+            try:
+                matches = sorted(out_dir.glob(f"{safe_scene}__owner_*_timeline.json"))
+            except Exception:
+                matches = []
+            for path in matches:
+                try:
+                    pkey = str(Path(path).resolve())
+                except Exception:
+                    pkey = str(path)
+                if pkey in seen:
+                    continue
+                seen.add(pkey)
+                paths.append(Path(path))
+        return paths
 
     def _timeline_parse_keys_rows(self, rows) -> Dict[int, Dict[str, object]]:
         data: Dict[int, Dict[str, object]] = {}
@@ -1653,6 +1701,15 @@ class GraphGLTimelineModelMixin:
                 return current_keys
         try:
             renderer = getattr(self, "_mgl_renderer", None) or self
+            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            if callable(decode_fn) and decode_fn(key):
+                file_keys = self._timeline_saved_owner_keys_map(key)
+                if isinstance(file_keys, dict) and file_keys:
+                    return file_keys
+        except Exception:
+            pass
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
             map_fn = getattr(renderer, "_mgl_timeline_owner_keys_map", None)
             if callable(map_fn):
                 keys_map = map_fn(key)
@@ -1675,6 +1732,454 @@ class GraphGLTimelineModelMixin:
                 return file_keys
             break
         return {}
+
+    def _timeline_saved_owner_keys_map(self, owner: str) -> Dict[int, Dict[str, object]]:
+        key = str(owner or "").strip()
+        if not key:
+            return {}
+        key_norm = self._timeline_owner_norm(key)
+        list_paths = getattr(self, "_timeline_owner_file_paths", None)
+        read_keys = getattr(self, "_timeline_read_owner_keys_file", None)
+        if not callable(list_paths) or not callable(read_keys):
+            return {}
+        for path in list_paths() or []:
+            try:
+                file_owner, file_keys = read_keys(path)
+            except Exception:
+                continue
+            if self._timeline_owner_norm(file_owner) != key_norm:
+                continue
+            if isinstance(file_keys, dict):
+                return file_keys
+            break
+        return {}
+
+    def _timeline_clone_owner_keys(self, keys_map) -> Dict[int, Dict[str, object]]:
+        out: Dict[int, Dict[str, object]] = {}
+        if not isinstance(keys_map, dict):
+            return out
+        safe_fn = getattr(self, "_timeline_json_safe", None)
+        for frame_raw, entry in keys_map.items():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                frame = int(frame_raw)
+            except Exception:
+                continue
+            if frame < 0:
+                continue
+            try:
+                item = safe_fn(entry) if callable(safe_fn) else dict(entry)
+            except Exception:
+                item = dict(entry)
+            if not isinstance(item, dict):
+                continue
+            item = dict(item)
+            item.pop("fbx_clip_key", None)
+            item.pop("joint_key", None)
+            if item:
+                out[int(frame)] = item
+        return out
+
+    def _timeline_owner_animation_path(self, owner: str) -> Optional[Path]:
+        key = str(owner or "").strip()
+        if not key:
+            return None
+        try:
+            scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip()
+        except Exception:
+            scene_name = ""
+        if not scene_name:
+            try:
+                scene_name = self._timeline_default_scene_name()
+            except Exception:
+                scene_name = "scene"
+        project_path = None
+        try:
+            win = self.window()
+            raw_path = str(getattr(win, "_current_path", "") or "").strip() if win is not None else ""
+            if raw_path:
+                project_path = raw_path
+        except Exception:
+            project_path = None
+        try:
+            return self._timeline_anim_file_path(
+                scene_name or "scene",
+                project_path=project_path,
+                owner_name=key,
+            )
+        except Exception:
+            return None
+
+    def _timeline_owner_keys_payload_rows(self, keys_map) -> List[Dict[str, object]]:
+        rows: List[Dict[str, object]] = []
+        keys = self._timeline_clone_owner_keys(keys_map)
+        try:
+            items = sorted(keys.items(), key=lambda kv: int(kv[0]))
+        except Exception:
+            items = []
+        safe_fn = getattr(self, "_timeline_json_safe", None)
+        for frame, entry in items:
+            if not isinstance(entry, dict):
+                continue
+            row: Dict[str, object] = {"frame": int(frame)}
+            xyz = entry.get("xyz", None)
+            if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
+                try:
+                    row["xyz"] = [float(xyz[0]), float(xyz[1]), float(xyz[2])]
+                except Exception:
+                    pass
+            rxyz = entry.get("rxyz", None)
+            if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3:
+                try:
+                    row["rxyz"] = [float(rxyz[0]), float(rxyz[1]), float(rxyz[2])]
+                except Exception:
+                    pass
+            st = entry.get("camera_state", None)
+            if isinstance(st, dict) and st:
+                try:
+                    row["camera_state"] = safe_fn(st) if callable(safe_fn) else dict(st)
+                except Exception:
+                    row["camera_state"] = dict(st)
+            mask = entry.get("axis_mask", None)
+            if isinstance(mask, (list, tuple)) and len(mask) >= 6:
+                try:
+                    row["axis_mask"] = [bool(mask[i]) for i in range(6)]
+                except Exception:
+                    pass
+            ch = entry.get("curve_handles", None)
+            if isinstance(ch, dict) and ch:
+                ch_out = {}
+                for ak, av in ch.items():
+                    try:
+                        axis_idx = int(str(ak).strip())
+                    except Exception:
+                        continue
+                    if axis_idx < 0 or axis_idx > 5 or not isinstance(av, dict):
+                        continue
+                    mode_raw = str(av.get("mode", "tied") or "tied").strip().lower()
+                    if mode_raw == "straight":
+                        ch_out[str(axis_idx)] = {"mode": "straight"}
+                        continue
+                    mode = "untied" if mode_raw == "untied" else "tied"
+                    in_raw = av.get("in", None)
+                    out_raw = av.get("out", None)
+                    if not (isinstance(in_raw, (list, tuple)) and len(in_raw) >= 2):
+                        continue
+                    if not (isinstance(out_raw, (list, tuple)) and len(out_raw) >= 2):
+                        continue
+                    try:
+                        ch_out[str(axis_idx)] = {
+                            "mode": mode,
+                            "in": [float(in_raw[0]), float(in_raw[1])],
+                            "out": [float(out_raw[0]), float(out_raw[1])],
+                        }
+                    except Exception:
+                        continue
+                if ch_out:
+                    row["curve_handles"] = ch_out
+            source_frame = entry.get("source_frame", None)
+            if source_frame is not None:
+                try:
+                    value = float(source_frame)
+                    if math.isfinite(float(value)):
+                        row["source_frame"] = float(value)
+                except Exception:
+                    pass
+            if len(row) > 1:
+                rows.append(row)
+        return rows
+
+    def _timeline_animation_clipboard_message(self, text: str) -> None:
+        msg = str(text or "").strip()
+        if not msg:
+            return
+        try:
+            win = self.window()
+            status_fn = getattr(win, "statusBar", None) if win is not None else None
+            status = status_fn() if callable(status_fn) else None
+            show_fn = getattr(status, "showMessage", None)
+            if callable(show_fn):
+                show_fn(msg, 2500)
+                return
+        except Exception:
+            pass
+        try:
+            self._timeline_scene_view_log(msg, throttle_key=f"animation_clipboard:{msg}", interval=0.25)
+        except Exception:
+            pass
+
+    def _timeline_can_paste_animation(self, target: str | None = None) -> bool:
+        clip = getattr(self, "_timeline_animation_clipboard", None)
+        if not isinstance(clip, dict):
+            return False
+        kind = str(clip.get("type") or "").strip().lower()
+        if kind == "owner_keys":
+            return isinstance(clip.get("keys"), dict) and bool(clip.get("keys"))
+        if kind == "composition_block":
+            if str(target or "").strip().lower() == "owner_keys":
+                return isinstance(clip.get("keys"), dict) and bool(clip.get("keys"))
+            return isinstance(clip.get("block"), dict) or (isinstance(clip.get("keys"), dict) and bool(clip.get("keys")))
+        return False
+
+    def _timeline_copy_owner_animation(self, owner: str) -> bool:
+        key = str(owner or "").strip()
+        if not key:
+            return False
+        keys = self._timeline_clone_owner_keys(self._timeline_keys_map_for_owner(key))
+        if not keys:
+            self._timeline_animation_clipboard_message(f"No animation keys found for {key}.")
+            return False
+        self._timeline_animation_clipboard = {
+            "type": "owner_keys",
+            "owner": key,
+            "scene": str(getattr(self, "_timeline_scene_name", "") or ""),
+            "fps": float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+            "keys": keys,
+            "copied_at": float(time.time()),
+        }
+        self._timeline_animation_clipboard_message(f"Copied animation keys from {key}.")
+        return True
+
+    def _timeline_replace_owner_animation_keys(
+        self,
+        owner: str,
+        keys_map,
+        *,
+        apply_current_frame: bool = True,
+    ) -> bool:
+        key = str(owner or "").strip()
+        if not key:
+            return False
+        keys = self._timeline_clone_owner_keys(keys_map)
+        if not keys:
+            self._timeline_animation_clipboard_message("No animation keys to paste.")
+            return False
+        path = self._timeline_owner_animation_path(key)
+        if path is None:
+            self._timeline_animation_clipboard_message(f"Could not resolve timeline file for {key}.")
+            return False
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except Exception:
+            raw = {}
+        payload = dict(raw) if isinstance(raw, dict) else {}
+        try:
+            scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip()
+        except Exception:
+            scene_name = ""
+        payload["scene"] = scene_name or "scene"
+        payload["owner"] = key
+        payload["fps"] = float(getattr(self, "_timeline_fps", 24.0) or 24.0)
+        payload.setdefault(
+            "in_frame",
+            int(getattr(self, "_timeline_in_frame", 0))
+            if getattr(self, "_timeline_in_frame", None) is not None
+            else None,
+        )
+        payload.setdefault(
+            "out_frame",
+            int(getattr(self, "_timeline_out_frame", 0))
+            if getattr(self, "_timeline_out_frame", None) is not None
+            else None,
+        )
+        payload.setdefault("end_frame", payload.get("out_frame", None))
+        payload["keys"] = self._timeline_owner_keys_payload_rows(keys)
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            if callable(decode_fn) and decode_fn(key):
+                payload["scene_skeleton_fbx_seeded"] = True
+                payload["scene_skeleton_frame_space"] = "timeline"
+        except Exception:
+            pass
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+            self._timeline_owner_keys_cache = {}
+        except Exception:
+            self._timeline_animation_clipboard_message(f"Failed to write animation keys for {key}.")
+            return False
+        try:
+            if self._timeline_owner_norm(str(getattr(self, "_timeline_owner_name", "") or "")) == self._timeline_owner_norm(key):
+                self._timeline_keys = keys
+                self._timeline_anim_path = path
+                self._timeline_total_max = max(
+                    240,
+                    max(int(frame) for frame in keys.keys()) if keys else 0,
+                )
+                self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+                self._timeline_update_key_count_label()
+                self._timeline_refresh_coord_labels()
+        except Exception:
+            pass
+        try:
+            self._timeline_invalidate_owner_animation_cache(key)
+            asset_owner = self._timeline_scene_joint_asset_owner(key)
+            if asset_owner and self._timeline_owner_norm(asset_owner) != self._timeline_owner_norm(key):
+                self._timeline_invalidate_owner_animation_cache(asset_owner)
+        except Exception:
+            pass
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            apply_fn = getattr(renderer, "_mgl_scene_skeleton_apply_timeline_keys", None)
+            if callable(decode_fn) and decode_fn(key) and callable(apply_fn):
+                apply_fn(key, keys, float(getattr(self, "_timeline_fps", 24.0) or 24.0))
+        except Exception:
+            pass
+        if bool(apply_current_frame):
+            try:
+                frame = int(self._timeline_current_frame())
+            except Exception:
+                frame = 0
+            try:
+                self._timeline_apply_frame_if_keyed(frame, force=True)
+            except Exception:
+                pass
+            try:
+                self._timeline_apply_other_owner_frames(frame)
+            except Exception:
+                pass
+            try:
+                self.update()
+            except Exception:
+                pass
+        self._timeline_animation_clipboard_message(f"Pasted animation keys to {key}.")
+        return True
+
+    def _timeline_paste_owner_animation(self, owner: str) -> bool:
+        key = str(owner or "").strip()
+        if not key:
+            return False
+        clip = getattr(self, "_timeline_animation_clipboard", None)
+        if not isinstance(clip, dict):
+            self._timeline_animation_clipboard_message("No copied animation.")
+            return False
+        keys = clip.get("keys")
+        if not isinstance(keys, dict) or not keys:
+            self._timeline_animation_clipboard_message("Copied item has no animation keys.")
+            return False
+        return self._timeline_replace_owner_animation_keys(key, keys)
+
+    def _timeline_copy_composition_animation(self, block: Dict[str, object]) -> bool:
+        if not isinstance(block, dict):
+            return False
+        normalized = self._timeline_normalize_composition_block(block)
+        if not isinstance(normalized, dict):
+            return False
+        owner = str(normalized.get("owner") or "").strip()
+        timing_fields = (
+            "clip_start_frame",
+            "clip_end_frame",
+            "source_start_frame",
+            "source_end_frame",
+            "speed_percent",
+            "loop",
+            "hold_before",
+            "hold_after",
+            "enabled",
+        )
+        block_copy = {field: normalized.get(field) for field in timing_fields}
+        keys = self._timeline_clone_owner_keys(self._timeline_keys_map_for_owner(owner)) if owner else {}
+        self._timeline_animation_clipboard = {
+            "type": "composition_block",
+            "owner": owner,
+            "scene": str(getattr(self, "_timeline_scene_name", "") or ""),
+            "fps": float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+            "block": block_copy,
+            "keys": keys,
+            "copied_at": float(time.time()),
+        }
+        self._timeline_animation_clipboard_message(f"Copied sequence animation from {owner or 'sequence'}.")
+        return True
+
+    def _timeline_paste_composition_animation(self, block: Dict[str, object]) -> bool:
+        if not isinstance(block, dict):
+            return False
+        clip = getattr(self, "_timeline_animation_clipboard", None)
+        if not isinstance(clip, dict):
+            self._timeline_animation_clipboard_message("No copied animation.")
+            return False
+        target_owner = str(block.get("owner") or "").strip()
+        changed = False
+        if isinstance(clip.get("block"), dict) and not bool(block.get("locked", False)):
+            src = clip.get("block") or {}
+            int_fields = ("clip_start_frame", "clip_end_frame", "source_start_frame", "source_end_frame")
+            bool_fields = ("loop", "hold_before", "hold_after", "enabled")
+            for field in int_fields:
+                if field not in src:
+                    continue
+                try:
+                    block[field] = max(0, int(src.get(field, 0) or 0))
+                    changed = True
+                except Exception:
+                    pass
+            if int(block.get("clip_end_frame", 1) or 1) <= int(block.get("clip_start_frame", 0) or 0):
+                block["clip_end_frame"] = int(block.get("clip_start_frame", 0) or 0) + 1
+            if int(block.get("source_end_frame", 0) or 0) < int(block.get("source_start_frame", 0) or 0):
+                block["source_end_frame"] = int(block.get("source_start_frame", 0) or 0)
+            if "speed_percent" in src:
+                try:
+                    block["speed_percent"] = float(self._timeline_normalize_speed_percent(src.get("speed_percent", 100.0)))
+                    changed = True
+                except Exception:
+                    pass
+            for field in bool_fields:
+                if field in src:
+                    block[field] = bool(src.get(field))
+                    changed = True
+            try:
+                block_id = str(block.get("id") or "")
+                normalized = self._timeline_normalize_composition_block(block)
+                if isinstance(normalized, dict):
+                    block.update(normalized)
+                    block["id"] = block_id or str(block.get("id") or "")
+            except Exception:
+                pass
+            try:
+                self._timeline_save_composition()
+            except Exception:
+                pass
+            try:
+                self._timeline_total_max = max(
+                    240,
+                    self._timeline_composition_max_frame(),
+                    int(self._timeline_current_frame()),
+                )
+                self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+            except Exception:
+                pass
+            try:
+                if target_owner:
+                    self._timeline_invalidate_owner_animation_cache(target_owner)
+            except Exception:
+                pass
+        keys = clip.get("keys")
+        if target_owner and isinstance(keys, dict) and keys:
+            if self._timeline_replace_owner_animation_keys(target_owner, keys, apply_current_frame=False):
+                changed = True
+        if changed:
+            canvas = getattr(self, "_timeline_composition_canvas", None)
+            if canvas is not None:
+                try:
+                    canvas.update()
+                except Exception:
+                    pass
+            try:
+                self._timeline_refresh_speed_control()
+            except Exception:
+                pass
+            try:
+                frame = int(self._timeline_current_frame())
+                self._timeline_apply_other_owner_frames(frame)
+                self.update()
+            except Exception:
+                pass
+            self._timeline_animation_clipboard_message(f"Pasted sequence animation to {target_owner or 'sequence'}.")
+        else:
+            self._timeline_animation_clipboard_message("Nothing was pasted.")
+        return bool(changed)
 
     def _timeline_apply_selected_camera_owner_frame(self, frame: int) -> None:
         if self._timeline_preview_context_active():

@@ -39,7 +39,7 @@ class GraphGLTimelineIOMixin:
         current = str(getattr(self, "_timeline_scene_name", "scene") or "scene").strip()
         return current or "scene"
 
-    def _timeline_default_project_dir(self, project_path: str | None = None) -> Path:
+    def _timeline_project_ref_path(self, project_path: str | None = None) -> Path | None:
         raw = (project_path or "").strip()
         if not raw:
             try:
@@ -52,9 +52,17 @@ class GraphGLTimelineIOMixin:
                 raw = str(getattr(getattr(self, "_scene", None), "_filename", "") or "").strip()
             except Exception:
                 raw = ""
-        if raw:
+        if not raw:
+            return None
+        try:
+            return Path(raw)
+        except Exception:
+            return None
+
+    def _timeline_default_project_dir(self, project_path: str | None = None) -> Path:
+        p = self._timeline_project_ref_path(project_path=project_path)
+        if p is not None:
             try:
-                p = Path(raw)
                 if p.suffix:
                     p = p.parent
                 return p
@@ -62,15 +70,56 @@ class GraphGLTimelineIOMixin:
                 pass
         return Path(tempfile.gettempdir()) / "EchoGraph"
 
+    def _timeline_workflow_namespace(self, project_path: str | None = None) -> str:
+        p = self._timeline_project_ref_path(project_path=project_path)
+        if p is None:
+            return ""
+        try:
+            if not p.suffix:
+                return ""
+            stem = str(p.stem or "").strip()
+        except Exception:
+            return ""
+        if not stem:
+            return ""
+        try:
+            return self._timeline_safe_name(stem)
+        except Exception:
+            return stem
+
+    def _timeline_project_sidecar_dir(
+        self,
+        project_path: str | None = None,
+        *,
+        legacy: bool = False,
+        create: bool = True,
+    ) -> Path:
+        base_dir = self._timeline_default_project_dir(project_path=project_path)
+        out_dir = base_dir / "projects"
+        if not bool(legacy):
+            namespace = self._timeline_workflow_namespace(project_path=project_path)
+            if namespace:
+                out_dir = out_dir / namespace
+        if bool(create):
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        return out_dir
+
     def _timeline_anim_file_path(
         self,
         scene_name: str,
         project_path: str | None = None,
         owner_name: str | None = None,
+        legacy: bool = False,
+        create: bool = True,
     ) -> Path:
-        base_dir = self._timeline_default_project_dir(project_path=project_path)
-        out_dir = base_dir / "projects"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._timeline_project_sidecar_dir(
+            project_path=project_path,
+            legacy=bool(legacy),
+            create=bool(create),
+        )
         safe_scene = self._timeline_safe_name(scene_name)
         safe_owner = self._timeline_safe_name(owner_name) if str(owner_name or "").strip() else ""
         if safe_owner:
@@ -81,10 +130,14 @@ class GraphGLTimelineIOMixin:
         self,
         scene_name: str,
         project_path: str | None = None,
+        legacy: bool = False,
+        create: bool = True,
     ) -> Path:
-        base_dir = self._timeline_default_project_dir(project_path=project_path)
-        out_dir = base_dir / "projects"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._timeline_project_sidecar_dir(
+            project_path=project_path,
+            legacy=bool(legacy),
+            create=bool(create),
+        )
         safe_scene = self._timeline_safe_name(scene_name or "scene")
         return out_dir / f"{safe_scene}_timeline_range.json"
 
@@ -116,10 +169,14 @@ class GraphGLTimelineIOMixin:
         self,
         scene_name: str,
         project_path: str | None = None,
+        legacy: bool = False,
+        create: bool = True,
     ) -> Path:
-        base_dir = self._timeline_default_project_dir(project_path=project_path)
-        out_dir = base_dir / "projects"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._timeline_project_sidecar_dir(
+            project_path=project_path,
+            legacy=bool(legacy),
+            create=bool(create),
+        )
         safe_scene = self._timeline_safe_name(scene_name or "viewport")
         return out_dir / f"{safe_scene}_audio.json"
 
@@ -201,6 +258,22 @@ class GraphGLTimelineIOMixin:
         if raw is None:
             legacy_candidates = []
             seen = set()
+            try:
+                scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip() or "scene"
+                legacy_range_path = self._timeline_range_file_path(
+                    scene_name,
+                    legacy=True,
+                    create=False,
+                )
+                if path is None or str(legacy_range_path) != str(path):
+                    try:
+                        pkey = str(Path(legacy_range_path).resolve())
+                    except Exception:
+                        pkey = str(legacy_range_path)
+                    seen.add(pkey)
+                    legacy_candidates.append(Path(legacy_range_path))
+            except Exception:
+                pass
             legacy_path = getattr(self, "_timeline_anim_path", None)
             if legacy_path is not None:
                 try:
@@ -211,8 +284,7 @@ class GraphGLTimelineIOMixin:
                 legacy_candidates.append(Path(legacy_path))
             try:
                 scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip() or "scene"
-                base_dir = self._timeline_default_project_dir()
-                out_dir = Path(base_dir) / "projects"
+                out_dir = self._timeline_project_sidecar_dir(legacy=True, create=False)
                 safe_scene = self._timeline_safe_name(scene_name)
                 extra = [out_dir / f"{safe_scene}_timeline.json"]
                 extra.extend(sorted(out_dir.glob(f"{safe_scene}__owner_*_timeline.json")))
@@ -329,10 +401,25 @@ class GraphGLTimelineIOMixin:
 
     def _timeline_audio_load_from_disk(self) -> None:
         path = getattr(self, "_timeline_audio_cfg_path", None)
-        raw = {}
-        if path is not None and path.exists():
+        load_path = path
+        loaded_from_legacy = False
+        if path is not None and not path.exists():
             try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
+                scene_name = str(getattr(self, "_timeline_audio_scene_name", "") or "").strip() or "viewport"
+                legacy_path = self._timeline_audio_file_path(
+                    scene_name,
+                    legacy=True,
+                    create=False,
+                )
+                if str(legacy_path) != str(path) and legacy_path.exists():
+                    load_path = legacy_path
+                    loaded_from_legacy = True
+            except Exception:
+                load_path = path
+        raw = {}
+        if load_path is not None and load_path.exists():
+            try:
+                raw = json.loads(load_path.read_text(encoding="utf-8"))
             except Exception:
                 raw = {}
         if not isinstance(raw, dict):
@@ -340,6 +427,13 @@ class GraphGLTimelineIOMixin:
         stored = str(raw.get("audio_path", "") or "").strip()
         resolved = self._timeline_audio_resolve_path(stored)
         muted = bool(raw.get("muted", False))
+        if loaded_from_legacy:
+            try:
+                self._timeline_audio_path = resolved
+                self._timeline_audio_muted = bool(muted)
+                self._timeline_audio_save_to_disk()
+            except Exception:
+                pass
         setter = getattr(self, "_timeline_audio_set_path", None)
         mute_setter = getattr(self, "_timeline_audio_set_muted", None)
         if callable(setter):
@@ -709,6 +803,23 @@ class GraphGLTimelineIOMixin:
 
     def _timeline_load_from_disk(self, *, apply_current_frame: bool = True) -> None:
         path = getattr(self, "_timeline_anim_path", None)
+        load_path = path
+        loaded_from_legacy = False
+        if path is not None and not path.exists():
+            try:
+                scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip() or "scene"
+                owner_name = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+                legacy_path = self._timeline_anim_file_path(
+                    scene_name,
+                    owner_name=owner_name or None,
+                    legacy=True,
+                    create=False,
+                )
+                if str(legacy_path) != str(path) and legacy_path.exists():
+                    load_path = legacy_path
+                    loaded_from_legacy = True
+            except Exception:
+                load_path = path
         self._timeline_keys = {}
         self._timeline_curve_selected = set()
         self._timeline_scene_skeleton_fbx_seeded = False
@@ -716,7 +827,7 @@ class GraphGLTimelineIOMixin:
         material_live_mode = True
         fx_instances_enabled = True
         fx_proxy_enabled = True
-        if path is None or not path.exists():
+        if load_path is None or not load_path.exists():
             try:
                 self._timeline_set_fps(24.0, save=False, sync_ui=True)
             except Exception:
@@ -775,7 +886,7 @@ class GraphGLTimelineIOMixin:
                 pass
             return
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(load_path.read_text(encoding="utf-8"))
         except Exception:
             raw = {}
         if not isinstance(raw, dict):
@@ -952,7 +1063,7 @@ class GraphGLTimelineIOMixin:
                     self._timeline_scene_skeleton_frame_space = "timeline"
         except Exception:
             pass
-        if seeded_from_fbx:
+        if seeded_from_fbx or loaded_from_legacy:
             try:
                 self._timeline_save_to_disk()
             except Exception:
