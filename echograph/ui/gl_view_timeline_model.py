@@ -1909,8 +1909,109 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
 
+    def _timeline_normalize_animation_clipboard(self, clip) -> dict | None:
+        if not isinstance(clip, dict):
+            return None
+        kind = str(clip.get("type") or "").strip().lower()
+        if kind not in {"owner_keys", "composition_block"}:
+            return None
+        out = {
+            "type": kind,
+            "owner": str(clip.get("owner") or "").strip(),
+            "scene": str(clip.get("scene") or "").strip(),
+            "fps": float(clip.get("fps", getattr(self, "_timeline_fps", 24.0)) or 24.0),
+            "copied_at": float(clip.get("copied_at", 0.0) or 0.0),
+        }
+        if isinstance(clip.get("block"), dict):
+            out["block"] = dict(clip.get("block") or {})
+        keys_raw = clip.get("keys")
+        keys = {}
+        if isinstance(keys_raw, dict):
+            keys = self._timeline_clone_owner_keys(keys_raw)
+        elif isinstance(keys_raw, list):
+            try:
+                keys = self._timeline_parse_keys_rows(keys_raw)
+            except Exception:
+                keys = {}
+        if keys:
+            out["keys"] = keys
+        elif kind == "owner_keys":
+            return None
+        if kind == "composition_block" and not isinstance(out.get("block"), dict) and not keys:
+            return None
+        return out
+
+    def _timeline_animation_clipboard_payload(self, clip: dict) -> dict | None:
+        normalized = self._timeline_normalize_animation_clipboard(clip)
+        if not isinstance(normalized, dict):
+            return None
+        payload = {
+            "schema": "qubit.timeline.animation_clipboard.v1",
+            "type": str(normalized.get("type") or ""),
+            "owner": str(normalized.get("owner") or ""),
+            "scene": str(normalized.get("scene") or ""),
+            "fps": float(normalized.get("fps", 24.0) or 24.0),
+            "copied_at": float(normalized.get("copied_at", 0.0) or 0.0),
+        }
+        if isinstance(normalized.get("block"), dict):
+            payload["block"] = dict(normalized.get("block") or {})
+        keys = normalized.get("keys")
+        if isinstance(keys, dict) and keys:
+            payload["keys"] = self._timeline_owner_keys_payload_rows(keys)
+        return payload
+
+    def _timeline_write_animation_clipboard_to_system(self, clip: dict) -> None:
+        payload = self._timeline_animation_clipboard_payload(clip)
+        if not isinstance(payload, dict):
+            return
+        try:
+            clipboard = QtWidgets.QApplication.clipboard()
+            if clipboard is not None:
+                clipboard.setText(json.dumps(payload, ensure_ascii=True, separators=(",", ":")))
+        except Exception:
+            pass
+
+    def _timeline_read_animation_clipboard_from_system(self) -> dict | None:
+        try:
+            clipboard = QtWidgets.QApplication.clipboard()
+            text = clipboard.text() if clipboard is not None else ""
+        except Exception:
+            text = ""
+        if not text:
+            return None
+        try:
+            payload = json.loads(str(text))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        schema = str(payload.get("schema") or "").strip().lower()
+        if schema != "qubit.timeline.animation_clipboard.v1":
+            return None
+        return self._timeline_normalize_animation_clipboard(payload)
+
+    def _timeline_current_animation_clipboard(self) -> dict | None:
+        memory_clip = self._timeline_normalize_animation_clipboard(
+            getattr(self, "_timeline_animation_clipboard", None)
+        )
+        system_clip = self._timeline_read_animation_clipboard_from_system()
+        if isinstance(memory_clip, dict) and isinstance(system_clip, dict):
+            try:
+                if float(system_clip.get("copied_at", 0.0) or 0.0) > float(memory_clip.get("copied_at", 0.0) or 0.0):
+                    self._timeline_animation_clipboard = system_clip
+                    return system_clip
+            except Exception:
+                pass
+            return memory_clip
+        if isinstance(system_clip, dict):
+            self._timeline_animation_clipboard = system_clip
+            return system_clip
+        if isinstance(memory_clip, dict):
+            return memory_clip
+        return None
+
     def _timeline_can_paste_animation(self, target: str | None = None) -> bool:
-        clip = getattr(self, "_timeline_animation_clipboard", None)
+        clip = self._timeline_current_animation_clipboard()
         if not isinstance(clip, dict):
             return False
         kind = str(clip.get("type") or "").strip().lower()
@@ -1938,6 +2039,7 @@ class GraphGLTimelineModelMixin:
             "keys": keys,
             "copied_at": float(time.time()),
         }
+        self._timeline_write_animation_clipboard_to_system(self._timeline_animation_clipboard)
         self._timeline_animation_clipboard_message(f"Copied animation keys from {key}.")
         return True
 
@@ -2021,6 +2123,15 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
         try:
+            self._timeline_total_max = max(
+                int(getattr(self, "_timeline_total_max", 240) or 240),
+                max(int(frame) for frame in keys.keys()) if keys else 0,
+                int(self._timeline_current_frame()),
+            )
+            self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+        except Exception:
+            pass
+        try:
             renderer = getattr(self, "_mgl_renderer", None) or self
             decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
             apply_fn = getattr(renderer, "_mgl_scene_skeleton_apply_timeline_keys", None)
@@ -2052,7 +2163,7 @@ class GraphGLTimelineModelMixin:
         key = str(owner or "").strip()
         if not key:
             return False
-        clip = getattr(self, "_timeline_animation_clipboard", None)
+        clip = self._timeline_current_animation_clipboard()
         if not isinstance(clip, dict):
             self._timeline_animation_clipboard_message("No copied animation.")
             return False
@@ -2091,13 +2202,14 @@ class GraphGLTimelineModelMixin:
             "keys": keys,
             "copied_at": float(time.time()),
         }
+        self._timeline_write_animation_clipboard_to_system(self._timeline_animation_clipboard)
         self._timeline_animation_clipboard_message(f"Copied sequence animation from {owner or 'sequence'}.")
         return True
 
     def _timeline_paste_composition_animation(self, block: Dict[str, object]) -> bool:
         if not isinstance(block, dict):
             return False
-        clip = getattr(self, "_timeline_animation_clipboard", None)
+        clip = self._timeline_current_animation_clipboard()
         if not isinstance(clip, dict):
             self._timeline_animation_clipboard_message("No copied animation.")
             return False
@@ -2263,15 +2375,36 @@ class GraphGLTimelineModelMixin:
             f = 0
         if self._timeline_is_composition_mode():
             pairs: List[Tuple[str, Dict[int, Dict[str, object]]]] = []
+            covered_owner_norms = set()
+            try:
+                self._timeline_ensure_composition_blocks_cached()
+            except Exception:
+                pass
             for block in self._timeline_composition_blocks_list():
-                if not isinstance(block, dict) or not bool(block.get("enabled", True)):
+                if not isinstance(block, dict):
                     continue
                 owner = str(block.get("owner") or "").strip()
                 if not owner:
                     continue
+                owner_norm = self._timeline_owner_norm(owner)
+                if owner_norm:
+                    covered_owner_norms.add(owner_norm)
+                if not bool(block.get("enabled", True)):
+                    continue
                 keys_map = self._timeline_keys_map_for_owner(owner)
                 if isinstance(keys_map, dict) and keys_map:
                     pairs.append((owner, keys_map))
+            try:
+                extra_pairs = self._timeline_collect_other_owner_keys()
+            except Exception:
+                extra_pairs = []
+            for owner, keys_map in extra_pairs:
+                owner_norm = self._timeline_owner_norm(owner)
+                if not owner_norm or owner_norm in covered_owner_norms:
+                    continue
+                if isinstance(keys_map, dict) and keys_map:
+                    pairs.append((owner, keys_map))
+                    covered_owner_norms.add(owner_norm)
         else:
             pairs = self._timeline_collect_other_owner_keys()
         for owner, keys_map in pairs:
@@ -2292,7 +2425,7 @@ class GraphGLTimelineModelMixin:
             except Exception:
                 continue
             eval_frame = f
-            mapped = self._timeline_composition_source_frame(owner, f)
+            mapped = self._timeline_composition_source_frame(owner, f) if self._timeline_owner_is_camera(owner) else None
             if mapped is not None:
                 try:
                     if self._timeline_owner_is_camera(owner):
@@ -2761,7 +2894,14 @@ class GraphGLTimelineModelMixin:
 
     def _timeline_max_key_frame(self) -> int:
         if self._timeline_is_composition_mode():
-            return int(self._timeline_composition_max_frame())
+            max_frame = int(self._timeline_composition_max_frame())
+            try:
+                for _owner, keys_map in self._timeline_collect_other_owner_keys():
+                    if isinstance(keys_map, dict) and keys_map:
+                        max_frame = max(max_frame, max(int(k) for k in keys_map.keys()))
+            except Exception:
+                pass
+            return int(max_frame)
         try:
             keys = getattr(self, "_timeline_keys", {}) or {}
             if keys:

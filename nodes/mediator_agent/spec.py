@@ -13,7 +13,7 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 from nodes.core import Spec
-from echograph.qt_compat import QtWidgets, QtCore
+from echograph.qt_compat import QtWidgets, QtCore, QtGui
 
 
 MEDIGATOR_NODE_KIND = "mediator_agent"
@@ -44,7 +44,7 @@ MEDIGATOR_MAX_HISTORY_CHARS = 24000
 MEDIGATOR_MAX_VOICE_CHARS = 8000
 MEDIGATOR_MAX_PROMPT_LOG_FILES = 15
 MEDIGATOR_MAX_CONSOLE_LOG_LINES = 5000
-MEDIGATOR_CODEX_MODEL = "gpt-5.3-codex"
+MEDIGATOR_CODEX_MODEL = "gpt-5.5"
 VOICE_ACTOR_KINDS = {"voice_actor", "voice actor", "voiceactor"}
 VOICE_ACTOR_SEND_TOKEN_PARAM = "__voice_actor_send_token"
 QDECK_CONTROLLER_KINDS = {
@@ -57,6 +57,54 @@ SYSTEM_PROMPT_KINDS = {"llm_prompt", "gpt_prompt", "prompt", "system_prompt"}
 QDECK_PROMPT_PROFILE = "qubit_deck_controller"
 QDECK_DEFAULT_API_BASE = "http://127.0.0.1:8765"
 QDECK_CONTEXT_MAX_ROWS = 220
+AGENT_POPUP_MIN_WIDTH = 520
+AGENT_POPUP_RADIUS = 8
+AGENT_POPUP_BORDER_WIDTH = 2
+AGENT_POPUP_TITLE_RADIUS = max(0, AGENT_POPUP_RADIUS - AGENT_POPUP_BORDER_WIDTH)
+AGENT_POPUP_CONTENT_MARGIN_X = 14
+AGENT_POPUP_DETAIL_TEXT_WIDTH = (
+    AGENT_POPUP_MIN_WIDTH
+    - (AGENT_POPUP_BORDER_WIDTH * 2)
+    - (AGENT_POPUP_CONTENT_MARGIN_X * 2)
+)
+AGENT_POPUP_CLOSE_ICON_COLOR = "#d1d5db"
+SECURITY_GUARD_PROMPT_PROFILE = "security_guard"
+SECURITY_GUARD_POPUP_NAME = "Security Guard popup"
+TANYA_PROMPT_PROFILE = "assistant_tanya"
+MEDIGATOR_PROMPT_PROFILE_ALIASES = {
+    "romantic_dark_assistant": TANYA_PROMPT_PROFILE,
+}
+SECURITY_AGENT_ICON_FILENAMES = ("ScurityAgent_Icon.png", "SecurityAgent_Icon.png")
+OPERATOR_AGENT_ICON_FILENAMES = ("ITOperatorAgent_Icon.png", "OperatorAgent_Icon.png")
+TANYA_AGENT_ICON_FILENAMES = ("AssistentTanyaAgent_Icon.png", "AssistantTanyaAgent_Icon.png", "TanyaAI_Icon.png")
+MEDIGATOR_PENDING_SECURITY_REQUEST_PARAM = "__pending_security_request"
+MEDIGATOR_PENDING_SECURITY_REQUESTER_NODE_PARAM = "__pending_security_requester_node"
+MEDIGATOR_PENDING_SECURITY_USER_INPUT_PARAM = "__pending_security_user_input"
+MEDIGATOR_PENDING_SECURITY_SIGNATURE_PARAM = "__pending_security_signature"
+MEDIGATOR_CODEX_RESPONSE_SOURCES = {
+    "auto",
+    "manual",
+    "security_request",
+    "security_approval",
+}
+SECURITY_HIDDEN_PARAMS = [
+    MEDIGATOR_PENDING_SECURITY_REQUEST_PARAM,
+    MEDIGATOR_PENDING_SECURITY_REQUESTER_NODE_PARAM,
+    MEDIGATOR_PENDING_SECURITY_USER_INPUT_PARAM,
+    MEDIGATOR_PENDING_SECURITY_SIGNATURE_PARAM,
+]
+SECURITY_REQUEST_RE = re.compile(
+    r"<security_request\b(?P<attrs>[^>]*)>.*?</security_request>",
+    re.IGNORECASE | re.DOTALL,
+)
+SECURITY_APPROVAL_RE = re.compile(
+    r"<security_approval\b(?P<attrs>[^>]*)>.*?</security_approval>",
+    re.IGNORECASE | re.DOTALL,
+)
+SECURITY_ATTR_RE = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(['\"])(.*?)\2",
+    re.DOTALL,
+)
 
 
 def _repo_root() -> Path:
@@ -74,6 +122,7 @@ def _normalize_prompt_profile(value: str) -> str:
         if ch.isalnum() or ch in ("_", "-"):
             cleaned.append(ch)
     token = "".join(cleaned).strip("._-")
+    token = MEDIGATOR_PROMPT_PROFILE_ALIASES.get(token, token)
     return token or MEDIGATOR_DEFAULT_PROMPT_PROFILE
 
 
@@ -686,6 +735,108 @@ def _set_param_value(node_item, name: str, value: str, *, notify_scene: bool = T
         pass
 
 
+def _security_attrs_from_match(match) -> dict[str, str]:
+    if not match:
+        return {}
+    attrs_text = match.groupdict().get("attrs", "") or ""
+    attrs: dict[str, str] = {}
+    for attr_match in SECURITY_ATTR_RE.finditer(attrs_text):
+        attrs[attr_match.group(1).strip().lower()] = attr_match.group(3).strip()
+    return attrs
+
+
+def _first_security_request(text: str) -> tuple[str, dict[str, str]]:
+    match = SECURITY_REQUEST_RE.search(str(text or ""))
+    if not match:
+        return "", {}
+    return match.group(0).strip(), _security_attrs_from_match(match)
+
+
+def _first_security_approval(text: str) -> tuple[str, dict[str, str]]:
+    match = SECURITY_APPROVAL_RE.search(str(text or ""))
+    if not match:
+        return "", {}
+    return match.group(0).strip(), _security_attrs_from_match(match)
+
+
+def _xml_attr(value: str) -> str:
+    return (
+        str(value or "")
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _security_approval_marker(requester: str, tool: str, decision: str) -> str:
+    clean_decision = str(decision or "").strip().lower()
+    if clean_decision not in {"approved", "denied"}:
+        clean_decision = "denied"
+    clean_requester = str(requester or "Tanya").strip() or "Tanya"
+    clean_tool = str(tool or "qubit_deck_controller").strip() or "qubit_deck_controller"
+    return (
+        f'<security_approval requester="{_xml_attr(clean_requester)}" '
+        f'tool="{_xml_attr(clean_tool)}" scope="single_action" '
+        f'decision="{clean_decision}">{clean_decision}</security_approval>'
+    )
+
+
+def _is_qdeck_security_tool(value: str) -> bool:
+    return _normalize_prompt_profile(value) == QDECK_PROMPT_PROFILE
+
+
+def _security_signature(*parts: str) -> str:
+    payload = "\n".join(str(part or "") for part in parts)
+    return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _mediator_items(scene) -> list:
+    if scene is None or not hasattr(scene, "_node_items"):
+        return []
+    try:
+        items = list(scene._node_items.values())
+    except Exception:
+        return []
+    return [item for item in items if _kind_of_item(item) in MEDIGATOR_NODE_KINDS]
+
+
+def _mediator_profile_from_item(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    return _normalize_prompt_profile(
+        _param_value(model, MEDIGATOR_PROMPT_PROFILE_PARAM, MEDIGATOR_DEFAULT_PROMPT_PROFILE)
+    )
+
+
+def _mediator_widget_from_item(node_item):
+    return getattr(node_item, "_mediator_console_widget", None)
+
+
+def _find_security_guard_item(scene, *, exclude_item=None):
+    for item in _mediator_items(scene):
+        if item is exclude_item:
+            continue
+        if _mediator_profile_from_item(item) == SECURITY_GUARD_PROMPT_PROFILE:
+            return item
+    for item in _mediator_items(scene):
+        if item is exclude_item:
+            continue
+        name = _node_name(item).replace("_", " ")
+        if "security guard" in name:
+            return item
+    return None
+
+
+def _find_mediator_item_by_name(scene, name: str):
+    wanted = str(name or "").strip().lower()
+    if not wanted:
+        return None
+    for item in _mediator_items(scene):
+        if _node_name(item) == wanted:
+            return item
+    return None
+
+
 def _trim_text(text: str, limit: int, *, keep_tail: bool = False) -> str:
     clean = str(text or "").strip()
     if limit <= 0 or len(clean) <= limit:
@@ -749,6 +900,794 @@ def build_ports(node_item) -> None:
         node_item.ensure_input(port_name)
 
 
+def _style_icon(widget, standard_pixmap: str):
+    try:
+        style = widget.style()
+        return style.standardIcon(getattr(QtWidgets.QStyle, standard_pixmap))
+    except Exception:
+        try:
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                return app.style().standardIcon(getattr(QtWidgets.QStyle, standard_pixmap))
+        except Exception:
+            pass
+    return None
+
+
+def _tinted_style_icon(widget, standard_pixmap: str, color: str, size: int = 18):
+    icon = _style_icon(widget, standard_pixmap)
+    if icon is None:
+        return None
+    try:
+        pixmap = icon.pixmap(int(size), int(size))
+        if pixmap.isNull():
+            return icon
+        tinted = QtGui.QPixmap(pixmap.size())
+        tinted.fill(QtGui.QColor(0, 0, 0, 0))
+        painter = QtGui.QPainter(tinted)
+        painter.drawPixmap(0, 0, pixmap)
+        try:
+            mode = QtGui.QPainter.CompositionMode_SourceIn
+        except Exception:
+            mode = QtGui.QPainter.CompositionMode.CompositionMode_SourceIn
+        painter.setCompositionMode(mode)
+        painter.fillRect(tinted.rect(), QtGui.QColor(str(color or AGENT_POPUP_CLOSE_ICON_COLOR)))
+        painter.end()
+        return QtGui.QIcon(tinted)
+    except Exception:
+        return icon
+
+
+def _popup_close_icon(widget):
+    return _tinted_style_icon(widget, "SP_DialogCloseButton", AGENT_POPUP_CLOSE_ICON_COLOR, 18)
+
+
+def _icon_path_from_filenames(filenames) -> Path | None:
+    icon_dir = _repo_root() / "icons"
+    for filename in filenames or ():
+        path = icon_dir / filename
+        try:
+            if path.exists() and path.is_file():
+                return path
+        except Exception:
+            pass
+    return None
+
+
+def _security_agent_icon_path() -> Path | None:
+    return _icon_path_from_filenames(SECURITY_AGENT_ICON_FILENAMES)
+
+
+def _operator_agent_icon_path() -> Path | None:
+    return _icon_path_from_filenames(OPERATOR_AGENT_ICON_FILENAMES)
+
+
+def _tanya_agent_icon_path() -> Path | None:
+    return _icon_path_from_filenames(TANYA_AGENT_ICON_FILENAMES)
+
+
+def _scaled_pixmap(path: Path, size: int):
+    try:
+        pixmap = QtGui.QPixmap(str(path))
+        if pixmap.isNull():
+            return None
+        aspect_mode = getattr(QtCore.Qt, "KeepAspectRatio", None)
+        if aspect_mode is None:
+            aspect_mode = QtCore.Qt.AspectRatioMode.KeepAspectRatio
+        transform_mode = getattr(QtCore.Qt, "SmoothTransformation", None)
+        if transform_mode is None:
+            transform_mode = QtCore.Qt.TransformationMode.SmoothTransformation
+        return pixmap.scaled(
+            int(size),
+            int(size),
+            aspect_mode,
+            transform_mode,
+        )
+    except Exception:
+        return None
+
+
+def _qt_enum(group_name: str, member_name: str):
+    group = getattr(QtCore.Qt, group_name, None)
+    if group is not None:
+        value = getattr(group, member_name, None)
+        if value is not None:
+            return value
+    return getattr(QtCore.Qt, member_name, None)
+
+
+def _qt_window_flags(*member_names: str):
+    combined = None
+    for member_name in member_names:
+        value = _qt_enum("WindowType", member_name)
+        if value is None:
+            continue
+        combined = value if combined is None else combined | value
+    return combined
+
+
+def _set_agent_popup_chrome(dialog: QtWidgets.QDialog) -> None:
+    flags = _qt_window_flags("Window", "FramelessWindowHint", "WindowStaysOnTopHint")
+    if flags is not None:
+        try:
+            dialog.setWindowFlags(flags)
+        except Exception:
+            pass
+    for member_name, enabled in (
+        ("FramelessWindowHint", True),
+        ("WindowStaysOnTopHint", True),
+        ("WindowTitleHint", False),
+        ("WindowSystemMenuHint", False),
+        ("WindowMinimizeButtonHint", False),
+        ("WindowMaximizeButtonHint", False),
+        ("WindowCloseButtonHint", False),
+    ):
+        flag = _qt_enum("WindowType", member_name)
+        if flag is None:
+            continue
+        try:
+            dialog.setWindowFlag(flag, enabled)
+        except Exception:
+            pass
+    try:
+        modality = _qt_enum("WindowModality", "NonModal")
+        if modality is not None:
+            dialog.setWindowModality(modality)
+        dialog.setModal(False)
+    except Exception:
+        pass
+    try:
+        delete_on_close = _qt_enum("WidgetAttribute", "WA_DeleteOnClose")
+        if delete_on_close is not None:
+            dialog.setAttribute(delete_on_close, False)
+    except Exception:
+        pass
+    for member_name in ("WA_TranslucentBackground", "WA_NoSystemBackground"):
+        try:
+            attribute = _qt_enum("WidgetAttribute", member_name)
+            if attribute is not None:
+                dialog.setAttribute(attribute, True)
+        except Exception:
+            pass
+    try:
+        dialog.setAutoFillBackground(False)
+    except Exception:
+        pass
+
+
+def _graph_view_for_anchor(anchor_widget):
+    if anchor_widget is None:
+        return None
+    scene = None
+    try:
+        proxy = anchor_widget.graphicsProxyWidget()
+        if proxy is not None:
+            scene = proxy.scene()
+    except Exception:
+        scene = None
+    if scene is None:
+        try:
+            node_item = getattr(anchor_widget, "_node_item", None)
+            if node_item is not None:
+                scene = node_item.scene()
+        except Exception:
+            scene = None
+    if scene is not None:
+        try:
+            views = list(scene.views())
+        except Exception:
+            views = []
+        for view in views:
+            try:
+                if view is not None and view.isVisible() and view.viewport() is not None:
+                    return view
+            except Exception:
+                pass
+        for view in views:
+            if view is not None:
+                return view
+    return None
+
+
+def _agent_popup_target_center(anchor_widget):
+    view = _graph_view_for_anchor(anchor_widget)
+    if view is not None:
+        try:
+            viewport = view.viewport()
+            return viewport.mapToGlobal(viewport.rect().center())
+        except Exception:
+            pass
+    if anchor_widget is not None:
+        try:
+            return anchor_widget.mapToGlobal(anchor_widget.rect().center())
+        except Exception:
+            pass
+    return None
+
+
+def _agent_popup_size(dialog: QtWidgets.QDialog) -> QtCore.QSize:
+    try:
+        dialog.adjustSize()
+    except Exception:
+        pass
+    try:
+        hint = dialog.sizeHint().expandedTo(dialog.minimumSizeHint()).expandedTo(dialog.minimumSize())
+    except Exception:
+        hint = QtCore.QSize(AGENT_POPUP_MIN_WIDTH, 1)
+    try:
+        size = dialog.size().expandedTo(hint)
+    except Exception:
+        size = hint
+    width = max(AGENT_POPUP_MIN_WIDTH, int(size.width()))
+    height = max(1, int(size.height()))
+    try:
+        dialog.resize(width, height)
+    except Exception:
+        pass
+    return QtCore.QSize(width, height)
+
+
+def _position_agent_popup(dialog: QtWidgets.QDialog, anchor_widget) -> None:
+    if anchor_widget is None:
+        return
+    try:
+        target_center = _agent_popup_target_center(anchor_widget)
+        if target_center is None:
+            return
+        screen = None
+        try:
+            screen = QtGui.QGuiApplication.screenAt(target_center)
+        except Exception:
+            screen = None
+        if screen is None:
+            try:
+                screen = QtWidgets.QApplication.primaryScreen()
+            except Exception:
+                screen = None
+        size = _agent_popup_size(dialog)
+        x = int(target_center.x() - (size.width() / 2))
+        y = int(target_center.y() - (size.height() / 2))
+        if screen is None:
+            dialog.move(x, y)
+            return
+        rect = screen.availableGeometry()
+        margin = 12
+        x = min(max(x, rect.left() + margin), rect.right() - size.width() - margin)
+        y = min(max(y, rect.top() + margin), rect.bottom() - size.height() - margin)
+        dialog.move(x, y)
+    except Exception:
+        pass
+
+
+def _show_agent_popup(dialog: QtWidgets.QDialog, anchor_widget=None) -> None:
+    if anchor_widget is None:
+        anchor_widget = getattr(dialog, "_anchor_widget", None)
+    _set_agent_popup_chrome(dialog)
+    _position_agent_popup(dialog, anchor_widget)
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
+
+
+def _event_global_pos(event):
+    try:
+        return event.globalPosition().toPoint()
+    except Exception:
+        pass
+    try:
+        return event.globalPos()
+    except Exception:
+        return None
+
+
+def _breakable_popup_text(text: str) -> str:
+    clean = str(text or "").strip()
+    if not clean:
+        return ""
+    try:
+        parsed = json.loads(clean)
+        if isinstance(parsed, (dict, list)):
+            return json.dumps(parsed, ensure_ascii=False, separators=(", ", ": "))
+    except Exception:
+        pass
+    return re.sub(r"([,;:{}\[\]\(\)=])(?=\S)", r"\1 ", clean)
+
+
+class AgentPopupTextBlock(QtWidgets.QLabel):
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(AGENT_POPUP_DETAIL_TEXT_WIDTH)
+        self.setWordWrap(True)
+        self.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        self.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.setContentsMargins(0, 0, 0, 0)
+        try:
+            self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        except Exception:
+            pass
+        self.setStyleSheet("QLabel{background:transparent;color:#cbd5e1;padding:0px;margin:0px;}")
+        self.set_text(text)
+
+    def set_text(self, text: str) -> None:
+        self.setText(_breakable_popup_text(text))
+        self.fit_to_text()
+
+    def fit_to_text(self, width: int | None = None) -> None:
+        try:
+            width = max(320, int(width or self.width() or AGENT_POPUP_DETAIL_TEXT_WIDTH))
+            self.setMinimumWidth(width)
+            self.setMaximumWidth(width)
+            height = int(self.heightForWidth(width))
+            if height > 0:
+                self.setMinimumHeight(max(24, height))
+                self.setMaximumHeight(max(24, height))
+        except Exception:
+            pass
+        try:
+            self.updateGeometry()
+        except Exception:
+            pass
+
+
+class AgentPopupTitleBar(QtWidgets.QFrame):
+    def __init__(
+        self,
+        dialog: QtWidgets.QDialog,
+        title: str,
+        *,
+        accent: str,
+        hover_accent: str,
+        closable: bool = False,
+    ):
+        super().__init__(dialog)
+        self._dialog = dialog
+        self._drag_offset = None
+        self.setObjectName("AgentPopupTitleBar")
+        self.setFixedHeight(34)
+        try:
+            hover_attribute = _qt_enum("WidgetAttribute", "WA_Hover")
+            if hover_attribute is not None:
+                self.setAttribute(hover_attribute, True)
+        except Exception:
+            pass
+        self.setStyleSheet(
+            "QFrame#AgentPopupTitleBar{"
+            f"background:{accent};"
+            f"border-top-left-radius:{AGENT_POPUP_TITLE_RADIUS}px;"
+            f"border-top-right-radius:{AGENT_POPUP_TITLE_RADIUS}px;"
+            "}"
+            "QFrame#AgentPopupTitleBar:hover{"
+            f"background:{hover_accent};"
+            "}"
+            "QLabel{color:#f8fafc;font-size:13px;font-weight:600;}"
+            "QPushButton{background:transparent;border:0;border-radius:4px;}"
+            "QPushButton:hover{background:rgba(255,255,255,36);}"
+        )
+
+        label = QtWidgets.QLabel(str(title or "").strip())
+        label.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 8, 0)
+        layout.setSpacing(6)
+        layout.addWidget(label, 1)
+
+        if closable:
+            close_btn = QtWidgets.QPushButton()
+            close_icon = _popup_close_icon(self)
+            if close_icon is not None:
+                close_btn.setIcon(close_icon)
+            close_btn.setToolTip("Close")
+            close_btn.setAccessibleName("Close")
+            close_btn.setFixedSize(26, 24)
+            close_btn.clicked.connect(dialog.accept)
+            layout.addWidget(close_btn, 0)
+
+    def mousePressEvent(self, event):
+        try:
+            left_button = _qt_enum("MouseButton", "LeftButton") or QtCore.Qt.LeftButton
+            if event.button() != left_button:
+                return super().mousePressEvent(event)
+        except Exception:
+            pass
+        pos = _event_global_pos(event)
+        if pos is not None:
+            self._drag_offset = pos - self._dialog.frameGeometry().topLeft()
+            try:
+                event.accept()
+            except Exception:
+                pass
+            return
+        return super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is None:
+            return super().mouseMoveEvent(event)
+        pos = _event_global_pos(event)
+        if pos is not None:
+            self._dialog.move(pos - self._drag_offset)
+            try:
+                event.accept()
+            except Exception:
+                pass
+            return
+        return super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+        try:
+            event.accept()
+        except Exception:
+            pass
+
+
+class AgentPopupDialog(QtWidgets.QDialog):
+    def __init__(self, title: str, parent=None):
+        super().__init__(None)
+        self._anchor_widget = parent
+        self.setWindowTitle(str(title or "").strip())
+        self.setMinimumWidth(AGENT_POPUP_MIN_WIDTH)
+        self.setObjectName("AgentPopupDialog")
+        self.setStyleSheet("QDialog#AgentPopupDialog{background:transparent;border:0px;}")
+        _set_agent_popup_chrome(self)
+
+    def _create_popup_surface(self, *, background: str, border: str) -> QtWidgets.QVBoxLayout:
+        root_layout = QtWidgets.QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        surface = QtWidgets.QFrame(self)
+        surface.setObjectName("AgentPopupSurface")
+        try:
+            styled_background = _qt_enum("WidgetAttribute", "WA_StyledBackground")
+            if styled_background is not None:
+                surface.setAttribute(styled_background, True)
+        except Exception:
+            pass
+        surface.setStyleSheet(
+            "QFrame#AgentPopupSurface{"
+            f"background:{background};"
+            f"border:{AGENT_POPUP_BORDER_WIDTH}px solid {border};"
+            f"border-radius:{AGENT_POPUP_RADIUS}px;"
+            "}"
+        )
+        root_layout.addWidget(surface, 1)
+
+        surface_layout = QtWidgets.QVBoxLayout(surface)
+        surface_layout.setContentsMargins(0, 0, 0, 0)
+        surface_layout.setSpacing(0)
+        return surface_layout
+
+
+def _clean_tanya_popup_text(text: str) -> str:
+    clean = str(text or "").strip()
+    feedback_match = re.search(
+        r"<\s*(?:user[\s_-]*feedback|user[\s_-]*feed[\s_-]*back|feedback)\s*>"
+        r"(.*?)"
+        r"<\s*/\s*(?:user[\s_-]*feedback|user[\s_-]*feed[\s_-]*back|feedback)\s*>",
+        clean,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if feedback_match:
+        clean = str(feedback_match.group(1) or "").strip()
+    clean = SECURITY_REQUEST_RE.sub("", clean)
+    clean = SECURITY_APPROVAL_RE.sub("", clean)
+    clean = re.sub(r"<\s*/?\s*(?:security_request|security_approval)\b[^>]*>", "", clean, flags=re.IGNORECASE | re.DOTALL)
+    clean = clean.replace("\r\n", "\n").replace("\r", "\n")
+    clean = re.sub(r"[ \t]+\n", "\n", clean)
+    clean = re.sub(r"\n{3,}", "\n\n", clean)
+    clean = re.sub(r"[ \t]{2,}", " ", clean)
+    return clean.strip()
+
+
+def _speech_popup_delay_ms(text: str) -> int:
+    words = re.findall(r"\S+", str(text or ""))
+    return max(2500, min(8000, 1200 + (len(words) * 320)))
+
+
+class TanyaSpeechDialog(AgentPopupDialog):
+    def __init__(self, *, message: str, parent=None):
+        super().__init__("Tanya", parent=parent)
+
+        tanya_icon_path = _tanya_agent_icon_path()
+        if tanya_icon_path is not None:
+            try:
+                self.setWindowIcon(QtGui.QIcon(str(tanya_icon_path)))
+            except Exception:
+                pass
+
+        icon_label = QtWidgets.QLabel()
+        icon_pixmap = _scaled_pixmap(tanya_icon_path, 58) if tanya_icon_path is not None else None
+        if icon_pixmap is not None:
+            icon_label.setPixmap(icon_pixmap)
+        else:
+            icon = _style_icon(self, "SP_MessageBoxInformation")
+            if icon is not None:
+                icon_label.setPixmap(icon.pixmap(42, 42))
+        icon_label.setFixedSize(64, 64)
+        icon_label.setAlignment(QtCore.Qt.AlignCenter)
+
+        title = QtWidgets.QLabel("Tanya")
+        title.setStyleSheet("QLabel{color:#f8fafc;font-size:16px;font-weight:600;}")
+        detail = QtWidgets.QLabel(str(message or "").strip())
+        detail.setWordWrap(True)
+        detail.setStyleSheet("QLabel{color:#e5e7eb;}")
+        detail.setMinimumWidth(380)
+
+        close_btn = QtWidgets.QPushButton()
+        close_icon = _popup_close_icon(self)
+        if close_icon is not None:
+            close_btn.setIcon(close_icon)
+        close_btn.setToolTip("Close")
+        close_btn.setAccessibleName("Close")
+        close_btn.setFixedSize(36, 32)
+        close_btn.clicked.connect(self.accept)
+
+        text_col = QtWidgets.QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(6)
+        text_col.addWidget(title, 0)
+        text_col.addWidget(detail, 1)
+
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+        row.addWidget(icon_label, 0, QtCore.Qt.AlignTop)
+        row.addLayout(text_col, 1)
+
+        close_row = QtWidgets.QHBoxLayout()
+        close_row.setContentsMargins(0, 0, 0, 0)
+        close_row.addStretch(1)
+        close_row.addWidget(close_btn, 0)
+
+        content = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(content)
+        content_layout.setContentsMargins(14, 12, 14, 14)
+        content_layout.setSpacing(10)
+        content_layout.addLayout(row, 1)
+        content_layout.addLayout(close_row, 0)
+
+        layout = self._create_popup_surface(background="#111018", border="#5b314f")
+        layout.addWidget(AgentPopupTitleBar(self, "Tanya", accent="#5b314f", hover_accent="#744062"), 0)
+        layout.addWidget(content, 1)
+        self.resize(AGENT_POPUP_MIN_WIDTH, 190)
+
+
+class SecurityApprovalDialog(AgentPopupDialog):
+    def __init__(self, *, request_text: str, attrs: dict[str, str], parent=None):
+        super().__init__("Security Guard", parent=parent)
+
+        requester = str(attrs.get("requester", "") or "Tanya").strip() or "Tanya"
+        tool = str(attrs.get("tool", "") or "qubit_deck_controller").strip() or "qubit_deck_controller"
+        action = str(attrs.get("requested_action", "") or "invoke").strip() or "invoke"
+        target = str(attrs.get("target", "") or "").strip()
+        reason = str(attrs.get("reason", "") or "").strip()
+        agent_icon_path = _security_agent_icon_path()
+        if agent_icon_path is not None:
+            try:
+                self.setWindowIcon(QtGui.QIcon(str(agent_icon_path)))
+            except Exception:
+                pass
+
+        icon_label = QtWidgets.QLabel()
+        icon_pixmap = _scaled_pixmap(agent_icon_path, 52) if agent_icon_path is not None else None
+        if icon_pixmap is not None:
+            icon_label.setPixmap(icon_pixmap)
+        else:
+            icon = _style_icon(self, "SP_MessageBoxWarning")
+            if icon is not None:
+                icon_label.setPixmap(icon.pixmap(42, 42))
+        icon_label.setFixedSize(58, 58)
+        icon_label.setAlignment(QtCore.Qt.AlignCenter)
+
+        title = QtWidgets.QLabel("Qubit Deck access")
+        title.setStyleSheet("QLabel{color:#f8fafc;font-size:15px;font-weight:600;}")
+        route = QtWidgets.QLabel(f"{requester} -> {tool}")
+        route.setStyleSheet("QLabel{color:#93c5fd;}")
+        summary = QtWidgets.QLabel(f"{action}: {target or '(unspecified target)'}")
+        summary.setWordWrap(True)
+        summary.setStyleSheet("QLabel{color:#e5e7eb;}")
+        detail = QtWidgets.QLabel(reason or request_text)
+        detail.setWordWrap(True)
+        detail.setStyleSheet("QLabel{color:#cbd5e1;}")
+        detail.setMinimumWidth(380)
+
+        approve_btn = QtWidgets.QPushButton()
+        approve_icon = _style_icon(self, "SP_DialogApplyButton")
+        if approve_icon is not None:
+            approve_btn.setIcon(approve_icon)
+        approve_btn.setToolTip("Grant access")
+        approve_btn.setAccessibleName("Grant access")
+        approve_btn.setFixedSize(44, 36)
+        approve_btn.setStyleSheet(
+            "QPushButton{background:#0f766e;border:1px solid #115e59;border-radius:6px;}"
+            "QPushButton:hover{background:#0d9488;}"
+        )
+
+        deny_btn = QtWidgets.QPushButton()
+        deny_icon = _style_icon(self, "SP_DialogCancelButton")
+        if deny_icon is not None:
+            deny_btn.setIcon(deny_icon)
+        deny_btn.setToolTip("Deny access")
+        deny_btn.setAccessibleName("Deny access")
+        deny_btn.setFixedSize(44, 36)
+        deny_btn.setStyleSheet(
+            "QPushButton{background:#7f1d1d;border:1px solid #991b1b;border-radius:6px;}"
+            "QPushButton:hover{background:#991b1b;}"
+        )
+        approve_btn.clicked.connect(self.accept)
+        deny_btn.clicked.connect(self.reject)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        btn_row.addWidget(deny_btn, 0)
+        btn_row.addWidget(approve_btn, 0)
+
+        text_col = QtWidgets.QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(6)
+        text_col.addWidget(title, 0)
+        text_col.addWidget(route, 0)
+        text_col.addWidget(summary, 0)
+        text_col.addWidget(detail, 0)
+        text_col.addLayout(btn_row, 0)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(12)
+        top_row.addWidget(icon_label, 0, QtCore.Qt.AlignTop)
+        top_row.addLayout(text_col, 1)
+
+        content = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(content)
+        content_layout.setContentsMargins(14, 12, 14, 14)
+        content_layout.setSpacing(10)
+        content_layout.addLayout(top_row, 1)
+
+        layout = self._create_popup_surface(background="#0b1220", border="#334155")
+        layout.addWidget(
+            AgentPopupTitleBar(self, "Security Guard", accent="#334155", hover_accent="#475569"),
+            0,
+        )
+        layout.addWidget(content, 1)
+        self.resize(AGENT_POPUP_MIN_WIDTH, 190)
+
+
+class QDeckHandoffDialog(AgentPopupDialog):
+    def __init__(self, *, request_text: str, voice_input: str, parent=None):
+        super().__init__("Qubit Deck Operator", parent=parent)
+        operator_icon_path = _operator_agent_icon_path()
+        if operator_icon_path is not None:
+            try:
+                self.setWindowIcon(QtGui.QIcon(str(operator_icon_path)))
+            except Exception:
+                pass
+
+        icon_label = QtWidgets.QLabel()
+        icon_pixmap = _scaled_pixmap(operator_icon_path, 52) if operator_icon_path is not None else None
+        if icon_pixmap is not None:
+            icon_label.setPixmap(icon_pixmap)
+        else:
+            icon = _style_icon(self, "SP_ComputerIcon")
+            if icon is not None:
+                icon_label.setPixmap(icon.pixmap(42, 42))
+        icon_label.setFixedSize(58, 58)
+        icon_label.setAlignment(QtCore.Qt.AlignCenter)
+
+        self._title = QtWidgets.QLabel("Qubit Deck controller")
+        self._title.setStyleSheet("QLabel{color:#f8fafc;font-size:15px;font-weight:600;}")
+        self._phase = QtWidgets.QLabel("Running qubit_deck_controller.md")
+        self._phase.setStyleSheet("QLabel{color:#93c5fd;}")
+        self._detail = AgentPopupTextBlock(str(voice_input or request_text or "").strip())
+
+        self._progress = QtWidgets.QProgressBar()
+        self._progress.setRange(0, 0)
+        self._progress.setTextVisible(False)
+        self._progress.setFixedHeight(8)
+        self._progress.setStyleSheet(
+            "QProgressBar{background:#111827;border:1px solid #334155;border-radius:4px;}"
+            "QProgressBar::chunk{background:#22c55e;border-radius:4px;}"
+        )
+
+        self._close_btn = QtWidgets.QPushButton()
+        close_icon = _popup_close_icon(self)
+        if close_icon is not None:
+            self._close_btn.setIcon(close_icon)
+        self._close_btn.setToolTip("Close")
+        self._close_btn.setAccessibleName("Close")
+        self._close_btn.setFixedSize(36, 32)
+        self._close_btn.setEnabled(False)
+        self._close_btn.clicked.connect(self.accept)
+
+        text_col = QtWidgets.QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(6)
+        text_col.addWidget(self._title, 0)
+        text_col.addWidget(self._phase, 0)
+
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+        row.addWidget(icon_label, 0, QtCore.Qt.AlignTop)
+        row.addLayout(text_col, 1)
+
+        close_row = QtWidgets.QHBoxLayout()
+        close_row.setContentsMargins(0, 0, 0, 0)
+        close_row.addStretch(1)
+        close_row.addWidget(self._close_btn, 0)
+
+        content = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(content)
+        content_layout.setContentsMargins(14, 12, 14, 14)
+        content_layout.setSpacing(10)
+        content_layout.addLayout(row, 0)
+        content_layout.addWidget(self._detail, 0)
+        content_layout.addWidget(self._progress, 0)
+        content_layout.addLayout(close_row, 0)
+
+        layout = self._create_popup_surface(background="#0b1220", border="#334155")
+        layout.addWidget(
+            AgentPopupTitleBar(self, "Qubit Deck Operator", accent="#334155", hover_accent="#475569"),
+            0,
+        )
+        layout.addWidget(content, 1)
+        self.resize(AGENT_POPUP_MIN_WIDTH, 180)
+        self._resize_to_detail_text()
+
+    def _detail_text_width(self) -> int:
+        try:
+            width = int(self.width() or AGENT_POPUP_MIN_WIDTH)
+        except Exception:
+            width = AGENT_POPUP_MIN_WIDTH
+        return max(
+            320,
+            width - (AGENT_POPUP_BORDER_WIDTH * 2) - (AGENT_POPUP_CONTENT_MARGIN_X * 2),
+        )
+
+    def _resize_to_detail_text(self) -> None:
+        try:
+            self._detail.fit_to_text(self._detail_text_width())
+        except Exception:
+            pass
+        try:
+            layout = self.layout()
+            if layout is not None:
+                layout.activate()
+        except Exception:
+            pass
+        try:
+            hint = self.sizeHint().expandedTo(self.minimumSizeHint()).expandedTo(self.minimumSize())
+            self.resize(max(AGENT_POPUP_MIN_WIDTH, int(hint.width())), max(1, int(hint.height())))
+        except Exception:
+            pass
+
+    def resizeEvent(self, event) -> None:
+        try:
+            super().resizeEvent(event)
+        except Exception:
+            pass
+        try:
+            self._detail.fit_to_text(self._detail_text_width())
+        except Exception:
+            pass
+
+    def finish(self, *, message: str, error: bool = False) -> None:
+        self._progress.setRange(0, 1)
+        self._progress.setValue(1)
+        if error:
+            self._phase.setText("Handoff failed")
+            self._phase.setStyleSheet("QLabel{color:#fca5a5;}")
+        else:
+            self._phase.setText("Command published to Qubit Deck executor")
+            self._phase.setStyleSheet("QLabel{color:#86efac;}")
+        if message:
+            self._detail.set_text(str(message or "").strip()[:500])
+        self._resize_to_detail_text()
+        self._close_btn.setEnabled(True)
+
+
 class MediatorConsoleWidget(QtWidgets.QWidget):
     _console_append = QtCore.Signal(str)
     _command_done = QtCore.Signal(int, str, str, str, str)
@@ -771,6 +1710,12 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._pending_signature = ""
         self._pending_source = ""
         self._stop_requested = False
+        self._last_prompt_voice_input = ""
+        self._security_dialog = None
+        self._qdeck_handoff_dialog = None
+        self._qdeck_handoff_active = False
+        self._tanya_dialog = None
+        self._tanya_popup_message = ""
 
         self.setMinimumSize(MEDIGATOR_BODY_W, MEDIGATOR_BODY_H)
         try:
@@ -1094,16 +2039,460 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 return src
         return None
 
-    def _collect_inputs(self) -> tuple[str, str, str]:
+    def _collect_inputs_for_profile(self, profile: str, *, include_pending_security: bool = True) -> tuple[str, str, str]:
         scene = self._ensure_scene()
         if scene is None:
             return "", "", ""
-        profile = self._selected_prompt_profile()
+        profile = _normalize_prompt_profile(profile)
         policy = _input_policy_for_profile(profile)
         if bool(policy.get("prefer_named", True)) and _has_named_input_edges(scene, self._node_item):
-            return _collect_inputs_from_named_ports(scene, self._node_item, profile)
-        # Single-pin mode: route by upstream node kind policy.
-        return _collect_inputs_from_default_pin(scene, self._node_item, profile)
+            system_prompt, chatbot_history, voice_input = _collect_inputs_from_named_ports(scene, self._node_item, profile)
+        else:
+            # Single-pin mode: route by upstream node kind policy.
+            system_prompt, chatbot_history, voice_input = _collect_inputs_from_default_pin(scene, self._node_item, profile)
+
+        if include_pending_security and profile == SECURITY_GUARD_PROMPT_PROFILE:
+            pending_context = self._pending_security_context()
+            if pending_context:
+                chatbot_history = "\n\n".join(
+                    part for part in (chatbot_history, pending_context) if part
+                ).strip()
+        return system_prompt, chatbot_history, voice_input
+
+    def _collect_inputs(self) -> tuple[str, str, str]:
+        return self._collect_inputs_for_profile(self._selected_prompt_profile())
+
+    def _pending_security_context(self) -> str:
+        model = getattr(self._node_item, "model", None)
+        request_text = _param_value(model, MEDIGATOR_PENDING_SECURITY_REQUEST_PARAM, "").strip()
+        if not request_text:
+            return ""
+        requester_node = _param_value(model, MEDIGATOR_PENDING_SECURITY_REQUESTER_NODE_PARAM, "").strip()
+        original_input = _param_value(model, MEDIGATOR_PENDING_SECURITY_USER_INPUT_PARAM, "").strip()
+        lines = ["Pending controlled-tool access request:"]
+        if requester_node:
+            lines.append(f"Requester node: {requester_node}")
+        lines.append(request_text)
+        if original_input:
+            lines.append("")
+            lines.append("Original user request:")
+            lines.append(original_input)
+        return "\n".join(lines).strip()
+
+    def _store_security_request_state(
+        self,
+        *,
+        request_text: str,
+        requester_node_name: str,
+        original_input: str,
+        request_signature: str,
+        guard_item=None,
+    ) -> None:
+        _set_param_value(self._node_item, MEDIGATOR_PENDING_SECURITY_REQUEST_PARAM, request_text, notify_scene=False)
+        _set_param_value(self._node_item, MEDIGATOR_PENDING_SECURITY_USER_INPUT_PARAM, original_input, notify_scene=False)
+        _set_param_value(self._node_item, MEDIGATOR_PENDING_SECURITY_SIGNATURE_PARAM, request_signature, notify_scene=False)
+        _ensure_hidden_params(getattr(self._node_item, "model", None), SECURITY_HIDDEN_PARAMS)
+
+        if guard_item is None:
+            return
+        _set_param_value(guard_item, MEDIGATOR_PENDING_SECURITY_REQUEST_PARAM, request_text, notify_scene=False)
+        _set_param_value(guard_item, MEDIGATOR_PENDING_SECURITY_REQUESTER_NODE_PARAM, requester_node_name, notify_scene=False)
+        _set_param_value(guard_item, MEDIGATOR_PENDING_SECURITY_USER_INPUT_PARAM, original_input, notify_scene=False)
+        _set_param_value(guard_item, MEDIGATOR_PENDING_SECURITY_SIGNATURE_PARAM, request_signature, notify_scene=False)
+        _ensure_hidden_params(getattr(guard_item, "model", None), SECURITY_HIDDEN_PARAMS)
+
+    def _clear_security_request_state(self, *items) -> None:
+        for item in items or ():
+            if item is None:
+                continue
+            for param_name in SECURITY_HIDDEN_PARAMS:
+                _set_param_value(item, param_name, "", notify_scene=False)
+
+    def _publish_security_popup_decision_to_guard(
+        self,
+        *,
+        guard_item,
+        guard_widget,
+        approval_text: str,
+        decision: str,
+    ) -> None:
+        if guard_item is None:
+            return
+        detail = "Approved by user through Security Guard popup." if decision == "approved" else "Denied by user through Security Guard popup."
+        _set_node_info(guard_item, "\n".join([approval_text, detail]).strip())
+        self._clear_security_request_state(guard_item)
+        if guard_widget is not None:
+            try:
+                guard_widget._console_append.emit(f"[security] {detail}")
+                guard_widget._set_status(detail)
+            except Exception:
+                pass
+
+    def _show_security_request_dialog(
+        self,
+        *,
+        request_text: str,
+        attrs: dict[str, str],
+        requester_node_name: str,
+        original_input: str,
+        guard_item=None,
+        guard_widget=None,
+        delay_for_tanya: bool = True,
+    ) -> None:
+        if delay_for_tanya:
+            tanya_dialog = getattr(self, "_tanya_dialog", None)
+            try:
+                tanya_visible = bool(tanya_dialog is not None and tanya_dialog.isVisible())
+            except Exception:
+                tanya_visible = tanya_dialog is not None
+            if tanya_visible:
+                delay_ms = _speech_popup_delay_ms(getattr(self, "_tanya_popup_message", "") or request_text)
+                self._set_status("Tanya is speaking; Security Guard popup will open next.")
+
+                def _open_after_tanya() -> None:
+                    self._show_security_request_dialog(
+                        request_text=request_text,
+                        attrs=attrs,
+                        requester_node_name=requester_node_name,
+                        original_input=original_input,
+                        guard_item=guard_item,
+                        guard_widget=guard_widget,
+                        delay_for_tanya=False,
+                    )
+
+                QtCore.QTimer.singleShot(delay_ms, self, _open_after_tanya)
+                return
+        self._close_tanya_popup()
+        old_dialog = getattr(self, "_security_dialog", None)
+        try:
+            if old_dialog is not None and old_dialog.isVisible():
+                old_dialog.raise_()
+                old_dialog.activateWindow()
+                self._set_status("Security Guard popup is already waiting for user approval.")
+                return
+        except Exception:
+            pass
+
+        dialog = SecurityApprovalDialog(request_text=request_text, attrs=attrs, parent=self)
+        self._security_dialog = dialog
+
+        def _finish(decision: str) -> None:
+            if getattr(self, "_security_dialog", None) is dialog:
+                self._security_dialog = None
+            requester = str(attrs.get("requester", "") or "Tanya").strip() or "Tanya"
+            tool = str(attrs.get("tool", "") or "qubit_deck_controller").strip() or "qubit_deck_controller"
+            approval_text = _security_approval_marker(requester, tool, decision)
+            self._publish_security_popup_decision_to_guard(
+                guard_item=guard_item,
+                guard_widget=guard_widget,
+                approval_text=approval_text,
+                decision=decision,
+            )
+            self._process_security_decision_from_guard(
+                approval_text=approval_text,
+                request_text=request_text,
+                original_user_input=original_input,
+                guard_node_name=SECURITY_GUARD_POPUP_NAME,
+            )
+
+        dialog.accepted.connect(lambda: _finish("approved"))
+        dialog.rejected.connect(lambda: _finish("denied"))
+        dialog.finished.connect(
+            lambda _result=0, _dialog=dialog: self._clear_security_dialog_reference(_dialog)
+        )
+        dialog.destroyed.connect(
+            lambda _obj=None, _dialog=dialog: self._clear_security_dialog_reference(_dialog)
+        )
+        self._set_status("Security Guard popup is waiting for user approval.")
+        try:
+            _show_agent_popup(dialog, self)
+        except Exception as exc:
+            if getattr(self, "_security_dialog", None) is dialog:
+                self._security_dialog = None
+            self._set_status(f"Security Guard popup failed: {exc}", error=True)
+
+    def _clear_security_dialog_reference(self, dialog) -> None:
+        if getattr(self, "_security_dialog", None) is dialog:
+            self._security_dialog = None
+
+    def _close_tanya_popup(self) -> None:
+        dialog = getattr(self, "_tanya_dialog", None)
+        self._tanya_dialog = None
+        self._tanya_popup_message = ""
+        if dialog is None:
+            return
+        try:
+            dialog.close()
+        except Exception:
+            pass
+
+    def _show_qdeck_handoff_dialog(self, *, request_text: str, voice_input: str) -> None:
+        old_dialog = getattr(self, "_qdeck_handoff_dialog", None)
+        try:
+            if old_dialog is not None:
+                old_dialog.close()
+        except Exception:
+            pass
+        dialog = QDeckHandoffDialog(request_text=request_text, voice_input=voice_input, parent=self)
+        self._qdeck_handoff_dialog = dialog
+        self._qdeck_handoff_active = True
+        dialog.finished.connect(
+            lambda _result=0, _dialog=dialog: self._clear_qdeck_handoff_dialog_reference(_dialog)
+        )
+        dialog.destroyed.connect(
+            lambda _obj=None, _dialog=dialog: self._clear_qdeck_handoff_dialog_reference(_dialog)
+        )
+        try:
+            _show_agent_popup(dialog, self)
+        except Exception as exc:
+            self._clear_qdeck_handoff_dialog_reference(dialog)
+            self._set_status(f"Qubit Deck Operator popup failed: {exc}", error=True)
+
+    def _finish_qdeck_handoff_dialog(self, *, message: str, error: bool = False) -> None:
+        if not getattr(self, "_qdeck_handoff_active", False):
+            return
+        self._qdeck_handoff_active = False
+        dialog = getattr(self, "_qdeck_handoff_dialog", None)
+        if dialog is None:
+            return
+        try:
+            dialog.finish(message=message, error=error)
+        except Exception:
+            pass
+
+    def _clear_qdeck_handoff_dialog_reference(self, dialog) -> None:
+        if getattr(self, "_qdeck_handoff_dialog", None) is dialog:
+            self._qdeck_handoff_dialog = None
+            self._qdeck_handoff_active = False
+
+    def _maybe_show_tanya_speech_popup(self, output: str, *, source: str) -> None:
+        if self._selected_prompt_profile() != TANYA_PROMPT_PROFILE:
+            return
+        clean_source = str(source or "").strip().lower()
+        if clean_source == "security_approval" and getattr(self, "_qdeck_handoff_active", False):
+            return
+        message = _clean_tanya_popup_text(output)
+        if not message:
+            return
+        self._tanya_popup_message = message
+        old_dialog = getattr(self, "_tanya_dialog", None)
+        try:
+            if old_dialog is not None:
+                old_dialog.close()
+        except Exception:
+            pass
+        dialog = TanyaSpeechDialog(message=message, parent=self)
+        self._tanya_dialog = dialog
+        dialog.finished.connect(
+            lambda _result=0, _dialog=dialog: self._clear_tanya_dialog_reference(_dialog)
+        )
+        dialog.destroyed.connect(
+            lambda _obj=None, _dialog=dialog: self._clear_tanya_dialog_reference(_dialog)
+        )
+        try:
+            _show_agent_popup(dialog, self)
+        except Exception as exc:
+            self._clear_tanya_dialog_reference(dialog)
+            self._set_status(f"Tanya popup failed: {exc}", error=True)
+
+    def _clear_tanya_dialog_reference(self, dialog) -> None:
+        if getattr(self, "_tanya_dialog", None) is dialog:
+            self._tanya_dialog = None
+            self._tanya_popup_message = ""
+
+    def _process_approved_qdeck_decision(
+        self,
+        *,
+        approval_text: str,
+        request_text: str,
+        original_user_input: str,
+        guard_node_name: str,
+    ) -> None:
+        system_prompt, chatbot_history, voice_input = self._collect_inputs_for_profile(
+            QDECK_PROMPT_PROFILE,
+            include_pending_security=False,
+        )
+        history_parts = [chatbot_history]
+        if request_text:
+            history_parts.extend(["Approved controlled-tool request:", request_text])
+        if approval_text:
+            history_parts.extend(["Security Guard decision:", approval_text])
+        if guard_node_name:
+            history_parts.append(f"Decision source node: {guard_node_name}")
+        chatbot_history = "\n\n".join(part for part in history_parts if part).strip()
+
+        clean_voice_input = _normalize_qdeck_voice_input((original_user_input or voice_input or "").strip())
+        if not clean_voice_input:
+            self._set_status("Security approval received, but original voice request is unavailable.", error=True)
+            return
+
+        self._show_qdeck_handoff_dialog(request_text=request_text, voice_input=clean_voice_input)
+        prompt, signature = _compose_mediator_prompt(
+            system_prompt,
+            chatbot_history,
+            clean_voice_input,
+            _load_prompt_profile_text(QDECK_PROMPT_PROFILE),
+        )
+        signature = _security_signature("qdeck_handoff", approval_text, request_text, clean_voice_input, signature)
+        self._run_codex_prompt(prompt, signature, "security_approval")
+
+    def _process_security_request_from_agent(
+        self,
+        *,
+        request_text: str,
+        requester_node_name: str,
+        original_user_input: str,
+        request_signature: str,
+    ) -> None:
+        prompt_history = "\n\n".join(
+            part
+            for part in (
+                "Controlled-tool access request received:",
+                request_text,
+                f"Requester node: {requester_node_name}" if requester_node_name else "",
+                f"Original user request:\n{original_user_input}" if original_user_input else "",
+            )
+            if part
+        )
+        prompt, signature = _compose_mediator_prompt(
+            "",
+            prompt_history,
+            "Ask the user for approval for this controlled-tool access request.",
+            self._selected_profile_prompt(),
+        )
+        signature = _security_signature("security_request", request_signature, signature)
+        self._run_codex_prompt(prompt, signature, "security_request")
+
+    def _process_security_decision_from_guard(
+        self,
+        *,
+        approval_text: str,
+        request_text: str,
+        original_user_input: str,
+        guard_node_name: str,
+    ) -> None:
+        _marker, approval_attrs = _first_security_approval(approval_text)
+        _request_marker, request_attrs = _first_security_request(request_text)
+        decision = str(approval_attrs.get("decision", "") or "").strip().lower()
+        tool = str(approval_attrs.get("tool", "") or request_attrs.get("tool", "") or "").strip()
+        self._clear_security_request_state(self._node_item)
+        if decision == "approved" and _is_qdeck_security_tool(tool):
+            self._set_status("Security approved. Running Qubit Deck controller handoff.")
+            self._process_approved_qdeck_decision(
+                approval_text=approval_text,
+                request_text=request_text,
+                original_user_input=original_user_input,
+                guard_node_name=guard_node_name,
+            )
+            return
+
+        system_prompt, chatbot_history, voice_input = self._collect_inputs()
+        history_parts = [chatbot_history]
+        if request_text:
+            history_parts.extend(["Recent security request:", request_text])
+        if approval_text:
+            history_parts.extend(["Security Guard decision:", approval_text])
+        if guard_node_name:
+            history_parts.append(f"Decision source node: {guard_node_name}")
+        chatbot_history = "\n\n".join(part for part in history_parts if part).strip()
+
+        clean_voice_input = (original_user_input or voice_input or "").strip()
+        profile = self._selected_prompt_profile()
+        if profile == QDECK_PROMPT_PROFILE:
+            clean_voice_input = _normalize_qdeck_voice_input(clean_voice_input)
+        if not clean_voice_input:
+            self._set_status("Security approval received, but original voice request is unavailable.", error=True)
+            return
+
+        prompt, signature = _compose_mediator_prompt(
+            system_prompt,
+            chatbot_history,
+            clean_voice_input,
+            self._selected_profile_prompt(),
+        )
+        signature = _security_signature("security_approval", approval_text, request_text, clean_voice_input, signature)
+        self._run_codex_prompt(prompt, signature, "security_approval")
+
+    def _handle_security_request_output(self, output: str) -> bool:
+        request_text, attrs = _first_security_request(output)
+        if not request_text:
+            return False
+        if self._selected_prompt_profile() == SECURITY_GUARD_PROMPT_PROFILE:
+            return False
+
+        scene = self._ensure_scene()
+        guard_item = _find_security_guard_item(scene, exclude_item=self._node_item)
+        guard_widget = _mediator_widget_from_item(guard_item) if guard_item is not None else None
+
+        requester_node_name = str(getattr(getattr(self._node_item, "model", None), "name", "") or "").strip()
+        original_input = self._last_prompt_voice_input.strip()
+        request_signature = _security_signature(request_text, original_input)
+
+        self._store_security_request_state(
+            request_text=request_text,
+            requester_node_name=requester_node_name,
+            original_input=original_input,
+            request_signature=request_signature,
+            guard_item=guard_item,
+        )
+        if guard_widget is not None:
+            try:
+                guard_widget._console_append.emit("[security] Pending Qubit Deck access request shown in popup.")
+                guard_widget._set_status("Security Guard popup is waiting for user approval.")
+            except Exception:
+                pass
+        self._show_security_request_dialog(
+            request_text=request_text,
+            attrs=attrs,
+            requester_node_name=requester_node_name,
+            original_input=original_input,
+            guard_item=guard_item,
+            guard_widget=guard_widget,
+        )
+        return True
+
+    def _handle_security_approval_output(self, output: str) -> bool:
+        approval_text, attrs = _first_security_approval(output)
+        if not approval_text:
+            return False
+        if self._selected_prompt_profile() != SECURITY_GUARD_PROMPT_PROFILE:
+            return False
+
+        scene = self._ensure_scene()
+        model = getattr(self._node_item, "model", None)
+        requester_node_name = _param_value(model, MEDIGATOR_PENDING_SECURITY_REQUESTER_NODE_PARAM, "").strip()
+        requester_item = _find_mediator_item_by_name(scene, requester_node_name)
+        requester_widget = _mediator_widget_from_item(requester_item) if requester_item is not None else None
+        if requester_item is None or requester_widget is None:
+            self._set_status("Security decision published, but requester mediator was not found.", error=True)
+            return True
+
+        request_text = _param_value(model, MEDIGATOR_PENDING_SECURITY_REQUEST_PARAM, "").strip()
+        original_input = _param_value(model, MEDIGATOR_PENDING_SECURITY_USER_INPUT_PARAM, "").strip()
+        self._clear_security_request_state(self._node_item)
+
+        try:
+            requester_widget._process_security_decision_from_guard(
+                approval_text=approval_text,
+                request_text=request_text,
+                original_user_input=original_input,
+                guard_node_name=str(getattr(model, "name", "") or "").strip(),
+            )
+            decision = str(attrs.get("decision", "") or "").strip().lower()
+            if decision == "approved":
+                self._set_status("Approval sent back to requester mediator.")
+            elif decision == "denied":
+                self._set_status("Denial sent back to requester mediator.")
+            else:
+                self._set_status("Security decision sent back to requester mediator.")
+        except Exception as exc:
+            self._set_status(f"Requester handoff failed: {exc}", error=True)
+        return True
+
+    def _handle_security_output(self, output: str) -> bool:
+        if self._handle_security_request_output(output):
+            return True
+        return self._handle_security_approval_output(output)
 
     def _queue_pending(self, prompt: str, signature: str, source: str) -> None:
         if self._stop_requested:
@@ -1183,6 +2572,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             if force:
                 self._set_status("No voice_input text available.", error=True)
             return
+        self._last_prompt_voice_input = clean_voice_input
         if not force:
             self._last_auto_voice_input = clean_voice_input
             self._last_auto_voice_token = current_voice_token
@@ -1415,7 +2805,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._set_running(False)
 
         clean_source = (source or "").strip().lower()
-        is_codex_process = clean_source in {"auto", "manual"}
+        is_codex_process = clean_source in MEDIGATOR_CODEX_RESPONSE_SOURCES
         if self._stop_requested:
             self._clear_pending()
             self._stop_requested = False
@@ -1427,6 +2817,8 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
 
         if error_text:
             self._console_append.emit(error_text)
+            if clean_source == "security_approval":
+                self._finish_qdeck_handoff_dialog(message=error_text, error=True)
             self._set_status(error_text, error=True)
         elif is_codex_process:
             output = str(response_text or "").strip()
@@ -1434,11 +2826,23 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 _set_node_info(self._node_item, output)
                 self._console_append.emit("[mediator] Response published to node output.")
                 self._last_processed_signature = str(signature or self._last_processed_signature)
-                if clean_source == "auto":
-                    self._set_status("Auto-processing complete.")
-                else:
-                    self._set_status("Processing complete.")
+                self._maybe_show_tanya_speech_popup(output, source=clean_source)
+                security_handled = self._handle_security_output(output)
+                if clean_source == "security_approval":
+                    preview = output.splitlines()[0].strip() if output.splitlines() else output
+                    self._finish_qdeck_handoff_dialog(message=preview or "Qubit Deck command published.", error=False)
+                if not security_handled:
+                    if clean_source == "auto":
+                        self._set_status("Auto-processing complete.")
+                    elif clean_source == "security_request":
+                        self._set_status("Security request processing complete.")
+                    elif clean_source == "security_approval":
+                        self._set_status("Security approval processing complete.")
+                    else:
+                        self._set_status("Processing complete.")
             else:
+                if clean_source == "security_approval":
+                    self._finish_qdeck_handoff_dialog(message="Codex returned empty output.", error=True)
                 self._set_status("Codex returned empty output.", error=True)
         else:
             if int(exit_code) == 0:
@@ -1472,6 +2876,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
 def render_node_body(node_item, y_cursor: int) -> int:
     try:
         body = MediatorConsoleWidget(node_item, None)
+        setattr(node_item, "_mediator_console_widget", body)
     except Exception as exc:
         print("[EchoGraph] Mediator UI init failed:", exc)
         body = QtWidgets.QFrame()
@@ -1490,7 +2895,8 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setZValue(node_item.zValue() + 0.1)
     proxy.setPos(0, y_cursor)
 
-    h = body.sizeHint().height()
+    hint = body.sizeHint().expandedTo(body.minimumSizeHint())
+    h = max(36, int(hint.height()))
     try:
         pad = float(getattr(node_item, "_PADDING", 0))
         available = float(node_item.height) - float(y_cursor) - pad
@@ -1503,7 +2909,23 @@ def render_node_body(node_item, y_cursor: int) -> int:
         node_item._plugin_proxies.append(proxy)
     except Exception:
         pass
-    return y_cursor + h
+    bottom_y = int(y_cursor + h)
+    try:
+        pad = float(getattr(node_item, "_PADDING", 0))
+        required_height = float(bottom_y) + pad
+        if float(getattr(node_item, "height", 0.0) or 0.0) < required_height:
+            try:
+                node_item.prepareGeometryChange()
+            except Exception:
+                pass
+            node_item.height = required_height
+            try:
+                node_item.update()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return bottom_y
 
 
 MEDIGATOR_SPEC = Spec(

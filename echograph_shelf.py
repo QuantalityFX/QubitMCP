@@ -1247,7 +1247,19 @@ class GraphScene(QtWidgets.QGraphicsScene):
         if not item or not getattr(item, "model", None):
             return []
         model = item.model
-        kind = (model.kind or "").lower()
+        kind = (model.kind or "").strip().lower()
+        if kind in (
+            "python",
+            "mediator_agent",
+            "mediator agent",
+            "medigator_agent",
+            "medigator agent",
+            "mediator",
+            "medigator",
+        ):
+            info = (model.info or "").strip()
+            if info:
+                return [{"node": model.name, "param": "info", "text": info}]
         if kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
             csv_text = ""
             try:
@@ -1270,6 +1282,9 @@ class GraphScene(QtWidgets.QGraphicsScene):
             name = (p.get("name") or "").strip()
             if not name:
                 name = f"param{idx+1}"
+            key_name = name.lower()
+            if key_name == "__ui_hidden_params" or key_name.startswith("__"):
+                continue
             segments.append({"node": model.name, "param": name, "text": val})
 
         if kind in ("import", "html_preview"):

@@ -3282,14 +3282,64 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             except Exception:
                 pass
 
+    def _entry_retime_aliases(entry: dict):
+        if not isinstance(entry, dict):
+            return
+        for alias_key in (
+            "scene_alignment_owner",
+            "source_owner",
+            "target_owner",
+            "instance_source_name",
+            "fbx_sample_owner",
+            "sample_owner",
+            "deformer_owner",
+            "rig_owner",
+            "animation_owner",
+            "retarget_owner",
+            "skinned_splat_proxy_node",
+            "skinned_volume_mesh_node",
+        ):
+            alias = str(entry.get(alias_key) or "").strip()
+            if alias:
+                yield alias
+        for cfg_key in (
+            "groom_deform",
+            "groom_guide_pose",
+            "groom_guide_sim",
+            "groom_guide_tube",
+            "render_proxy",
+        ):
+            cfg = entry.get(cfg_key)
+            if not isinstance(cfg, dict):
+                continue
+            for alias_key in (
+                "rig_owner",
+                "animation_owner",
+                "retarget_owner",
+                "sample_owner",
+                "deformer_owner",
+                "source_owner",
+                "target_owner",
+                "guide_source_owner",
+            ):
+                alias = str(cfg.get(alias_key) or "").strip()
+                if alias:
+                    yield alias
+            try:
+                for alias in list(cfg.get("sample_owner_candidates") or []):
+                    alias = str(alias or "").strip()
+                    if alias:
+                        yield alias
+            except Exception:
+                pass
+
     for entry in assets:
         if not isinstance(entry, dict):
             continue
         owner_name = str(entry.get("node") or "").strip()
         if owner_name and _apply_retime(entry, owner_name):
             continue
-        for alias_key in ("scene_alignment_owner", "source_owner", "target_owner", "instance_source_name"):
-            alias = str(entry.get(alias_key) or "").strip()
+        for alias in _entry_retime_aliases(entry):
             if alias and _apply_retime(entry, alias):
                 break
 
@@ -4049,6 +4099,23 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 pass
             return glv
 
+        def _clean_vec3(value, default):
+            try:
+                if isinstance(value, (list, tuple)) and len(value) >= 3:
+                    return [float(value[0]), float(value[1]), float(value[2])]
+            except Exception:
+                pass
+            return [float(default[0]), float(default[1]), float(default[2])]
+
+        def _clean_xform_payload(xf):
+            if not isinstance(xf, dict):
+                xf = {}
+            return {
+                "pos": _clean_vec3(xf.get("pos"), (0.0, 0.0, 0.0)),
+                "rot": _clean_vec3(xf.get("rot"), (0.0, 0.0, 0.0)),
+                "scl": _clean_vec3(xf.get("scl"), (1.0, 1.0, 1.0)),
+            }
+
         def _show_outliner_animation_menu(item, global_pos) -> bool:
             if item is None:
                 return False
@@ -4056,31 +4123,149 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 kind = str(item.data(QtCore.Qt.UserRole + 1) or "").strip().lower()
             except Exception:
                 kind = ""
-            if kind not in {"skeleton", "camera"}:
-                return False
             try:
                 owner = str(item.data(QtCore.Qt.UserRole) or "").strip()
             except Exception:
                 owner = ""
             if not owner:
                 return False
-            glv = _activate_outliner_timeline_context()
-            if glv is None:
-                return False
+            glv = _get_glv()
+
+            def _current_outliner_xform():
+                xf = _lookup_saved_xform(owner)
+                if isinstance(xf, dict):
+                    return _clean_xform_payload(xf)
+                try:
+                    selected_owner = str(getattr(card, "_scene_selected_owner", "") or "").strip()
+                    if selected_owner and selected_owner.lower() == owner.lower():
+                        return _xform_from_spins()
+                except Exception:
+                    pass
+
+                if not _scene_is_active():
+                    return _clean_xform_payload({})
+
+                try:
+                    getf = getattr(glv, "_mgl_get_scene_asset_xform", None)
+                    splat_map = getattr(glv, "_mgl_scene_splats", None)
+                    if _owner_in_map(splat_map, owner):
+                        getf = getattr(glv, "_mgl_get_scene_splat_xform", getf)
+                    if callable(getf):
+                        xf = getf(owner)
+                except Exception:
+                    xf = None
+                return _clean_xform_payload(xf)
+
+            def _set_status(message: str) -> None:
+                try:
+                    win = card.window()
+                    status_fn = getattr(win, "statusBar", None) if win is not None else None
+                    status = status_fn() if callable(status_fn) else None
+                    show_fn = getattr(status, "showMessage", None)
+                    if callable(show_fn):
+                        show_fn(str(message or ""), 2500)
+                except Exception:
+                    pass
+
+            def _copy_transform():
+                payload = {
+                    "schema": "qubit.scene.transform_clipboard.v1",
+                    "owner": owner,
+                    "scene": str(getattr(getattr(card, "_node_ref", None), "name", "") or ""),
+                    "xform": _current_outliner_xform(),
+                    "copied_at": float(time.time()),
+                }
+                try:
+                    QtWidgets.QApplication.clipboard().setText(
+                        json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+                    )
+                    _set_status(f"Copied transform from {owner}.")
+                except Exception:
+                    pass
+
+            def _read_transform_clipboard():
+                try:
+                    text = QtWidgets.QApplication.clipboard().text()
+                except Exception:
+                    text = ""
+                if not text:
+                    return None
+                try:
+                    payload = json.loads(str(text))
+                except Exception:
+                    return None
+                if not isinstance(payload, dict):
+                    return None
+                if str(payload.get("schema") or "").strip().lower() != "qubit.scene.transform_clipboard.v1":
+                    return None
+                xf = payload.get("xform")
+                if not isinstance(xf, dict):
+                    return None
+                return {
+                    "pos": _clean_vec3(xf.get("pos"), (0.0, 0.0, 0.0)),
+                    "rot": _clean_vec3(xf.get("rot"), (0.0, 0.0, 0.0)),
+                    "scl": _clean_vec3(xf.get("scl"), (1.0, 1.0, 1.0)),
+                }
+
+            def _can_paste_transform() -> bool:
+                return isinstance(_read_transform_clipboard(), dict)
+
+            def _paste_transform():
+                xf = _read_transform_clipboard()
+                if not isinstance(xf, dict):
+                    _set_status("No copied transform.")
+                    return
+                before = _current_outliner_xform()
+                _set_xyz(card._xform_pos, xf.get("pos", (0.0, 0.0, 0.0)))
+                _set_xyz(card._xform_rot, xf.get("rot", (0.0, 0.0, 0.0)))
+                _set_xyz(card._xform_scl, xf.get("scl", (1.0, 1.0, 1.0)))
+                try:
+                    card._scene_selected_owner = owner
+                    card._scene_selected_kind = kind or "mesh"
+                    xform_panel.setEnabled(True)
+                except Exception:
+                    pass
+                after = _clean_xform_payload(xf)
+                _store_saved_xform(owner, after)
+                if _scene_is_active():
+                    _apply_xform("all")
+                else:
+                    try:
+                        win = card.window()
+                        scene_node = getattr(card, "_node_ref", None)
+                        actions.record_scene_xform(win, scene_node, owner, before, after)
+                    except Exception:
+                        pass
+                _set_status(f"Pasted transform to {owner}.")
+
             menu = QtWidgets.QMenu(outliner)
-            copy_act = menu.addAction("Copy Animation")
-            paste_act = menu.addAction("Paste Animation")
-            try:
-                can_paste = getattr(glv, "_timeline_can_paste_animation", None)
-                paste_act.setEnabled(bool(callable(can_paste) and can_paste("owner_keys")))
-            except Exception:
-                paste_act.setEnabled(False)
-            copy_act.triggered.connect(
-                lambda _checked=False, g=glv, o=owner: getattr(g, "_timeline_copy_owner_animation", lambda *_: False)(o)
+            menu.setStyleSheet(
+                "QMenu{background:#0f172a;color:#e5e7eb;border:1px solid #334155;padding:4px;}"
+                "QMenu::item{padding:6px 22px 6px 22px;border-radius:3px;}"
+                "QMenu::item:selected{background:#16a34a;color:#f8fafc;}"
+                "QMenu::item:disabled{color:#64748b;background:transparent;}"
+                "QMenu::separator{height:1px;background:#334155;margin:4px 6px;}"
             )
-            paste_act.triggered.connect(
-                lambda _checked=False, g=glv, o=owner: getattr(g, "_timeline_paste_owner_animation", lambda *_: False)(o)
-            )
+            copy_xform_act = menu.addAction("Copy Transform")
+            paste_xform_act = menu.addAction("Paste Transform")
+            paste_xform_act.setEnabled(_can_paste_transform())
+            copy_xform_act.triggered.connect(lambda _checked=False: _copy_transform())
+            paste_xform_act.triggered.connect(lambda _checked=False: _paste_transform())
+            if kind in {"skeleton", "camera"}:
+                menu.addSeparator()
+                copy_act = menu.addAction("Copy Animation")
+                paste_act = menu.addAction("Paste Animation")
+                try:
+                    can_paste = getattr(glv, "_timeline_can_paste_animation", None)
+                    paste_act.setEnabled(bool(callable(can_paste) and can_paste("owner_keys")))
+                except Exception:
+                    paste_act.setEnabled(False)
+                copy_act.triggered.connect(
+                    lambda _checked=False, o=owner: getattr(_activate_outliner_timeline_context(), "_timeline_copy_owner_animation", lambda *_: False)(o)
+                )
+                paste_act.triggered.connect(
+                    lambda _checked=False, o=owner: getattr(_activate_outliner_timeline_context(), "_timeline_paste_owner_animation", lambda *_: False)(o)
+                )
             try:
                 menu.exec(global_pos)
             except Exception:
@@ -4120,6 +4305,45 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     sb.blockSignals(False)
             finally:
                 card._xform_updating = False
+
+        def _xform_from_spins():
+            try:
+                return {
+                    "pos": [float(s.value()) for s in card._xform_pos],
+                    "rot": [float(s.value()) for s in card._xform_rot],
+                    "scl": [float(s.value()) for s in card._xform_scl],
+                }
+            except Exception:
+                return _clean_xform_payload({})
+
+        def _set_xform_spins(xf):
+            clean = _clean_xform_payload(xf)
+            _set_xyz(card._xform_pos, clean.get("pos", (0.0, 0.0, 0.0)))
+            _set_xyz(card._xform_rot, clean.get("rot", (0.0, 0.0, 0.0)))
+            _set_xyz(card._xform_scl, clean.get("scl", (1.0, 1.0, 1.0)))
+
+        def _store_saved_xform(owner: str, xf) -> dict:
+            clean = _clean_xform_payload(xf)
+            key = str(owner or "").strip()
+            if not key:
+                return clean
+            try:
+                node_ref = getattr(card, "_node_ref", None)
+                if node_ref is not None:
+                    xforms = getattr(node_ref, "_scene_xforms", None)
+                    if not isinstance(xforms, dict):
+                        xforms = {}
+                    else:
+                        xforms = dict(xforms)
+                    xforms[key] = {
+                        "pos": list(clean.get("pos", (0.0, 0.0, 0.0))),
+                        "rot": list(clean.get("rot", (0.0, 0.0, 0.0))),
+                        "scl": list(clean.get("scl", (1.0, 1.0, 1.0))),
+                    }
+                    setattr(node_ref, "_scene_xforms", xforms)
+            except Exception:
+                pass
+            return clean
 
         def _menu_icon(name: str, alpha: float = 0.7) -> QtGui.QIcon:
             try:
@@ -4181,18 +4405,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         def _load_xform_from_view(owner: str):
             if not _scene_is_active():
                 xf = _lookup_saved_xform(owner)
-                if isinstance(xf, dict):
-                    _set_xyz(card._xform_pos, xf.get("pos", (0.0, 0.0, 0.0)))
-                    _set_xyz(card._xform_rot, xf.get("rot", (0.0, 0.0, 0.0)))
-                    _set_xyz(card._xform_scl, xf.get("scl", (1.0, 1.0, 1.0)))
+                _set_xform_spins(xf if isinstance(xf, dict) else {})
                 return
             glv = _get_glv()
             if glv is None:
                 xf = _lookup_saved_xform(owner)
-                if isinstance(xf, dict):
-                    _set_xyz(card._xform_pos, xf.get("pos", (0.0, 0.0, 0.0)))
-                    _set_xyz(card._xform_rot, xf.get("rot", (0.0, 0.0, 0.0)))
-                    _set_xyz(card._xform_scl, xf.get("scl", (1.0, 1.0, 1.0)))
+                _set_xform_spins(xf if isinstance(xf, dict) else {})
                 return
             # Prefer splat xform when owner is a splat
             getf = getattr(glv, "_mgl_get_scene_asset_xform", None)
@@ -4203,11 +4421,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             except Exception:
                 pass
             if not callable(getf):
+                xf = _lookup_saved_xform(owner)
+                _set_xform_spins(xf if isinstance(xf, dict) else {})
                 return
             x = getf(owner)
-            _set_xyz(card._xform_pos, x.get("pos", (0.0, 0.0, 0.0)))
-            _set_xyz(card._xform_rot, x.get("rot", (0.0, 0.0, 0.0)))
-            _set_xyz(card._xform_scl, x.get("scl", (1.0, 1.0, 1.0)))
+            if not isinstance(x, dict):
+                x = _lookup_saved_xform(owner)
+            _set_xform_spins(x if isinstance(x, dict) else {})
         # expose for external refresh (e.g., gizmo drag)
         card._scene_xform_refresh = _load_xform_from_view
 

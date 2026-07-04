@@ -133,6 +133,15 @@ _USER_FEEDBACK_TAG_RE = re.compile(
     r"<\s*/\s*(?:user[\s_-]*feedback|user[\s_-]*feed[\s_-]*back|feedback)\s*>",
     re.IGNORECASE | re.DOTALL,
 )
+_SECURITY_REQUEST_TAG_RE = re.compile(
+    r"<\s*security_request\b[^>]*>.*?<\s*/\s*security_request\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_VOICE_CONTROL_TAG_RE = re.compile(
+    r"<\s*/?\s*(?:security_request|security_approval)\b[^>]*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_MULTI_BLANK_RE = re.compile(r"\n{3,}")
 
 
 def _new_gtts(text: str):
@@ -616,18 +625,35 @@ def _extract_user_feedback_text(text: str) -> str:
     return matches[-1] if matches else ""
 
 
+def _clean_voice_text(text: str) -> str:
+    cleaned = str(text or "")
+    cleaned = _SECURITY_REQUEST_TAG_RE.sub("", cleaned)
+    cleaned = _VOICE_CONTROL_TAG_RE.sub("", cleaned)
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = _MULTI_BLANK_RE.sub("\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
 def _proxy_auto_speech_text(source_item, text: str, *, fallback_text: str = "") -> str:
     clean = str(text or "").strip()
     if _auto_speech_source_kind(source_item) != "mediator":
-        return clean
+        return _clean_voice_text(clean)
     feedback = _extract_user_feedback_text(clean)
     if feedback:
         return feedback
+    stripped = _clean_voice_text(clean)
+    if stripped and stripped != clean:
+        return stripped
     if not clean:
         fallback_feedback = _extract_user_feedback_text(fallback_text)
         if fallback_feedback:
             return fallback_feedback
-    return clean
+        fallback_stripped = _clean_voice_text(fallback_text)
+        if fallback_stripped:
+            return fallback_stripped
+    return stripped or clean
 
 
 def _pick_female_voice_id(engine) -> str:
@@ -2655,7 +2681,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 text, token, _err = _latest_auto_speech_response(self._scene, source_item)
                 if not text:
                     return
-                text = text.strip()
+                text = _proxy_auto_speech_text(source_item, text, fallback_text=text).strip()
                 if not text:
                     return
 
@@ -2689,7 +2715,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 error=True,
             )
             return False
-        clean = (text or "").strip()
+        clean = _clean_voice_text(text)
         if not clean:
             if source == "selected_param":
                 self._set_status(
@@ -2763,24 +2789,27 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 return "", "chatbot_latest"
 
             text, token, _err = _latest_auto_speech_response(self._scene, self._chatbot_input_item)
-            if text.strip():
+            spoken = _proxy_auto_speech_text(self._chatbot_input_item, text, fallback_text=text)
+            if spoken.strip():
                 if token:
                     self._last_chatbot_token = token
-                return text.strip(), "chatbot_latest"
+                return spoken.strip(), "chatbot_latest"
             return "", "chatbot_latest"
 
         selected_key = str(self._selected_param_key or "").strip()
         if selected_key:
             value, _label = self._selected_source_param_value()
-            if value.strip():
-                return value.strip(), "selected_param"
+            spoken = _clean_voice_text(value)
+            if spoken.strip():
+                return spoken.strip(), "selected_param"
             return "", "selected_param"
 
         scene = self._node_item.scene()
         wired = _text_from_input(scene, self._node_item, "text")
-        if wired.strip():
-            return wired.strip(), "input"
-        local = (self._transcript.toPlainText() or "").strip()
+        spoken = _clean_voice_text(wired)
+        if spoken.strip():
+            return spoken.strip(), "input"
+        local = _clean_voice_text(self._transcript.toPlainText())
         return local, "transcript"
 
     def _start_tts(self) -> None:

@@ -741,6 +741,54 @@ class MGLRendererMixin:
     def _mgl_timeline_time_seconds(self) -> float:
         return float(self._mgl_timeline_frame_index()) / float(self._mgl_timeline_fps_value())
 
+    def _mgl_owner_timeline_source_frame(self, owner: str | None = None) -> float:
+        try:
+            frame = float(self._mgl_timeline_frame_index())
+        except Exception:
+            frame = 0.0
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            return max(0.0, float(frame))
+        try:
+            map_fn = getattr(self, "_timeline_composition_source_frame", None)
+            if callable(map_fn):
+                mapped = map_fn(owner_key, frame, allow_owner_key_mode=True)
+                if mapped is not None:
+                    return max(0.0, float(mapped))
+        except Exception:
+            pass
+        try:
+            retime_fn = getattr(self, "_timeline_retimed_frame_for_owner", None)
+            if callable(retime_fn):
+                return max(0.0, float(retime_fn(owner_key, frame)))
+        except Exception:
+            pass
+        try:
+            speed_fn = getattr(self, "_timeline_owner_speed_factor", None)
+            if callable(speed_fn):
+                return max(0.0, float(frame) * float(speed_fn(owner_key)))
+        except Exception:
+            pass
+        try:
+            speeds = getattr(self, "_timeline_owner_speed_percent_by_owner", None)
+            pct = None
+            if isinstance(speeds, dict):
+                pct = speeds.get(owner_key, None)
+                if pct is None:
+                    owner_l = owner_key.lower()
+                    for maybe_key, maybe_val in speeds.items():
+                        try:
+                            if str(maybe_key).strip().lower() == owner_l:
+                                pct = maybe_val
+                                break
+                        except Exception:
+                            continue
+            if pct is not None:
+                return max(0.0, float(frame) * max(0.01, float(pct) / 100.0))
+        except Exception:
+            pass
+        return max(0.0, float(frame))
+
     def _mgl_fbx_context_timeline_sample_seconds(self, context: dict | None, owner: str | None = None) -> float:
         timeline_seconds = self._mgl_timeline_time_seconds()
         owner_key = str(owner or "").strip()
@@ -7010,7 +7058,7 @@ class MGLRendererMixin:
         except Exception:
             items = []
         roots_by_owner: Dict[str, Any] = {}
-        frame = int(self._mgl_timeline_frame_index())
+        timeline_frame = int(self._mgl_timeline_frame_index())
         for item in items:
             payload = getattr(item, "payload", None) or {}
             if not self._mgl_groom_guide_item_should_update(item, payload):
@@ -7024,6 +7072,12 @@ class MGLRendererMixin:
             if not bool(settings.get("enabled", True)):
                 continue
             frame_settings_sig = self._mgl_groom_guide_sim_settings_signature(settings)
+            owner = str(payload.get("owner") or "").strip()
+            frame_owner = self._mgl_groom_deform_sample_owner(payload, owner) or owner
+            try:
+                frame = max(0, int(round(float(self._mgl_owner_timeline_source_frame(frame_owner)))))
+            except Exception:
+                frame = int(timeline_frame)
             if (
                 not bool(force)
                 and
@@ -7031,7 +7085,6 @@ class MGLRendererMixin:
                 and payload.get("_groom_guide_sim_frame_settings_sig") == frame_settings_sig
             ):
                 continue
-            owner = str(payload.get("owner") or "").strip()
             bind_curves = sim_cfg.get("bind_curves")
             if not isinstance(bind_curves, list) or not bind_curves:
                 continue
@@ -7122,6 +7175,8 @@ class MGLRendererMixin:
                     payload=payload,
                     interval=1.0,
                     frame=int(frame),
+                    timeline_frame=int(timeline_frame),
+                    frame_owner=str(frame_owner or ""),
                     start_frame=int(start_frame),
                     context=self._mgl_groom_guide_gpu_context_debug(),
                 )
@@ -7191,6 +7246,8 @@ class MGLRendererMixin:
                     "start_frame": int(start_frame),
                     "first_simulated_frame": int(start_frame + 1),
                     "frame": int(frame),
+                    "timeline_frame": int(timeline_frame),
+                    "frame_owner": str(frame_owner or ""),
                     "start_state_armed": bool(frame == start_frame and payload.get("_groom_guide_sim_start_state_sig") == start_state_sig),
                 }
                 if root_targets is not None:
@@ -7288,6 +7345,8 @@ class MGLRendererMixin:
                 collider_enabled=bool(isinstance(collider, dict)),
                 collider_error=str(payload.get("_groom_collider_error") or ""),
                 frame=int(frame),
+                timeline_frame=int(timeline_frame),
+                frame_owner=str(frame_owner or ""),
                 start_frame=int(start_frame),
                 first_simulated_frame=int(start_frame + 1),
                 frame_delta=int(delta),
@@ -7342,6 +7401,7 @@ class MGLRendererMixin:
                                     owner=owner,
                                     node_kind="groom_guide_sim",
                                     frame=int(frame),
+                                    timeline_frame=int(timeline_frame),
                                     point_count=int(gpu_runtime.get("point_count", 0) or 0),
                                     segment_count=int(gpu_runtime.get("segment_count", 0) or 0),
                                     root_count=int(gpu_runtime.get("root_count", 0) or 0),
@@ -7394,6 +7454,8 @@ class MGLRendererMixin:
                             payload=payload,
                             interval=0.75,
                             frame=int(frame),
+                            timeline_frame=int(timeline_frame),
+                            frame_owner=str(frame_owner or ""),
                             step_count=int(gpu_step_count),
                             wire_path=str(debug.get("wire_path") or ""),
                             runtime_debug=dict(debug),
@@ -7428,6 +7490,7 @@ class MGLRendererMixin:
                                 owner=owner,
                                 node_kind="groom_guide_sim",
                                 frame=int(frame),
+                                timeline_frame=int(timeline_frame),
                                 error=repr(exc),
                                 context=self._mgl_groom_guide_gpu_context_debug(),
                             )
@@ -7463,6 +7526,8 @@ class MGLRendererMixin:
                 payload=payload,
                 interval=0.75,
                 frame=int(frame),
+                timeline_frame=int(timeline_frame),
+                frame_owner=str(frame_owner or ""),
                 requested_device=device,
                 reason=str(gpu_fallback_reason or "GPU path did not complete."),
                 context=self._mgl_groom_guide_gpu_context_debug(),
@@ -7492,6 +7557,7 @@ class MGLRendererMixin:
                         owner=owner,
                         node_kind="groom_guide_sim",
                         frame=int(frame),
+                        timeline_frame=int(timeline_frame),
                         error=repr(exc),
                         fallback_reason=str(gpu_fallback_reason or ""),
                     )
@@ -7550,6 +7616,8 @@ class MGLRendererMixin:
                 payload=payload,
                 interval=0.75,
                 frame=int(frame),
+                timeline_frame=int(timeline_frame),
+                frame_owner=str(frame_owner or ""),
                 step_count=int(step_count),
                 fallback_reason=str(gpu_fallback_reason or ""),
                 runtime_debug=dict(debug or {}),

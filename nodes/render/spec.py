@@ -767,11 +767,18 @@ class RenderNodeWidget(QtWidgets.QWidget):
 
     def _set_fmt_combo(self, fmt: str):
         target = _norm_fmt(fmt)
-        for i in range(self._format_combo.count()):
-            if _norm_fmt(str(self._format_combo.itemData(i) or "")) == target:
-                self._format_combo.setCurrentIndex(i)
-                return
-        self._format_combo.setCurrentIndex(0)
+        try:
+            self._format_combo.blockSignals(True)
+            for i in range(self._format_combo.count()):
+                if _norm_fmt(str(self._format_combo.itemData(i) or "")) == target:
+                    self._format_combo.setCurrentIndex(i)
+                    return
+            self._format_combo.setCurrentIndex(0)
+        finally:
+            try:
+                self._format_combo.blockSignals(False)
+            except Exception:
+                pass
 
     def _selected_fmt(self) -> str:
         return _norm_fmt(str(self._format_combo.currentData() or "png"))
@@ -823,29 +830,29 @@ class RenderNodeWidget(QtWidgets.QWidget):
 
     def _on_fps_changed(self, value: float):
         fps = max(1.0, float(value))
-        _set_param_value(self._node_item, "frame_rate", f"{fps:.3f}".rstrip("0").rstrip("."), notify_scene=True)
+        _set_param_value(self._node_item, "frame_rate", f"{fps:.3f}".rstrip("0").rstrip("."), notify_scene=False)
 
     def _on_format_changed(self, _index: int):
         fmt = self._selected_fmt()
-        _set_param_value(self._node_item, "format", fmt, notify_scene=True)
+        _set_param_value(self._node_item, "format", fmt, notify_scene=False)
 
     def _on_start_frame_changed(self, value: int):
         start = max(0, int(value))
-        _set_param_value(self._node_item, "start_frame", str(start), notify_scene=True)
+        _set_param_value(self._node_item, "start_frame", str(start), notify_scene=False)
 
     def _on_end_frame_changed(self, value: int):
         end_frame = int(value)
         if end_frame < -1:
             end_frame = -1
-        _set_param_value(self._node_item, "end_frame", str(end_frame), notify_scene=True)
+        _set_param_value(self._node_item, "end_frame", str(end_frame), notify_scene=False)
 
     def _on_output_edit_committed(self):
         text = (self._output_edit.text() or "").strip()
-        _set_param_value(self._node_item, "output", text, notify_scene=True)
+        _set_param_value(self._node_item, "output", text, notify_scene=False)
         fmt = _fmt_from_suffix(Path(text).suffix) if text else None
         if fmt:
             self._set_fmt_combo(fmt)
-            _set_param_value(self._node_item, "format", fmt, notify_scene=True)
+            _set_param_value(self._node_item, "format", fmt, notify_scene=False)
 
     def _on_browse_clicked(self):
         start, fmt = self._resolved_template()
