@@ -37,7 +37,7 @@ _IDENTITY_MATRIX_4X4: Tuple[float, ...] = (
 )
 
 _BIND_INGEST_CACHE_MAX = 8
-_BIND_INGEST_CACHE_VERSION = 2
+_BIND_INGEST_CACHE_VERSION = 3
 _BIND_INGEST_CACHE: "OrderedDict[Tuple[str, int, int, str, int, int], FBXBindIngestResult]" = OrderedDict()
 
 
@@ -587,6 +587,33 @@ def _triangulate_faces(faces: Sequence[Sequence[int]]) -> List[int]:
     return tris
 
 
+def _authored_edge_indices(faces: Sequence[Sequence[int]], vertex_count: int) -> List[int]:
+    edges: List[int] = []
+    seen: set[Tuple[int, int]] = set()
+    max_idx = int(vertex_count) - 1
+    for face in faces:
+        valid: List[int] = []
+        for raw_idx in face:
+            try:
+                idx = int(raw_idx)
+            except Exception:
+                continue
+            if 0 <= idx <= max_idx:
+                valid.append(idx)
+        if len(valid) < 2:
+            continue
+        for idx, a in enumerate(valid):
+            b = valid[(idx + 1) % len(valid)]
+            if a == b:
+                continue
+            key = (a, b) if a < b else (b, a)
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.extend([int(a), int(b)])
+    return edges
+
+
 def _select_skeleton_nodes(
     node_records: Sequence[_NodeRecord],
     bone_names: Sequence[str],
@@ -749,6 +776,7 @@ def _build_mesh_assets(
         faces = _mesh_faces(mesh)
         triangle_indices = _triangulate_faces(faces)
         triangle_indices = [idx for idx in triangle_indices if 0 <= idx < vertex_count]
+        edge_indices = _authored_edge_indices(faces, vertex_count)
 
         per_vertex: Dict[int, Dict[int, float]] = {}
         clamp_warning_count = 0
@@ -820,6 +848,7 @@ def _build_mesh_assets(
                 "source_mesh_index": int(mesh_idx),
                 "source_mesh_name": raw_mesh_name,
                 "bind_positions": [list(v) for v in bind_positions],
+                "edge_indices": [int(i) for i in edge_indices],
             },
         )
         asset.validate(skeleton)

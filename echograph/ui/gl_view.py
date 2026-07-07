@@ -684,6 +684,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_shadow_light_dir = (0.35, 0.85, 0.45)
         self._mgl_ambient_light_enabled = True
         self._mgl_ambient_light_strength = 0.10
+        self._mgl_unlit_view_enabled = False
+        self._mgl_work_light_enabled = False
         self._mgl_scene_light_owner = None
         self._mgl_scene_light_type = "directional"
         self._mgl_scene_light_dir = None
@@ -1107,6 +1109,26 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         scene_skeleton_joint_names,
                         False,
                     )
+                unlit_view = settings.get("unlit_view", None)
+                if unlit_view is not None:
+                    if hasattr(self, "_apply_mgl_unlit_view_settings"):
+                        self._apply_mgl_unlit_view_settings(
+                            enabled=_coerce_view_bool(unlit_view, False),
+                            sync_ui=True,
+                            sync_scene=False,
+                        )
+                    else:
+                        self._mgl_unlit_view_enabled = _coerce_view_bool(unlit_view, False)
+                work_light = settings.get("work_light_view", None)
+                if work_light is not None:
+                    if hasattr(self, "_apply_mgl_work_light_settings"):
+                        self._apply_mgl_work_light_settings(
+                            enabled=_coerce_view_bool(work_light, False),
+                            sync_ui=True,
+                            sync_scene=False,
+                        )
+                    else:
+                        self._mgl_work_light_enabled = _coerce_view_bool(work_light, False)
                 ambient_light = settings.get("ambient_light", None)
                 ambient_strength = settings.get("ambient_light_strength", None)
                 if ambient_light is not None or ambient_strength is not None:

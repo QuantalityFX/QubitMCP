@@ -13,6 +13,8 @@
   "self_shadows": true,
   "two_sided_shadows": true,
   "ambient_light": true,
+  "unlit_view": false,
+  "work_light_view": true,
   "ambient_light_strength": 0.1,
-  "scene_skeleton_joint_names": false
+  "scene_skeleton_joint_names": true
 }

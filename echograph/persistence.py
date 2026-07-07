@@ -3,6 +3,20 @@ import time
 from typing import Callable, Dict, Any
 from echograph.constants import LLM_SCALE_DEFAULT
 
+def _coerce_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on", "y"}:
+            return True
+        if text in {"0", "false", "no", "off", "n"}:
+            return False
+    return bool(default)
+
+
 def _node_to_dict(node) -> Dict[str, Any]:
     # Prefer Qt-free position
     try:
@@ -189,6 +203,9 @@ def serialize_scene(scene) -> Dict[str, Any]:
                         settings[key] = float(view_settings[key])
                     except Exception:
                         pass
+            for key in ("unlit_view", "work_light_view"):
+                if key in view_settings:
+                    settings[key] = _coerce_bool(view_settings.get(key), False)
             if "wire_color" in view_settings:
                 try:
                     raw = view_settings.get("wire_color")
@@ -261,6 +278,9 @@ def deserialize_scene(
                             view_settings[key] = float(settings[key])
                         except Exception:
                             pass
+                for key in ("unlit_view", "work_light_view"):
+                    if key in settings:
+                        view_settings[key] = _coerce_bool(settings.get(key), False)
                 raw_wire_color = settings.get("wire_color", None)
                 if isinstance(raw_wire_color, (list, tuple)) and len(raw_wire_color) >= 3:
                     try:

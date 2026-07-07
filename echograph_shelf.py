@@ -83,6 +83,8 @@ _VOICE_MIC_DEVICE_DEFAULT = None
 _SHADOW_QUALITY_DEFAULT = "high"
 _AMBIENT_LIGHT_STRENGTH_DEFAULT = 0.10
 _SCENE_SKELETON_JOINT_NAMES_DEFAULT = False
+_UNLIT_VIEW_DEFAULT = False
+_WORK_LIGHT_VIEW_DEFAULT = False
 _SHADOW_QUALITY_LABELS = {
     "low": "Low",
     "medium": "Medium",
@@ -334,6 +336,8 @@ def _load_app_settings() -> Dict[str, Any]:
     self_shadows = _coerce_bool(raw.get("self_shadows"), True)
     two_sided_shadows = _coerce_bool(raw.get("two_sided_shadows"), True)
     ambient_light = _coerce_bool(raw.get("ambient_light"), True)
+    unlit_view = _coerce_bool(raw.get("unlit_view"), _UNLIT_VIEW_DEFAULT)
+    work_light_view = _coerce_bool(raw.get("work_light_view"), _WORK_LIGHT_VIEW_DEFAULT)
     ambient_light_strength = _normalize_ambient_light_strength(
         raw.get("ambient_light_strength"),
         _AMBIENT_LIGHT_STRENGTH_DEFAULT,
@@ -353,6 +357,8 @@ def _load_app_settings() -> Dict[str, Any]:
         "self_shadows": bool(self_shadows),
         "two_sided_shadows": bool(two_sided_shadows),
         "ambient_light": bool(ambient_light),
+        "unlit_view": bool(unlit_view),
+        "work_light_view": bool(work_light_view),
         "ambient_light_strength": float(ambient_light_strength),
         "scene_skeleton_joint_names": bool(scene_skeleton_joint_names),
     }
@@ -376,6 +382,8 @@ def _save_app_settings(settings: Dict[str, Any]) -> None:
         "self_shadows": _coerce_bool((settings or {}).get("self_shadows"), True),
         "two_sided_shadows": _coerce_bool((settings or {}).get("two_sided_shadows"), True),
         "ambient_light": _coerce_bool((settings or {}).get("ambient_light"), True),
+        "unlit_view": _coerce_bool((settings or {}).get("unlit_view"), _UNLIT_VIEW_DEFAULT),
+        "work_light_view": _coerce_bool((settings or {}).get("work_light_view"), _WORK_LIGHT_VIEW_DEFAULT),
         "ambient_light_strength": _normalize_ambient_light_strength(
             (settings or {}).get("ambient_light_strength"),
             _AMBIENT_LIGHT_STRENGTH_DEFAULT,
@@ -2653,6 +2661,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._self_shadows_enabled = _coerce_bool(app_settings.get("self_shadows"), True)
         self._two_sided_shadows_enabled = _coerce_bool(app_settings.get("two_sided_shadows"), True)
         self._ambient_light_enabled = _coerce_bool(app_settings.get("ambient_light"), True)
+        self._unlit_view_enabled = _coerce_bool(app_settings.get("unlit_view"), _UNLIT_VIEW_DEFAULT)
+        self._work_light_enabled = _coerce_bool(app_settings.get("work_light_view"), _WORK_LIGHT_VIEW_DEFAULT)
         self._ambient_light_strength = _normalize_ambient_light_strength(
             app_settings.get("ambient_light_strength"),
             _AMBIENT_LIGHT_STRENGTH_DEFAULT,
@@ -5179,6 +5189,24 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(ambient_light_label, 10, 0, 1, 1, QtCore.Qt.AlignVCenter)
         grid.addWidget(self._ambient_light_toggle, 10, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
+        work_light_label = QtWidgets.QLabel("Work Light")
+        self._work_light_toggle = QtWidgets.QCheckBox()
+        self._work_light_toggle.setChecked(bool(getattr(self, "_work_light_enabled", _WORK_LIGHT_VIEW_DEFAULT)))
+        self._work_light_toggle.setToolTip(
+            "Keep normal-based lighting but bypass viewport shadow darkening and add fill light for modeling."
+        )
+        self._work_light_toggle.toggled.connect(self._on_work_light_toggled)
+        grid.addWidget(work_light_label, 11, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._work_light_toggle, 11, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+        unlit_view_label = QtWidgets.QLabel("Unlit View")
+        self._unlit_view_toggle = QtWidgets.QCheckBox()
+        self._unlit_view_toggle.setChecked(bool(getattr(self, "_unlit_view_enabled", _UNLIT_VIEW_DEFAULT)))
+        self._unlit_view_toggle.setToolTip("Draw viewport meshes without light shading or shadow darkening.")
+        self._unlit_view_toggle.toggled.connect(self._on_unlit_view_toggled)
+        grid.addWidget(unlit_view_label, 12, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._unlit_view_toggle, 12, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
         two_sided_shadows_label = QtWidgets.QLabel("2-Sided Shadows")
         self._two_sided_shadows_toggle = QtWidgets.QCheckBox()
         self._two_sided_shadows_toggle.setChecked(bool(getattr(self, "_two_sided_shadows_enabled", True)))
@@ -5186,10 +5214,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "Cast shadows from both front and back faces so closed or thin geometry blocks directional light."
         )
         self._two_sided_shadows_toggle.toggled.connect(self._on_two_sided_shadows_toggled)
-        grid.addWidget(two_sided_shadows_label, 11, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(two_sided_shadows_label, 13, 0, 1, 1, QtCore.Qt.AlignVCenter)
         grid.addWidget(
             self._two_sided_shadows_toggle,
-            11,
+            13,
             1,
             1,
             1,
@@ -5201,20 +5229,20 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._splat_log_toggle = QtWidgets.QCheckBox()
         self._splat_log_toggle.setChecked(self._splat_log_enabled)
         self._splat_log_toggle.toggled.connect(self._on_splat_log_toggled)
-        grid.addWidget(splat_log_label, 12, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._splat_log_toggle, 12, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        grid.addWidget(splat_log_label, 14, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._splat_log_toggle, 14, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         joint_names_label = QtWidgets.QLabel("Joint Names")
         self._scene_skeleton_joint_names_toggle = QtWidgets.QCheckBox()
         self._scene_skeleton_joint_names_toggle.setChecked(
             bool(getattr(self, "_scene_skeleton_joint_names_enabled", _SCENE_SKELETON_JOINT_NAMES_DEFAULT))
         )
-        self._scene_skeleton_joint_names_toggle.setToolTip("Show selected skeleton joint names in the 3D view")
+        self._scene_skeleton_joint_names_toggle.setToolTip("Show visible skeleton joint names in the 3D view")
         self._scene_skeleton_joint_names_toggle.toggled.connect(self._on_scene_skeleton_joint_names_toggled)
-        grid.addWidget(joint_names_label, 13, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(joint_names_label, 15, 0, 1, 1, QtCore.Qt.AlignVCenter)
         grid.addWidget(
             self._scene_skeleton_joint_names_toggle,
-            13,
+            15,
             1,
             1,
             1,
@@ -5226,8 +5254,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._save_layout_toggle.setChecked(bool(getattr(self, "_save_layout_enabled", True)))
         self._save_layout_toggle.setToolTip("Automatically save panel visibility and view mode as the global default layout")
         self._save_layout_toggle.toggled.connect(self._on_save_layout_toggled)
-        grid.addWidget(save_layout_label, 14, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._save_layout_toggle, 14, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        grid.addWidget(save_layout_label, 16, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._save_layout_toggle, 16, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         voice_audio_label = QtWidgets.QLabel("Turn-Taking Audio")
         self._voice_audio_toggle = QtWidgets.QCheckBox()
@@ -5236,8 +5264,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "On = turn-taking (pause mic while another actor speaks). Off = bilateral mic+speaker."
         )
         self._voice_audio_toggle.toggled.connect(self._on_voice_audio_mode_toggled)
-        grid.addWidget(voice_audio_label, 15, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._voice_audio_toggle, 15, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        grid.addWidget(voice_audio_label, 17, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._voice_audio_toggle, 17, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         mic_label = QtWidgets.QLabel("Microphone")
         self._voice_mic_combo = QtWidgets.QComboBox()
@@ -5247,8 +5275,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
         )
         self._voice_mic_combo.currentIndexChanged.connect(self._on_voice_microphone_changed)
-        grid.addWidget(mic_label, 16, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._voice_mic_combo, 16, 1, 1, 2, QtCore.Qt.AlignVCenter)
+        grid.addWidget(mic_label, 18, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._voice_mic_combo, 18, 1, 1, 2, QtCore.Qt.AlignVCenter)
         self._refresh_voice_microphone_options()
 
         panel_action = QtWidgets.QWidgetAction(settings_menu)
@@ -5746,6 +5774,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "self_shadows": bool(getattr(self, "_self_shadows_enabled", True)),
             "two_sided_shadows": bool(getattr(self, "_two_sided_shadows_enabled", True)),
             "ambient_light": bool(getattr(self, "_ambient_light_enabled", True)),
+            "unlit_view": bool(getattr(self, "_unlit_view_enabled", _UNLIT_VIEW_DEFAULT)),
+            "work_light_view": bool(getattr(self, "_work_light_enabled", _WORK_LIGHT_VIEW_DEFAULT)),
             "ambient_light_strength": _normalize_ambient_light_strength(
                 getattr(self, "_ambient_light_strength", _AMBIENT_LIGHT_STRENGTH_DEFAULT),
                 _AMBIENT_LIGHT_STRENGTH_DEFAULT,
@@ -6047,6 +6077,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         settings["self_shadows"] = bool(getattr(self, "_self_shadows_enabled", True))
         settings["two_sided_shadows"] = bool(getattr(self, "_two_sided_shadows_enabled", True))
         settings["ambient_light"] = bool(getattr(self, "_ambient_light_enabled", True))
+        settings["unlit_view"] = bool(getattr(self, "_unlit_view_enabled", _UNLIT_VIEW_DEFAULT))
+        settings["work_light_view"] = bool(getattr(self, "_work_light_enabled", _WORK_LIGHT_VIEW_DEFAULT))
         settings["ambient_light_strength"] = _normalize_ambient_light_strength(
             getattr(self, "_ambient_light_strength", _AMBIENT_LIGHT_STRENGTH_DEFAULT),
             _AMBIENT_LIGHT_STRENGTH_DEFAULT,
@@ -6345,6 +6377,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._self_shadows_enabled = True
         self._two_sided_shadows_enabled = True
         self._ambient_light_enabled = True
+        self._unlit_view_enabled = _UNLIT_VIEW_DEFAULT
+        self._work_light_enabled = _WORK_LIGHT_VIEW_DEFAULT
         self._ambient_light_strength = _AMBIENT_LIGHT_STRENGTH_DEFAULT
         self._splat_log_enabled = False
         self._scene_skeleton_joint_names_enabled = _SCENE_SKELETON_JOINT_NAMES_DEFAULT
@@ -6415,6 +6449,20 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._ambient_light_toggle.blockSignals(True)
                 self._ambient_light_toggle.setChecked(bool(self._ambient_light_enabled))
                 self._ambient_light_toggle.blockSignals(False)
+            except Exception:
+                pass
+        if hasattr(self, "_unlit_view_toggle"):
+            try:
+                self._unlit_view_toggle.blockSignals(True)
+                self._unlit_view_toggle.setChecked(bool(self._unlit_view_enabled))
+                self._unlit_view_toggle.blockSignals(False)
+            except Exception:
+                pass
+        if hasattr(self, "_work_light_toggle"):
+            try:
+                self._work_light_toggle.blockSignals(True)
+                self._work_light_toggle.setChecked(bool(self._work_light_enabled))
+                self._work_light_toggle.blockSignals(False)
             except Exception:
                 pass
         if hasattr(self, "_two_sided_shadows_toggle"):
@@ -6512,6 +6560,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self_shadows = bool(getattr(self, "_self_shadows_enabled", True))
             two_sided_shadows = bool(getattr(self, "_two_sided_shadows_enabled", True))
             ambient_light = bool(getattr(self, "_ambient_light_enabled", True))
+            unlit_view = bool(getattr(self, "_unlit_view_enabled", _UNLIT_VIEW_DEFAULT))
+            work_light = bool(getattr(self, "_work_light_enabled", _WORK_LIGHT_VIEW_DEFAULT))
             ambient_strength = _normalize_ambient_light_strength(
                 getattr(self, "_ambient_light_strength", _AMBIENT_LIGHT_STRENGTH_DEFAULT),
                 _AMBIENT_LIGHT_STRENGTH_DEFAULT,
@@ -6526,6 +6576,22 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             else:
                 gv._mgl_ambient_light_enabled = ambient_light
                 gv._mgl_ambient_light_strength = ambient_strength
+            if hasattr(gv, "_apply_mgl_unlit_view_settings"):
+                gv._apply_mgl_unlit_view_settings(
+                    enabled=unlit_view,
+                    sync_ui=True,
+                    sync_scene=False,
+                )
+            else:
+                gv._mgl_unlit_view_enabled = unlit_view
+            if hasattr(gv, "_apply_mgl_work_light_settings"):
+                gv._apply_mgl_work_light_settings(
+                    enabled=work_light,
+                    sync_ui=True,
+                    sync_scene=False,
+                )
+            else:
+                gv._mgl_work_light_enabled = work_light
             if hasattr(gv, "_apply_mgl_shadow_settings"):
                 gv._apply_mgl_shadow_settings(
                     enabled=cast_shadows,
@@ -6566,6 +6632,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 settings["self_shadows"] = bool(getattr(self, "_self_shadows_enabled", True))
                 settings["two_sided_shadows"] = bool(getattr(self, "_two_sided_shadows_enabled", True))
                 settings["ambient_light"] = bool(getattr(self, "_ambient_light_enabled", True))
+                settings["unlit_view"] = bool(getattr(self, "_unlit_view_enabled", _UNLIT_VIEW_DEFAULT))
+                settings["work_light_view"] = bool(getattr(self, "_work_light_enabled", _WORK_LIGHT_VIEW_DEFAULT))
                 settings["ambient_light_strength"] = _normalize_ambient_light_strength(
                     getattr(self, "_ambient_light_strength", _AMBIENT_LIGHT_STRENGTH_DEFAULT),
                     _AMBIENT_LIGHT_STRENGTH_DEFAULT,
@@ -6775,6 +6843,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _on_ambient_light_toggled(self, checked: bool) -> None:
         self._ambient_light_enabled = bool(checked)
+        self._apply_pan_settings_to_gl_view()
+        self._persist_app_layout_settings()
+
+    def _on_unlit_view_toggled(self, checked: bool) -> None:
+        self._unlit_view_enabled = bool(checked)
+        self._apply_pan_settings_to_gl_view()
+        self._persist_app_layout_settings()
+
+    def _on_work_light_toggled(self, checked: bool) -> None:
+        self._work_light_enabled = bool(checked)
         self._apply_pan_settings_to_gl_view()
         self._persist_app_layout_settings()
 
@@ -7084,6 +7162,20 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             ambient_light = bool(getattr(self, "_ambient_light_enabled", True))
         try:
+            unlit_view = _coerce_bool(
+                settings.get("unlit_view", getattr(self, "_unlit_view_enabled", _UNLIT_VIEW_DEFAULT)),
+                _UNLIT_VIEW_DEFAULT,
+            )
+        except Exception:
+            unlit_view = bool(getattr(self, "_unlit_view_enabled", _UNLIT_VIEW_DEFAULT))
+        try:
+            work_light = _coerce_bool(
+                settings.get("work_light_view", getattr(self, "_work_light_enabled", _WORK_LIGHT_VIEW_DEFAULT)),
+                _WORK_LIGHT_VIEW_DEFAULT,
+            )
+        except Exception:
+            work_light = bool(getattr(self, "_work_light_enabled", _WORK_LIGHT_VIEW_DEFAULT))
+        try:
             ambient_light_strength = _normalize_ambient_light_strength(
                 settings.get(
                     "ambient_light_strength",
@@ -7122,6 +7214,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._self_shadows_enabled = bool(self_shadows)
         self._two_sided_shadows_enabled = bool(two_sided_shadows)
         self._ambient_light_enabled = bool(ambient_light)
+        self._unlit_view_enabled = bool(unlit_view)
+        self._work_light_enabled = bool(work_light)
         self._ambient_light_strength = float(ambient_light_strength)
         self._voice_audio_mode = voice_audio_mode
         self._voice_mic_device_index = voice_mic_device_index
@@ -7170,6 +7264,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._ambient_light_toggle.blockSignals(True)
             self._ambient_light_toggle.setChecked(bool(ambient_light))
             self._ambient_light_toggle.blockSignals(False)
+        if hasattr(self, "_unlit_view_toggle"):
+            self._unlit_view_toggle.blockSignals(True)
+            self._unlit_view_toggle.setChecked(bool(unlit_view))
+            self._unlit_view_toggle.blockSignals(False)
+        if hasattr(self, "_work_light_toggle"):
+            self._work_light_toggle.blockSignals(True)
+            self._work_light_toggle.setChecked(bool(work_light))
+            self._work_light_toggle.blockSignals(False)
         if hasattr(self, "_two_sided_shadows_toggle"):
             self._two_sided_shadows_toggle.blockSignals(True)
             self._two_sided_shadows_toggle.setChecked(bool(two_sided_shadows))

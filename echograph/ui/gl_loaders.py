@@ -13,6 +13,7 @@ import base64
 import struct
 import json
 import math
+import zlib
 
 try:
     import numpy as np
@@ -649,16 +650,205 @@ def _load_fbx_ascii_edge_vertices(path: Path) -> "np.ndarray":
     return np.array(line_pos, dtype="f4").reshape(-1, 3)
 
 
+def _load_fbx_binary_edge_vertices(path: Path) -> "np.ndarray":
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    data = path.read_bytes()
+    header = b"Kaydara FBX Binary  \x00\x1a\x00"
+    if not data.startswith(header) or len(data) < 27:
+        raise RuntimeError("not binary FBX")
+    try:
+        version = struct.unpack_from("<I", data, 23)[0]
+    except Exception as exc:
+        raise RuntimeError(f"invalid FBX binary header: {exc}")
+    wide = int(version) >= 7500
+    field_fmt = "<QQQB" if wide else "<IIIB"
+    field_size = 25 if wide else 13
+
+    def _read_node(pos: int, limit: int):
+        if pos + field_size > limit:
+            return None
+        try:
+            end_offset, prop_count, _prop_len, name_len = struct.unpack_from(field_fmt, data, pos)
+        except Exception:
+            return None
+        pos += field_size
+        end_offset = int(end_offset)
+        prop_count = int(prop_count)
+        name_len = int(name_len)
+        if end_offset == 0 and prop_count == 0 and name_len == 0:
+            return None
+        if end_offset <= pos or end_offset > len(data) or pos + name_len > len(data):
+            return None
+        try:
+            name = data[pos : pos + name_len].decode("utf-8", errors="ignore")
+        except Exception:
+            name = ""
+        pos += name_len
+        props = []
+        for _ in range(max(0, prop_count)):
+            if pos >= len(data):
+                break
+            type_code = chr(data[pos])
+            pos += 1
+            try:
+                if type_code == "Y":
+                    props.append(struct.unpack_from("<h", data, pos)[0])
+                    pos += 2
+                elif type_code == "C":
+                    props.append(bool(data[pos]))
+                    pos += 1
+                elif type_code == "I":
+                    props.append(struct.unpack_from("<i", data, pos)[0])
+                    pos += 4
+                elif type_code == "F":
+                    props.append(struct.unpack_from("<f", data, pos)[0])
+                    pos += 4
+                elif type_code == "D":
+                    props.append(struct.unpack_from("<d", data, pos)[0])
+                    pos += 8
+                elif type_code == "L":
+                    props.append(struct.unpack_from("<q", data, pos)[0])
+                    pos += 8
+                elif type_code in {"S", "R"}:
+                    length = int(struct.unpack_from("<I", data, pos)[0])
+                    pos += 4
+                    raw = data[pos : pos + length]
+                    pos += length
+                    props.append(raw if type_code == "R" else raw.decode("utf-8", errors="ignore"))
+                elif type_code in {"f", "d", "i", "l", "b", "c"}:
+                    count, encoding, byte_count = struct.unpack_from("<III", data, pos)
+                    pos += 12
+                    raw = data[pos : pos + int(byte_count)]
+                    pos += int(byte_count)
+                    if int(encoding) == 1:
+                        raw = zlib.decompress(raw)
+                    fmt, size = {
+                        "f": ("<f", 4),
+                        "d": ("<d", 8),
+                        "i": ("<i", 4),
+                        "l": ("<q", 8),
+                        "b": ("<?", 1),
+                        "c": ("<?", 1),
+                    }[type_code]
+                    n = int(count)
+                    if n <= 0:
+                        props.append([])
+                    else:
+                        props.append(list(struct.unpack("<" + fmt[1:] * n, raw[: n * size])))
+                else:
+                    break
+            except Exception:
+                break
+        return {
+            "name": name,
+            "props": props,
+            "children_start": pos,
+            "end": end_offset,
+        }
+
+    def _is_mesh_geometry(props) -> bool:
+        try:
+            return any(str(p).strip().lower() == "mesh" for p in props)
+        except Exception:
+            return False
+
+    line_pos: List[float] = []
+
+    def _collect_geometry_edges(node) -> None:
+        verts = None
+        poly_idx = None
+        child_pos = int(node["children_start"])
+        end = int(node["end"])
+        while child_pos < end:
+            child = _read_node(child_pos, end)
+            if child is None:
+                break
+            name = str(child.get("name") or "")
+            props = child.get("props") or []
+            if name == "Vertices" and props:
+                verts = props[0]
+            elif name == "PolygonVertexIndex" and props:
+                poly_idx = props[0]
+            child_pos = int(child.get("end", child_pos + 1))
+        if not verts or not poly_idx:
+            return
+        if len(verts) % 3 != 0:
+            verts = verts[: (len(verts) // 3) * 3]
+        if not verts:
+            return
+        vertices = np.asarray(verts, dtype="f4").reshape(-1, 3)
+        max_idx = vertices.shape[0] - 1
+        edges = set()
+        polygon: List[int] = []
+        for raw_idx in poly_idx:
+            try:
+                idx = int(raw_idx)
+            except Exception:
+                continue
+            end_poly = False
+            if idx < 0:
+                idx = -idx - 1
+                end_poly = True
+            if idx < 0 or idx > max_idx:
+                polygon = []
+                if end_poly:
+                    continue
+            else:
+                polygon.append(idx)
+            if end_poly:
+                if len(polygon) >= 2:
+                    for i in range(len(polygon)):
+                        a = polygon[i]
+                        b = polygon[(i + 1) % len(polygon)]
+                        if a == b:
+                            continue
+                        edge = (a, b) if a < b else (b, a)
+                        edges.add(edge)
+                polygon = []
+        for a, b in edges:
+            try:
+                ax, ay, az = vertices[a]
+                bx, by, bz = vertices[b]
+            except Exception:
+                continue
+            line_pos.extend([ax, ay, az, bx, by, bz])
+
+    def _scan_range(start: int, end: int) -> None:
+        pos = int(start)
+        end = min(int(end), len(data))
+        while pos < end:
+            node = _read_node(pos, end)
+            if node is None:
+                break
+            if str(node.get("name") or "") == "Geometry" and _is_mesh_geometry(node.get("props") or []):
+                _collect_geometry_edges(node)
+            child_start = int(node.get("children_start", pos))
+            node_end = int(node.get("end", pos + 1))
+            if child_start < node_end:
+                _scan_range(child_start, node_end)
+            pos = node_end
+
+    _scan_range(27, len(data))
+    if not line_pos:
+        raise RuntimeError("FBX binary edge data empty")
+    return np.asarray(line_pos, dtype="f4").reshape(-1, 3)
+
+
 def load_fbx_edge_vertices(path: Path) -> "np.ndarray":
     if np is None:
         raise RuntimeError("numpy unavailable")
+    if _is_ascii_fbx(path):
+        return _load_fbx_ascii_edge_vertices(path)
+    try:
+        return _load_fbx_binary_edge_vertices(path)
+    except Exception:
+        pass
     ensure_assimp_dll()
     try:
         import pyassimp
         from pyassimp import postprocess as ai_post
     except Exception as exc:
-        if _is_ascii_fbx(path):
-            return _load_fbx_ascii_edge_vertices(path)
         raise RuntimeError(f"pyassimp unavailable: {exc}")
     try:
         processing = ai_post.aiProcess_PreTransformVertices | ai_post.aiProcess_JoinIdenticalVertices
@@ -676,11 +866,26 @@ def load_fbx_edge_vertices(path: Path) -> "np.ndarray":
                 if vertices.size == 0 or face_count <= 0:
                     continue
 
-                # Preserve authored triangle edges by default; only fallback to
-                # feature-edge extraction if raw extraction cannot build wires.
-                line_points = _mesh_raw_edge_vertices(vertices, faces)
-                if line_points.size == 0:
-                    line_points = _mesh_feature_edge_vertices(vertices, faces)
+                face_rows = []
+                try:
+                    for face in faces:
+                        face_rows.append([int(i) for i in face])
+                except Exception:
+                    face_rows = []
+                if not face_rows:
+                    continue
+
+                # Assimp can expose binary FBX polygons as render triangles. For all-triangle
+                # data, prefer feature/boundary edges so viewport wireframe does not show
+                # backend triangulation diagonals. Non-triangle faces are treated as authored.
+                if all(len(face) == 3 for face in face_rows):
+                    line_points = _mesh_feature_edge_vertices(vertices, face_rows)
+                    if line_points.size == 0:
+                        line_points = _mesh_raw_edge_vertices(vertices, face_rows)
+                else:
+                    line_points = _mesh_raw_edge_vertices(vertices, face_rows)
+                    if line_points.size == 0:
+                        line_points = _mesh_feature_edge_vertices(vertices, face_rows)
                 if line_points.size == 0:
                     continue
                 line_sets.append(line_points.astype("f4").reshape(-1, 3))
@@ -689,8 +894,6 @@ def load_fbx_edge_vertices(path: Path) -> "np.ndarray":
                 raise RuntimeError("FBX edge data empty")
             return np.concatenate(line_sets, axis=0).astype("f4")
     except Exception as exc:
-        if _is_ascii_fbx(path):
-            return _load_fbx_ascii_edge_vertices(path)
         raise RuntimeError(str(exc))
 
 def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:

@@ -643,6 +643,8 @@ class MGLRendererMixin:
             payload["owner"] = owner
         if path_key:
             payload["path"] = path_key
+            if str(path_key).strip().lower().endswith(".fbx") and tag in {"model-wire", "scene-wire"}:
+                payload["fbx_mesh_wire"] = True
         item = MGLSceneItem(
             name=name,
             draw_fn=MGLRendererMixin._mgl_draw_scene_wire,
@@ -1077,6 +1079,9 @@ class MGLRendererMixin:
                     + f"item={item.name} id={getattr(item, 'item_id', 0)}"
                 )
             return
+        if bool(payload.get("fbx_mesh_wire", False)):
+            self._mgl_refresh_fbx_mesh_wire_item(item, context)
+            return
 
         pose_mode = str(payload.get("fbx_rig_pose_mode", "animated") or "animated").strip().lower()
         owner_for_pose = str(payload.get("owner") or "").strip()
@@ -1277,6 +1282,21 @@ class MGLRendererMixin:
             tri_indices = np.asarray(tri_idx_list[:tri_count], dtype=np.int64)
             tri_points = bind_positions[tri_indices].reshape(-1, 3).astype("f4", copy=False)
             tri_normals = self._mgl_fbx_triangle_normals(tri_points)
+            edge_idx_list: List[int] = []
+            try:
+                metadata = getattr(mesh_obj, "metadata", None)
+            except Exception:
+                metadata = None
+            if isinstance(metadata, dict):
+                for value in list(metadata.get("edge_indices") or []):
+                    try:
+                        vid = int(value)
+                    except Exception:
+                        continue
+                    if 0 <= vid < vertex_count:
+                        edge_idx_list.append(vid)
+            edge_count = int((len(edge_idx_list) // 2) * 2)
+            edge_indices = np.asarray(edge_idx_list[:edge_count], dtype=np.int64)
 
             skins = list(getattr(mesh_obj, "vertex_skins", None) or [])
             max_influences = 0
@@ -1319,6 +1339,7 @@ class MGLRendererMixin:
                     "name": str(getattr(mesh_obj, "name", "") or ""),
                     "bind_positions": bind_positions,
                     "triangle_indices": tri_indices,
+                    "edge_indices": edge_indices,
                     "bind_tri_points": tri_points,
                     "bind_tri_normals": tri_normals,
                     "joint_indices": joint_indices,
@@ -2192,6 +2213,8 @@ class MGLRendererMixin:
                         "entry": entry,
                         "affine": affine,
                         "fit_rmse": float(rmse),
+                        "name": str(spec.get("name", "") or ""),
+                        "edge_indices": np.asarray(spec.get("edge_indices"), dtype=np.int64).ravel(),
                     }
                 )
         if skinning_enabled and runtime_meshes:
@@ -2270,6 +2293,8 @@ class MGLRendererMixin:
                         "nbo": entry.get("nbo"),
                         "entry": entry,
                         "affine": np.eye(4, dtype="f4"),
+                        "name": str(spec.get("name", "") or ""),
+                        "edge_indices": np.asarray(spec.get("edge_indices"), dtype=np.int64).ravel(),
                     }
                 )
         if not entries:
@@ -2429,13 +2454,14 @@ class MGLRendererMixin:
                 if np.any(~weighted_mask):
                     deformed[~weighted_mask] = bind_positions[~weighted_mask]
 
-            tri_points = deformed[triangle_indices].reshape(-1, 3).astype("f4", copy=False)
+            deformed_for_render = deformed
             affine = mesh.get("affine")
             if affine is not None:
                 try:
-                    tri_points = self._mgl_fbx_apply_affine_row_major(affine, tri_points)
+                    deformed_for_render = self._mgl_fbx_apply_affine_row_major(affine, deformed)
                 except Exception:
-                    pass
+                    deformed_for_render = deformed
+            tri_points = deformed_for_render[triangle_indices].reshape(-1, 3).astype("f4", copy=False)
             tri_normals = self._mgl_fbx_triangle_normals(tri_points)
             vbo = mesh.get("vbo")
             nbo = mesh.get("nbo")
@@ -2448,6 +2474,9 @@ class MGLRendererMixin:
                 if isinstance(entry, dict):
                     entry["points"] = tri_points.astype("f4", copy=False)
                     entry["normals"] = tri_normals.astype("f4", copy=False)
+                mesh["deformed_positions"] = deformed.astype("f4", copy=False)
+                mesh["deformed_positions_affine"] = deformed_for_render.astype("f4", copy=False)
+                mesh["_fbx_skin_frame"] = skin_frame_key
             except Exception:
                 continue
 
@@ -2468,6 +2497,314 @@ class MGLRendererMixin:
         except Exception:
             pass
         item.payload = payload
+
+    def _mgl_fbx_context_bind_edge_line_points(self, context: dict | None) -> Optional[NDArray]:
+        if np is None or not isinstance(context, dict):
+            return None
+        line_sets: List[NDArray] = []
+        for spec in self._mgl_fbx_skin_specs_from_context(context):
+            try:
+                bind_positions = np.asarray(spec.get("bind_positions"), dtype="f4").reshape(-1, 3)
+                edge_indices = np.asarray(spec.get("edge_indices"), dtype=np.int64).ravel()
+            except Exception:
+                continue
+            edge_count = int((edge_indices.size // 2) * 2)
+            if bind_positions.size == 0 or edge_count <= 0:
+                continue
+            edge_indices = edge_indices[:edge_count]
+            try:
+                valid = np.all((edge_indices.reshape(-1, 2) >= 0) & (edge_indices.reshape(-1, 2) < bind_positions.shape[0]), axis=1)
+                edge_indices = edge_indices.reshape(-1, 2)[valid].reshape(-1)
+            except Exception:
+                edge_indices = np.zeros((0,), dtype=np.int64)
+            if edge_indices.size:
+                line_sets.append(bind_positions[edge_indices].reshape(-1, 3).astype("f4", copy=False))
+        if not line_sets:
+            return None
+        try:
+            return np.concatenate(line_sets, axis=0).astype("f4", copy=False)
+        except Exception:
+            return line_sets[0].astype("f4", copy=False)
+
+    def _mgl_fbx_model_runtime_meshes_for_wire(self, payload: dict, context: dict) -> List[Dict[str, Any]]:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return []
+        owner_key = str(payload.get("owner") or payload.get("node") or "").strip().lower()
+        path_key = str(payload.get("path") or "").strip().lower()
+        try:
+            candidates = [
+                item
+                for item in scene.items()
+                if str(getattr(item, "tag", "") or "") in {"model", "scene-model"}
+            ]
+        except Exception:
+            candidates = []
+        for model_item in candidates:
+            model_payload = getattr(model_item, "payload", None) or {}
+            model_context = model_payload.get("fbx_rig_context")
+            if not isinstance(model_context, dict):
+                continue
+            if model_context is not context and model_context.get("skeleton") is not context.get("skeleton"):
+                continue
+            model_owner = str(model_payload.get("owner") or model_payload.get("node") or "").strip().lower()
+            model_path = str(model_payload.get("path") or "").strip().lower()
+            if owner_key and model_owner and owner_key != model_owner:
+                continue
+            if path_key and model_path and path_key != model_path:
+                continue
+            try:
+                self._mgl_refresh_fbx_rig_mesh_item(model_item)
+            except Exception:
+                pass
+            runtime = (getattr(model_item, "payload", None) or {}).get("_fbx_skin_runtime")
+            if not isinstance(runtime, dict):
+                continue
+            meshes = [mesh for mesh in list(runtime.get("meshes") or []) if isinstance(mesh, dict)]
+            if meshes:
+                return meshes
+        return []
+
+    @staticmethod
+    def _mgl_fbx_wire_point_key(point: NDArray, eps: float = 1.0e-5) -> Tuple[int, int, int]:
+        scale = 1.0 / max(float(eps), 1.0e-8)
+        return (
+            int(round(float(point[0]) * scale)),
+            int(round(float(point[1]) * scale)),
+            int(round(float(point[2]) * scale)),
+        )
+
+    def _mgl_fbx_mesh_wire_endpoint_map(
+        self,
+        source_line_points: NDArray,
+        runtime_meshes: List[Dict[str, Any]],
+    ) -> Optional[Tuple[NDArray, NDArray]]:
+        if np is None:
+            return None
+        try:
+            source = np.asarray(source_line_points, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return None
+        if source.size == 0:
+            return None
+        lookup: Dict[Tuple[int, int, int], Tuple[int, int]] = {}
+        for mesh_idx, mesh in enumerate(runtime_meshes):
+            try:
+                bind_positions = np.asarray(mesh.get("bind_positions"), dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            for vertex_idx, point in enumerate(bind_positions):
+                key = self._mgl_fbx_wire_point_key(point)
+                if key not in lookup:
+                    lookup[key] = (int(mesh_idx), int(vertex_idx))
+        if not lookup:
+            return None
+        mesh_indices = np.full((source.shape[0],), -1, dtype=np.int32)
+        vertex_indices = np.full((source.shape[0],), -1, dtype=np.int32)
+        for point_idx, point in enumerate(source):
+            hit = lookup.get(self._mgl_fbx_wire_point_key(point))
+            if hit is None:
+                continue
+            mesh_indices[point_idx] = int(hit[0])
+            vertex_indices[point_idx] = int(hit[1])
+        if not bool(np.any(mesh_indices >= 0)):
+            return None
+        return mesh_indices, vertex_indices
+
+    def _mgl_fbx_mesh_wire_points_from_runtime(
+        self,
+        context: dict,
+        runtime_meshes: List[Dict[str, Any]],
+        payload: dict,
+    ) -> Optional[NDArray]:
+        if np is None or not runtime_meshes:
+            return None
+
+        line_sets: List[NDArray] = []
+        for runtime_mesh in runtime_meshes:
+            try:
+                edge_indices = np.asarray(runtime_mesh.get("edge_indices"), dtype=np.int64).ravel()
+            except Exception:
+                continue
+            edge_count = int((edge_indices.size // 2) * 2)
+            if edge_count <= 0:
+                continue
+            deformed = runtime_mesh.get("deformed_positions_affine")
+            if deformed is None:
+                deformed = runtime_mesh.get("deformed_positions")
+            if deformed is None:
+                continue
+            try:
+                points = np.asarray(deformed, dtype="f4").reshape(-1, 3)
+                edge_pairs = edge_indices[:edge_count].reshape(-1, 2)
+                valid = np.all((edge_pairs >= 0) & (edge_pairs < points.shape[0]), axis=1)
+                edge_flat = edge_pairs[valid].reshape(-1)
+            except Exception:
+                edge_flat = np.zeros((0,), dtype=np.int64)
+                points = np.zeros((0, 3), dtype="f4")
+            if edge_flat.size:
+                line_sets.append(points[edge_flat].reshape(-1, 3).astype("f4", copy=False))
+        if line_sets:
+            try:
+                return np.concatenate(line_sets, axis=0).astype("f4", copy=False)
+            except Exception:
+                return line_sets[0].astype("f4", copy=False)
+
+        source = payload.get("_fbx_mesh_wire_bind_line_points")
+        if source is None:
+            return None
+        try:
+            source_arr = np.asarray(source, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return None
+        mapping = payload.get("_fbx_mesh_wire_endpoint_map")
+        runtime_sig = tuple(id(mesh) for mesh in runtime_meshes)
+        if (
+            not isinstance(mapping, tuple)
+            or len(mapping) != 2
+            or payload.get("_fbx_mesh_wire_endpoint_map_runtime_sig") != runtime_sig
+        ):
+            mapping = self._mgl_fbx_mesh_wire_endpoint_map(source_arr, runtime_meshes)
+            payload["_fbx_mesh_wire_endpoint_map"] = mapping
+            payload["_fbx_mesh_wire_endpoint_map_runtime_sig"] = runtime_sig
+        if mapping is None:
+            return None
+        mesh_indices, vertex_indices = mapping
+        out = source_arr.copy()
+        for mesh_idx, mesh in enumerate(runtime_meshes):
+            try:
+                mask = mesh_indices == int(mesh_idx)
+            except Exception:
+                continue
+            if not bool(np.any(mask)):
+                continue
+            deformed = mesh.get("deformed_positions_affine")
+            if deformed is None:
+                deformed = mesh.get("deformed_positions")
+            if deformed is None:
+                continue
+            try:
+                points = np.asarray(deformed, dtype="f4").reshape(-1, 3)
+                vids = vertex_indices[mask].astype(np.int64, copy=False)
+                valid = (vids >= 0) & (vids < points.shape[0])
+                target_rows = np.nonzero(mask)[0][valid]
+                out[target_rows] = points[vids[valid]]
+            except Exception:
+                continue
+        return out.astype("f4", copy=False)
+
+    def _mgl_update_wire_item_line_points(self, item: MGLSceneItem, line_points: NDArray) -> bool:
+        if self._mgl_ctx is None or self._mgl_wire_prog is None or np is None:
+            return False
+        try:
+            line_arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return False
+        if line_arr.size == 0:
+            return False
+        payload = item.payload or {}
+        prefer_instanced = bool(payload.get("wire_instanced", False)) or bool(payload.get("fbx_mesh_wire", False))
+        if prefer_instanced:
+            if self._mgl_update_instanced_wire_item_from_points(item, line_arr):
+                return True
+            payload = item.payload or payload
+            payload["wire_instanced"] = False
+            item.payload = payload
+        if bool(payload.get("wire_instanced", False)):
+            return self._mgl_update_instanced_wire_item_from_points(item, line_arr)
+        try:
+            verts = self._mgl_wire_vertex_data_from_line_points(line_arr)
+        except Exception:
+            return False
+        if verts.size == 0:
+            return False
+        vbo = payload.get("wire_vbo")
+        vao = payload.get("vao")
+        try:
+            vbo_size = int(getattr(vbo, "size", 0) or 0) if vbo is not None else 0
+        except Exception:
+            vbo_size = 0
+        if vbo is None or vao is None or vbo_size != int(verts.nbytes):
+            old_vao = payload.get("vao")
+            old_vbo = payload.get("wire_vbo")
+            old_segment_vbo = payload.get("wire_segment_vbo")
+            try:
+                vbo = self._mgl_ctx.buffer(verts.tobytes())
+                vao = self._mgl_ctx.vertex_array(
+                    self._mgl_wire_prog,
+                    [(vbo, "3f 3f 3f 1f", "in_pos", "in_start", "in_end", "in_side")],
+                )
+            except Exception:
+                return False
+            for resource in (old_vao, old_vbo, old_segment_vbo):
+                if resource is None or resource is vao or resource is vbo:
+                    continue
+                try:
+                    if hasattr(resource, "release"):
+                        resource.release()
+                except Exception:
+                    pass
+            payload["vao"] = vao
+            payload["wire_vbo"] = vbo
+            payload.pop("wire_segment_vbo", None)
+            payload["wire_instanced"] = False
+            item.resources = [vao, vbo]
+        else:
+            try:
+                vbo.write(verts.tobytes())
+            except Exception:
+                return False
+        payload["wire_vertex_count"] = int(verts.shape[0] // 10)
+        payload["line_segment_count"] = int(line_arr.shape[0] // 2)
+        payload["mode"] = moderngl.TRIANGLES if moderngl is not None else payload.get("mode")
+        try:
+            payload["bounds_min"] = line_arr.min(axis=0).astype("f4")
+            payload["bounds_max"] = line_arr.max(axis=0).astype("f4")
+        except Exception:
+            pass
+        item.payload = payload
+        return True
+
+    def _mgl_refresh_fbx_mesh_wire_item(self, item: MGLSceneItem, context: dict) -> None:
+        if np is None or not isinstance(context, dict):
+            return
+        payload = item.payload or {}
+        if not bool(payload.get("fbx_mesh_wire", False)):
+            return
+        if not self._mgl_fbx_mesh_skinning_enabled(context):
+            return
+        frame = self._mgl_timeline_frame_index()
+        sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(
+            context,
+            payload.get("fbx_sample_owner") or payload.get("owner"),
+        )
+        frame_key = (
+            int(frame),
+            round(float(sample_seconds), 6),
+            id(context.get("skeleton")),
+            id(context.get("clip")),
+            id(context.get("meshes")),
+        )
+        if payload.get("_fbx_mesh_wire_frame", None) == frame_key:
+            return
+        runtime_meshes = self._mgl_fbx_model_runtime_meshes_for_wire(payload, context)
+        line_points = self._mgl_fbx_mesh_wire_points_from_runtime(context, runtime_meshes, payload)
+        if line_points is None or not getattr(line_points, "size", 0):
+            payload["_fbx_mesh_wire_frame"] = frame_key
+            payload["_fbx_mesh_wire_refresh_failed"] = True
+            item.payload = payload
+            return
+        if self._mgl_update_wire_item_line_points(item, line_points):
+            payload = item.payload or {}
+            payload["_fbx_mesh_wire_frame"] = frame_key
+            payload["_fbx_mesh_wire_segment_count"] = int(line_points.shape[0] // 2)
+            payload["_fbx_mesh_wire_refresh_failed"] = False
+            item.payload = payload
+        else:
+            payload = item.payload or payload
+            payload["_fbx_mesh_wire_frame"] = frame_key
+            payload["_fbx_mesh_wire_refresh_failed"] = True
+            item.payload = payload
 
     def _mgl_normalize_music_effects_config(self, raw) -> Optional[Dict[str, Any]]:
         if not isinstance(raw, dict):
@@ -8087,47 +8424,67 @@ class MGLRendererMixin:
         path_key: Optional[str] = None,
         rig_context: Optional[dict] = None,
     ) -> Optional[MGLSceneItem]:
-        if np is not None:
-            context = rig_context if isinstance(rig_context, dict) else self._mgl_fbx_rig_context_for_path(path)
-            if isinstance(context, dict) and context.get("skeleton") is not None:
+        wire_path_key = path_key or str(path)
+        context = rig_context if isinstance(rig_context, dict) else None
+        line_points = self._mgl_fbx_context_bind_edge_line_points(context)
+        used_context_edges = line_points is not None and getattr(line_points, "size", 0)
+        try:
+            if line_points is None or not getattr(line_points, "size", 0):
+                line_points = load_fbx_edge_vertices(path)
+                used_context_edges = False
+        except Exception as exc:
+            self._mgl_fbx_joints_log(
+                "fbx mesh wire load failed "
+                + f"path={path} tag={tag} owner={owner or ''} err={exc!r}"
+            )
+            line_points = None
+        if line_points is not None and getattr(line_points, "size", 0):
+            item = self._mgl_add_wire_item_from_points(
+                name=f"{path.name}-wire",
+                line_points=line_points,
+                visible=visible,
+                tag=tag,
+                owner=owner,
+                path_key=wire_path_key,
+            )
+            if item is not None:
+                payload = dict(item.payload or {})
+                payload["fbx_mesh_wire"] = True
+                payload["_fbx_mesh_wire_bind_line_points"] = np.asarray(line_points, dtype="f4").reshape(-1, 3).copy()
+                if isinstance(context, dict):
+                    payload["fbx_rig_context"] = context
+                    payload["fbx_sample_owner"] = str(owner or "")
+                item.payload = payload
+            if item is None and used_context_edges:
                 try:
-                    sample = evaluate_skeleton_line_points(
-                        context.get("skeleton"),
-                        context.get("clip"),
-                        self._mgl_fbx_context_timeline_sample_seconds(context, owner),
-                        loop=bool(context.get("loop", True)),
-                    )
-                    line_points = np.array(sample.line_points or [], dtype="f4").reshape(-1, 3)
+                    fallback_points = load_fbx_edge_vertices(path)
                 except Exception:
-                    line_points = None
-                if line_points is not None and getattr(line_points, "size", 0):
+                    fallback_points = None
+                if fallback_points is not None and getattr(fallback_points, "size", 0):
                     item = self._mgl_add_wire_item_from_points(
                         name=f"{path.name}-wire",
-                        line_points=line_points,
+                        line_points=fallback_points,
                         visible=visible,
                         tag=tag,
                         owner=owner,
-                        path_key=path_key,
+                        path_key=wire_path_key,
                     )
                     if item is not None:
                         payload = dict(item.payload or {})
-                        payload["fbx_rig_context"] = context
-                        payload["fbx_rig_pose_mode"] = "animated"
-                        payload["_fbx_rig_frame"] = ("animated", self._mgl_timeline_frame_index())
+                        payload["fbx_mesh_wire"] = True
+                        payload["_fbx_mesh_wire_bind_line_points"] = (
+                            np.asarray(fallback_points, dtype="f4").reshape(-1, 3).copy()
+                        )
+                        if isinstance(context, dict):
+                            payload["fbx_rig_context"] = context
+                            payload["fbx_sample_owner"] = str(owner or "")
                         item.payload = payload
-                        return item
-        try:
-            line_points = load_fbx_edge_vertices(path)
-        except Exception:
-            return None
-        return self._mgl_add_wire_item_from_points(
-            name=f"{path.name}-wire",
-            line_points=line_points,
-            visible=visible,
-            tag=tag,
-            owner=owner,
-            path_key=path_key,
+            return item
+        self._mgl_fbx_joints_log(
+            "fbx mesh wire skipped "
+            + f"path={path} tag={tag} owner={owner or ''} reason=empty_edges"
         )
+        return None
 
     def _mgl_add_fbx_joint_overlay_item(
         self,
@@ -10112,6 +10469,250 @@ class MGLRendererMixin:
             pass
         return True
 
+    def _mgl_fbx_joint_label_positions(
+        self,
+        context: dict | None,
+        pose_mode: str,
+        owner: str | None = None,
+    ) -> List[dict]:
+        if np is None or not isinstance(context, dict):
+            return []
+        skeleton = context.get("skeleton")
+        if skeleton is None:
+            return []
+        try:
+            joints = list(getattr(skeleton, "joints", []) or [])
+        except Exception:
+            joints = []
+        if not joints:
+            return []
+        mode = str(pose_mode or "animated").strip().lower()
+        capture_pose = mode in {"capture", "bind", "rest", "capture_pose"}
+        owner_for_pose = str(owner or "").strip()
+        target_pose_edit_static = False
+        try:
+            target_pose_edit_static = (
+                self._mgl_retarget_pick_mode() == "target_pose"
+                and owner_for_pose
+                and owner_for_pose.lower() == self._mgl_retarget_target_owner().lower()
+            )
+        except Exception:
+            target_pose_edit_static = False
+        static_frame = bool(context.get("retarget_static_pose", False)) or target_pose_edit_static
+        if capture_pose:
+            clip = None
+            sample_time = 0.0
+        elif static_frame:
+            clip = None
+            sample_time = 0.0
+        else:
+            clip = context.get("clip")
+            sample_time = self._mgl_fbx_context_timeline_sample_seconds(context, owner_for_pose)
+        rows: List[Tuple[float, float, float]] = []
+        if capture_pose:
+            try:
+                bind_rows = self._mgl_retarget_inverse_bind_positions(skeleton)
+                if bind_rows and self._mgl_retarget_positions_diag(bind_rows) > 1.0e-7:
+                    rows = [
+                        (float(row[0]), float(row[1]), float(row[2]))
+                        for row in list(bind_rows or [])
+                    ]
+            except Exception:
+                rows = []
+        if not rows:
+            try:
+                evaluation = evaluate_rig_at_time(
+                    skeleton=skeleton,
+                    clip=clip,
+                    time_seconds=float(sample_time),
+                    loop=bool(context.get("loop", True)),
+                )
+                rows_tcol: List[Tuple[float, float, float]] = []
+                rows_trow: List[Tuple[float, float, float]] = []
+                for matrix in list(getattr(evaluation, "global_matrices", []) or []):
+                    values = tuple(matrix or ())
+                    if len(values) != 16:
+                        continue
+                    rows_tcol.append((float(values[3]), float(values[7]), float(values[11])))
+                    rows_trow.append((float(values[12]), float(values[13]), float(values[14])))
+                if rows_tcol or rows_trow:
+                    rows = (
+                        rows_trow
+                        if self._mgl_retarget_positions_diag(rows_trow) > self._mgl_retarget_positions_diag(rows_tcol)
+                        else rows_tcol
+                    )
+            except Exception:
+                rows = []
+        if not rows:
+            rows = []
+            for idx, joint in enumerate(joints):
+                try:
+                    tx, ty, tz = getattr(getattr(joint, "local_bind", None), "translation", (0.0, 0.0, 0.0))
+                    parent = int(getattr(joint, "parent_index", -1))
+                    if 0 <= parent < len(rows):
+                        px, py, pz = rows[parent]
+                        rows.append((px + float(tx), py + float(ty), pz + float(tz)))
+                    else:
+                        rows.append((float(tx), float(ty), float(tz)))
+                except Exception:
+                    rows.append((0.0, 0.0, 0.0))
+        label_rows = []
+        for idx in range(min(len(joints), len(rows))):
+            try:
+                name = str(getattr(joints[idx], "name", "") or "").strip()
+                if not name:
+                    continue
+                pos = rows[idx]
+                label_rows.append(
+                    {
+                        "name": name,
+                        "index": int(idx),
+                        "position": (float(pos[0]), float(pos[1]), float(pos[2])),
+                    }
+                )
+            except Exception:
+                continue
+        return label_rows
+
+    def _mgl_fbx_rig_joint_name_overlay_labels(self) -> List[Tuple[float, float, float, str]]:
+        if np is None or not bool(getattr(self, "_mgl_scene_skeleton_show_joint_names", False)):
+            return []
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return []
+        try:
+            dpr = float(self.devicePixelRatioF())
+        except Exception:
+            try:
+                dpr = float(self.devicePixelRatio())
+            except Exception:
+                dpr = 1.0
+        dpr = max(1.0e-6, float(dpr))
+        try:
+            viewport_w = int(float(self.width()) * dpr)
+            viewport_h = int(float(self.height()) * dpr)
+        except Exception:
+            return []
+        if viewport_w <= 0 or viewport_h <= 0:
+            return []
+        active_owner = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip().lower()
+        try:
+            rig_items = [
+                item
+                for item in list(scene.iter_by_tag("scene-rig-joints"))
+                if bool(getattr(item, "visible", False))
+            ]
+        except Exception:
+            rig_items = []
+        if not rig_items:
+            return []
+
+        def _item_sort_key(item):
+            payload = getattr(item, "payload", None) or {}
+            mode = str(payload.get("fbx_rig_pose_mode", "") or "").strip().lower()
+            priority = 0 if mode == "animated" else 1
+            return (priority, int(getattr(item, "order", 0) or 0), str(getattr(item, "name", "") or ""))
+
+        labels: List[Tuple[float, float, float, str]] = []
+        seen_names = set()
+        for item in sorted(rig_items, key=_item_sort_key):
+            payload = getattr(item, "payload", None) or {}
+            if bool(payload.get("scene_skeleton_overlay", False)):
+                continue
+            owner = str(payload.get("owner") or "").strip()
+            owner_norm = owner.lower()
+            if active_owner and owner_norm == active_owner:
+                continue
+            context = payload.get("fbx_rig_context")
+            if not isinstance(context, dict):
+                continue
+            pose_mode = str(payload.get("fbx_rig_pose_mode", "animated") or "animated").strip().lower()
+            rows = self._mgl_fbx_joint_label_positions(context, pose_mode, owner)
+            if not rows:
+                continue
+            try:
+                points = np.asarray([row.get("position", (0.0, 0.0, 0.0)) for row in rows], dtype=np.float32).reshape(-1, 3)
+            except Exception:
+                continue
+            if points.size == 0:
+                continue
+            try:
+                bmin = points.min(axis=0).astype("f4")
+                bmax = points.max(axis=0).astype("f4")
+            except Exception:
+                bmin = bmax = None
+            topo = {
+                "points": points,
+                "bounds_min": bmin,
+                "bounds_max": bmax,
+            }
+            if not bool(payload.get("ignore_owner_model", False)) and payload.get("model") is not None:
+                topo["model"] = payload.get("model")
+            projected = self._mgl_project_owner_points_device(owner, topo, viewport_w, viewport_h)
+            if not isinstance(projected, dict):
+                continue
+            try:
+                valid = np.asarray(projected.get("valid"), dtype=bool).reshape(-1)
+                xs = np.asarray(projected.get("x"), dtype=np.float32).reshape(-1)
+                ys = np.asarray(projected.get("y"), dtype=np.float32).reshape(-1)
+                zs = np.asarray(projected.get("z"), dtype=np.float32).reshape(-1)
+                count = min(valid.size, xs.size, ys.size, zs.size, len(rows))
+            except Exception:
+                continue
+            for idx in range(max(0, int(count))):
+                if not bool(valid[idx]):
+                    continue
+                name = str(rows[idx].get("name") or "").strip()
+                if not name:
+                    continue
+                seen_key = (owner_norm, name.lower())
+                if seen_key in seen_names:
+                    continue
+                seen_names.add(seen_key)
+                labels.append((float(zs[idx]), float(xs[idx]) / dpr, float(ys[idx]) / dpr, name))
+        return labels
+
+    def _draw_fbx_rig_joint_names_qt_overlay(self, painter: QtGui.QPainter) -> None:
+        labels = self._mgl_fbx_rig_joint_name_overlay_labels()
+        if not labels:
+            return
+        try:
+            painter.save()
+        except Exception:
+            pass
+        try:
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+            font = painter.font()
+            try:
+                font.setPointSize(max(7, int(font.pointSize() or 9) - 1))
+                painter.setFont(font)
+            except Exception:
+                pass
+            no_pen = QtGui.QPen()
+            no_pen.setStyle(QtCore.Qt.NoPen)
+            outline_pen = QtGui.QPen(QtGui.QColor(0, 0, 0, 165), 1.6)
+            outline_pen.setCosmetic(True)
+            try:
+                outline_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+            except Exception:
+                pass
+            fill_brush = QtGui.QBrush(QtGui.QColor(34, 211, 238, 245))
+            for _z, x, y, name in sorted(labels, key=lambda item: float(item[0]), reverse=True):
+                label_path = QtGui.QPainterPath()
+                label_path.addText(QtCore.QPointF(float(x) + 5.0, float(y) - 5.0), painter.font(), str(name))
+                painter.setPen(outline_pen)
+                painter.setBrush(QtCore.Qt.NoBrush)
+                painter.drawPath(label_path)
+                painter.setPen(no_pen)
+                painter.setBrush(fill_brush)
+                painter.drawPath(label_path)
+        finally:
+            try:
+                painter.restore()
+            except Exception:
+                pass
+
     def _mgl_scene_skeleton_qt_overlay_data(self) -> dict | None:
         if np is None:
             return None
@@ -10296,7 +10897,10 @@ class MGLRendererMixin:
             candidates.append(fallback)
         if not candidates:
             return None
-        best = max(candidates, key=lambda c: (int(c.get("visible_count", 0)), int(c.get("finite_count", 0))))
+        best = max(
+            enumerate(candidates),
+            key=lambda item: (int(item[1].get("finite_count", 0)), -int(item[0])),
+        )[1]
         projected = list(best.get("points") or [])
 
         lines = []
@@ -10337,53 +10941,72 @@ class MGLRendererMixin:
             "points": projected,
             "lines": lines,
             "selected": str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or "").strip(),
+            "show_names": bool(getattr(self, "_mgl_scene_skeleton_show_joint_names", False)),
         }
 
     def _draw_scene_skeleton_qt_overlay(self, painter: QtGui.QPainter) -> None:
         data = self._mgl_scene_skeleton_qt_overlay_data()
-        if not isinstance(data, dict):
-            return
-        points = list(data.get("points") or [])
-        lines = list(data.get("lines") or [])
-        if not points:
-            return
-        selected = str(data.get("selected") or "").strip()
-        try:
-            painter.save()
-        except Exception:
-            pass
-        try:
-            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-            no_pen = QtGui.QPen()
-            no_pen.setStyle(QtCore.Qt.NoPen)
-            base_brush = QtGui.QBrush(QtGui.QColor(0, 255, 0, 215))
-            selected_brush = QtGui.QBrush(QtGui.QColor(255, 220, 0, 245))
-            font = painter.font()
-            try:
-                font.setPointSize(max(7, int(font.pointSize() or 9) - 1))
-                painter.setFont(font)
-            except Exception:
-                pass
-            selected_label_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 255), 1.0)
-            for point in points:
-                if not isinstance(point, dict):
-                    continue
-                x = float(point.get("x", 0.0))
-                y = float(point.get("y", 0.0))
-                name = str(point.get("name") or "")
-                is_selected = bool(selected and name == selected)
-                radius = (3.5 if is_selected else 2.45) * _SCENE_SKELETON_SCREEN_HANDLE_RADIUS_SCALE
-                painter.setPen(no_pen)
-                painter.setBrush(selected_brush if is_selected else base_brush)
-                painter.drawEllipse(QtCore.QPointF(x, y), radius, radius)
-                if is_selected and name:
-                    painter.setPen(selected_label_pen)
-                    painter.drawText(QtCore.QPointF(x + radius + 3.0, y - radius - 2.0), name)
-        finally:
-            try:
-                painter.restore()
-            except Exception:
-                pass
+        if isinstance(data, dict):
+            points = list(data.get("points") or [])
+            lines = list(data.get("lines") or [])
+            if points:
+                selected = str(data.get("selected") or "").strip()
+                show_names = bool(data.get("show_names", False))
+                try:
+                    painter.save()
+                except Exception:
+                    pass
+                try:
+                    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                    painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+                    no_pen = QtGui.QPen()
+                    no_pen.setStyle(QtCore.Qt.NoPen)
+                    base_brush = QtGui.QBrush(QtGui.QColor(0, 255, 0, 215))
+                    selected_brush = QtGui.QBrush(QtGui.QColor(255, 220, 0, 245))
+                    font = painter.font()
+                    try:
+                        font.setPointSize(max(7, int(font.pointSize() or 9) - 1))
+                        painter.setFont(font)
+                    except Exception:
+                        pass
+                    label_brush = QtGui.QBrush(QtGui.QColor(34, 211, 238, 248))
+                    selected_label_brush = QtGui.QBrush(QtGui.QColor(255, 244, 140, 255))
+                    label_outline_pen = QtGui.QPen(QtGui.QColor(0, 0, 0, 165), 1.6)
+                    label_outline_pen.setCosmetic(True)
+                    try:
+                        label_outline_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+                    except Exception:
+                        pass
+                    labels_to_draw = []
+                    for point in points:
+                        if not isinstance(point, dict):
+                            continue
+                        x = float(point.get("x", 0.0))
+                        y = float(point.get("y", 0.0))
+                        name = str(point.get("name") or "")
+                        is_selected = bool(selected and name == selected)
+                        radius = (3.5 if is_selected else 2.45) * _SCENE_SKELETON_SCREEN_HANDLE_RADIUS_SCALE
+                        painter.setPen(no_pen)
+                        painter.setBrush(selected_brush if is_selected else base_brush)
+                        painter.drawEllipse(QtCore.QPointF(x, y), radius, radius)
+                        if name and (show_names or is_selected):
+                            labels_to_draw.append((x + radius + 3.0, y - radius - 2.0, name, is_selected))
+                    for x, y, name, is_selected in labels_to_draw:
+                        label_path = QtGui.QPainterPath()
+                        label_path.addText(QtCore.QPointF(float(x), float(y)), painter.font(), str(name))
+                        painter.setPen(label_outline_pen)
+                        painter.setBrush(QtCore.Qt.NoBrush)
+                        painter.drawPath(label_path)
+                        painter.setPen(no_pen)
+                        painter.setBrush(selected_label_brush if is_selected else label_brush)
+                        painter.drawPath(label_path)
+                finally:
+                    try:
+                        painter.restore()
+                    except Exception:
+                        pass
+        if bool(getattr(self, "_mgl_scene_skeleton_show_joint_names", False)):
+            self._draw_fbx_rig_joint_names_qt_overlay(painter)
 
     def _mgl_project_owner_point_device(
         self,
@@ -10422,8 +11045,12 @@ class MGLRendererMixin:
         except Exception:
             bmin = bmax = None
         try:
-            owner_model = self._mgl_scene_model_matrix_for_owner(owner, bmin, bmax)
-            owner_model = np.asarray(owner_model, dtype=np.float32).reshape(4, 4)
+            topo_model = topo.get("model")
+            owner_model = (
+                np.asarray(topo_model, dtype=np.float32).reshape(4, 4)
+                if topo_model is not None
+                else np.asarray(self._mgl_scene_model_matrix_for_owner(owner, bmin, bmax), dtype=np.float32).reshape(4, 4)
+            )
         except Exception:
             owner_model = None
         try:
@@ -10481,7 +11108,10 @@ class MGLRendererMixin:
             candidates.append(fallback)
         if not candidates:
             return None
-        return max(candidates, key=lambda item: (int(item.get("visible_count", 0)), int(item.get("finite_count", 0))))
+        return max(
+            enumerate(candidates),
+            key=lambda item: (int(item[1].get("finite_count", 0)), -int(item[0])),
+        )[1]
 
     def _mesh_selection_point_screen_pos(self, elem: dict):
         if np is None or not isinstance(elem, dict):
@@ -15383,6 +16013,7 @@ class MGLRendererMixin:
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
         weight_debug = bool(payload.get("_fbx_skin_weight_debug", False))
         use_vertex_color = bool(weight_debug or payload.get("use_vertex_color", False))
+        lighting_enabled = 0 if bool(getattr(self, "_mgl_unlit_view_enabled", False)) else 1
         force_opaque_mesh = bool(payload.get("force_opaque_mesh", False)) or tag == "scene-groom-guide-tube"
         material = None if force_opaque_mesh else self._mgl_normalize_material(payload.get("material"))
         is_transparent_material = (not force_opaque_mesh) and (not weight_debug) and self._mgl_material_is_transparent(material)
@@ -15714,7 +16345,7 @@ class MGLRendererMixin:
                 self._mgl_ctx.depth_mask = False
             except Exception:
                 pass
-        # For FBX, avoid fallback triangle-wire overlay; only show explicit edge wire items.
+        # FBX uses explicit file-edge line items; GPU polygon wireframe exposes triangulation diagonals.
         wire_overlay = bool(
             self._mgl_wireframe
             and not edge_wire
@@ -15724,6 +16355,7 @@ class MGLRendererMixin:
         explicit_edge_wire = bool(
             self._mgl_wireframe
             and edge_wire
+            and (not is_fbx_payload)
             and (submeshes or vao is not None)
         )
 
@@ -15942,7 +16574,7 @@ class MGLRendererMixin:
                 try:
                     self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                     self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
-                    self._mgl_prog["UseLighting"].value = 1
+                    self._mgl_prog["UseLighting"].value = lighting_enabled
                     self._mgl_prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
                     self._mgl_prog["Color"].value = color
                 except Exception:
@@ -15974,7 +16606,7 @@ class MGLRendererMixin:
             try:
                 self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                 self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
-                self._mgl_prog["UseLighting"].value = 1
+                self._mgl_prog["UseLighting"].value = lighting_enabled
                 self._mgl_prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
                 self._mgl_prog["Color"].value = color
             except Exception:
@@ -16010,7 +16642,7 @@ class MGLRendererMixin:
                         try:
                             self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                             self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
-                            self._mgl_prog["UseLighting"].value = 1
+                            self._mgl_prog["UseLighting"].value = lighting_enabled
                             self._mgl_prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
                             self._mgl_prog["Color"].value = color
                         except Exception:
@@ -16028,7 +16660,7 @@ class MGLRendererMixin:
                     try:
                         self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                         self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
-                        self._mgl_prog["UseLighting"].value = 1
+                        self._mgl_prog["UseLighting"].value = lighting_enabled
                         self._mgl_prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
                         self._mgl_prog["Color"].value = color
                     except Exception:
@@ -17801,8 +18433,12 @@ class MGLRendererMixin:
         except Exception:
             bmin = bmax = None
         try:
-            owner_model = self._mgl_scene_model_matrix_for_owner(owner, bmin, bmax)
-            owner_model = np.asarray(owner_model, dtype=np.float32).reshape(4, 4)
+            topo_model = topo.get("model")
+            owner_model = (
+                np.asarray(topo_model, dtype=np.float32).reshape(4, 4)
+                if topo_model is not None
+                else np.asarray(self._mgl_scene_model_matrix_for_owner(owner, bmin, bmax), dtype=np.float32).reshape(4, 4)
+            )
         except Exception:
             owner_model = None
         try:
@@ -17864,7 +18500,10 @@ class MGLRendererMixin:
             candidates.append(fallback)
         if not candidates:
             return None
-        result = max(candidates, key=lambda item: (int(item.get("visible_count", 0)), int(item.get("finite_count", 0))))
+        result = max(
+            enumerate(candidates),
+            key=lambda item: (int(item[1].get("finite_count", 0)), -int(item[0])),
+        )[1]
         if cache_key is not None:
             try:
                 cache = getattr(self, "_mgl_project_points_cache", None)
@@ -19855,15 +20494,22 @@ class MGLRendererMixin:
             return 1.0
 
     def _mgl_effective_ambient_light(self) -> float:
+        base = 0.10
         try:
             if not bool(getattr(self, "_mgl_ambient_light_enabled", True)):
-                return 0.0
+                base = 0.0
+            else:
+                base = max(0.0, min(1.0, float(getattr(self, "_mgl_ambient_light_strength", 0.10))))
+        except Exception:
+            base = 0.10
+        try:
+            if bool(getattr(self, "_mgl_work_light_enabled", False)) and not bool(
+                getattr(self, "_mgl_unlit_view_enabled", False)
+            ):
+                base = max(float(base), 0.38)
         except Exception:
             pass
-        try:
-            return max(0.0, min(1.0, float(getattr(self, "_mgl_ambient_light_strength", 0.10))))
-        except Exception:
-            return 0.10
+        return max(0.0, min(1.0, float(base)))
 
     def _mgl_effective_shadow_darkness(self) -> float:
         try:
@@ -20517,6 +21163,8 @@ class MGLRendererMixin:
                 pass
         use_shadows = bool(
             getattr(self, "_mgl_shadows_enabled", True)
+            and not bool(getattr(self, "_mgl_unlit_view_enabled", False))
+            and not bool(getattr(self, "_mgl_work_light_enabled", False))
             and getattr(self, "_mgl_shadow_valid", False)
             and getattr(self, "_mgl_shadow_depth_tex", None) is not None
         )
@@ -21803,7 +22451,12 @@ class MGLRendererMixin:
                 try:
                     self._mgl_apply_shadow_uniforms(self._mgl_splatq_prog)
                     self._mgl_splatq_prog["UseSplatLighting"].value = (
-                        1 if bool(getattr(self, "_mgl_splats_has_lit", False)) else 0
+                        1
+                        if (
+                            bool(getattr(self, "_mgl_splats_has_lit", False))
+                            and not bool(getattr(self, "_mgl_unlit_view_enabled", False))
+                        )
+                        else 0
                     )
                 except Exception:
                     pass
@@ -25377,6 +26030,141 @@ class MGLRendererMixin:
                     pass
         self.update()
 
+    def _apply_mgl_unlit_view_settings(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        sync_ui: bool = True,
+        sync_scene: bool = True,
+    ) -> None:
+        if not self._use_moderngl:
+            return
+        if enabled is not None:
+            self._mgl_unlit_view_enabled = bool(enabled)
+        unlit = bool(getattr(self, "_mgl_unlit_view_enabled", False))
+        try:
+            if self._mgl_prog is not None:
+                self._mgl_prog["UseLighting"].value = 0 if unlit else 1
+        except Exception:
+            pass
+        try:
+            if self._mgl_splatq_prog is not None:
+                self._mgl_splatq_prog["UseSplatLighting"].value = (
+                    0 if unlit else (1 if bool(getattr(self, "_mgl_splats_has_lit", False)) else 0)
+                )
+        except Exception:
+            pass
+        if sync_ui:
+            toggle = getattr(self, "_mgl_unlit_view_toggle", None)
+            if toggle is not None:
+                try:
+                    toggle.blockSignals(True)
+                    toggle.setChecked(unlit)
+                finally:
+                    try:
+                        toggle.blockSignals(False)
+                    except Exception:
+                        pass
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        if win is not None and win is not self:
+            try:
+                if hasattr(win, "_unlit_view_enabled"):
+                    win._unlit_view_enabled = unlit
+                toggle = getattr(win, "_unlit_view_toggle", None)
+                if toggle is not None:
+                    try:
+                        toggle.blockSignals(True)
+                        toggle.setChecked(unlit)
+                    finally:
+                        try:
+                            toggle.blockSignals(False)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        try:
+            self._mgl_shadow_dirty = True
+        except Exception:
+            pass
+        if sync_scene:
+            scene = getattr(self, "_scene", None)
+            if scene is not None:
+                try:
+                    settings = getattr(scene, "_view_settings", None)
+                    if not isinstance(settings, dict):
+                        settings = {}
+                    settings = dict(settings)
+                    settings["unlit_view"] = unlit
+                    scene._view_settings = settings
+                except Exception:
+                    pass
+        self.update()
+
+    def _apply_mgl_work_light_settings(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        sync_ui: bool = True,
+        sync_scene: bool = True,
+    ) -> None:
+        if not self._use_moderngl:
+            return
+        if enabled is not None:
+            self._mgl_work_light_enabled = bool(enabled)
+        work_light = bool(getattr(self, "_mgl_work_light_enabled", False))
+        ambient = float(self._mgl_effective_ambient_light())
+        for prog_name in ("_mgl_prog", "_mgl_grid_prog", "_mgl_splatq_prog"):
+            try:
+                prog = getattr(self, prog_name, None)
+                if prog is None:
+                    continue
+                prog["AmbientLight"].value = ambient
+                if work_light:
+                    prog["UseShadows"].value = 0
+            except Exception:
+                pass
+        if sync_ui:
+            try:
+                win = self.window()
+            except Exception:
+                win = None
+            if win is not None and win is not self:
+                try:
+                    if hasattr(win, "_work_light_enabled"):
+                        win._work_light_enabled = work_light
+                    toggle = getattr(win, "_work_light_toggle", None)
+                    if toggle is not None:
+                        try:
+                            toggle.blockSignals(True)
+                            toggle.setChecked(work_light)
+                        finally:
+                            try:
+                                toggle.blockSignals(False)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+        try:
+            self._mgl_shadow_dirty = True
+        except Exception:
+            pass
+        if sync_scene:
+            scene = getattr(self, "_scene", None)
+            if scene is not None:
+                try:
+                    settings = getattr(scene, "_view_settings", None)
+                    if not isinstance(settings, dict):
+                        settings = {}
+                    settings = dict(settings)
+                    settings["work_light_view"] = work_light
+                    scene._view_settings = settings
+                except Exception:
+                    pass
+        self.update()
+
     def _on_mgl_ambient_toggled(self, checked: bool) -> None:
         self._apply_mgl_ambient_settings(enabled=bool(checked), sync_ui=False, sync_scene=True)
 
@@ -25623,17 +26411,132 @@ class MGLRendererMixin:
                 pass
         self.update()
 
+    def _mgl_ensure_fbx_mesh_wire_items(self, scene, visibility_map) -> None:
+        if scene is None:
+            return
+        try:
+            mesh_items = [
+                item
+                for item in scene.items()
+                if str(getattr(item, "tag", "") or "") in {"model", "scene-model"}
+            ]
+        except Exception:
+            mesh_items = []
+
+        desired = []
+        desired_keys = set()
+        desired_name_keys = set()
+        for item in mesh_items:
+            payload = item.payload or {}
+            path_text = str(payload.get("path") or "").strip()
+            if not path_text or not path_text.lower().endswith(".fbx"):
+                continue
+            if bool(payload.get("fbx_bind_joints_only", False)):
+                continue
+            if payload.get("hidden_submeshes"):
+                continue
+            owner = str(payload.get("owner") or payload.get("node") or "").strip()
+            owner_key = owner.lower()
+            path_key = path_text.lower()
+            tag = "model-wire" if str(getattr(item, "tag", "") or "") == "model" else "scene-wire"
+            desired.append((item, tag, owner, owner_key, path_text, path_key, payload.get("fbx_rig_context")))
+            desired_keys.add((tag, owner_key, path_key))
+            desired_name_keys.add((tag, owner_key, f"{Path(path_text).name}-wire".lower()))
+
+        if desired_keys:
+            try:
+                kept = []
+                removed = 0
+                for item in getattr(scene, "_items", []):
+                    tag = str(getattr(item, "tag", "") or "")
+                    if tag not in {"model-wire", "scene-wire"}:
+                        kept.append(item)
+                        continue
+                    payload = item.payload or {}
+                    path_key = str(payload.get("path") or "").strip().lower()
+                    owner_key = str(payload.get("owner") or payload.get("node") or "").strip().lower()
+                    key = (tag, owner_key, path_key)
+                    name_key = str(getattr(item, "name", "") or "").strip().lower()
+                    stale_path_match = path_key.endswith(".fbx") and key in desired_keys
+                    stale_name_match = (not path_key) and (tag, owner_key, name_key) in desired_name_keys
+                    if (stale_path_match or stale_name_match) and not bool(payload.get("fbx_mesh_wire", False)):
+                        try:
+                            item.release()
+                        except Exception:
+                            pass
+                        removed += 1
+                    else:
+                        kept.append(item)
+                if removed:
+                    scene._items = kept
+            except Exception:
+                pass
+
+        try:
+            existing = []
+            for tag in ("model-wire", "scene-wire"):
+                for item in scene.iter_by_tag(tag):
+                    payload = item.payload or {}
+                    if isinstance(payload.get("fbx_rig_context"), dict) and not bool(payload.get("fbx_mesh_wire", False)):
+                        continue
+                    if not bool(payload.get("fbx_mesh_wire", False)):
+                        continue
+                    path_key = str(payload.get("path") or "").strip().lower()
+                    if path_key.endswith(".fbx"):
+                        owner_key = str(payload.get("owner") or payload.get("node") or "").strip().lower()
+                        existing.append((tag, owner_key, path_key))
+        except Exception:
+            existing = []
+
+        for item, tag, owner, owner_key, path_text, path_key, rig_context in desired:
+            if (tag, owner_key, path_key) in existing:
+                continue
+            try:
+                visible = bool(getattr(item, "visible", False)) and (not owner or bool(visibility_map.get(owner, True)))
+                wire_item = self._mgl_add_fbx_wire_item(
+                    Path(path_text),
+                    visible,
+                    tag=tag,
+                    owner=owner or None,
+                    path_key=path_text,
+                    rig_context=rig_context if isinstance(rig_context, dict) else None,
+                )
+                if wire_item is not None:
+                    scene.add(wire_item)
+                    existing.append((tag, owner_key, path_key))
+            except Exception:
+                continue
+
     def _on_mgl_wireframe_toggled(self, checked: bool) -> None:
         if not self._use_moderngl:
             return
         self._mgl_wireframe = bool(checked)
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None:
-            scene.set_visible_by_tag("model-wire", bool(checked))
+            visibility_map = getattr(self, "_mgl_scene_visibility", {}) or {}
             if checked:
-                visibility_map = getattr(self, "_mgl_scene_visibility", {}) or {}
+                self._mgl_ensure_fbx_mesh_wire_items(scene, visibility_map)
+            for item in scene.iter_by_tag("model-wire"):
+                payload = item.payload or {}
+                path_is_fbx = str(payload.get("path") or "").strip().lower().endswith(".fbx")
+                is_fbx_mesh_wire = bool(payload.get("fbx_mesh_wire", False))
+                if (isinstance(payload.get("fbx_rig_context"), dict) and not is_fbx_mesh_wire) or (
+                    path_is_fbx and not bool(payload.get("fbx_mesh_wire", False))
+                ):
+                    item.visible = False
+                    continue
+                owner = payload.get("owner") or payload.get("node")
+                item.visible = bool(checked) and (not owner or bool(visibility_map.get(owner, True)))
+            if checked:
                 for item in scene.iter_by_tag("scene-wire"):
                     payload = item.payload or {}
+                    path_is_fbx = str(payload.get("path") or "").strip().lower().endswith(".fbx")
+                    is_fbx_mesh_wire = bool(payload.get("fbx_mesh_wire", False))
+                    if (isinstance(payload.get("fbx_rig_context"), dict) and not is_fbx_mesh_wire) or (
+                        path_is_fbx and not bool(payload.get("fbx_mesh_wire", False))
+                    ):
+                        item.visible = False
+                        continue
                     owner = payload.get("owner") or payload.get("node")
                     if owner and not visibility_map.get(owner, True):
                         item.visible = False
