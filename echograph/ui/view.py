@@ -937,6 +937,7 @@ class GraphView(QtWidgets.QGraphicsView):
                         sc._add_edge_and_update_switch(
                             drag_src.model.name,
                             target.model.name,
+                            src_port_name=getattr(sc, "_drag_src_port_name", None),
                             dst_port_name=dst_port,
                         )
                     except Exception:

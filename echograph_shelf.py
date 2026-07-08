@@ -987,6 +987,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self._comment_groups = []
         self._moving_comment_group = False
         self._drag_src_item = None
+        self._drag_src_port_name = None
         self._temp_wire = None
         self._current_output_name = None
         self._last_paste_jitter = QtCore.QPointF(0.0, 0.0)
@@ -1571,14 +1572,19 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self._reframe_to_nodes(margin=8000.0)
         return item
 
-    def add_edge(self, src_name, dst_name, dst_port_name=None):
-        return self._add_edge_and_update_switch(src_name, dst_name, dst_port_name=dst_port_name)
+    def add_edge(self, src_name, dst_name, dst_port_name=None, src_port_name=None):
+        return self._add_edge_and_update_switch(
+            src_name,
+            dst_name,
+            dst_port_name=dst_port_name,
+            src_port_name=src_port_name,
+        )
 
     @profiled("graph.connect_edge")
-    def _add_edge_and_update_switch(self, src_name, dst_name, dst_port_name=None):
+    def _add_edge_and_update_switch(self, src_name, dst_name, dst_port_name=None, src_port_name=None):
         bulk = bool(getattr(self, "_bulk_loading", False))
         src = self._node_items[src_name]; dst = self._node_items[dst_name]
-        edge = EdgeItem(src, dst, dst_port_name=dst_port_name)
+        edge = EdgeItem(src, dst, src_port_name=src_port_name, dst_port_name=dst_port_name)
         self._edges.append(edge); self.addItem(edge)
         self._mark_edge_index_dirty()
 
@@ -1995,6 +2001,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     self._add_edge_and_update_switch(
                         name_map[src_old],
                         name_map[dst_old],
+                        src_port_name=edge.get("src_port"),
                         dst_port_name=edge.get("dst_port"),
                     )
                 except Exception:
@@ -2267,7 +2274,15 @@ class GraphScene(QtWidgets.QGraphicsScene):
     def _on_start_wire_drag(self, src_item: NodeItem):
         self._cancel_temp_wire()
         self._drag_src_item = src_item
-        start = src_item.scenePos() + QtCore.QPointF(src_item.width, src_item._BASE_H/2)
+        src_port_name = str(getattr(src_item, "_wire_drag_src_port_name", "") or "").strip() or None
+        self._drag_src_port_name = src_port_name
+        if src_port_name and hasattr(src_item, "port_anchor"):
+            try:
+                start = src_item.port_anchor(src_port_name, side="out")
+            except Exception:
+                start = src_item.scenePos() + QtCore.QPointF(src_item.width, src_item._BASE_H/2)
+        else:
+            start = src_item.scenePos() + QtCore.QPointF(src_item.width, src_item._BASE_H/2)
         self._temp_wire = TempWire(start)
         self.addItem(self._temp_wire)
 
@@ -2285,6 +2300,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         self._add_edge_and_update_switch(
                             self._drag_src_item.model.name,
                             target.model.name,
+                            src_port_name=getattr(self, "_drag_src_port_name", None),
                             dst_port_name=dst_port,
                         )
                     except Exception:
@@ -2316,6 +2332,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self.removeItem(self._temp_wire)
             self._temp_wire = None
         self._drag_src_item = None
+        self._drag_src_port_name = None
 
     def _clear_path_highlight(self):
         for e in self._edges:
@@ -2626,6 +2643,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self.resize(1100, 720)
 
         self._current_path = None
+        self._current_project_dir = ""
+        self._pending_project_save_dir = ""
         self._card_by_node = {}
         self._bigedit_registry = {}
         self._recent_files = _load_recent_graphs()
@@ -5113,6 +5132,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_recent.clicked.connect(lambda: self._run_menu_action(self._open_recent_dialog, "_file_btn"))
         file_layout.addWidget(file_recent, 0)
 
+        file_new_project = QtWidgets.QPushButton("New Project", file_panel)
+        file_new_project.setToolTip("Create a project folder for the next workflow save")
+        file_new_project.setFixedHeight(22)
+        file_new_project.setCursor(QtCore.Qt.PointingHandCursor)
+        file_new_project.setFlat(True)
+        file_new_project.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        file_new_project.clicked.connect(lambda: self._run_menu_action(self._new_project, "_file_btn"))
+        file_layout.addWidget(file_new_project, 0)
+
         file_save = QtWidgets.QPushButton("Save", file_panel)
         file_save.setToolTip("Save to the last opened/exported .json (Save)")
         file_save.setFixedHeight(22)
@@ -5802,7 +5830,41 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+    @staticmethod
+    def _safe_path_component(raw: str, *, strip_json_suffix: bool = False) -> str:
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        try:
+            text = Path(text).name
+        except Exception:
+            pass
+        if strip_json_suffix and text.lower().endswith(".json"):
+            text = text[:-5]
+        text = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", text)
+        text = re.sub(r"\s+", " ", text).strip(" .")
+        return text
+
+    def _project_dir_from_state(self, attr_name: str) -> Path | None:
+        try:
+            raw = str(getattr(self, attr_name, "") or "").strip()
+        except Exception:
+            raw = ""
+        if not raw:
+            return None
+        try:
+            path = Path(raw).expanduser()
+            if path.is_dir():
+                return path.resolve()
+        except Exception:
+            return None
+        return None
+
     def _workflow_project_dir(self) -> str:
+        for attr_name in ("_pending_project_save_dir", "_current_project_dir"):
+            project_dir = self._project_dir_from_state(attr_name)
+            if project_dir is not None:
+                return str(project_dir)
         try:
             path = str(self._current_path or "").strip()
         except Exception:
@@ -5818,6 +5880,195 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return str(script_dir().resolve())
         except Exception:
             return str(script_dir())
+
+    def _new_project(self) -> None:
+        root_text = self._workflow_project_dir()
+        project_text = f"Project_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        while True:
+            dlg = QtWidgets.QDialog(self)
+            dlg.setWindowTitle("New Project")
+            dlg.setModal(True)
+            dlg.resize(560, 150)
+
+            layout = QtWidgets.QVBoxLayout(dlg)
+            layout.setContentsMargins(12, 12, 12, 12)
+            layout.setSpacing(8)
+
+            form = QtWidgets.QFormLayout()
+            form.setContentsMargins(0, 0, 0, 0)
+            form.setSpacing(8)
+
+            root_row = QtWidgets.QWidget(dlg)
+            root_layout = QtWidgets.QHBoxLayout(root_row)
+            root_layout.setContentsMargins(0, 0, 0, 0)
+            root_layout.setSpacing(6)
+            root_edit = QtWidgets.QLineEdit(root_text, root_row)
+            root_edit.setPlaceholderText("Choose the folder where the project folder will be created")
+            browse_btn = QtWidgets.QPushButton("Browse...", root_row)
+            browse_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            root_layout.addWidget(root_edit, 1)
+            root_layout.addWidget(browse_btn, 0)
+
+            project_edit = QtWidgets.QLineEdit(project_text, dlg)
+            project_edit.setPlaceholderText("Project folder name")
+
+            form.addRow("Root location:", root_row)
+            form.addRow("Project name:", project_edit)
+            layout.addLayout(form)
+
+            preview_label = QtWidgets.QLabel(dlg)
+            preview_label.setWordWrap(True)
+            preview_label.setStyleSheet("color:#9ca3af;")
+            layout.addWidget(preview_label)
+
+            buttons = QtWidgets.QDialogButtonBox(
+                QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+                parent=dlg,
+            )
+            create_btn = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+            if create_btn is not None:
+                create_btn.setText("Create")
+            buttons.accepted.connect(dlg.accept)
+            buttons.rejected.connect(dlg.reject)
+            layout.addWidget(buttons)
+
+            def _preview_path() -> str:
+                root = str(root_edit.text() or "").strip()
+                name = self._safe_path_component(str(project_edit.text() or ""))
+                if not root or not name:
+                    return ""
+                try:
+                    return str(Path(root).expanduser() / name)
+                except Exception:
+                    return ""
+
+            def _sync_preview() -> None:
+                preview_path = _preview_path()
+                preview_label.setText(f"Folder to create: {preview_path}" if preview_path else "")
+
+            def _browse_root() -> None:
+                start_dir = str(root_edit.text() or "").strip() or self._workflow_project_dir()
+                try:
+                    if not Path(start_dir).expanduser().is_dir():
+                        start_dir = self._workflow_project_dir()
+                except Exception:
+                    start_dir = self._workflow_project_dir()
+                chosen = QtWidgets.QFileDialog.getExistingDirectory(
+                    dlg,
+                    "Choose Project Root",
+                    start_dir,
+                    QtWidgets.QFileDialog.ShowDirsOnly,
+                )
+                if chosen:
+                    root_edit.setText(chosen)
+
+            browse_btn.clicked.connect(_browse_root)
+            root_edit.textChanged.connect(lambda _text: _sync_preview())
+            project_edit.textChanged.connect(lambda _text: _sync_preview())
+            _sync_preview()
+
+            try:
+                project_edit.setFocus(QtCore.Qt.TabFocusReason)
+                project_edit.selectAll()
+            except Exception:
+                pass
+
+            if _qexec(dlg) != QtWidgets.QDialog.Accepted:
+                return
+
+            root_text = str(root_edit.text() or "").strip()
+            project_text = str(project_edit.text() or "").strip()
+            safe_name = self._safe_path_component(project_text)
+            if not safe_name:
+                QtWidgets.QMessageBox.warning(self, APP_TITLE, "Enter a project folder name.")
+                continue
+            if not root_text:
+                QtWidgets.QMessageBox.warning(self, APP_TITLE, "Choose a root location.")
+                continue
+            try:
+                parent_path = Path(root_text).expanduser().resolve()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Invalid project location:\n{e}")
+                continue
+            if not parent_path.is_dir():
+                QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Root location does not exist:\n{parent_path}")
+                continue
+            project_path = parent_path / safe_name
+            if project_path.exists() and not project_path.is_dir():
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    APP_TITLE,
+                    f"A file already exists with that name:\n{project_path}",
+                )
+                continue
+            if project_path.exists():
+                choice = QtWidgets.QMessageBox.question(
+                    self,
+                    APP_TITLE,
+                    f"Project folder already exists:\n{project_path}\n\nUse this folder?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.Yes,
+                )
+                if choice != QtWidgets.QMessageBox.Yes:
+                    continue
+            try:
+                project_path.mkdir(parents=True, exist_ok=True)
+                project_path = project_path.resolve()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to create project folder:\n{e}")
+                return
+            self._current_project_dir = str(project_path)
+            self._pending_project_save_dir = str(project_path)
+            try:
+                QtWidgets.QToolTip.showText(
+                    QtGui.QCursor.pos(),
+                    f"Project ready:\n{project_path}",
+                    self,
+                    self.rect(),
+                    1500,
+                )
+            except Exception:
+                pass
+            return
+
+    def _prompt_project_workflow_path(self, project_dir: Path) -> str | None:
+        default_name = "workflow"
+        try:
+            current_path = str(self._current_path or "").strip()
+            if current_path:
+                current_stem = Path(current_path).stem.strip()
+                if current_stem:
+                    default_name = current_stem
+        except Exception:
+            pass
+
+        while True:
+            workflow_name, ok = QtWidgets.QInputDialog.getText(
+                self,
+                "Save Workflow",
+                f"Workflow name for:\n{project_dir}",
+                QtWidgets.QLineEdit.Normal,
+                default_name,
+            )
+            if not ok:
+                return None
+            stem = self._safe_path_component(workflow_name, strip_json_suffix=True)
+            if not stem:
+                QtWidgets.QMessageBox.warning(self, APP_TITLE, "Enter a workflow name.")
+                continue
+            path = project_dir / f"{stem}.json"
+            if path.exists():
+                choice = QtWidgets.QMessageBox.question(
+                    self,
+                    APP_TITLE,
+                    f"Workflow already exists:\n{path}\n\nOverwrite it?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.No,
+                )
+                if choice != QtWidgets.QMessageBox.Yes:
+                    default_name = stem
+                    continue
+            return str(path)
 
     def _clone_timeline_sidecars_for_save_as(self, previous_path: str | None, new_path: str | None) -> None:
         old_raw = str(previous_path or "").strip()
@@ -7505,6 +7756,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self._current_path = path
         try:
+            self._current_project_dir = str(Path(path).expanduser().resolve().parent)
+            self._pending_project_save_dir = ""
+        except Exception:
+            pass
+        try:
             if workflow_panel_layout is not None:
                 self._apply_panel_layout_preset(workflow_panel_layout, persist_global=False)
             elif bool(getattr(self, "_save_layout_enabled", True)):
@@ -7563,6 +7819,69 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
         return True
 
+    def _workflow_data_for_save(self, *, include_preview: bool = False) -> Dict[str, Any]:
+        data = self.scene.to_dict()
+        self._inject_panel_layout_into_workflow_data(data)
+        self._inject_scene_restore_into_workflow_data(data)
+
+        if include_preview:
+            try:
+                out_name = getattr(self.scene, "_current_output_name", "") or ""
+                if out_name and hasattr(self.scene, "merged_text_for_output"):
+                    pairs = self.scene.merged_text_for_output(out_name)  # [(node_name, text)]
+                    data.setdefault("preview", {})
+                    data["preview"]["output"] = out_name
+                    data["preview"]["ordered_pairs"] = [{"node": n, "text": t} for (n, t) in pairs]
+                    data["preview"]["merged_text"] = "\n\n".join(t for _, t in pairs)
+            except Exception:
+                pass  # don't block export if preview assembly hiccups
+
+        return data
+
+    def _save_workflow_file(
+        self,
+        path: str,
+        *,
+        previous_path: str | None = None,
+        clone_sidecars: bool = False,
+        include_preview: bool = False,
+        tooltip_label: str = "Saved",
+    ) -> bool:
+        try:
+            data = self._workflow_data_for_save(include_preview=include_preview)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+
+            if clone_sidecars:
+                self._clone_timeline_sidecars_for_save_as(previous_path, path)
+
+            self._current_path = path
+            try:
+                self._current_project_dir = str(Path(path).expanduser().resolve().parent)
+                self._pending_project_save_dir = ""
+            except Exception:
+                pass
+            self._remember_recent(path)
+            self._update_window_title()
+            try:
+                self._timeline_controller.sync_timeline_context()
+            except Exception:
+                pass
+            try:
+                QtWidgets.QToolTip.showText(
+                    QtGui.QCursor.pos(),
+                    f"{tooltip_label}:\n{path}",
+                    self,
+                    self.rect(),
+                    1500,
+                )
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to save:\n{e}")
+            return False
+
     def _open_graph(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
@@ -7575,34 +7894,51 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._load_graph_file(path)
 
     def _save_graph(self):
+        pending_raw = str(getattr(self, "_pending_project_save_dir", "") or "").strip()
+        if pending_raw:
+            project_dir = self._project_dir_from_state("_pending_project_save_dir")
+            if project_dir is None:
+                self._pending_project_save_dir = ""
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    APP_TITLE,
+                    f"Project folder is no longer available:\n{pending_raw}",
+                )
+                return
+            path = self._prompt_project_workflow_path(project_dir)
+            if not path:
+                return
+            self._save_workflow_file(
+                path,
+                previous_path=self._current_path,
+                clone_sidecars=True,
+                include_preview=True,
+                tooltip_label="Saved",
+            )
+            return
+
         if not self._current_path:
             return self._export_graph()
-        try:
-            data = self.scene.to_dict()
-            self._inject_panel_layout_into_workflow_data(data)
-            self._inject_scene_restore_into_workflow_data(data)
-            with open(self._current_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            self._remember_recent(self._current_path)
-            self._update_window_title()
-            try:
-                self._timeline_controller.sync_timeline_context()
-            except Exception:
-                pass
-            try:
-                QtWidgets.QToolTip.showText(
-                    QtGui.QCursor.pos(),
-                    f"Saved:\n{self._current_path}",
-                    self, self.rect(), 1500
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to save:\n{e}")
+        self._save_workflow_file(
+            self._current_path,
+            include_preview=False,
+            tooltip_label="Saved",
+        )
 
 
     def _export_graph(self):
-        suggested = self._current_path if self._current_path else "graph.json"
+        project_dir = (
+            self._project_dir_from_state("_pending_project_save_dir")
+            or self._project_dir_from_state("_current_project_dir")
+        )
+        if project_dir is not None:
+            try:
+                stem = Path(str(self._current_path or "graph.json")).stem or "graph"
+            except Exception:
+                stem = "graph"
+            suggested = str(project_dir / f"{stem}.json")
+        else:
+            suggested = self._current_path if self._current_path else "graph.json"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Export Graph (.json)", suggested, "JSON Files (*.json)"
         )
@@ -7631,6 +7967,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
             self._clone_timeline_sidecars_for_save_as(previous_path, path)
             self._current_path = path
+            try:
+                self._current_project_dir = str(Path(path).expanduser().resolve().parent)
+                self._pending_project_save_dir = ""
+            except Exception:
+                pass
             self._remember_recent(path)
             self._update_window_title()
             try:

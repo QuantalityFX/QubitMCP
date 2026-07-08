@@ -927,6 +927,7 @@ class SourceResolutionResult:
     status: str
     requested_sources: Dict[str, str] = field(default_factory=dict)
     effective_sources: Dict[str, str] = field(default_factory=dict)
+    source_roles: Dict[str, str] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
@@ -941,7 +942,11 @@ class SourceResolutionResult:
                 elif (not raw) and role in ("capture_pose", "animated_pose"):
                     lines.append(f"{role}: {resolved} (defaulted from rest_geometry)")
                 else:
-                    lines.append(f"{role}: {resolved}")
+                    src_role = (self.source_roles.get(role) or "").strip()
+                    if src_role and src_role != role:
+                        lines.append(f"{role}: {resolved} (from {src_role} output)")
+                    else:
+                        lines.append(f"{role}: {resolved}")
             elif raw:
                 lines.append(f"{role}: {raw} (unresolved)")
             else:
@@ -1068,10 +1073,20 @@ def _ensure_input(node_item, name: str) -> None:
         node_item.add_input(name)
 
 
+def _ensure_output(node_item, name: str) -> None:
+    if hasattr(node_item, "ensure_output"):
+        node_item.ensure_output(name)
+    elif hasattr(node_item, "add_output_port"):
+        node_item.add_output_port(name)
+    elif hasattr(node_item, "add_output"):
+        node_item.add_output(name)
+
+
 def build_ports(node_item) -> None:
     for role in ROLE_PORTS:
         _ensure_param(node_item, role, "")
         _ensure_input(node_item, role)
+        _ensure_output(node_item, role)
     _ensure_param(node_item, "debug_log", "0")
     _ensure_param(node_item, "skin_weight_debug", "0")
     _ensure_param(node_item, "show_capture_joints", "0")
@@ -1108,6 +1123,14 @@ def _edge_dst_name(edge) -> str:
         (getattr(edge, "dst_port_name", None) or "")
         or (getattr(edge, "dst_label", None) or "")
         or (getattr(edge, "dst_name", None) or "")
+    ).strip()
+
+
+def _edge_src_name(edge) -> str:
+    return (
+        (getattr(edge, "src_port_name", None) or "")
+        or (getattr(edge, "src_label", None) or "")
+        or (getattr(edge, "src_name", None) or "")
     ).strip()
 
 
@@ -1188,7 +1211,7 @@ def _trace_source_item(scene, src_item):
     return current, ""
 
 
-def _source_path_from_item(src_item, role: str) -> Tuple[str, str]:
+def _source_path_from_item(src_item, role: str, src_role: str = "") -> Tuple[str, str]:
     model = getattr(src_item, "model", None)
     if model is None:
         return "", "connected source has no model."
@@ -1213,25 +1236,40 @@ def _source_path_from_item(src_item, role: str) -> Tuple[str, str]:
         return path, ""
 
     if kind in FBX_KIND_ALIASES:
+        source_role = (src_role or "").strip().lower()
+        if source_role not in ROLE_PORTS:
+            source_role = role
         path = (
-            str(getattr(model, f"_fbx_resolved_{role}", "") or "").strip()
-            or _param_value(model, f"resolved_{role}")
-            or _param_value(model, role)
+            str(getattr(model, f"_fbx_resolved_{source_role}", "") or "").strip()
+            or _param_value(model, f"resolved_{source_role}")
+            or _param_value(model, source_role)
         )
+        if not path and source_role in ("capture_pose", "animated_pose"):
+            path = (
+                str(getattr(model, "_fbx_resolved_rest_geometry", "") or "").strip()
+                or _param_value(model, "resolved_rest_geometry")
+                or _param_value(model, "rest_geometry")
+            )
         if not path:
-            return "", f"{role}: upstream FBXImport node '{name}' has no resolved source."
+            return "", f"{role}: upstream FBXImport node '{name}' has no resolved {source_role} source."
         return path, ""
 
     return "", f"{role}: source node '{name}' has unsupported kind '{kind}'."
 
 
-def _validate_fbx_path(role: str, raw_path: str, base_dir: Path | None) -> Tuple[str, str]:
+def _validate_fbx_path(
+    role: str,
+    raw_path: str,
+    base_dir: Path | None,
+    *,
+    allow_animation: bool = False,
+) -> Tuple[str, str]:
     if not raw_path:
         return "", f"{role}: source is empty."
     path = _resolve_existing_path(raw_path, base_dir)
     if path is None:
         return "", f"{role}: file does not exist: {raw_path}"
-    allowed_exts = {".fbx", ".bvh"} if role == "animated_pose" else {".fbx"}
+    allowed_exts = {".fbx", ".bvh"} if role == "animated_pose" or bool(allow_animation) else {".fbx"}
     if path.suffix.lower() not in allowed_exts:
         allowed_text = " or ".join(sorted(allowed_exts))
         return "", f"{role}: file is not {allowed_text}: {path}"
@@ -1288,6 +1326,7 @@ def _ingest_animation_source(path_value: str, *, skeleton):
 def _validate_bind_sources_stage3(
     *,
     effective: Dict[str, str],
+    source_roles: Dict[str, str],
     errors: List[str],
     warnings: List[str],
 ) -> Dict[str, Any]:
@@ -1324,6 +1363,13 @@ def _validate_bind_sources_stage3(
     _append_prefixed_messages(warnings, "rest_geometry", getattr(rest_result, "warnings", []))
 
     capture_path = (effective.get("capture_pose") or "").strip()
+    capture_source_role = (source_roles.get("capture_pose") or "").strip().lower()
+    if capture_source_role == "animated_pose":
+        state["capture_result"] = rest_result
+        if not capture_path:
+            effective["capture_pose"] = rest_path
+        return state
+
     if not capture_path or capture_path == rest_path:
         state["capture_result"] = rest_result
         if not capture_path:
@@ -1377,11 +1423,15 @@ def _validate_bind_sources_stage3(
 def _validate_animation_sources_stage4(
     *,
     effective: Dict[str, str],
+    source_roles: Dict[str, str],
     bind_state: Dict[str, Any],
     warnings: List[str],
 ) -> Dict[str, Any]:
     state: Dict[str, Any] = {
         "rest_result": None,
+        "capture_animation_result": None,
+        "capture_alignment_summary": "",
+        "capture_alignment_metrics": None,
         "animated_result": None,
         "alignment_summary": "",
         "alignment_metrics": None,
@@ -1399,7 +1449,7 @@ def _validate_animation_sources_stage4(
         if rest_bind is not None:
             skeleton = getattr(rest_bind, "skeleton", None)
 
-    def _append_alignment_warning(metrics_obj) -> None:
+    def _append_alignment_warning(metrics_obj, role: str = "animated_pose") -> None:
         if not isinstance(metrics_obj, dict):
             return
         if float(metrics_obj.get("failed", 0.0) or 0.0) >= 0.5:
@@ -1410,7 +1460,7 @@ def _validate_animation_sources_stage4(
         max_t = float(metrics_obj.get("max_t", 0.0) or 0.0)
         if (mean_r > 25.0) or (max_r > 120.0) or (max_t > 1.0):
             warnings.append(
-                "animated_pose: frame0 differs strongly from bind pose "
+                f"{role}: frame0 differs strongly from bind pose "
                 f"(mean_t={mean_t:.5f}, max_t={max_t:.5f}, "
                 f"mean_r={mean_r:.3f}deg, max_r={max_r:.3f}deg). "
                 "If mesh explodes, this likely indicates bind/animation basis mismatch."
@@ -1445,6 +1495,23 @@ def _validate_animation_sources_stage4(
     rest_result = _ingest_animation(rest_path, "rest_geometry")
     state["rest_result"] = rest_result
 
+    capture_source_role = (source_roles.get("capture_pose") or "").strip().lower()
+    capture_path = (effective.get("capture_pose") or "").strip()
+    if capture_source_role == "animated_pose":
+        capture_animation_result = None
+        if capture_path:
+            if capture_path == rest_path and rest_result is not None:
+                capture_animation_result = rest_result
+            else:
+                capture_animation_result = _ingest_animation(capture_path, "capture_pose")
+        if capture_animation_result is not None and list(getattr(capture_animation_result, "clips", []) or []):
+            state["capture_animation_result"] = capture_animation_result
+            state["capture_alignment_summary"] = _clip_alignment_summary(skeleton, capture_animation_result)
+            state["capture_alignment_metrics"] = _clip_alignment_metrics(skeleton, capture_animation_result)
+            _append_alignment_warning(state.get("capture_alignment_metrics"), "capture_pose")
+        else:
+            warnings.append("capture_pose: connected animated_pose output has no usable animation clip.")
+
     animated_path = (effective.get("animated_pose") or "").strip()
     if not animated_path or animated_path == rest_path:
         if not animated_path:
@@ -1452,7 +1519,7 @@ def _validate_animation_sources_stage4(
         state["animated_result"] = rest_result
         state["alignment_summary"] = _clip_alignment_summary(skeleton, rest_result)
         state["alignment_metrics"] = _clip_alignment_metrics(skeleton, rest_result)
-        _append_alignment_warning(state.get("alignment_metrics"))
+        _append_alignment_warning(state.get("alignment_metrics"), "animated_pose")
         return state
 
     animated_result = _ingest_animation(animated_path, "animated_pose")
@@ -1463,7 +1530,7 @@ def _validate_animation_sources_stage4(
             state["animated_result"] = rest_result
             state["alignment_summary"] = _clip_alignment_summary(skeleton, rest_result)
             state["alignment_metrics"] = _clip_alignment_metrics(skeleton, rest_result)
-            _append_alignment_warning(state.get("alignment_metrics"))
+            _append_alignment_warning(state.get("alignment_metrics"), "animated_pose")
         return state
 
     if (not list(getattr(animated_result, "clips", []) or [])) and (
@@ -1474,13 +1541,13 @@ def _validate_animation_sources_stage4(
         state["animated_result"] = rest_result
         state["alignment_summary"] = _clip_alignment_summary(skeleton, rest_result)
         state["alignment_metrics"] = _clip_alignment_metrics(skeleton, rest_result)
-        _append_alignment_warning(state.get("alignment_metrics"))
+        _append_alignment_warning(state.get("alignment_metrics"), "animated_pose")
         return state
 
     state["animated_result"] = animated_result
     state["alignment_summary"] = _clip_alignment_summary(skeleton, animated_result)
     state["alignment_metrics"] = _clip_alignment_metrics(skeleton, animated_result)
-    _append_alignment_warning(state.get("alignment_metrics"))
+    _append_alignment_warning(state.get("alignment_metrics"), "animated_pose")
     return state
 
 
@@ -1504,6 +1571,7 @@ def resolve_fbx_import_sources(
 
     requested = {role: "" for role in ROLE_PORTS}
     effective = {role: "" for role in ROLE_PORTS}
+    source_roles = {role: "" for role in ROLE_PORTS}
     errors: List[str] = []
     warnings: List[str] = []
 
@@ -1525,7 +1593,14 @@ def resolve_fbx_import_sources(
             if trace_issue:
                 warnings.append(f"{role}: {trace_issue}")
             if src_item is not None:
-                wired_path, source_issue = _source_path_from_item(src_item, role)
+                edge_source_role = _edge_src_name(role_edges[0]).strip().lower()
+                if edge_source_role in ROLE_PORTS:
+                    source_roles[role] = edge_source_role
+                wired_path, source_issue = _source_path_from_item(
+                    src_item,
+                    role,
+                    edge_source_role,
+                )
                 if source_issue:
                     warnings.append(source_issue)
 
@@ -1551,7 +1626,12 @@ def resolve_fbx_import_sources(
         raw = requested[role]
         if not raw:
             continue
-        resolved, issue = _validate_fbx_path(role, raw, base_dir)
+        resolved, issue = _validate_fbx_path(
+            role,
+            raw,
+            base_dir,
+            allow_animation=bool(role == "capture_pose" and source_roles.get(role) == "animated_pose"),
+        )
         if issue:
             warnings.append(f"{issue}; override ignored.")
         else:
@@ -1574,6 +1654,7 @@ def resolve_fbx_import_sources(
     if bind_validation_enabled and effective["rest_geometry"]:
         bind_state = _validate_bind_sources_stage3(
             effective=effective,
+            source_roles=source_roles,
             errors=errors,
             warnings=warnings,
         )
@@ -1583,6 +1664,7 @@ def resolve_fbx_import_sources(
     if animation_validation_enabled and effective["rest_geometry"]:
         animation_state = _validate_animation_sources_stage4(
             effective=effective,
+            source_roles=source_roles,
             bind_state=bind_state,
             warnings=warnings,
         )
@@ -1592,6 +1674,7 @@ def resolve_fbx_import_sources(
         status=status,
         requested_sources=requested,
         effective_sources=effective,
+        source_roles=source_roles,
         errors=errors,
         warnings=warnings,
     )
@@ -1601,6 +1684,9 @@ def resolve_fbx_import_sources(
             setattr(model, "_fbx_resolved_rest_geometry", effective["rest_geometry"])
             setattr(model, "_fbx_resolved_capture_pose", effective["capture_pose"])
             setattr(model, "_fbx_resolved_animated_pose", effective["animated_pose"])
+            setattr(model, "_fbx_source_role_rest_geometry", source_roles["rest_geometry"])
+            setattr(model, "_fbx_source_role_capture_pose", source_roles["capture_pose"])
+            setattr(model, "_fbx_source_role_animated_pose", source_roles["animated_pose"])
             setattr(model, "_fbx_validation_state", status)
             setattr(model, "_fbx_validation_errors", list(errors))
             setattr(model, "_fbx_validation_warnings", list(warnings))
@@ -1611,6 +1697,8 @@ def resolve_fbx_import_sources(
             setattr(model, "_fbx_bind_capture_report", bind_state.get("capture_report"))
             setattr(model, "_fbx_anim_validation_enabled", bool(animation_validation_enabled))
             setattr(model, "_fbx_anim_rest_result", animation_state.get("rest_result"))
+            setattr(model, "_fbx_anim_capture_result", animation_state.get("capture_animation_result"))
+            setattr(model, "_fbx_capture_anim_alignment_summary", str(animation_state.get("capture_alignment_summary") or ""))
             setattr(model, "_fbx_anim_animated_result", animation_state.get("animated_result"))
             setattr(model, "_fbx_anim_alignment_summary", str(animation_state.get("alignment_summary") or ""))
         except Exception:
@@ -1807,10 +1895,13 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
     if skeleton is None:
         return asset
 
-    animation_result = (
-        getattr(model, "_fbx_anim_animated_result", None)
-        or getattr(model, "_fbx_anim_rest_result", None)
-    )
+    animated_requested = bool(str(result.requested_sources.get("animated_pose", "") or "").strip())
+    animation_result = None
+    if animated_requested:
+        animation_result = (
+            getattr(model, "_fbx_anim_animated_result", None)
+            or getattr(model, "_fbx_anim_rest_result", None)
+        )
     clip = None
     try:
         clips = list(getattr(animation_result, "clips", []) or [])
@@ -1818,6 +1909,20 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         clips = []
     if clips:
         clip = clips[0]
+    mesh_skinning_enabled = bool(animated_requested and clip is not None)
+    capture_animation_result = getattr(model, "_fbx_anim_capture_result", None)
+    capture_clip = None
+    try:
+        capture_clips = list(getattr(capture_animation_result, "clips", []) or [])
+    except Exception:
+        capture_clips = []
+    if capture_clips:
+        capture_clip = capture_clips[0]
+    try:
+        capture_sample_time = float(getattr(capture_clip, "start_time", 0.0) or 0.0) if capture_clip is not None else 0.0
+    except Exception:
+        capture_sample_time = 0.0
+    capture_source_role = str(getattr(model, "_fbx_source_role_capture_pose", "") or "").strip().lower()
     weight_debug = _param_bool(
         model,
         "skin_weight_debug",
@@ -1840,13 +1945,17 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
     debug_log = _param_bool(model, "debug_log", default=False)
     asset["fbx_rig_context"] = {
         "skeleton": skeleton,
-        "clip": clip,
+        "clip": clip if mesh_skinning_enabled else None,
         "meshes": meshes,
-        "loop": True,
-        "mesh_skinning_enabled": True,
+        "loop": bool(mesh_skinning_enabled),
+        "mesh_skinning_enabled": bool(mesh_skinning_enabled),
+        "preview_bind_geometry_only": not bool(animated_requested),
         "skin_weight_debug": bool(weight_debug),
         "show_capture_joints": bool(show_capture_joints),
         "show_animated_joints": bool(show_animated_joints),
+        "capture_pose_source_role": capture_source_role,
+        "capture_clip": capture_clip,
+        "capture_sample_time": float(capture_sample_time),
         "fbx_debug_log": bool(debug_log),
     }
     asset["fbx_debug_log"] = bool(debug_log)
@@ -2085,6 +2194,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         ]
         if bind_validated:
             model_obj = getattr(item, "model", None)
+            capture_animation_result = getattr(model_obj, "_fbx_anim_capture_result", None)
+            if capture_animation_result is not None:
+                detail_lines.append("capture " + _clip_summary_text(capture_animation_result))
+                capture_align_text = str(getattr(model_obj, "_fbx_capture_anim_alignment_summary", "") or "").strip()
+                if capture_align_text:
+                    detail_lines.append("capture " + capture_align_text)
             animation_result = (
                 getattr(model_obj, "_fbx_anim_animated_result", None)
                 or getattr(model_obj, "_fbx_anim_rest_result", None)

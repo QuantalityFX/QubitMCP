@@ -174,6 +174,9 @@ def serialize_scene(scene) -> Dict[str, Any]:
     edges = []
     for e in scene._edges:
         entry = {"src": e.src.model.name, "dst": e.dst.model.name}
+        src_port = getattr(e, "src_port_name", None)
+        if src_port:
+            entry["src_port"] = src_port
         dst_port = getattr(e, "dst_port_name", None)
         if dst_port:
             entry["dst_port"] = dst_port
@@ -440,6 +443,7 @@ def deserialize_scene(
                 edge = scene._add_edge_and_update_switch(
                     ed["src"],
                     ed["dst"],
+                    src_port_name=ed.get("src_port"),
                     dst_port_name=ed.get("dst_port"),
                 )
                 ok = edge is not None

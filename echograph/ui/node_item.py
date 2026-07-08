@@ -659,6 +659,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._llm_proxy = None
         self._llm_view = None  # kept for API parity if ever needed
         self._input_port_pos = {}
+        self._output_port_pos = {}
         self._live_dialogs: set[QtWidgets.QDialog] = set()
         self._busy = False
         self._busy_message = ""
@@ -1039,6 +1040,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._ensure_named_inputs_set()
         return [str(n) for n in getattr(self.model, "_named_inputs", []) if n]
 
+    def _ensure_named_outputs_set(self):
+        try:
+            store = getattr(self.model, "_named_outputs", None)
+        except Exception:
+            store = None
+
+        if isinstance(store, list):
+            return
+        if isinstance(store, set):
+            setattr(self.model, "_named_outputs", [str(n) for n in store if n])
+            return
+        if store is None:
+            setattr(self.model, "_named_outputs", [])
+            return
+        try:
+            setattr(self.model, "_named_outputs", [str(n) for n in store if n])
+        except Exception:
+            setattr(self.model, "_named_outputs", [])
+
+    def output_port_names(self) -> list[str]:
+        self._ensure_named_outputs_set()
+        return [str(n) for n in getattr(self.model, "_named_outputs", []) if n]
+
     def _header_debug_button_kind(self) -> str | None:
         kind = (self.model.kind or "").strip().lower()
         if kind in ("mnaterial", "material"):
@@ -1414,14 +1438,24 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def port_anchor(self, name: str, side: str = "in") -> QtCore.QPointF:
         """Return scene-relative anchor point for a named port bead."""
-        entry = getattr(self, "_input_port_pos", {}).get((name or "").strip().lower())
-        if entry:
-            point = entry[0]
-            try:
-                return self.mapToScene(point)
-            except Exception:
-                return self.scenePos() + QtCore.QPointF(point.x(), point.y())
-        if side == "in":
+        port_key = (name or "").strip().lower()
+        if (side or "").strip().lower() == "out":
+            entry = getattr(self, "_output_port_pos", {}).get(port_key)
+            if entry:
+                point = entry[0]
+                try:
+                    return self.mapToScene(point)
+                except Exception:
+                    return self.scenePos() + QtCore.QPointF(point.x(), point.y())
+        else:
+            entry = getattr(self, "_input_port_pos", {}).get(port_key)
+            if entry:
+                point = entry[0]
+                try:
+                    return self.mapToScene(point)
+                except Exception:
+                    return self.scenePos() + QtCore.QPointF(point.x(), point.y())
+        if (side or "").strip().lower() == "in":
             try:
                 return self.mapToScene(QtCore.QPointF(0, self._BASE_H / 2.0))
             except Exception:
@@ -1446,6 +1480,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 existing.append(str(name))
             setattr(self.model, "_named_inputs", existing)
 
+    def ensure_output(self, name: str):
+        self._ensure_named_outputs_set()
+        if not name:
+            return
+        try:
+            names = getattr(self.model, "_named_outputs", [])
+            if str(name) not in names:
+                names.append(str(name))
+        except Exception:
+            existing = [str(n) for n in getattr(self.model, "_named_outputs", []) if n]
+            if str(name) not in existing:
+                existing.append(str(name))
+            setattr(self.model, "_named_outputs", existing)
+
     def input_port_hit(self, local_point, tolerance: float | None = None) -> str | None:
         """
         Return the named input hit by a left-socket interaction.
@@ -1461,6 +1509,28 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         tol = float(self._PORT_HIT_TOL if tolerance is None else tolerance)
         for name_key, entry in getattr(self, "_input_port_pos", {}).items():
+            pos, canonical = entry
+            dx = lx - float(pos.x())
+            dy = ly - float(pos.y())
+            if (dx * dx + dy * dy) ** 0.5 <= tol:
+                return canonical or name_key
+        return None
+
+    def output_port_hit(self, local_point, tolerance: float | None = None) -> str | None:
+        """
+        Return the named output hit by a right-socket interaction.
+        Accepts a QPointF in local coords.
+        """
+        if not hasattr(local_point, "x"):
+            return None
+        try:
+            lx = float(local_point.x())
+            ly = float(local_point.y())
+        except Exception:
+            return None
+
+        tol = float(self._PORT_HIT_TOL if tolerance is None else tolerance)
+        for name_key, entry in getattr(self, "_output_port_pos", {}).items():
             pos, canonical = entry
             dx = lx - float(pos.x())
             dy = ly - float(pos.y())
@@ -1555,6 +1625,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def add_input(self, name: str):
         self.ensure_input(name)
+
+    def add_output_port(self, name: str):
+        self.ensure_output(name)
+
+    def add_output(self, name: str):
+        self.ensure_output(name)
 
     def _current_llm_scale(self) -> float:
         sc = self.scene()
@@ -3076,6 +3152,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             # --- Named input bead layout (for plugins like Librarian) ---
             # --- Parameters ---
             self._input_port_pos = {}
+            self._output_port_pos = {}
             if self.model.params:
                 kind = (self.model.kind or "").lower()
                 if kind == "note" and self.model.params:
@@ -3121,6 +3198,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                 wired_inputs = self._wired_named_inputs()
                 named_inputs = {n.strip().lower() for n in self.input_port_names()}
+                named_outputs = {n.strip().lower() for n in self.output_port_names()}
                 hidden_params = self._ui_hidden_params_set()
 
                 for i, p in enumerate(self.model.params):
@@ -3130,10 +3208,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                     if pname_key == "__ui_hidden_params":
                         continue
+                    has_port = pname_key in named_inputs
+                    has_output_port = pname_key in named_outputs
                     if pname_key in hidden_params:
                         continue
-
-                    has_port = pname_key in named_inputs
                     wired = has_port and pname_key in wired_inputs
                     is_completed = kind == "note" and pname in completed_set
 
@@ -3553,6 +3631,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         center_x = pin_center_x if pin_center_x is not None else 0.0
                         canonical = (pname or pname_key) or pname_key
                         self._input_port_pos[pname_key] = (QtCore.QPointF(center_x, row_center_y), canonical)
+                    if has_output_port:
+                        canonical = (pname or pname_key) or pname_key
+                        self._output_port_pos[pname_key] = (QtCore.QPointF(float(self.width), row_center_y), canonical)
 
                     y_cursor += self._PARAM_ROW_H
 
@@ -7727,6 +7808,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def shape(self):
         path = QtGui.QPainterPath()
         path.addRoundedRect(QtCore.QRectF(0, 0, self.width, self.height), self.radius, self.radius)
+        path.addRect(QtCore.QRectF(-6.0, 0.0, 12.0, self.height))
+        path.addRect(QtCore.QRectF(self.width - 6.0, 0.0, 12.0, self.height))
         return path
 
     def paint(self, p: QtGui.QPainter, opt: QtWidgets.QStyleOptionGraphicsItem, w: QtWidgets.QWidget | None = None):
@@ -8057,6 +8140,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             p.setPen(QtCore.Qt.NoPen)
             p.setBrush(QtGui.QColor("#cbd5e1"))
             p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
+            output_entries = list(getattr(self, "_output_port_pos", {}).items())
+            for _key, (pos, _) in output_entries:
+                p.setBrush(QtGui.QColor("#cbd5e1"))
+                p.drawEllipse(QtCore.QRectF(float(pos.x()) - 4.0, float(pos.y()) - 4.0, 8.0, 8.0))
             entries = list(getattr(self, "_input_port_pos", {}).items())
             wired = self._wired_named_inputs()
             draw_default_input = bool(getattr(self, "_show_default_input_with_named", False))
@@ -8287,11 +8374,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 it.setSelected(False)
                         self.setSelected(True)
 
-            on_right_socket = (self.width - 12 <= e.pos().x() <= self.width + 6) and (0 <= e.pos().y() <= self._BASE_H)
+            src_port_name = None
+            try:
+                src_port_name = self.output_port_hit(e.pos())
+            except Exception:
+                src_port_name = None
+            on_right_socket = bool(src_port_name) or (
+                (self.width - 12 <= e.pos().x() <= self.width + 6) and (0 <= e.pos().y() <= self._BASE_H)
+            )
             if on_right_socket:
                 if scene:
                     scene._group_drag_active = False
                 try:
+                    setattr(self, "_wire_drag_src_port_name", src_port_name or "")
                     self.startWireDrag.emit(self)
                     self._lmb_started_wire = True
                 except Exception:

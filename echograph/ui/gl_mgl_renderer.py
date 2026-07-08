@@ -2171,9 +2171,21 @@ void main() {
         except Exception:
             target_pose_edit_static = False
         static_frame = bool(context.get("retarget_static_pose", False)) or target_pose_edit_static
+        capture_pose_mode = pose_mode in {"capture", "bind", "rest", "capture_pose"}
+        capture_clip_for_key = context.get("capture_clip") if capture_pose_mode else None
+        capture_sample_for_key = 0.0
+        if capture_clip_for_key is not None:
+            try:
+                capture_sample_for_key = float(
+                    context.get("capture_sample_time", getattr(capture_clip_for_key, "start_time", 0.0)) or 0.0
+                )
+            except Exception:
+                capture_sample_for_key = 0.0
         frame_key = (
-            ("capture", 0)
-            if pose_mode in {"capture", "bind", "rest", "capture_pose"}
+            ("capture_animation", id(capture_clip_for_key), round(float(capture_sample_for_key), 6))
+            if capture_clip_for_key is not None
+            else ("capture", 0)
+            if capture_pose_mode
             else (
                 "animated",
                 0 if static_frame else self._mgl_timeline_frame_index(),
@@ -2190,10 +2202,22 @@ void main() {
                 + f"item={item.name} id={getattr(item, 'item_id', 0)} mode={pose_mode}"
             )
             return
-        if pose_mode in {"capture", "bind", "rest", "capture_pose"}:
-            clip = None
-            sample_time = 0.0
-            loop = True
+        capture_pose_mode = pose_mode in {"capture", "bind", "rest", "capture_pose"}
+        capture_clip = context.get("capture_clip") if capture_pose_mode else None
+        if capture_pose_mode:
+            if capture_clip is not None:
+                clip = capture_clip
+                try:
+                    sample_time = float(context.get("capture_sample_time", getattr(clip, "start_time", 0.0)) or 0.0)
+                except Exception:
+                    sample_time = 0.0
+                loop = False
+                prefer_inverse_bind = False
+            else:
+                clip = None
+                sample_time = 0.0
+                loop = True
+                prefer_inverse_bind = True
         else:
             if static_frame:
                 clip = None
@@ -2202,12 +2226,13 @@ void main() {
                 clip = context.get("clip")
                 sample_time = self._mgl_fbx_context_timeline_sample_seconds(context, payload.get("owner"))
             loop = bool(context.get("loop", True))
+            prefer_inverse_bind = False
         line_points = self._mgl_fbx_joint_line_points(
             skeleton,
             clip,
             sample_time,
             loop=loop,
-            prefer_inverse_bind=bool(pose_mode in {"capture", "bind", "rest", "capture_pose"}),
+            prefer_inverse_bind=bool(prefer_inverse_bind),
         )
         owner = payload.get("owner")
         if bool(payload.get("scene_skeleton_overlay", False)) and np is not None:
@@ -3207,65 +3232,117 @@ void main() {
                 self._mgl_mesh_entry_reset_vertex_colors(entry)
         runtime_meshes: List[Dict[str, Any]] = []
         joint_count = int(len(list(getattr(skeleton, "joints", []) or [])))
-        specs_by_name: Dict[str, Dict[str, Any]] = {}
+        specs_by_name: Dict[str, List[Dict[str, Any]]] = {}
         for spec in specs:
             spec_name = str(spec.get("name", "") or "").strip().lower()
-            if spec_name and spec_name not in specs_by_name:
-                specs_by_name[spec_name] = spec
-        used_spec_keys: set[str] = set()
-        index_fallback: List[Dict[str, Any]] = [spec for spec in specs]
-        fallback_idx = 0
+            if spec_name:
+                specs_by_name.setdefault(spec_name, []).append(spec)
+        used_spec_ids: set[int] = set()
+
+        def _entry_spec_fit(entry_points, spec_obj):
+            try:
+                bind_tri_points_obj = np.asarray(spec_obj.get("bind_tri_points"), dtype="f4").reshape(-1, 3)
+            except Exception:
+                return None
+            if entry_points.shape[0] != bind_tri_points_obj.shape[0]:
+                return None
+            try:
+                affine_obj = self._mgl_fbx_fit_affine_row_major(bind_tri_points_obj, entry_points)
+                fit_points_obj = self._mgl_fbx_apply_affine_row_major(affine_obj, bind_tri_points_obj)
+                delta_obj = fit_points_obj - entry_points
+                rmse_obj = float(np.sqrt(np.mean(np.sum(delta_obj * delta_obj, axis=1))))
+                bbox_min_obj = entry_points.min(axis=0)
+                bbox_max_obj = entry_points.max(axis=0)
+                bbox_diag_obj = float(np.linalg.norm(bbox_max_obj - bbox_min_obj))
+                normalized_rmse_obj = rmse_obj / max(1.0e-5, bbox_diag_obj)
+            except Exception:
+                return None
+            return {
+                "spec": spec_obj,
+                "affine": affine_obj,
+                "rmse": float(rmse_obj),
+                "normalized_rmse": float(normalized_rmse_obj),
+            }
+
+        def _best_spec_for_entry(entry_name_key: str, entry_points):
+            candidates: List[Dict[str, Any]] = []
+            if entry_name_key:
+                candidates.extend(
+                    spec_obj
+                    for spec_obj in specs_by_name.get(entry_name_key, [])
+                    if id(spec_obj) not in used_spec_ids
+                )
+            candidate_ids = {id(spec_obj) for spec_obj in candidates}
+            candidates.extend(
+                spec_obj
+                for spec_obj in specs
+                if id(spec_obj) not in used_spec_ids and id(spec_obj) not in candidate_ids
+            )
+
+            best = None
+            for candidate in candidates:
+                fit = _entry_spec_fit(entry_points, candidate)
+                if fit is None:
+                    continue
+                if best is None or fit["normalized_rmse"] < best["normalized_rmse"]:
+                    best = fit
+            return best
 
         for entry in existing_submeshes:
             entry_name_key = str(entry.get("name", "") or "").strip().lower()
-            spec = None
-            if entry_name_key:
-                candidate = specs_by_name.get(entry_name_key)
-                if candidate is not None and entry_name_key not in used_spec_keys:
-                    spec = candidate
-                    used_spec_keys.add(entry_name_key)
-            if spec is None:
-                while fallback_idx < len(index_fallback):
-                    candidate = index_fallback[fallback_idx]
-                    fallback_idx += 1
-                    candidate_key = str(candidate.get("name", "") or "").strip().lower()
-                    if candidate_key and candidate_key in used_spec_keys:
-                        continue
-                    if candidate_key:
-                        used_spec_keys.add(candidate_key)
-                    spec = candidate
-                    break
-            if spec is None:
-                continue
-
-            bind_positions = np.asarray(spec.get("bind_positions"), dtype="f4").reshape(-1, 3)
-            triangle_indices = np.asarray(spec.get("triangle_indices"), dtype=np.int64).ravel()
-            if bind_positions.size == 0 or triangle_indices.size == 0:
-                continue
             render_points_raw = entry.get("points")
             if render_points_raw is None:
                 continue
             render_points = np.asarray(render_points_raw, dtype="f4").reshape(-1, 3)
-            bind_tri_points = np.asarray(spec.get("bind_tri_points"), dtype="f4").reshape(-1, 3)
-            if render_points.shape[0] != bind_tri_points.shape[0]:
-                continue
             if entry.get("vbo") is None or entry.get("nbo") is None:
                 continue
-            affine = self._mgl_fbx_fit_affine_row_major(bind_tri_points, render_points)
+
+            fit = _best_spec_for_entry(entry_name_key, render_points)
+            if fit is None:
+                try:
+                    self._mgl_fbx_joints_log(
+                        "fbx skin match skip "
+                        + f"entry={entry.get('name', '')!r} reason=no_shape_match "
+                        + f"render_points={int(render_points.shape[0])}"
+                    )
+                except Exception:
+                    pass
+                continue
+            if float(fit.get("normalized_rmse", 1.0)) > 0.05:
+                try:
+                    self._mgl_fbx_joints_log(
+                        "fbx skin match skip "
+                        + f"entry={entry.get('name', '')!r} spec={str(fit['spec'].get('name', '') or '')!r} "
+                        + f"reason=fit_error normalized_rmse={float(fit.get('normalized_rmse', 0.0)):.6f}"
+                    )
+                except Exception:
+                    pass
+                continue
+
+            spec = fit["spec"]
+            used_spec_ids.add(id(spec))
+            bind_positions = np.asarray(spec.get("bind_positions"), dtype="f4").reshape(-1, 3)
+            triangle_indices = np.asarray(spec.get("triangle_indices"), dtype=np.int64).ravel()
+            if bind_positions.size == 0 or triangle_indices.size == 0:
+                continue
+            bind_tri_points = np.asarray(spec.get("bind_tri_points"), dtype="f4").reshape(-1, 3)
+            affine = fit["affine"]
+            rmse = float(fit.get("rmse", 0.0))
+            normalized_rmse = float(fit.get("normalized_rmse", 0.0))
             try:
-                fit_points = self._mgl_fbx_apply_affine_row_major(affine, bind_tri_points)
-                delta = fit_points - render_points
-                rmse = float(np.sqrt(np.mean(np.sum(delta * delta, axis=1))))
-                bbox_min = render_points.min(axis=0)
-                bbox_max = render_points.max(axis=0)
-                bbox_diag = float(np.linalg.norm(bbox_max - bbox_min))
-                normalized_rmse = rmse / max(1.0e-5, bbox_diag)
+                self._mgl_fbx_joints_log(
+                    "fbx skin match "
+                    + f"entry={entry.get('name', '')!r} spec={str(spec.get('name', '') or '')!r} "
+                    + f"render_points={int(render_points.shape[0])} normalized_rmse={normalized_rmse:.6f}"
+                )
+            except Exception:
+                pass
+            try:
+                rmse = float(rmse)
+                normalized_rmse = float(normalized_rmse)
             except Exception:
                 rmse = 0.0
                 normalized_rmse = 0.0
-            # Guard against invalid submesh pairing to avoid catastrophic scrambling.
-            if normalized_rmse > 0.05:
-                continue
             if weight_debug:
                 self._mgl_fbx_apply_weight_debug_colors(entry, spec, joint_count)
             if skinning_enabled:
@@ -9596,9 +9673,20 @@ void main() {
             return None
         mode = str(pose_mode or "animated").strip().lower()
         if mode in {"capture", "bind", "rest", "capture_pose"}:
-            clip = None
-            sample_time = 0.0
-            loop = True
+            capture_clip = context.get("capture_clip")
+            if capture_clip is not None:
+                clip = capture_clip
+                try:
+                    sample_time = float(context.get("capture_sample_time", getattr(clip, "start_time", 0.0)) or 0.0)
+                except Exception:
+                    sample_time = 0.0
+                loop = False
+                prefer_inverse_bind = False
+            else:
+                clip = None
+                sample_time = 0.0
+                loop = True
+                prefer_inverse_bind = True
             default_color = (1.00, 0.12, 0.12, 1.0)
         else:
             mode = "animated"
@@ -9609,6 +9697,7 @@ void main() {
                 clip = context.get("clip")
                 sample_time = self._mgl_fbx_context_timeline_sample_seconds(context, owner)
             loop = bool(context.get("loop", True))
+            prefer_inverse_bind = False
             default_color = (1.00, 0.95, 0.15, 1.0)
         try:
             raw_color = context.get("joint_color")
@@ -9626,7 +9715,7 @@ void main() {
             clip,
             sample_time,
             loop=loop,
-            prefer_inverse_bind=bool(mode in {"capture", "bind", "rest", "capture_pose"}),
+            prefer_inverse_bind=bool(prefer_inverse_bind),
         )
         try:
             preview_role = str(context.get("retarget_preview_role") or "").strip()
@@ -9641,7 +9730,7 @@ void main() {
                     clip_name=str(getattr(clip, "name", "") or "<bind>"),
                     sample_time=round(float(sample_time), 6),
                     loop=bool(loop),
-                    prefer_inverse_bind=bool(mode in {"capture", "bind", "rest", "capture_pose"}),
+                    prefer_inverse_bind=bool(prefer_inverse_bind),
                     joint_count=int(len(list(getattr(skeleton, "joints", []) or []))),
                     line_points=self._mgl_retarget_points_summary(line_points),
                     context_show_capture=bool(context.get("show_capture_joints", False)),
@@ -9684,7 +9773,9 @@ void main() {
         payload["fbx_rig_context"] = context
         payload["fbx_rig_pose_mode"] = mode
         payload["_fbx_rig_frame"] = (
-            ("capture", 0)
+            ("capture_animation", id(clip), round(float(sample_time), 6))
+            if mode == "capture" and clip is not None
+            else ("capture", 0)
             if mode == "capture"
             else ("animated", 0 if bool(context.get("retarget_static_pose", False)) else self._mgl_timeline_frame_index())
         )
@@ -29147,16 +29238,21 @@ void main() {
                     fbx_rig_context = None
                 if isinstance(fbx_rig_context, dict):
                     self._mgl_fbx_joints_log_enabled = bool(fbx_rig_context.get("fbx_debug_log", False))
-                try:
-                    mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
-                    points = mesh_arrays.points
-                    normals = mesh_arrays.normals
-                    uvs = mesh_arrays.uvs
-                except Exception as exc:
+                fbx_bind_geometry_only = bool(
+                    isinstance(fbx_rig_context, dict)
+                    and not self._mgl_fbx_mesh_skinning_enabled(fbx_rig_context)
+                )
+                if fbx_bind_geometry_only:
                     mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(fbx_rig_context)
-                    if mesh_arrays is None:
-                        self._mgl_error = f"FBX load failed: {exc}"
-                        return
+                if mesh_arrays is None:
+                    try:
+                        mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
+                    except Exception as exc:
+                        mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(fbx_rig_context)
+                        if mesh_arrays is None:
+                            self._mgl_error = f"FBX load failed: {exc}"
+                            return
+                if mesh_arrays is not None:
                     points = mesh_arrays.points
                     normals = mesh_arrays.normals
                     uvs = mesh_arrays.uvs
@@ -31944,18 +32040,25 @@ void main() {
                         normals = mesh_arrays.normals
                         uvs = mesh_arrays.uvs
                     elif ext == ".fbx":
-                        try:
-                            mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
-                            points = mesh_arrays.points
-                            normals = mesh_arrays.normals
-                            uvs = mesh_arrays.uvs
-                        except Exception as exc:
+                        fbx_bind_geometry_only = bool(
+                            isinstance(fbx_rig_context, dict)
+                            and not self._mgl_fbx_mesh_skinning_enabled(fbx_rig_context)
+                        )
+                        if fbx_bind_geometry_only:
                             mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(
                                 fbx_rig_context if isinstance(fbx_rig_context, dict) else None
                             )
-                            if mesh_arrays is None:
-                                self._mgl_error = f"FBX load failed: {exc}"
-                                continue
+                        if mesh_arrays is None:
+                            try:
+                                mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
+                            except Exception as exc:
+                                mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(
+                                    fbx_rig_context if isinstance(fbx_rig_context, dict) else None
+                                )
+                                if mesh_arrays is None:
+                                    self._mgl_error = f"FBX load failed: {exc}"
+                                    continue
+                        if mesh_arrays is not None:
                             points = mesh_arrays.points
                             normals = mesh_arrays.normals
                             uvs = mesh_arrays.uvs
