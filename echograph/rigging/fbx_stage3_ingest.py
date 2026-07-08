@@ -37,7 +37,7 @@ _IDENTITY_MATRIX_4X4: Tuple[float, ...] = (
 )
 
 _BIND_INGEST_CACHE_MAX = 8
-_BIND_INGEST_CACHE_VERSION = 3
+_BIND_INGEST_CACHE_VERSION = 5
 _BIND_INGEST_CACHE: "OrderedDict[Tuple[str, int, int, str, int, int], FBXBindIngestResult]" = OrderedDict()
 
 
@@ -87,6 +87,9 @@ class _SimpleMesh:
     name: str
     vertices: List[Tuple[float, float, float]] = field(default_factory=list)
     faces: List[List[int]] = field(default_factory=list)
+    uv_faces: List[List[Tuple[float, float]]] = field(default_factory=list)
+    uv_set_name: str = ""
+    normal_faces: List[List[Tuple[float, float, float]]] = field(default_factory=list)
     bones: List[_SimpleBone] = field(default_factory=list)
 
 
@@ -595,6 +598,201 @@ def _triangulate_faces(faces: Sequence[Sequence[int]]) -> List[int]:
     return tris
 
 
+def _mesh_uv_faces(mesh_obj: Any) -> List[List[Tuple[float, float]]]:
+    raw = getattr(mesh_obj, "uv_faces", None)
+    if raw is not None:
+        tolist = getattr(raw, "tolist", None)
+        if callable(tolist):
+            try:
+                raw = tolist()
+            except Exception:
+                pass
+
+        out: List[List[Tuple[float, float]]] = []
+        seq = list(raw) if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)) else []
+        for entry in seq:
+            conv = entry
+            tolist = getattr(conv, "tolist", None)
+            if callable(tolist):
+                try:
+                    conv = tolist()
+                except Exception:
+                    pass
+            if not isinstance(conv, Sequence) or isinstance(conv, (str, bytes)):
+                out.append([])
+                continue
+            out.append([_vec2_from_obj(v) for v in conv])
+        return out
+
+    texturecoords = getattr(mesh_obj, "texturecoords", None)
+    if texturecoords is None:
+        return []
+    tolist = getattr(texturecoords, "tolist", None)
+    if callable(tolist):
+        try:
+            texturecoords = tolist()
+        except Exception:
+            pass
+    try:
+        layers = list(texturecoords)
+    except Exception:
+        layers = []
+    if not layers:
+        return []
+    layer0 = layers[0]
+    tolist = getattr(layer0, "tolist", None)
+    if callable(tolist):
+        try:
+            layer0 = tolist()
+        except Exception:
+            pass
+    try:
+        coords = list(layer0)
+    except Exception:
+        coords = []
+    if not coords:
+        return []
+    out = []
+    for face in _mesh_faces(mesh_obj):
+        uv_face: List[Tuple[float, float]] = []
+        for idx in face:
+            if 0 <= int(idx) < len(coords):
+                uv_face.append(_vec2_from_obj(coords[int(idx)]))
+        out.append(uv_face if len(uv_face) == len(face) else [])
+    return out
+
+
+def _mesh_normal_faces(mesh_obj: Any) -> List[List[Tuple[float, float, float]]]:
+    raw = getattr(mesh_obj, "normal_faces", None)
+    if raw is not None:
+        tolist = getattr(raw, "tolist", None)
+        if callable(tolist):
+            try:
+                raw = tolist()
+            except Exception:
+                pass
+
+        out: List[List[Tuple[float, float, float]]] = []
+        seq = list(raw) if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)) else []
+        for entry in seq:
+            conv = entry
+            tolist = getattr(conv, "tolist", None)
+            if callable(tolist):
+                try:
+                    conv = tolist()
+                except Exception:
+                    pass
+            if not isinstance(conv, Sequence) or isinstance(conv, (str, bytes)):
+                out.append([])
+                continue
+            normals: List[Tuple[float, float, float]] = []
+            for value in conv:
+                normal = _normalize_vec3(_vec3_from_obj(value))
+                if normal is None:
+                    normals = []
+                    break
+                normals.append(normal)
+            out.append(normals)
+        return out
+
+    raw_normals = getattr(mesh_obj, "normals", None)
+    if raw_normals is None:
+        return []
+    tolist = getattr(raw_normals, "tolist", None)
+    if callable(tolist):
+        try:
+            raw_normals = tolist()
+        except Exception:
+            pass
+    try:
+        coords = list(raw_normals)
+    except Exception:
+        coords = []
+    if not coords:
+        return []
+    out = []
+    for face in _mesh_faces(mesh_obj):
+        normal_face: List[Tuple[float, float, float]] = []
+        for idx in face:
+            normal = _normalize_vec3(_vec3_from_obj(coords[int(idx)])) if 0 <= int(idx) < len(coords) else None
+            if normal is None:
+                normal_face = []
+                break
+            normal_face.append(normal)
+        out.append(normal_face if len(normal_face) == len(face) else [])
+    return out
+
+
+def _triangulate_face_uvs(
+    faces: Sequence[Sequence[int]],
+    uv_faces: Sequence[Sequence[Tuple[float, float]]],
+    vertex_count: int,
+) -> List[Tuple[float, float]]:
+    if not uv_faces or len(uv_faces) != len(faces):
+        return []
+    out: List[Tuple[float, float]] = []
+    for face, uv_face in zip(faces, uv_faces):
+        if len(face) < 3:
+            continue
+        if len(uv_face) != len(face):
+            return []
+        if len(face) == 3:
+            tri = (int(face[0]), int(face[1]), int(face[2]))
+            if all(0 <= idx < vertex_count for idx in tri):
+                out.extend([
+                    _vec2_from_obj(uv_face[0]),
+                    _vec2_from_obj(uv_face[1]),
+                    _vec2_from_obj(uv_face[2]),
+                ])
+            continue
+        f0 = int(face[0])
+        for i in range(1, len(face) - 1):
+            tri = (f0, int(face[i]), int(face[i + 1]))
+            if all(0 <= idx < vertex_count for idx in tri):
+                out.extend([
+                    _vec2_from_obj(uv_face[0]),
+                    _vec2_from_obj(uv_face[i]),
+                    _vec2_from_obj(uv_face[i + 1]),
+                ])
+    return out
+
+
+def _triangulate_face_normals(
+    faces: Sequence[Sequence[int]],
+    normal_faces: Sequence[Sequence[Tuple[float, float, float]]],
+    vertex_count: int,
+) -> List[Tuple[float, float, float]]:
+    if not normal_faces or len(normal_faces) != len(faces):
+        return []
+    out: List[Tuple[float, float, float]] = []
+    for face, normal_face in zip(faces, normal_faces):
+        if len(face) < 3:
+            continue
+        if len(normal_face) != len(face):
+            return []
+        if len(face) == 3:
+            tri = (int(face[0]), int(face[1]), int(face[2]))
+            if all(0 <= idx < vertex_count for idx in tri):
+                n0 = _normalize_vec3(normal_face[0])
+                n1 = _normalize_vec3(normal_face[1])
+                n2 = _normalize_vec3(normal_face[2])
+                if n0 is None or n1 is None or n2 is None:
+                    return []
+                out.extend([n0, n1, n2])
+            continue
+        f0 = int(face[0])
+        for i in range(1, len(face) - 1):
+            tri = (f0, int(face[i]), int(face[i + 1]))
+            if all(0 <= idx < vertex_count for idx in tri):
+                n0 = _normalize_vec3(normal_face[0])
+                n1 = _normalize_vec3(normal_face[i])
+                n2 = _normalize_vec3(normal_face[i + 1])
+                if n0 is None or n1 is None or n2 is None:
+                    return []
+                out.extend([n0, n1, n2])
+    return out
+
+
 def _authored_edge_indices(faces: Sequence[Sequence[int]], vertex_count: int) -> List[int]:
     edges: List[int] = []
     seen: set[Tuple[int, int]] = set()
@@ -785,6 +983,12 @@ def _build_mesh_assets(
         faces = _mesh_faces(mesh)
         triangle_indices = _triangulate_faces(faces)
         triangle_indices = [idx for idx in triangle_indices if 0 <= idx < vertex_count]
+        triangle_uvs = _triangulate_face_uvs(faces, _mesh_uv_faces(mesh), vertex_count)
+        if len(triangle_uvs) != len(triangle_indices):
+            triangle_uvs = []
+        triangle_normals = _triangulate_face_normals(faces, _mesh_normal_faces(mesh), vertex_count)
+        if len(triangle_normals) != len(triangle_indices):
+            triangle_normals = []
         edge_indices = _authored_edge_indices(faces, vertex_count)
 
         per_vertex: Dict[int, Dict[int, float]] = {}
@@ -857,20 +1061,32 @@ def _build_mesh_assets(
                 pad_count = vertex_count - len(bind_positions)
                 bind_positions.extend([(0.0, 0.0, 0.0)] * int(pad_count))
 
+        metadata = {
+            "source_mesh_index": int(mesh_idx),
+            "source_mesh_name": raw_mesh_name,
+            "bind_positions": [list(v) for v in bind_positions],
+            "edge_indices": [int(i) for i in edge_indices],
+            "inverse_bind_matrices": mesh_inverse_bind_matrices,
+            "inverse_bind_source": "mesh_clusters",
+        }
+        if triangle_uvs:
+            metadata["triangle_uvs"] = [[float(u), float(v)] for u, v in triangle_uvs]
+            uv_set_name = str(getattr(mesh, "uv_set_name", "") or "").strip()
+            if uv_set_name:
+                metadata["uv_set_name"] = uv_set_name
+        if triangle_normals:
+            metadata["triangle_normals"] = [
+                [float(x), float(y), float(z)]
+                for x, y, z in triangle_normals
+            ]
+
         asset = SkeletalMeshAsset(
             name=mesh_name,
             skeleton_name=skeleton.name,
             vertex_count=vertex_count,
             triangle_indices=triangle_indices,
             vertex_skins=vertex_skins,
-            metadata={
-                "source_mesh_index": int(mesh_idx),
-                "source_mesh_name": raw_mesh_name,
-                "bind_positions": [list(v) for v in bind_positions],
-                "edge_indices": [int(i) for i in edge_indices],
-                "inverse_bind_matrices": mesh_inverse_bind_matrices,
-                "inverse_bind_source": "mesh_clusters",
-            },
+            metadata=metadata,
         )
         asset.validate(skeleton)
         out.append(asset)
@@ -907,6 +1123,48 @@ def _vec3_from_obj(value: Any) -> Tuple[float, float, float]:
         except Exception:
             pass
     return (0.0, 0.0, 0.0)
+
+
+def _vec2_from_obj(value: Any) -> Tuple[float, float]:
+    if value is None:
+        return (0.0, 0.0)
+    try:
+        return (
+            _to_float(value[0], 0.0),  # type: ignore[index]
+            _to_float(value[1], 0.0),  # type: ignore[index]
+        )
+    except Exception:
+        pass
+    try:
+        data = getattr(value, "mData")
+        return (
+            _to_float(data[0], 0.0),
+            _to_float(data[1], 0.0),
+        )
+    except Exception:
+        pass
+    try:
+        if hasattr(value, "x") and hasattr(value, "y"):
+            return (
+                _to_float(getattr(value, "x"), 0.0),
+                _to_float(getattr(value, "y"), 0.0),
+            )
+    except Exception:
+        pass
+    return (0.0, 0.0)
+
+
+def _normalize_vec3(value: Tuple[float, float, float]) -> Tuple[float, float, float] | None:
+    try:
+        x = float(value[0])
+        y = float(value[1])
+        z = float(value[2])
+        length = math.sqrt((x * x) + (y * y) + (z * z))
+    except Exception:
+        return None
+    if length <= 1.0e-12:
+        return None
+    return (float(x / length), float(y / length), float(z / length))
 
 
 def _matrix4_mul_row_major(a: Tuple[float, ...], b: Tuple[float, ...]) -> Tuple[float, ...]:
@@ -1029,10 +1287,47 @@ def _build_simple_mesh_from_fbxsdk(
                 out.vertices.append((0.0, 0.0, 0.0))
 
     # polygons
+    uv_set_name = ""
+    try:
+        uv_names: List[Any] = []
+        mesh_obj.GetUVSetNames(uv_names)
+        for raw_name in uv_names:
+            candidate = str(raw_name or "").strip()
+            if candidate:
+                uv_set_name = candidate
+                break
+    except Exception:
+        uv_set_name = ""
+    if not uv_set_name:
+        try:
+            uv_elem = (
+                mesh_obj.GetElementUV(0)
+                if _to_int(getattr(mesh_obj, "GetElementUVCount", lambda: 0)(), 0) > 0
+                else None
+            )
+            uv_set_name = (
+                str(getattr(uv_elem, "GetName", lambda: "")() or "").strip()
+                if uv_elem is not None
+                else ""
+            )
+        except Exception:
+            uv_set_name = ""
+    out.uv_set_name = uv_set_name
+
+    has_normals = False
+    try:
+        has_normals = _to_int(getattr(mesh_obj, "GetElementNormalCount", lambda: 0)(), 0) > 0
+    except Exception:
+        has_normals = False
+
     poly_count = _to_int(getattr(mesh_obj, "GetPolygonCount", lambda: 0)(), 0)
     for pidx in range(max(0, poly_count)):
         psize = _to_int(getattr(mesh_obj, "GetPolygonSize", lambda _i: 0)(pidx), 0)
         face: List[int] = []
+        uv_face: List[Tuple[float, float]] = []
+        uv_face_valid = bool(uv_set_name)
+        normal_face: List[Tuple[float, float, float]] = []
+        normal_face_valid = bool(has_normals)
         for corner in range(max(0, psize)):
             vid = _to_int(
                 getattr(mesh_obj, "GetPolygonVertex", lambda _p, _c: -1)(pidx, corner),
@@ -1040,8 +1335,41 @@ def _build_simple_mesh_from_fbxsdk(
             )
             if vid >= 0:
                 face.append(vid)
+                if uv_face_valid:
+                    try:
+                        uv_value = fbx_mod.FbxVector2()
+                        ret = mesh_obj.GetPolygonVertexUV(pidx, corner, uv_set_name, uv_value)
+                        success = (
+                            bool(ret[0])
+                            if isinstance(ret, tuple) and len(ret) >= 1
+                            else bool(ret)
+                        )
+                        unmapped = bool(ret[1]) if isinstance(ret, tuple) and len(ret) >= 2 else False
+                        if success and not unmapped:
+                            uv_face.append(_vec2_from_obj(uv_value))
+                        else:
+                            uv_face_valid = False
+                    except Exception:
+                        uv_face_valid = False
+                if normal_face_valid:
+                    try:
+                        normal_value = fbx_mod.FbxVector4()
+                        mesh_obj.GetPolygonVertexNormal(pidx, corner, normal_value)
+                        normal = _normalize_vec3(_vec3_from_obj(normal_value))
+                        if normal is not None:
+                            normal_face.append(normal)
+                        else:
+                            normal_face_valid = False
+                    except Exception:
+                        normal_face_valid = False
         if len(face) >= 3:
             out.faces.append(face)
+            out.uv_faces.append(uv_face if uv_face_valid and len(uv_face) == len(face) else [])
+            out.normal_faces.append(
+                normal_face
+                if normal_face_valid and len(normal_face) == len(face)
+                else []
+            )
 
     # skin clusters
     bones_by_name: Dict[str, _SimpleBone] = {}

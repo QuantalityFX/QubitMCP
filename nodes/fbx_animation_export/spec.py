@@ -568,6 +568,144 @@ def _mesh_bind_positions(mesh_obj) -> List[Tuple[float, float, float]]:
     return out
 
 
+def _mesh_triangle_uvs(mesh_obj) -> List[Tuple[float, float]]:
+    metadata = getattr(mesh_obj, "metadata", None)
+    raw = metadata.get("triangle_uvs") if isinstance(metadata, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: List[Tuple[float, float]] = []
+    for row in raw:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            return []
+        try:
+            out.append((float(row[0]), float(row[1])))
+        except Exception:
+            return []
+    return out
+
+
+def _normalize_vec3(values) -> Tuple[float, float, float] | None:
+    try:
+        x = float(values[0])
+        y = float(values[1])
+        z = float(values[2])
+        length = math.sqrt((x * x) + (y * y) + (z * z))
+    except Exception:
+        return None
+    if length <= 1.0e-12:
+        return None
+    return (float(x / length), float(y / length), float(z / length))
+
+
+def _mesh_triangle_normals(mesh_obj) -> List[Tuple[float, float, float]]:
+    metadata = getattr(mesh_obj, "metadata", None)
+    raw = metadata.get("triangle_normals") if isinstance(metadata, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: List[Tuple[float, float, float]] = []
+    for row in raw:
+        if not isinstance(row, (list, tuple)) or len(row) < 3:
+            return []
+        normal = _normalize_vec3(row)
+        if normal is None:
+            return []
+        out.append(normal)
+    return out
+
+
+def _mesh_uv_set_name(mesh_obj) -> str:
+    metadata = getattr(mesh_obj, "metadata", None)
+    if isinstance(metadata, dict):
+        name = str(metadata.get("uv_set_name") or "").strip()
+        if name:
+            return name
+    return "UVSet"
+
+
+def _fbx_layer_enum(fbx_mod, enum_name: str, value_name: str):
+    layer_cls = getattr(fbx_mod, "FbxLayerElement", None)
+    enum_cls = getattr(layer_cls, enum_name, None) if layer_cls is not None else None
+    value = getattr(enum_cls, value_name, None) if enum_cls is not None else None
+    if value is not None:
+        return value
+    uv_cls = getattr(fbx_mod, "FbxLayerElementUV", None)
+    enum_cls = getattr(uv_cls, enum_name, None) if uv_cls is not None else None
+    return getattr(enum_cls, value_name)
+
+
+def _write_mesh_uv_layer(fbx_mod, fbx_mesh, uv_set_name: str, triangle_uvs: List[Tuple[float, float]]) -> bool:
+    if fbx_mesh is None or not triangle_uvs:
+        return False
+    try:
+        uv_layer = fbx_mesh.CreateElementUV(str(uv_set_name or "UVSet"))
+    except Exception:
+        uv_layer = None
+    if uv_layer is None:
+        return False
+    try:
+        uv_layer.SetMappingMode(_fbx_layer_enum(fbx_mod, "EMappingMode", "eByPolygonVertex"))
+        uv_layer.SetReferenceMode(_fbx_layer_enum(fbx_mod, "EReferenceMode", "eIndexToDirect"))
+        direct = uv_layer.GetDirectArray()
+        indices = uv_layer.GetIndexArray()
+    except Exception:
+        return False
+
+    index_by_uv: Dict[Tuple[float, float], int] = {}
+    for uv in triangle_uvs:
+        key = (float(uv[0]), float(uv[1]))
+        idx = index_by_uv.get(key)
+        if idx is None:
+            idx = len(index_by_uv)
+            index_by_uv[key] = idx
+            try:
+                direct.Add(fbx_mod.FbxVector2(float(key[0]), float(key[1])))
+            except Exception:
+                return False
+        try:
+            indices.Add(int(idx))
+        except Exception:
+            return False
+    return True
+
+
+def _write_mesh_normal_layer(fbx_mod, fbx_mesh, triangle_normals: List[Tuple[float, float, float]]) -> bool:
+    if fbx_mesh is None or not triangle_normals:
+        return False
+    try:
+        normal_layer = fbx_mesh.CreateElementNormal()
+    except Exception:
+        normal_layer = None
+    if normal_layer is None:
+        return False
+    try:
+        normal_layer.SetMappingMode(_fbx_layer_enum(fbx_mod, "EMappingMode", "eByPolygonVertex"))
+        normal_layer.SetReferenceMode(_fbx_layer_enum(fbx_mod, "EReferenceMode", "eIndexToDirect"))
+        direct = normal_layer.GetDirectArray()
+        indices = normal_layer.GetIndexArray()
+    except Exception:
+        return False
+
+    index_by_normal: Dict[Tuple[float, float, float], int] = {}
+    for normal in triangle_normals:
+        normalized = _normalize_vec3(normal)
+        if normalized is None:
+            return False
+        key = (float(normalized[0]), float(normalized[1]), float(normalized[2]))
+        idx = index_by_normal.get(key)
+        if idx is None:
+            idx = len(index_by_normal)
+            index_by_normal[key] = idx
+            try:
+                direct.Add(fbx_mod.FbxVector4(float(key[0]), float(key[1]), float(key[2]), 0.0))
+            except Exception:
+                return False
+        try:
+            indices.Add(int(idx))
+        except Exception:
+            return False
+    return True
+
+
 def _mesh_inverse_bind_matrices(mesh_obj, joint_count: int) -> List[Tuple[float, ...] | None]:
     metadata = getattr(mesh_obj, "metadata", None)
     raw = metadata.get("inverse_bind_matrices") if isinstance(metadata, dict) else None
@@ -864,6 +1002,12 @@ def export_fbx_animation_from_context(
 
             triangles = [int(v) for v in list(getattr(mesh_obj, "triangle_indices", []) or [])]
             tri_count = int((len(triangles) // 3) * 3)
+            triangle_uvs = _mesh_triangle_uvs(mesh_obj)
+            has_triangle_uvs = len(triangle_uvs) >= tri_count and tri_count > 0
+            exported_triangle_uvs: List[Tuple[float, float]] = []
+            triangle_normals = _mesh_triangle_normals(mesh_obj)
+            has_triangle_normals = len(triangle_normals) >= tri_count and tri_count > 0
+            exported_triangle_normals: List[Tuple[float, float, float]] = []
             for base in range(0, tri_count, 3):
                 a, b, c = triangles[base], triangles[base + 1], triangles[base + 2]
                 if not (0 <= a < vertex_count and 0 <= b < vertex_count and 0 <= c < vertex_count):
@@ -873,6 +1017,23 @@ def export_fbx_animation_from_context(
                 fbx_mesh.AddPolygon(int(b))
                 fbx_mesh.AddPolygon(int(c))
                 fbx_mesh.EndPolygon()
+                if has_triangle_uvs:
+                    exported_triangle_uvs.extend([
+                        triangle_uvs[base],
+                        triangle_uvs[base + 1],
+                        triangle_uvs[base + 2],
+                    ])
+                if has_triangle_normals:
+                    exported_triangle_normals.extend([
+                        triangle_normals[base],
+                        triangle_normals[base + 1],
+                        triangle_normals[base + 2],
+                    ])
+
+            if exported_triangle_normals:
+                _write_mesh_normal_layer(fbx, fbx_mesh, exported_triangle_normals)
+            if exported_triangle_uvs:
+                _write_mesh_uv_layer(fbx, fbx_mesh, _mesh_uv_set_name(mesh_obj), exported_triangle_uvs)
 
             mesh_node = fbx.FbxNode.Create(manager, mesh_name)
             if mesh_node is None:
