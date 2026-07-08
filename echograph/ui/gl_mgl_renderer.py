@@ -13946,6 +13946,234 @@ void main() {
             pass
         return True
 
+    def _mgl_retarget_pose_quat_normalize(self, q) -> Tuple[float, float, float, float]:
+        try:
+            x, y, z, w = (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+        except Exception:
+            return (0.0, 0.0, 0.0, 1.0)
+        length = math.sqrt((x * x) + (y * y) + (z * z) + (w * w))
+        if length <= 1.0e-12:
+            return (0.0, 0.0, 0.0, 1.0)
+        inv = 1.0 / length
+        return (x * inv, y * inv, z * inv, w * inv)
+
+    def _mgl_retarget_pose_quat_mul(self, a, b) -> Tuple[float, float, float, float]:
+        ax, ay, az, aw = self._mgl_retarget_pose_quat_normalize(a)
+        bx, by, bz, bw = self._mgl_retarget_pose_quat_normalize(b)
+        return self._mgl_retarget_pose_quat_normalize(
+            (
+                (aw * bx) + (ax * bw) + (ay * bz) - (az * by),
+                (aw * by) - (ax * bz) + (ay * bw) + (az * bx),
+                (aw * bz) + (ax * by) - (ay * bx) + (az * bw),
+                (aw * bw) - (ax * bx) - (ay * by) - (az * bz),
+            )
+        )
+
+    def _mgl_retarget_pose_quat_inverse(self, q) -> Tuple[float, float, float, float]:
+        x, y, z, w = self._mgl_retarget_pose_quat_normalize(q)
+        return (-x, -y, -z, w)
+
+    def _mgl_retarget_pose_quat_from_axis_angle(self, axis, degrees: float) -> Tuple[float, float, float, float]:
+        try:
+            ax, ay, az = (float(axis[0]), float(axis[1]), float(axis[2]))
+            radians = math.radians(float(degrees))
+        except Exception:
+            return (0.0, 0.0, 0.0, 1.0)
+        length = math.sqrt((ax * ax) + (ay * ay) + (az * az))
+        if length <= 1.0e-12:
+            return (0.0, 0.0, 0.0, 1.0)
+        half = radians * 0.5
+        s = math.sin(half) / length
+        return self._mgl_retarget_pose_quat_normalize((ax * s, ay * s, az * s, math.cos(half)))
+
+    def _mgl_retarget_pose_quat_from_euler_degrees(self, rot_deg) -> Tuple[float, float, float, float]:
+        try:
+            rx, ry, rz = (float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2]))
+        except Exception:
+            return (0.0, 0.0, 0.0, 1.0)
+        qx = self._mgl_retarget_pose_quat_from_axis_angle((1.0, 0.0, 0.0), rx)
+        qy = self._mgl_retarget_pose_quat_from_axis_angle((0.0, 1.0, 0.0), ry)
+        qz = self._mgl_retarget_pose_quat_from_axis_angle((0.0, 0.0, 1.0), rz)
+        return self._mgl_retarget_pose_quat_mul(self._mgl_retarget_pose_quat_mul(qx, qy), qz)
+
+    def _mgl_retarget_pose_euler_degrees_from_quat(self, q, current_xyz=None) -> Tuple[float, float, float]:
+        xq, yq, zq, w = self._mgl_retarget_pose_quat_normalize(q)
+
+        r00 = 1.0 - (2.0 * ((yq * yq) + (zq * zq)))
+        r01 = 2.0 * ((xq * yq) - (zq * w))
+        r02 = 2.0 * ((xq * zq) + (yq * w))
+        r10 = 2.0 * ((xq * yq) + (zq * w))
+        r11 = 1.0 - (2.0 * ((xq * xq) + (zq * zq)))
+        r12 = 2.0 * ((yq * zq) - (xq * w))
+        r22 = 1.0 - (2.0 * ((xq * xq) + (yq * yq)))
+
+        sy = max(-1.0, min(1.0, r02))
+        ry = math.asin(sy)
+        cy = math.cos(ry)
+        if abs(cy) > 1.0e-6:
+            rx = math.atan2(-r12, r22)
+            rz = math.atan2(-r01, r00)
+        else:
+            rz = 0.0
+            rx = math.atan2(r10, r11) if sy >= 0.0 else math.atan2(-r10, r11)
+
+        rx0 = math.degrees(rx)
+        ry0 = math.degrees(ry)
+        rz0 = math.degrees(rz)
+        if not (isinstance(current_xyz, (list, tuple)) and len(current_xyz) >= 3):
+            return (rx0, ry0, rz0)
+
+        cx, cyv, cz = (float(current_xyz[0]), float(current_xyz[1]), float(current_xyz[2]))
+
+        def unwrap(prev: float, wrapped: float) -> float:
+            out = float(wrapped)
+            while out - prev > 180.0:
+                out -= 360.0
+            while out - prev < -180.0:
+                out += 360.0
+            return out
+
+        def score(candidate):
+            ux = unwrap(cx, float(candidate[0]))
+            uy = unwrap(cyv, float(candidate[1]))
+            uz = unwrap(cz, float(candidate[2]))
+            err = ((ux - cx) * (ux - cx)) + ((uy - cyv) * (uy - cyv)) + ((uz - cz) * (uz - cz))
+            return err, (ux, uy, uz)
+
+        candidates = (
+            (rx0, ry0, rz0),
+            (rx0 + 180.0, 180.0 - ry0, rz0 + 180.0),
+            (rx0 - 180.0, 180.0 - ry0, rz0 - 180.0),
+        )
+        return min((score(candidate) for candidate in candidates), key=lambda row: row[0])[1]
+
+    def _mgl_retarget_target_pose_rotation_context(self, joint_name: str):
+        name = str(joint_name or "").strip()
+        if not name:
+            return None
+        target_owner = self._mgl_retarget_target_owner()
+        if not target_owner:
+            return None
+        context = self._mgl_scene_owner_fbx_rig_context(target_owner)
+        if not isinstance(context, dict):
+            return None
+        skeleton = context.get("skeleton")
+        if skeleton is None:
+            return None
+        try:
+            base_skeleton = getattr(skeleton, "_anim_retarget_target_pose_source_skeleton", None)
+            if base_skeleton is not None:
+                skeleton = base_skeleton
+        except Exception:
+            pass
+        joints = list(getattr(skeleton, "joints", []) or [])
+        if not joints:
+            return None
+        joint_index = -1
+        for index, joint in enumerate(joints):
+            if str(getattr(joint, "name", "") or "").strip() == name:
+                joint_index = int(index)
+                break
+        if joint_index < 0:
+            needle = name.lower()
+            for index, joint in enumerate(joints):
+                if str(getattr(joint, "name", "") or "").strip().lower() == needle:
+                    joint_index = int(index)
+                    break
+        if joint_index < 0:
+            return None
+        try:
+            from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
+
+            payload_fn = getattr(anim_retarget_spec, "_target_pose_offsets_payload", None)
+            payload = payload_fn(self._mgl_retarget_node_model_for_pose()) if callable(payload_fn) else {}
+        except Exception:
+            payload = {}
+        payload = payload if isinstance(payload, dict) else {}
+
+        globals_q: List[Tuple[float, float, float, float]] = []
+        for index, joint in enumerate(joints):
+            try:
+                parent_index = int(getattr(joint, "parent_index", -1))
+            except Exception:
+                parent_index = -1
+            try:
+                base_local = self._mgl_retarget_pose_quat_normalize(
+                    getattr(getattr(joint, "local_bind", None), "rotation", (0.0, 0.0, 0.0, 1.0))
+                )
+            except Exception:
+                base_local = (0.0, 0.0, 0.0, 1.0)
+            row = payload.get(str(getattr(joint, "name", "") or "")) or {}
+            if isinstance(row, dict) and "rotation" in row:
+                offset_q = self._mgl_retarget_pose_quat_from_euler_degrees(row.get("rotation") or (0.0, 0.0, 0.0))
+            else:
+                offset_q = (0.0, 0.0, 0.0, 1.0)
+            local_q = self._mgl_retarget_pose_quat_mul(base_local, offset_q)
+            if 0 <= parent_index < index and parent_index < len(globals_q):
+                globals_q.append(self._mgl_retarget_pose_quat_mul(globals_q[parent_index], local_q))
+            else:
+                globals_q.append(local_q)
+
+        joint = joints[joint_index]
+        try:
+            parent_index = int(getattr(joint, "parent_index", -1))
+        except Exception:
+            parent_index = -1
+        parent_global = globals_q[parent_index] if 0 <= parent_index < len(globals_q) else (0.0, 0.0, 0.0, 1.0)
+        try:
+            base_local = self._mgl_retarget_pose_quat_normalize(
+                getattr(getattr(joint, "local_bind", None), "rotation", (0.0, 0.0, 0.0, 1.0))
+            )
+        except Exception:
+            base_local = (0.0, 0.0, 0.0, 1.0)
+        return {
+            "joint_name": name,
+            "parent_global": parent_global,
+            "base_local": base_local,
+            "current_global": globals_q[joint_index],
+        }
+
+    def _mgl_retarget_get_target_pose_joint_global_rotation(self, owner: str) -> Tuple[float, float, float, float]:
+        joint_name = self._mgl_retarget_target_pose_joint_from_owner(owner)
+        ctx = self._mgl_retarget_target_pose_rotation_context(joint_name)
+        if isinstance(ctx, dict):
+            return self._mgl_retarget_pose_quat_normalize(ctx.get("current_global"))
+        return self._mgl_retarget_pose_quat_from_euler_degrees(self._mgl_retarget_get_target_pose_joint_rotation(owner))
+
+    def _mgl_retarget_set_target_pose_joint_global_rotation(self, owner: str, quat_xyzw, *, notify_scene: bool = False) -> bool:
+        joint_name = self._mgl_retarget_target_pose_joint_from_owner(owner)
+        if not joint_name:
+            return False
+        ctx = self._mgl_retarget_target_pose_rotation_context(joint_name)
+        desired_global = self._mgl_retarget_pose_quat_normalize(quat_xyzw)
+        if not isinstance(ctx, dict):
+            offset_rot = self._mgl_retarget_pose_euler_degrees_from_quat(
+                desired_global,
+                self._mgl_retarget_get_target_pose_joint_rotation(owner),
+            )
+            return self._mgl_retarget_set_target_pose_joint_rotation(owner, offset_rot, notify_scene=notify_scene)
+
+        parent_global = self._mgl_retarget_pose_quat_normalize(ctx.get("parent_global"))
+        base_local = self._mgl_retarget_pose_quat_normalize(ctx.get("base_local"))
+        joint_space = self._mgl_retarget_pose_quat_mul(parent_global, base_local)
+        offset_q = self._mgl_retarget_pose_quat_mul(
+            self._mgl_retarget_pose_quat_inverse(joint_space),
+            desired_global,
+        )
+        current_offset = self._mgl_retarget_get_target_pose_joint_rotation(owner)
+        offset_rot = self._mgl_retarget_pose_euler_degrees_from_quat(offset_q, current_offset)
+        try:
+            self._mgl_retarget_log(
+                "target_pose_rotation_global",
+                joint=joint_name,
+                current_offset=[round(float(v), 6) for v in current_offset],
+                new_offset=[round(float(v), 6) for v in offset_rot],
+                desired_global=[round(float(v), 6) for v in desired_global],
+            )
+        except Exception:
+            pass
+        return self._mgl_retarget_set_target_pose_joint_rotation(owner, offset_rot, notify_scene=notify_scene)
+
     def _mgl_retarget_get_target_pose_joint_rotation(self, owner: str) -> Tuple[float, float, float]:
         joint_name = self._mgl_retarget_target_pose_joint_from_owner(owner)
         if not joint_name:

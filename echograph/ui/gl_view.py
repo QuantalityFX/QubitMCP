@@ -7779,50 +7779,54 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         try:
             owner = getattr(self, "_xform_gizmo_owner", None)
             if owner:
-                is_splat = False
-                try:
-                    splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
-                    if not isinstance(splat_map, dict) or not splat_map:
-                        splat_map = getattr(renderer, "_mgl_scene_splats", None)
-                    if isinstance(splat_map, dict) and owner in splat_map:
-                        is_splat = True
-                except Exception:
+                pose_q = self._rot_shared_target_pose_global_q(owner)
+                if pose_q is not None:
+                    R = self._rot_shared_matrix4_from_q(pose_q)
+                else:
                     is_splat = False
+                    try:
+                        splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                        if not isinstance(splat_map, dict) or not splat_map:
+                            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                        if isinstance(splat_map, dict) and owner in splat_map:
+                            is_splat = True
+                    except Exception:
+                        is_splat = False
 
-                try:
-                    rot, _rot_is_splat = self._get_owner_rot_deg(owner)
-                except Exception:
-                    get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
-                    xf = get_xf(owner) if callable(get_xf) else {}
-                    rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
+                    try:
+                        rot, _rot_is_splat = self._get_owner_rot_deg(owner)
+                    except Exception:
+                        get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                        xf = get_xf(owner) if callable(get_xf) else {}
+                        rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
 
-                rx, ry, rz = float(rot[0]), float(rot[1]), float(rot[2])
-                cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
-                cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
-                cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+                    rx, ry, rz = float(rot[0]), float(rot[1]), float(rot[2])
+                    cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+                    cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+                    cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
 
-                Rx = np.array(
-                    [[1.0, 0.0, 0.0, 0.0],
-                     [0.0,  cx,  sx, 0.0],
-                     [0.0, -sx,  cx, 0.0],
-                     [0.0, 0.0, 0.0, 1.0]],
-                    dtype=np.float32,
-                )
-                Ry = np.array(
-                    [[ cy, 0.0, -sy, 0.0],
-                     [0.0, 1.0, 0.0, 0.0],
-                     [ sy, 0.0,  cy, 0.0],
-                     [0.0, 0.0, 0.0, 1.0]],
-                    dtype=np.float32,
-                )
-                Rz = np.array(
-                    [[ cz,  sz, 0.0, 0.0],
-                     [-sz,  cz, 0.0, 0.0],
-                     [0.0, 0.0, 1.0, 0.0],
-                     [0.0, 0.0, 0.0, 1.0]],
-                    dtype=np.float32,
-                )
-                R = (Rz @ Ry @ Rx).astype(np.float32)
+                    Rx = np.array(
+                        [[1.0, 0.0, 0.0, 0.0],
+                         [0.0,  cx,  sx, 0.0],
+                         [0.0, -sx,  cx, 0.0],
+                         [0.0, 0.0, 0.0, 1.0]],
+                        dtype=np.float32,
+                    )
+                    Ry = np.array(
+                        [[ cy, 0.0, -sy, 0.0],
+                         [0.0, 1.0, 0.0, 0.0],
+                         [ sy, 0.0,  cy, 0.0],
+                         [0.0, 0.0, 0.0, 1.0]],
+                        dtype=np.float32,
+                    )
+                    Rz = np.array(
+                        [[ cz,  sz, 0.0, 0.0],
+                         [-sz,  cz, 0.0, 0.0],
+                         [0.0, 0.0, 1.0, 0.0],
+                         [0.0, 0.0, 0.0, 1.0]],
+                        dtype=np.float32,
+                    )
+                    R = (Rz @ Ry @ Rx).astype(np.float32)
         except Exception:
             pass
 
@@ -8150,10 +8154,105 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         scl = tuple((xf or {}).get("scl", (1.0, 1.0, 1.0)))
         return (float(scl[0]), float(scl[1]), float(scl[2])), is_splat
 
+    def _rot_shared_owner_is_target_pose_joint(self, owner: str) -> bool:
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        try:
+            is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+            return bool(callable(is_pose_joint) and is_pose_joint(owner))
+        except Exception:
+            return False
+
+    def _rot_shared_qt_from_xyzw(self, quat_xyzw) -> QtGui.QQuaternion:
+        try:
+            xq, yq, zq, w = (
+                float(quat_xyzw[0]),
+                float(quat_xyzw[1]),
+                float(quat_xyzw[2]),
+                float(quat_xyzw[3]),
+            )
+        except Exception:
+            return QtGui.QQuaternion()
+        q = QtGui.QQuaternion(float(w), float(xq), float(yq), float(zq))
+        try:
+            if hasattr(q, "normalized"):
+                q = q.normalized()
+        except Exception:
+            pass
+        return q
+
+    def _rot_shared_qt_to_xyzw(self, q: QtGui.QQuaternion):
+        try:
+            qn = q.normalized() if hasattr(q, "normalized") else q
+        except Exception:
+            qn = q
+        return (
+            float(qn.x()),
+            float(qn.y()),
+            float(qn.z()),
+            float(qn.scalar()),
+        )
+
+    def _rot_shared_target_pose_global_q(self, owner: str):
+        if not self._rot_shared_owner_is_target_pose_joint(owner):
+            return None
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        try:
+            get_pose_global = getattr(renderer, "_mgl_retarget_get_target_pose_joint_global_rotation", None)
+            if callable(get_pose_global):
+                return self._rot_shared_qt_from_xyzw(get_pose_global(owner))
+        except Exception:
+            pass
+        return None
+
+    def _rot_shared_apply_target_pose_global_q(self, owner: str, q: QtGui.QQuaternion, *, notify_scene: bool = False) -> bool:
+        if not self._rot_shared_owner_is_target_pose_joint(owner):
+            return False
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        try:
+            set_pose_global = getattr(renderer, "_mgl_retarget_set_target_pose_joint_global_rotation", None)
+            if callable(set_pose_global):
+                return bool(
+                    set_pose_global(
+                        owner,
+                        self._rot_shared_qt_to_xyzw(q),
+                        notify_scene=bool(notify_scene),
+                    )
+                )
+        except Exception:
+            pass
+        return False
+
+    def _rot_shared_matrix4_from_q(self, q: QtGui.QQuaternion):
+        try:
+            qn = q.normalized() if hasattr(q, "normalized") else q
+            w = float(qn.scalar())
+            xq = float(qn.x())
+            yq = float(qn.y())
+            zq = float(qn.z())
+        except Exception:
+            return np.eye(4, dtype=np.float32)
+        return np.array(
+            [
+                [1.0 - (2.0 * ((yq * yq) + (zq * zq))), 2.0 * ((xq * yq) - (zq * w)), 2.0 * ((xq * zq) + (yq * w)), 0.0],
+                [2.0 * ((xq * yq) + (zq * w)), 1.0 - (2.0 * ((xq * xq) + (zq * zq))), 2.0 * ((yq * zq) - (xq * w)), 0.0],
+                [2.0 * ((xq * zq) - (yq * w)), 2.0 * ((yq * zq) + (xq * w)), 1.0 - (2.0 * ((xq * xq) + (yq * yq))), 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+
     def _rot_shared_sync_q0_from_owner(self, owner: str) -> QtGui.QQuaternion:
         start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
         self._rot_shared_start_rot = start_rot_deg
         self._rot_shared_is_splat = bool(is_splat)
+
+        pose_q = self._rot_shared_target_pose_global_q(owner)
+        if pose_q is not None:
+            try:
+                self._rot_owner_quat[owner] = pose_q
+            except Exception:
+                pass
+            return pose_q
 
         try:
             rx = float(start_rot_deg[0])
@@ -8328,6 +8427,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
         self._rot_shared_start_rot = start_rot_deg
         self._rot_shared_is_splat = bool(is_splat)
+
+        pose_q = self._rot_shared_target_pose_global_q(owner)
+        if pose_q is not None:
+            try:
+                self._rot_owner_quat[owner] = pose_q
+            except Exception:
+                pass
+            return pose_q
 
         q0 = self._rot_shared_q_from_euler_deg(
             (float(start_rot_deg[0]), float(start_rot_deg[1]), float(start_rot_deg[2]))

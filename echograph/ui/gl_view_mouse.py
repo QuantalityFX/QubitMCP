@@ -1439,22 +1439,7 @@ def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_sync_q0(self, *, ow
         q0 = None
 
     if q0 is None:
-        start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
-        self._rot_shared_start_rot = start_rot_deg
-        self._rot_shared_is_splat = bool(is_splat)
-
-        try:
-            rx = float(start_rot_deg[0])
-            ry = float(start_rot_deg[1])
-            rz = float(start_rot_deg[2])
-        except Exception:
-            rx, ry, rz = 0.0, 0.0, 0.0
-
-        q0 = self._rot_shared_q_from_euler_deg((rx, ry, rz))
-        try:
-            self._rot_owner_quat[owner] = q0
-        except Exception:
-            pass
+        self._rot_shared_sync_q0_from_owner(owner)
 
 def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_set_center(self, *, p0):
     # Store view ring center in DEVICE pixels (project() returns device px).
@@ -3317,15 +3302,7 @@ def _handle_mouse_move_moderngl_rot_shared_view_drag_qcur(self, *, owner):
         qcur = None
 
     if qcur is None:
-        rot_deg, is_splat = self._get_owner_rot_deg(owner)
-        self._rot_shared_is_splat = bool(is_splat)
-        qcur = self._rot_shared_q_from_euler_deg(
-            (float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2]))
-        )
-        try:
-            self._rot_owner_quat[owner] = qcur
-        except Exception:
-            pass
+        qcur = self._rot_shared_sync_q0_from_owner(owner)
     return qcur
 
 def _handle_mouse_move_moderngl_rot_shared_view_drag_apply(self, *, e, owner, qnew):
@@ -3333,6 +3310,11 @@ def _handle_mouse_move_moderngl_rot_shared_view_drag_apply(self, *, e, owner, qn
         self._rot_owner_quat[owner] = qnew
     except Exception:
         pass
+
+    if self._rot_shared_apply_target_pose_global_q(owner, qnew):
+        self.update()
+        e.accept()
+        return
 
     rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
 
@@ -3461,6 +3443,11 @@ def _handle_mouse_move_moderngl_rot_shared_arc_drag_apply(self, *, e, owner, qne
         self._rot_owner_quat[owner] = qnew
     except Exception:
         pass
+
+    if self._rot_shared_apply_target_pose_global_q(owner, qnew):
+        self.update()
+        e.accept()
+        return
 
     # APPLY to owner so the object visibly rotates during arcball drag
     # unwrap vs current outliner values so angles keep accumulating past 180
@@ -3744,6 +3731,9 @@ def _handle_mouse_move_moderngl_rot_shared_axis_apply(self, owner, rot_shared, q
     try:
         qapply = self._handle_mouse_move_moderngl_rot_shared_axis_apply_qapply(rot_shared=rot_shared, qnew=qnew)
         self._handle_mouse_move_moderngl_rot_shared_axis_apply_cache_quat(owner=owner, qapply=qapply)
+        if self._rot_shared_apply_target_pose_global_q(owner, qapply):
+            self.update()
+            return
         rx0, ry0, rz0, candidates = self._handle_mouse_move_moderngl_rot_shared_axis_apply_candidates(qapply=qapply)
         best = self._handle_mouse_move_moderngl_rot_shared_axis_apply_best(
             owner=owner,
