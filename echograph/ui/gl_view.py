@@ -493,11 +493,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if QOpenGLWidget is not None:
             try:
                 fmt = QtGui.QSurfaceFormat()
-                fmt.setRenderableType(QtGui.QSurfaceFormat.OpenGL)
-                fmt.setProfile(QtGui.QSurfaceFormat.CoreProfile)
-                # Groom guide XPBD uses GLSL 4.30 compute shaders. Request the
-                # matching context up front instead of accepting Qt's 3.3 default.
-                fmt.setVersion(4, 3)
                 fmt.setDepthBufferSize(24)
                 fmt.setStencilBufferSize(8)
                 try:
@@ -795,6 +790,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_grid_fade_zoom_exp = 1.1
         self._mgl_grid_fx_enabled = True
         self._mgl_gizmo_visible = True
+        self._mgl_gizmo_tips_test_enabled = False
         self._mgl_grid_visible = False
         self._mgl_fov = 60.0
         self._mgl_clip_far = 1000.0
@@ -1772,6 +1768,16 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 self._mgl_gizmo_toggle.toggled.connect(self._on_mgl_gizmo_toggled)
                 layout.addWidget(self._mgl_gizmo_toggle, 0)
 
+                self._mgl_gizmo_tips_test_toggle = QtWidgets.QCheckBox("MGL Tips")
+                self._mgl_gizmo_tips_test_toggle.setToolTip(
+                    "Test toggle for the experimental ModernGL transform/scale gizmo tips path."
+                )
+                self._mgl_gizmo_tips_test_toggle.setChecked(
+                    bool(getattr(self, "_mgl_gizmo_tips_test_enabled", False))
+                )
+                self._mgl_gizmo_tips_test_toggle.toggled.connect(self._on_mgl_gizmo_tips_test_toggled)
+                layout.addWidget(self._mgl_gizmo_tips_test_toggle, 0)
+
                 if self._turntable_ctrl is None:
                     self._turntable_ctrl = TurntableController(self)
                 try:
@@ -2635,6 +2641,19 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             self._mgl_gizmo_visible = bool(checked)
         except Exception:
             self._mgl_gizmo_visible = True
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _on_mgl_gizmo_tips_test_toggled(self, checked: bool) -> None:
+        enabled = bool(checked)
+        self._mgl_gizmo_tips_test_enabled = enabled
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            setattr(renderer, "_mgl_gizmo_tips_test_enabled", enabled)
+        except Exception:
+            pass
         try:
             self.update()
         except Exception:
@@ -7304,10 +7323,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             self._draw_mask_paint_cursor(painter)
         except Exception:
             pass
-        try:
-            self._draw_xform_gizmo_top_overlay(painter)
-        except Exception:
-            pass
         if owns_painter:
             painter.end()
         if depth_disabled:
@@ -7495,6 +7510,71 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         finally:
             try:
                 painter.restore()
+            except Exception:
+                pass
+
+    def _clear_xform_overlay_state(self) -> None:
+        self._xform_overlay_mode = None
+        self._xform_overlay_center_px = None
+        self._xform_overlay_axis_proj = None
+        self._xform_hover_axis = None
+        self._xform_hover_center = False
+        self._xform_hover_center_px = None
+        self._xform_hover_axis_proj = None
+
+    def _xform_owner_is_retarget_target_pose_joint(self) -> bool:
+        owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+        owner_kind = str(getattr(self, "_xform_gizmo_owner_kind", "") or "").strip().lower()
+        if owner.startswith("retarget-target-pose::") or owner_kind == "retarget_target_joint":
+            return True
+        if self._retarget_selected_target_pose_owner():
+            return True
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+            return bool(callable(is_pose_joint) and is_pose_joint(owner))
+        except Exception:
+            return False
+
+    def _retarget_selected_target_pose_owner(self) -> str:
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            get_owner = getattr(renderer, "_mgl_retarget_selected_target_pose_gizmo_owner", None)
+            if callable(get_owner):
+                return str(get_owner() or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _reattach_retarget_target_pose_gizmo_if_selected(self) -> bool:
+        owner = self._retarget_selected_target_pose_owner()
+        if not owner:
+            return False
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            reanchor = getattr(renderer, "_mgl_retarget_reanchor_target_pose_gizmo", None)
+            if callable(reanchor):
+                return bool(reanchor(owner))
+        except Exception:
+            pass
+        return False
+
+    def _set_xform_gizmo_mode(self, mode: str) -> None:
+        next_mode = str(mode or "translate").strip().lower()
+        if next_mode not in ("translate", "rotate", "scale"):
+            next_mode = "translate"
+        if str(getattr(self, "_xform_gizmo_mode", "") or "") != next_mode:
+            self._clear_xform_overlay_state()
+        self._xform_gizmo_mode = next_mode
+        if self._reattach_retarget_target_pose_gizmo_if_selected():
+            return
+        if self._xform_owner_is_retarget_target_pose_joint():
+            try:
+                owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                reanchor = getattr(renderer, "_mgl_retarget_reanchor_target_pose_gizmo", None)
+                if owner and callable(reanchor):
+                    reanchor(owner)
             except Exception:
                 pass
 
@@ -9019,7 +9099,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             super().keyPressEvent(e)
             return
         if key == QtCore.Qt.Key_T:
-            self._xform_gizmo_mode = "translate"
+            self._set_xform_gizmo_mode("translate")
             try:
                 self.update()
             except Exception:
@@ -9027,7 +9107,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             e.accept()
             return
         if key == QtCore.Qt.Key_R:
-            self._xform_gizmo_mode = "rotate"
+            self._set_xform_gizmo_mode("rotate")
             try:
                 self.update()
             except Exception:
@@ -9035,7 +9115,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             e.accept()
             return
         if key == QtCore.Qt.Key_E:
-            self._xform_gizmo_mode = "scale"
+            self._set_xform_gizmo_mode("scale")
             try:
                 self.update()
             except Exception:

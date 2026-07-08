@@ -5,7 +5,7 @@
     "audio": false,
     "profiler": false
   },
-  "view_mode": "2d",
+  "view_mode": "split",
   "voice_audio_mode": "bilateral",
   "voice_mic_device_index": 1,
   "shadow_quality": "ultra",
@@ -16,5 +16,5 @@
   "unlit_view": false,
   "work_light_view": true,
   "ambient_light_strength": 0.1,
-  "scene_skeleton_joint_names": true
+  "scene_skeleton_joint_names": false
 }

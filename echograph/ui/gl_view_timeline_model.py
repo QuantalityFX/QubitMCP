@@ -29,6 +29,12 @@ class GraphGLTimelineModelMixin:
     def _timeline_is_composition_mode(self) -> bool:
         return str(getattr(self, "_timeline_mode", "composition") or "composition").strip().lower() == "composition"
 
+    def _timeline_has_project_reference(self, project_path: str | None = None) -> bool:
+        try:
+            return self._timeline_project_ref_path(project_path=project_path) is not None
+        except Exception:
+            return False
+
     def _timeline_preview_context_active(self) -> bool:
         try:
             win = self.window()
@@ -320,24 +326,29 @@ class GraphGLTimelineModelMixin:
         return (out, changed)
 
     def _timeline_load_composition(self, *, apply_current_frame: bool = True) -> None:
+        use_sidecar = self._timeline_has_project_reference()
         try:
-            path = getattr(self, "_timeline_composition_path", None)
-            if path is None:
-                path = self._timeline_composition_file_path()
-                self._timeline_composition_path = path
+            if use_sidecar:
+                path = getattr(self, "_timeline_composition_path", None)
+                if path is None:
+                    path = self._timeline_composition_file_path()
+                    self._timeline_composition_path = path
+            else:
+                path = None
+                self._timeline_composition_path = None
         except Exception:
             path = None
         saved_blocks: List[Dict[str, object]] = []
         raw = {}
         load_path = path
-        if path is not None and not Path(path).exists():
+        if use_sidecar and path is not None and not Path(path).exists():
             try:
                 legacy_path = self._timeline_composition_file_path(legacy=True, create=False)
                 if str(legacy_path) != str(path) and Path(legacy_path).exists():
                     load_path = legacy_path
             except Exception:
                 load_path = path
-        if load_path is not None and Path(load_path).exists():
+        if use_sidecar and load_path is not None and Path(load_path).exists():
             try:
                 raw = json.loads(Path(load_path).read_text(encoding="utf-8"))
             except Exception:
@@ -367,7 +378,7 @@ class GraphGLTimelineModelMixin:
             self._timeline_total_max = max(240, self._timeline_composition_max_frame())
         except Exception:
             self._timeline_total_max = 240
-        if changed or (path is not None and not Path(path).exists()):
+        if use_sidecar and (changed or (path is not None and not Path(path).exists())):
             self._timeline_save_composition()
         try:
             self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
@@ -391,6 +402,8 @@ class GraphGLTimelineModelMixin:
                 pass
 
     def _timeline_save_composition(self) -> None:
+        if not self._timeline_has_project_reference():
+            return
         path = getattr(self, "_timeline_composition_path", None)
         if path is None:
             try:
@@ -428,23 +441,28 @@ class GraphGLTimelineModelMixin:
         blocks = getattr(self, "_timeline_composition_blocks", None)
         if isinstance(blocks, list) and blocks:
             return
+        use_sidecar = self._timeline_has_project_reference()
         try:
-            path = getattr(self, "_timeline_composition_path", None)
-            if path is None:
-                path = self._timeline_composition_file_path()
-                self._timeline_composition_path = path
+            if use_sidecar:
+                path = getattr(self, "_timeline_composition_path", None)
+                if path is None:
+                    path = self._timeline_composition_file_path()
+                    self._timeline_composition_path = path
+            else:
+                path = None
+                self._timeline_composition_path = None
         except Exception:
             path = None
         saved_blocks: List[Dict[str, object]] = []
         load_path = path
-        if path is not None and not Path(path).exists():
+        if use_sidecar and path is not None and not Path(path).exists():
             try:
                 legacy_path = self._timeline_composition_file_path(legacy=True, create=False)
                 if str(legacy_path) != str(path) and Path(legacy_path).exists():
                     load_path = legacy_path
             except Exception:
                 load_path = path
-        if load_path is not None and Path(load_path).exists():
+        if use_sidecar and load_path is not None and Path(load_path).exists():
             try:
                 raw = json.loads(Path(load_path).read_text(encoding="utf-8"))
             except Exception:

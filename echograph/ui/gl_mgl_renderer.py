@@ -330,6 +330,8 @@ class MGLRendererMixin:
         }
 
     def _mgl_retarget_log(self, event: str, **fields) -> None:
+        if not self._mgl_retarget_debug_log_enabled():
+            return
         try:
             root = Path(__file__).resolve().parents[2]
             log_dir = root / "logs"
@@ -340,6 +342,1031 @@ class MGLRendererMixin:
                 handle.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
         except Exception:
             pass
+
+    def _mgl_retarget_debug_log_enabled(self) -> bool:
+        model = getattr(self, "_mgl_retarget_node_model", None)
+        if model is None:
+            node_item = getattr(self, "_mgl_retarget_node_item", None)
+            model = getattr(node_item, "model", None) if node_item is not None else None
+        for entry in list(getattr(model, "params", None) or []):
+            try:
+                if str(entry.get("name") or "").strip().lower() != "debug_log":
+                    continue
+                token = str(entry.get("value") or "").strip().lower()
+                return token in {"1", "true", "yes", "on", "checked"}
+            except Exception:
+                continue
+        return bool(getattr(self, "_mgl_retarget_debug_enabled", False))
+
+    def _mgl_retarget_gl_state_snapshot(self, label: str, *, gl=None, interval: float = 0.25, **fields) -> None:
+        if not self._mgl_retarget_debug_log_enabled():
+            return
+        try:
+            key = "_mgl_retarget_gl_probe_ts_" + str(label or "state")
+            now = float(time.time())
+            last = float(getattr(self, key, 0.0) or 0.0)
+            if (now - last) < float(interval):
+                return
+            setattr(self, key, now)
+        except Exception:
+            pass
+        raw_gl = gl if gl is not None else getattr(self, "_gl", None)
+        mgl_ctx = getattr(self, "_mgl_ctx", None)
+        state = {
+            "probe": "safe_no_driver_queries",
+            "raw_gl_present": bool(raw_gl is not None),
+            "raw_gl_type": type(raw_gl).__name__ if raw_gl is not None else "",
+            "mgl_ctx_present": bool(mgl_ctx is not None),
+            "mgl_ctx_type": type(mgl_ctx).__name__ if mgl_ctx is not None else "",
+            "mgl_error": str(getattr(self, "_mgl_error", "") or ""),
+        }
+        self._mgl_retarget_log("gl_state_" + str(label or "state"), state=state, **fields)
+
+    def _mgl_draw_gizmo_tips_test_overlay(
+        self,
+        mvp=None,
+        *,
+        mode: str = "translate",
+        alpha: float = 1.0,
+        hover_axis=None,
+        hover_center: bool = False,
+    ) -> bool:
+        if moderngl is None or np is None or self._mgl_ctx is None or mvp is None:
+            return False
+        if float(alpha) <= 0.0:
+            return False
+        try:
+            mvp_np = np.asarray(mvp, dtype="f4").reshape(4, 4)
+            if not bool(np.all(np.isfinite(mvp_np))):
+                return False
+            probe = np.asarray(
+                [
+                    [0.0, 0.0, 0.0, 1.0],
+                    [1.0, 0.0, 0.0, 1.0],
+                    [0.0, 1.0, 0.0, 1.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                ],
+                dtype="f4",
+            )
+            clip = probe @ mvp_np.T
+            w = clip[:, 3]
+            valid = w > 1.0e-6
+            if not bool(np.any(valid)):
+                return False
+            ndc = clip[valid, :2] / w[valid, None]
+            if not bool(np.any(np.all(np.abs(ndc) <= 8.0, axis=1))):
+                return False
+        except Exception:
+            return False
+        try:
+            self._mgl_bind_default_fbo()
+        except Exception:
+            pass
+
+        prog = getattr(self, "_mgl_gizmo_tips_test_prog", None)
+        vao = getattr(self, "_mgl_gizmo_tips_test_vao", None)
+        vbo = getattr(self, "_mgl_gizmo_tips_test_vbo", None)
+        count = int(getattr(self, "_mgl_gizmo_tips_test_vertex_count", 0) or 0)
+        version = int(getattr(self, "_mgl_gizmo_tips_test_version", 0) or 0)
+        if version != 12:
+            for res in (
+                vao,
+                vbo,
+                prog,
+                getattr(self, "_mgl_gizmo_tips_center_line_vao", None),
+                getattr(self, "_mgl_gizmo_tips_center_line_vbo", None),
+            ):
+                if res is not None:
+                    try:
+                        res.release()
+                    except Exception:
+                        pass
+            self._mgl_gizmo_tips_center_line_vao = None
+            self._mgl_gizmo_tips_center_line_vbo = None
+            self._mgl_gizmo_tips_center_line_vbo_capacity = 0
+            prog = vao = vbo = None
+            count = 0
+        if prog is None or vao is None or vbo is None or count <= 0:
+            try:
+                vert = """
+#version 330
+in vec3 in_pos;
+in vec3 in_col;
+uniform vec4 u_mvp_row0;
+uniform vec4 u_mvp_row1;
+uniform vec4 u_mvp_row2;
+uniform vec4 u_mvp_row3;
+uniform vec3 u_color;
+uniform float u_alpha;
+uniform int u_use_uniform_color;
+out vec4 v_color;
+void main() {
+    vec4 p = vec4(in_pos, 1.0);
+    gl_Position = vec4(
+        dot(u_mvp_row0, p),
+        dot(u_mvp_row1, p),
+        dot(u_mvp_row2, p),
+        dot(u_mvp_row3, p)
+    );
+    vec3 col = (u_use_uniform_color != 0) ? u_color : in_col;
+    v_color = vec4(col, u_alpha);
+}
+"""
+                frag = """
+#version 330
+in vec4 v_color;
+uniform int u_discard_backfaces;
+out vec4 fragColor;
+void main() {
+    if (u_discard_backfaces != 0 && !gl_FrontFacing) {
+        discard;
+    }
+    fragColor = v_color;
+}
+"""
+                rows = []
+
+                def add_vertex(pos, color):
+                    x, y, z = pos
+                    r, g, b = color
+                    rows.append((float(x), float(y), float(z), float(r), float(g), float(b)))
+
+                def add_cone(tip, axis_dir, radius, height, segments, color):
+                    tx, ty, tz = tip
+                    dx, dy, dz = axis_dir
+                    bx = tx - dx * height
+                    by = ty - dy * height
+                    bz = tz - dz * height
+
+                    if abs(dx) < 0.9:
+                        hx, hy, hz = (1.0, 0.0, 0.0)
+                    else:
+                        hx, hy, hz = (0.0, 1.0, 0.0)
+
+                    ux = dy * hz - dz * hy
+                    uy = dz * hx - dx * hz
+                    uz = dx * hy - dy * hx
+                    ulen = math.sqrt(ux * ux + uy * uy + uz * uz) or 1.0
+                    ux, uy, uz = ux / ulen, uy / ulen, uz / ulen
+
+                    vx = dy * uz - dz * uy
+                    vy = dz * ux - dx * uz
+                    vz = dx * uy - dy * ux
+
+                    for i in range(segments):
+                        a0 = (i / segments) * (math.pi * 2.0)
+                        a1 = ((i + 1) / segments) * (math.pi * 2.0)
+                        p0 = (
+                            bx + radius * (math.cos(a0) * ux + math.sin(a0) * vx),
+                            by + radius * (math.cos(a0) * uy + math.sin(a0) * vy),
+                            bz + radius * (math.cos(a0) * uz + math.sin(a0) * vz),
+                        )
+                        p1 = (
+                            bx + radius * (math.cos(a1) * ux + math.sin(a1) * vx),
+                            by + radius * (math.cos(a1) * uy + math.sin(a1) * vy),
+                            bz + radius * (math.cos(a1) * uz + math.sin(a1) * vz),
+                        )
+                        add_vertex((tx, ty, tz), color)
+                        add_vertex(p0, color)
+                        add_vertex(p1, color)
+
+                def add_cube(center, size, color, shaded=False):
+                    cx, cy, cz = center
+                    h = size * 0.5
+                    corners = [
+                        (cx - h, cy - h, cz - h),
+                        (cx + h, cy - h, cz - h),
+                        (cx + h, cy + h, cz - h),
+                        (cx - h, cy + h, cz - h),
+                        (cx - h, cy - h, cz + h),
+                        (cx + h, cy - h, cz + h),
+                        (cx + h, cy + h, cz + h),
+                        (cx - h, cy + h, cz + h),
+                    ]
+                    faces = [
+                        (0, 3, 2, 1),
+                        (4, 5, 6, 7),
+                        (0, 1, 5, 4),
+                        (2, 3, 7, 6),
+                        (1, 2, 6, 5),
+                        (3, 0, 4, 7),
+                    ]
+                    face_shades = (0.72, 1.08, 0.82, 0.96, 1.16, 0.88)
+                    for face_idx, (i0, i1, i2, i3) in enumerate(faces):
+                        face_color = color
+                        if shaded:
+                            shade = face_shades[face_idx % len(face_shades)]
+                            face_color = (
+                                max(0.0, min(1.0, float(color[0]) * shade)),
+                                max(0.0, min(1.0, float(color[1]) * shade)),
+                                max(0.0, min(1.0, float(color[2]) * shade)),
+                            )
+                        for idx in (i0, i1, i2, i0, i2, i3):
+                            add_vertex(corners[idx], face_color)
+
+                red = (1.0, 0.0, 0.0)
+                green = (0.0, 1.0, 0.0)
+                blue = (0.0, 0.0, 1.0)
+                center_base = (0.62, 0.34, 0.70)
+                center_hover = (0.78, 0.46, 0.84)
+                axis_len = 1.0
+                cone_radius = 0.05
+                cone_height = 0.18
+                line_end = axis_len - cone_height
+                segs = 12
+
+                line_ranges = {"x": (0, 2), "y": (2, 2), "z": (4, 2)}
+                add_vertex((0.0, 0.0, 0.0), red)
+                add_vertex((line_end, 0.0, 0.0), red)
+                add_vertex((0.0, 0.0, 0.0), green)
+                add_vertex((0.0, line_end, 0.0), green)
+                add_vertex((0.0, 0.0, 0.0), blue)
+                add_vertex((0.0, 0.0, line_end), blue)
+
+                cone_ranges = {}
+                start = len(rows)
+                add_cone((axis_len, 0.0, 0.0), (1.0, 0.0, 0.0), cone_radius, cone_height, segs, red)
+                cone_ranges["x"] = (start, len(rows) - start)
+                start = len(rows)
+                add_cone((0.0, axis_len, 0.0), (0.0, 1.0, 0.0), cone_radius, cone_height, segs, green)
+                cone_ranges["y"] = (start, len(rows) - start)
+                start = len(rows)
+                add_cone((0.0, 0.0, axis_len), (0.0, 0.0, 1.0), cone_radius, cone_height, segs, blue)
+                cone_ranges["z"] = (start, len(rows) - start)
+
+                cube_size = 0.10
+                cube_axis_pos = line_end + (cube_size * 0.5)
+                scale_cube_ranges = {}
+                start = len(rows)
+                add_cube((cube_axis_pos, 0.0, 0.0), cube_size, red)
+                scale_cube_ranges["x"] = (start, len(rows) - start)
+                start = len(rows)
+                add_cube((0.0, cube_axis_pos, 0.0), cube_size, green)
+                scale_cube_ranges["y"] = (start, len(rows) - start)
+                start = len(rows)
+                add_cube((0.0, 0.0, cube_axis_pos), cube_size, blue)
+                scale_cube_ranges["z"] = (start, len(rows) - start)
+                start = len(rows)
+                add_cube((0.0, 0.0, 0.0), cube_size * 0.70, center_base, shaded=True)
+                translate_center_range = (start, len(rows) - start)
+                start = len(rows)
+                add_cube((0.0, 0.0, 0.0), cube_size * 1.15, center_base, shaded=True)
+                scale_center_range = (start, len(rows) - start)
+                start = len(rows)
+                add_cube((0.0, 0.0, 0.0), cube_size * 1.15, center_hover, shaded=True)
+                center_hover_range = (start, len(rows) - start)
+
+                def add_clipped_axis_lines(start_pos):
+                    clipped = {}
+                    start = len(rows)
+                    add_vertex((start_pos, 0.0, 0.0), red)
+                    add_vertex((line_end, 0.0, 0.0), red)
+                    clipped["x"] = (start, len(rows) - start)
+                    start = len(rows)
+                    add_vertex((0.0, start_pos, 0.0), green)
+                    add_vertex((0.0, line_end, 0.0), green)
+                    clipped["y"] = (start, len(rows) - start)
+                    start = len(rows)
+                    add_vertex((0.0, 0.0, start_pos), blue)
+                    add_vertex((0.0, 0.0, line_end), blue)
+                    clipped["z"] = (start, len(rows) - start)
+                    return clipped
+
+                translate_line_ranges = add_clipped_axis_lines(cube_size * 0.70 * 0.5)
+                scale_line_ranges = add_clipped_axis_lines(cube_size * 1.15 * 0.5)
+
+                verts = np.asarray(rows, dtype="f4")
+                prog = self._mgl_ctx.program(vertex_shader=vert, fragment_shader=frag)
+                vbo = self._mgl_ctx.buffer(verts.tobytes())
+                vao = self._mgl_ctx.vertex_array(prog, [(vbo, "3f 3f", "in_pos", "in_col")])
+                self._mgl_gizmo_tips_test_prog = prog
+                self._mgl_gizmo_tips_test_vbo = vbo
+                self._mgl_gizmo_tips_test_vao = vao
+                self._mgl_gizmo_tips_test_vertex_count = int(verts.shape[0])
+                self._mgl_gizmo_tips_test_ranges = {
+                    "line": line_ranges,
+                    "cone": cone_ranges,
+                    "scale_cube": scale_cube_ranges,
+                    "translate_center": translate_center_range,
+                    "scale_center": scale_center_range,
+                    "center_hover": center_hover_range,
+                    "line_translate_center": translate_line_ranges,
+                    "line_scale_center": scale_line_ranges,
+                }
+                self._mgl_gizmo_tips_test_version = 12
+                count = int(verts.shape[0])
+            except Exception as exc:
+                self._mgl_error = f"ModernGL tips test overlay failed: {exc}"
+                return False
+
+        ranges = getattr(self, "_mgl_gizmo_tips_test_ranges", None)
+        if not isinstance(ranges, dict):
+            return False
+
+        ctx = self._mgl_ctx
+        prev_viewport = prev_scissor = None
+        prev_depth_mask = prev_wireframe = None
+        prev_line_width = prev_depth_func = prev_blend_func = None
+        prev_depth_test = None
+        prev_cull = bool(getattr(self, "_mgl_cull_enabled", False))
+        try:
+            prev_viewport = getattr(ctx, "viewport", None)
+        except Exception:
+            prev_viewport = None
+        try:
+            prev_scissor = getattr(ctx, "scissor", None)
+        except Exception:
+            prev_scissor = None
+        try:
+            prev_depth_mask = getattr(ctx, "depth_mask", None)
+        except Exception:
+            prev_depth_mask = None
+        try:
+            prev_wireframe = getattr(ctx, "wireframe", None)
+        except Exception:
+            prev_wireframe = None
+        try:
+            prev_line_width = getattr(ctx, "line_width", None)
+        except Exception:
+            prev_line_width = None
+        try:
+            prev_depth_func = getattr(ctx, "depth_func", None)
+        except Exception:
+            prev_depth_func = None
+        try:
+            prev_blend_func = getattr(ctx, "blend_func", None)
+        except Exception:
+            prev_blend_func = None
+        try:
+            prev_depth_test = getattr(ctx, "depth_test", None)
+        except Exception:
+            prev_depth_test = None
+
+        try:
+            base_alpha = max(0.0, min(1.0, float(alpha)))
+            try:
+                prog["u_mvp_row0"].value = tuple(float(v) for v in mvp_np[0])
+                prog["u_mvp_row1"].value = tuple(float(v) for v in mvp_np[1])
+                prog["u_mvp_row2"].value = tuple(float(v) for v in mvp_np[2])
+                prog["u_mvp_row3"].value = tuple(float(v) for v in mvp_np[3])
+                prog["u_use_uniform_color"].value = 1
+                prog["u_discard_backfaces"].value = 0
+                prog["u_alpha"].value = base_alpha
+            except Exception:
+                pass
+            try:
+                ctx.enable(moderngl.BLEND)
+                ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+                ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+                ctx.depth_func = "<="
+            except Exception:
+                pass
+            try:
+                raw_gl = getattr(self, "_gl", None)
+                if raw_gl is not None:
+                    raw_gl.glDisable(0x0C11)  # GL_SCISSOR_TEST
+                    raw_gl.glDisable(0x0B71)  # GL_DEPTH_TEST
+                    raw_gl.glDisable(0x0B44)  # GL_CULL_FACE
+                    raw_gl.glColorMask(True, True, True, True)
+                    raw_gl.glFrontFace(0x0901)  # GL_CCW
+            except Exception:
+                pass
+            try:
+                ctx.depth_mask = False
+                ctx.wireframe = False
+                ctx.line_width = 2.0
+            except Exception:
+                pass
+            try:
+                vw_i, vh_i = self._mgl_render_size()
+            except Exception:
+                vw_i, vh_i = (int(self.width()), int(self.height()))
+            full_vp = (0, 0, max(2, int(vw_i)), max(2, int(vh_i)))
+            active = getattr(self, "_mgl_active_viewport_rect", None)
+            if not (isinstance(active, (list, tuple)) and len(active) >= 4):
+                try:
+                    active = self._mgl_active_render_viewport()
+                except Exception:
+                    active = full_vp
+            try:
+                ax, ay, aw, ah = (int(v) for v in active[:4])
+            except Exception:
+                ax, ay, aw, ah = full_vp
+            active_vp = (max(0, ax), max(0, ay), max(2, aw), max(2, ah))
+            try:
+                ctx.viewport = active_vp
+                ctx.scissor = None if active_vp == full_vp else active_vp
+            except Exception:
+                pass
+            try:
+                raw_gl = getattr(self, "_gl", None)
+                if raw_gl is not None:
+                    raw_gl.glViewport(*active_vp)
+                    raw_gl.glLineWidth(2.0)
+            except Exception:
+                pass
+
+            axis_colors = {
+                "x": (1.0, 0.0, 0.0),
+                "y": (0.0, 1.0, 0.0),
+                "z": (0.0, 0.0, 1.0),
+            }
+            hover_colors = {
+                "x": (1.0, 0.3215686275, 0.3215686275),
+                "y": (0.3215686275, 1.0, 0.4705882353),
+                "z": (0.3215686275, 0.6117647059, 1.0),
+            }
+            center_color = (0.62, 0.34, 0.70)
+            center_hover_color = (0.78, 0.46, 0.84)
+            hover_axis_s = str(hover_axis or "").strip().lower()
+
+            def draw_range(
+                draw_mode,
+                first,
+                vert_count,
+                color,
+                alpha_value=None,
+                use_vertex_color: bool = False,
+                discard_backfaces: bool = False,
+            ) -> None:
+                if int(vert_count) <= 0:
+                    return
+                try:
+                    prog["u_color"].value = (float(color[0]), float(color[1]), float(color[2]))
+                    prog["u_use_uniform_color"].value = 0 if bool(use_vertex_color) else 1
+                    prog["u_discard_backfaces"].value = 1 if bool(discard_backfaces) else 0
+                    prog["u_alpha"].value = base_alpha if alpha_value is None else max(
+                        0.0,
+                        min(1.0, float(alpha_value)),
+                    )
+                except Exception:
+                    pass
+                vao.render(draw_mode, vertices=int(vert_count), first=int(first))
+
+            def line_ranges_for_center(mode_name: str, big_center: bool = False):
+                if str(mode_name or "").strip().lower() == "scale" or bool(big_center):
+                    return ranges.get("line_scale_center") or ranges.get("line") or {}
+                return ranges.get("line_translate_center") or ranges.get("line") or {}
+
+            def dynamic_line_ranges_for_center(mode_name: str, big_center: bool = False):
+                fallback = line_ranges_for_center(mode_name, big_center)
+                try:
+                    mode_name_s = str(mode_name or "").strip().lower()
+                    center_half = 0.0575 if mode_name_s == "scale" or bool(big_center) else 0.035
+                    line_end = 0.82
+
+                    def project_ndc(x, y, z):
+                        p = np.asarray([float(x), float(y), float(z), 1.0], dtype="f4")
+                        c = mvp_np @ p
+                        w = float(c[3])
+                        if w <= 1.0e-6:
+                            return None
+                        return (float(c[0] / w), float(c[1] / w))
+
+                    cube_pts = []
+                    for cx in (-center_half, center_half):
+                        for cy in (-center_half, center_half):
+                            for cz in (-center_half, center_half):
+                                pt = project_ndc(cx, cy, cz)
+                                if pt is not None:
+                                    cube_pts.append(pt)
+                    if len(cube_pts) < 3:
+                        return fallback
+
+                    def cross(o, a, b):
+                        return (float(a[0]) - float(o[0])) * (float(b[1]) - float(o[1])) - (
+                            float(a[1]) - float(o[1])
+                        ) * (float(b[0]) - float(o[0]))
+
+                    pts = sorted(set((round(float(x), 7), round(float(y), 7)) for x, y in cube_pts))
+                    if len(pts) < 3:
+                        return fallback
+                    lower = []
+                    for pt in pts:
+                        while len(lower) >= 2 and cross(lower[-2], lower[-1], pt) <= 0.0:
+                            lower.pop()
+                        lower.append(pt)
+                    upper = []
+                    for pt in reversed(pts):
+                        while len(upper) >= 2 and cross(upper[-2], upper[-1], pt) <= 0.0:
+                            upper.pop()
+                        upper.append(pt)
+                    hull = lower[:-1] + upper[:-1]
+                    if len(hull) < 3:
+                        return fallback
+
+                    def inside_hull(pt):
+                        sign = 0
+                        for idx, a in enumerate(hull):
+                            b = hull[(idx + 1) % len(hull)]
+                            c = cross(a, b, pt)
+                            if abs(c) <= 1.0e-7:
+                                continue
+                            cur = 1 if c > 0.0 else -1
+                            if sign == 0:
+                                sign = cur
+                            elif cur != sign:
+                                return False
+                        return True
+
+                    def projected_face_area(face_points):
+                        projected = []
+                        for px, py, pz in face_points:
+                            p_ndc = project_ndc(px, py, pz)
+                            if p_ndc is None:
+                                return None
+                            projected.append(p_ndc)
+                        area = 0.0
+                        for idx, a in enumerate(projected):
+                            b = projected[(idx + 1) % len(projected)]
+                            area += float(a[0]) * float(b[1]) - float(b[0]) * float(a[1])
+                        return area * 0.5
+
+                    def positive_face_front_facing(axis):
+                        h = float(center_half)
+                        faces = {
+                            "x": ((h, -h, -h), (h, h, -h), (h, h, h), (h, -h, h)),
+                            "y": ((h, h, -h), (-h, h, -h), (-h, h, h), (h, h, h)),
+                            "z": ((-h, -h, h), (h, -h, h), (h, h, h), (-h, h, h)),
+                        }
+                        area = projected_face_area(faces.get(axis, ()))
+                        if area is None:
+                            return True
+                        return float(area) > 1.0e-7
+
+                    rows = []
+                    dyn_map = {}
+                    axis_defs = {
+                        "x": ((1.0, 0.0, 0.0), axis_colors["x"]),
+                        "y": ((0.0, 1.0, 0.0), axis_colors["y"]),
+                        "z": ((0.0, 0.0, 1.0), axis_colors["z"]),
+                    }
+                    for axis, (axis_vec, color) in axis_defs.items():
+                        endpoint = (
+                            float(axis_vec[0]) * line_end,
+                            float(axis_vec[1]) * line_end,
+                            float(axis_vec[2]) * line_end,
+                        )
+                        end_ndc = project_ndc(*endpoint)
+                        start_t = float(center_half)
+                        if end_ndc is not None and not positive_face_front_facing(axis):
+                            if inside_hull(end_ndc):
+                                start_t = line_end
+                            else:
+                                lo = 0.0
+                                hi = line_end
+                                for _ in range(18):
+                                    mid = (lo + hi) * 0.5
+                                    p_ndc = project_ndc(
+                                        float(axis_vec[0]) * mid,
+                                        float(axis_vec[1]) * mid,
+                                        float(axis_vec[2]) * mid,
+                                    )
+                                    if p_ndc is not None and inside_hull(p_ndc):
+                                        lo = mid
+                                    else:
+                                        hi = mid
+                                start_t = max(float(center_half), min(float(line_end), float(hi)))
+                        start = len(rows)
+                        rows.append(
+                            (
+                                float(axis_vec[0]) * start_t,
+                                float(axis_vec[1]) * start_t,
+                                float(axis_vec[2]) * start_t,
+                                float(color[0]),
+                                float(color[1]),
+                                float(color[2]),
+                            )
+                        )
+                        rows.append(
+                            (
+                                endpoint[0],
+                                endpoint[1],
+                                endpoint[2],
+                                float(color[0]),
+                                float(color[1]),
+                                float(color[2]),
+                            )
+                        )
+                        dyn_map[axis] = (start, 2)
+                    verts_dyn = np.asarray(rows, dtype="f4")
+                    byte_count = int(verts_dyn.nbytes)
+                    dyn_vbo = getattr(self, "_mgl_gizmo_tips_center_line_vbo", None)
+                    dyn_vao = getattr(self, "_mgl_gizmo_tips_center_line_vao", None)
+                    dyn_cap = int(getattr(self, "_mgl_gizmo_tips_center_line_vbo_capacity", 0) or 0)
+                    if dyn_vbo is None or dyn_vao is None or dyn_cap < byte_count:
+                        for res_name in ("_mgl_gizmo_tips_center_line_vao", "_mgl_gizmo_tips_center_line_vbo"):
+                            res = getattr(self, res_name, None)
+                            if res is not None:
+                                try:
+                                    res.release()
+                                except Exception:
+                                    pass
+                        dyn_cap = max(256, byte_count * 2)
+                        dyn_vbo = ctx.buffer(reserve=dyn_cap)
+                        dyn_vao = ctx.vertex_array(prog, [(dyn_vbo, "3f 3f", "in_pos", "in_col")])
+                        self._mgl_gizmo_tips_center_line_vbo = dyn_vbo
+                        self._mgl_gizmo_tips_center_line_vao = dyn_vao
+                        self._mgl_gizmo_tips_center_line_vbo_capacity = int(dyn_cap)
+                    dyn_vbo.write(verts_dyn.tobytes())
+                    dyn_map["_vao"] = dyn_vao
+                    return dyn_map
+                except Exception:
+                    return fallback
+
+            def draw_axis_highlight(axis: str, mode_name: str, line_map=None) -> None:
+                color = hover_colors.get(axis, axis_colors.get(axis, (1.0, 1.0, 1.0)))
+                try:
+                    ctx.line_width = 7.0
+                except Exception:
+                    pass
+                draw_line_segment(line_map, axis, color, alpha_value=base_alpha * 0.30)
+                try:
+                    ctx.line_width = 3.2
+                except Exception:
+                    pass
+                draw_line_segment(line_map, axis, color)
+                try:
+                    ctx.line_width = 2.0
+                except Exception:
+                    pass
+                if mode_name == "scale":
+                    first, vert_count = (ranges.get("scale_cube") or {}).get(axis, (0, 0))
+                else:
+                    first, vert_count = (ranges.get("cone") or {}).get(axis, (0, 0))
+                draw_range(moderngl.TRIANGLES, first, vert_count, color)
+
+            def draw_line_segment(line_map, axis, color, alpha_value=None) -> None:
+                line_map = line_map or ranges.get("line") or {}
+                first, vert_count = line_map.get(axis, (0, 0))
+                if int(vert_count) <= 0:
+                    return
+                try:
+                    prog["u_color"].value = (float(color[0]), float(color[1]), float(color[2]))
+                    prog["u_use_uniform_color"].value = 1
+                    prog["u_discard_backfaces"].value = 0
+                    prog["u_alpha"].value = base_alpha if alpha_value is None else max(
+                        0.0,
+                        min(1.0, float(alpha_value)),
+                    )
+                except Exception:
+                    pass
+                dyn_vao = line_map.get("_vao") if isinstance(line_map, dict) else None
+                if dyn_vao is not None:
+                    dyn_vao.render(moderngl.LINES, vertices=int(vert_count), first=int(first))
+                else:
+                    vao.render(moderngl.LINES, vertices=int(vert_count), first=int(first))
+
+            def draw_axis_lines(line_map, width: float = 2.0) -> None:
+                try:
+                    ctx.line_width = float(width)
+                except Exception:
+                    pass
+                for axis in ("x", "y", "z"):
+                    draw_line_segment(line_map, axis, axis_colors[axis])
+                try:
+                    ctx.line_width = 2.0
+                except Exception:
+                    pass
+
+            def local_depth(x, y, z) -> float:
+                try:
+                    p = np.asarray([float(x), float(y), float(z), 1.0], dtype="f4")
+                    c = mvp_np @ p
+                    w = float(c[3])
+                    if abs(w) <= 1.0e-6:
+                        return 0.0
+                    return float(c[2] / w)
+                except Exception:
+                    return 0.0
+
+            def axis_pos(axis: str, amount: float):
+                if axis == "x":
+                    return (float(amount), 0.0, 0.0)
+                if axis == "y":
+                    return (0.0, float(amount), 0.0)
+                return (0.0, 0.0, float(amount))
+
+            def draw_sorted_solids(items) -> None:
+                for _depth, _order, draw_fn in sorted(items or [], key=lambda item: (float(item[0]), int(item[1])), reverse=True):
+                    try:
+                        draw_fn()
+                    except Exception:
+                        pass
+
+            def draw_tips_center_lines(tip_items, center_item, line_map) -> None:
+                try:
+                    center_depth = float(center_item[0])
+                except Exception:
+                    center_depth = 0.0
+                behind = []
+                front = []
+                for item in tip_items or []:
+                    try:
+                        if float(item[0]) > center_depth:
+                            behind.append(item)
+                        else:
+                            front.append(item)
+                    except Exception:
+                        front.append(item)
+                draw_sorted_solids(behind)
+                draw_sorted_solids([center_item])
+                draw_axis_lines(line_map)
+                draw_sorted_solids(front)
+
+            mode_s = str(mode or "translate").lower()
+            if mode_s == "scale":
+                center_line_map = dynamic_line_ranges_for_center(mode_s, bool(hover_center))
+                tip_items = []
+                scale_tip_pos = 0.87
+                for axis in ("x", "y", "z"):
+                    first, vert_count = (ranges.get("scale_cube") or {}).get(axis, (0, 0))
+                    color = axis_colors[axis]
+                    px, py, pz = axis_pos(axis, scale_tip_pos)
+                    tip_items.append(
+                        (
+                            local_depth(px, py, pz),
+                            10 + ("xyz".index(axis)),
+                            lambda first=first, vert_count=vert_count, color=color: draw_range(
+                                moderngl.TRIANGLES,
+                                first,
+                                vert_count,
+                                color,
+                            ),
+                        )
+                    )
+                if bool(hover_center):
+                    center_first, center_count = ranges.get("center_hover") or ranges.get("scale_center") or (0, 0)
+                    center_draw_color = center_hover_color
+                else:
+                    center_first, center_count = ranges.get("scale_center") or (0, 0)
+                    center_draw_color = center_color
+                center_item = (
+                    local_depth(0.0, 0.0, 0.0),
+                    0,
+                    lambda first=center_first, vert_count=center_count, color=center_draw_color: draw_range(
+                        moderngl.TRIANGLES,
+                        first,
+                        vert_count,
+                        color,
+                        use_vertex_color=True,
+                        discard_backfaces=True,
+                    ),
+                )
+                draw_tips_center_lines(tip_items, center_item, center_line_map)
+                if bool(hover_center):
+                    draw_axis_lines(center_line_map, 2.8)
+                    for axis in ("x", "y", "z"):
+                        draw_axis_highlight(axis, mode_s, center_line_map)
+                elif hover_axis_s in ("x", "y", "z"):
+                    draw_axis_highlight(hover_axis_s, mode_s, center_line_map)
+            elif mode_s == "translate":
+                center_line_map = dynamic_line_ranges_for_center(mode_s, bool(hover_center))
+                tip_items = []
+                cone_sort_pos = 0.91
+                for axis in ("x", "y", "z"):
+                    first, vert_count = (ranges.get("cone") or {}).get(axis, (0, 0))
+                    color = axis_colors[axis]
+                    px, py, pz = axis_pos(axis, cone_sort_pos)
+                    tip_items.append(
+                        (
+                            local_depth(px, py, pz),
+                            10 + ("xyz".index(axis)),
+                            lambda first=first, vert_count=vert_count, color=color: draw_range(
+                                moderngl.TRIANGLES,
+                                first,
+                                vert_count,
+                                color,
+                            ),
+                        )
+                    )
+                if bool(hover_center):
+                    center_first, center_count = ranges.get("center_hover") or ranges.get("scale_center") or (0, 0)
+                    center_draw_color = center_hover_color
+                else:
+                    center_first, center_count = ranges.get("translate_center") or ranges.get("scale_center") or (0, 0)
+                    center_draw_color = center_color
+                center_item = (
+                    local_depth(0.0, 0.0, 0.0),
+                    0,
+                    lambda first=center_first, vert_count=center_count, color=center_draw_color: draw_range(
+                        moderngl.TRIANGLES,
+                        first,
+                        vert_count,
+                        color,
+                        use_vertex_color=True,
+                        discard_backfaces=True,
+                    ),
+                )
+                draw_tips_center_lines(tip_items, center_item, center_line_map)
+                if hover_axis_s in ("x", "y", "z"):
+                    draw_axis_highlight(hover_axis_s, mode_s, center_line_map)
+                if bool(hover_center):
+                    draw_axis_lines(center_line_map, 2.8)
+            else:
+                return False
+            try:
+                screen_prog = getattr(self, "_mgl_gizmo_tips_screen_prog", None)
+                screen_vao = getattr(self, "_mgl_gizmo_tips_screen_vao", None)
+                screen_vbo = getattr(self, "_mgl_gizmo_tips_screen_vbo", None)
+                screen_cap = int(getattr(self, "_mgl_gizmo_tips_screen_vbo_capacity", 0) or 0)
+                if screen_prog is None:
+                    screen_vert = """
+#version 330
+in vec2 in_pos_ndc;
+in vec4 in_color;
+out vec4 v_color;
+void main() {
+    gl_Position = vec4(in_pos_ndc, 0.0, 1.0);
+    v_color = in_color;
+}
+"""
+                    screen_frag = """
+#version 330
+in vec4 v_color;
+out vec4 fragColor;
+void main() {
+    fragColor = v_color;
+}
+"""
+                    screen_prog = ctx.program(vertex_shader=screen_vert, fragment_shader=screen_frag)
+                    self._mgl_gizmo_tips_screen_prog = screen_prog
+
+                def project_local(px, py, pz):
+                    p = np.asarray([float(px), float(py), float(pz), 1.0], dtype="f4")
+                    c = mvp_np @ p
+                    w = float(c[3])
+                    if w <= 1.0e-6:
+                        return None
+                    nx = float(c[0] / w)
+                    ny = float(c[1] / w)
+                    if abs(nx) > 4.0 or abs(ny) > 4.0:
+                        return None
+                    return nx, ny
+
+                rows_2d = []
+                ndc_px = 2.0 / float(max(2, active_vp[2]))
+                ndc_py = 2.0 / float(max(2, active_vp[3]))
+                def add_rect_ndc(cx, cy, half_px_x, half_px_y, color):
+                    hx = float(half_px_x) * ndc_px
+                    hy = float(half_px_y) * ndc_py
+                    x0, x1 = float(cx) - hx, float(cx) + hx
+                    y0, y1 = float(cy) - hy, float(cy) + hy
+                    r, g, b, a = color
+                    for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y0), (x1, y1), (x0, y1)):
+                        rows_2d.append((float(x), float(y), float(r), float(g), float(b), float(a)))
+
+                def add_line_ndc(x0, y0, x1, y1, width_px, color):
+                    aw = float(max(2, active_vp[2]))
+                    ah = float(max(2, active_vp[3]))
+                    sx0 = (float(x0) * 0.5 + 0.5) * aw
+                    sy0 = (float(y0) * 0.5 + 0.5) * ah
+                    sx1 = (float(x1) * 0.5 + 0.5) * aw
+                    sy1 = (float(y1) * 0.5 + 0.5) * ah
+                    dx = sx1 - sx0
+                    dy = sy1 - sy0
+                    length = math.sqrt(dx * dx + dy * dy)
+                    if length <= 1.0e-6:
+                        return
+                    nx = (-dy / length) * float(width_px) * 0.5
+                    ny = (dx / length) * float(width_px) * 0.5
+
+                    def to_ndc(sx, sy):
+                        return ((float(sx) / aw) * 2.0 - 1.0, (float(sy) / ah) * 2.0 - 1.0)
+
+                    p0 = to_ndc(sx0 + nx, sy0 + ny)
+                    p1 = to_ndc(sx1 + nx, sy1 + ny)
+                    p2 = to_ndc(sx1 - nx, sy1 - ny)
+                    p3 = to_ndc(sx0 - nx, sy0 - ny)
+                    r, g, b, a = color
+                    for x, y in (p0, p1, p2, p0, p2, p3):
+                        rows_2d.append((float(x), float(y), float(r), float(g), float(b), float(a)))
+
+                def add_cross_ndc(cx, cy, color):
+                    add_rect_ndc(cx, cy, 13.0, 2.0, color)
+                    add_rect_ndc(cx, cy, 2.0, 13.0, color)
+
+                center_ndc = project_local(0.0, 0.0, 0.0)
+                marker_axis_pos = 0.87 if mode_s == "scale" else 1.0
+                marker_hover_colors = {
+                    "x": (1.0, 0.3215686275, 0.3215686275, 0.95),
+                    "y": (0.3215686275, 1.0, 0.4705882353, 0.95),
+                    "z": (0.3215686275, 0.6117647059, 1.0, 0.95),
+                }
+                for axis, base_color in (
+                    ("x", (1.0, 1.0, 1.0, 0.92)),
+                    ("y", (1.0, 1.0, 1.0, 0.92)),
+                    ("z", (1.0, 1.0, 1.0, 0.92)),
+                ):
+                    hover_color = marker_hover_colors.get(axis, (1.0, 1.0, 1.0, 0.95))
+                    if axis == "x":
+                        p_ndc = project_local(marker_axis_pos, 0.0, 0.0)
+                    elif axis == "y":
+                        p_ndc = project_local(0.0, marker_axis_pos, 0.0)
+                    else:
+                        p_ndc = project_local(0.0, 0.0, marker_axis_pos)
+                    if p_ndc is not None:
+                        if axis == hover_axis_s:
+                            if center_ndc is not None:
+                                add_line_ndc(
+                                    center_ndc[0],
+                                    center_ndc[1],
+                                    p_ndc[0],
+                                    p_ndc[1],
+                                    7.0,
+                                    (hover_color[0], hover_color[1], hover_color[2], 0.38),
+                                )
+                                add_line_ndc(
+                                    center_ndc[0],
+                                    center_ndc[1],
+                                    p_ndc[0],
+                                    p_ndc[1],
+                                    3.0,
+                                    hover_color,
+                                )
+                            add_rect_ndc(p_ndc[0], p_ndc[1], 11.0, 11.0, hover_color)
+                            add_rect_ndc(p_ndc[0], p_ndc[1], 6.0, 6.0, (1.0, 1.0, 1.0, 0.95))
+                        else:
+                            add_rect_ndc(p_ndc[0], p_ndc[1], 7.0, 7.0, base_color)
+
+                if rows_2d:
+                    verts_2d = np.asarray(rows_2d, dtype="f4")
+                    byte_count = int(verts_2d.nbytes)
+                    if screen_vbo is None or screen_vao is None or screen_cap < byte_count:
+                        for res_name in ("_mgl_gizmo_tips_screen_vao", "_mgl_gizmo_tips_screen_vbo"):
+                            res = getattr(self, res_name, None)
+                            if res is not None:
+                                try:
+                                    res.release()
+                                except Exception:
+                                    pass
+                        screen_cap = max(4096, byte_count * 2)
+                        screen_vbo = ctx.buffer(reserve=screen_cap)
+                        screen_vao = ctx.vertex_array(
+                            screen_prog,
+                            [(screen_vbo, "2f 4f", "in_pos_ndc", "in_color")],
+                        )
+                        self._mgl_gizmo_tips_screen_vbo = screen_vbo
+                        self._mgl_gizmo_tips_screen_vao = screen_vao
+                        self._mgl_gizmo_tips_screen_vbo_capacity = int(screen_cap)
+                    screen_vbo.write(verts_2d.tobytes())
+                    screen_vao.render(moderngl.TRIANGLES, vertices=int(verts_2d.shape[0]))
+                    self._mgl_gizmo_tips_screen_last_count = int(verts_2d.shape[0])
+            except Exception:
+                self._mgl_gizmo_tips_screen_last_count = 0
+            return True
+        except Exception as exc:
+            self._mgl_error = f"ModernGL tips test overlay draw failed: {exc}"
+            return False
+        finally:
+            if prev_viewport is not None:
+                try:
+                    ctx.viewport = prev_viewport
+                except Exception:
+                    pass
+            try:
+                ctx.scissor = prev_scissor
+            except Exception:
+                pass
+            if prev_depth_mask is not None:
+                try:
+                    ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_wireframe is not None:
+                try:
+                    ctx.wireframe = prev_wireframe
+                except Exception:
+                    pass
+            if prev_line_width is not None:
+                try:
+                    ctx.line_width = prev_line_width
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            if prev_blend_func is not None:
+                try:
+                    ctx.blend_func = prev_blend_func
+                except Exception:
+                    pass
+            try:
+                if prev_depth_test is False:
+                    ctx.disable(moderngl.DEPTH_TEST)
+                else:
+                    ctx.enable(moderngl.DEPTH_TEST)
+            except Exception:
+                pass
+            try:
+                if prev_cull:
+                    ctx.enable(moderngl.CULL_FACE)
+                else:
+                    ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
 
     def _mgl_retarget_points_summary(self, points, *, limit: int = 5) -> dict:
         if np is None:
@@ -9274,11 +10301,34 @@ class MGLRendererMixin:
         handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
         if not isinstance(owners, dict) or not isinstance(handles_by_owner, dict):
             return
-        for role in ("source", "target"):
-            owner = str(owners.get(role) or "").strip()
+        rebuild: list[tuple[str, str]] = []
+        prev_owner = str(getattr(self, "_mgl_retarget_selection_mesh_owner", "") or "").strip()
+        prev_role = str(getattr(self, "_mgl_retarget_selection_mesh_role", "") or "").strip().lower()
+        if prev_owner and prev_role in {"source", "target"}:
+            rebuild.append((prev_owner, prev_role))
+
+        selected = getattr(self, "_mgl_retarget_selected_joint", None)
+        selected_owner = ""
+        selected_role = ""
+        if isinstance(selected, dict):
+            selected_role = str(selected.get("role") or "").strip().lower()
+            if selected_role in {"source", "target"}:
+                selected_owner = str(owners.get(selected_role) or "").strip()
+                if selected_owner:
+                    rebuild.append((selected_owner, selected_role))
+
+        seen = set()
+        for owner, role in rebuild:
+            key = (str(owner).strip().lower(), str(role).strip().lower())
+            if not key[0] or key in seen:
+                continue
+            seen.add(key)
             handles = handles_by_owner.get(owner)
-            if owner and isinstance(handles, list):
+            if isinstance(handles, list):
                 self._mgl_retarget_rebuild_handle_mesh_for_owner(owner, handles, role)
+
+        self._mgl_retarget_selection_mesh_owner = selected_owner
+        self._mgl_retarget_selection_mesh_role = selected_role
 
     def _mgl_retarget_positions_diag(self, points) -> float:
         if np is None:
@@ -12219,6 +13269,7 @@ class MGLRendererMixin:
         self._mgl_retarget_preview_owner = str(asset.get("node") or "Anim Retarget Mapping")
         self._mgl_retarget_node_item = asset.get("retarget_node_item")
         self._mgl_retarget_node_model = asset.get("retarget_node_model")
+        self._mgl_retarget_debug_enabled = bool(asset.get("debug_log", False))
         self._mgl_retarget_joint_handles_by_owner = handles_by_owner
         self._mgl_retarget_joint_positions = positions_by_role
         self._mgl_retarget_joint_map = self._mgl_retarget_parse_joint_map(asset.get("joint_map"))
@@ -12355,23 +13406,35 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None or np is None:
             return
-        try:
-            scene.remove_by_tag("retarget-links")
-        except Exception:
-            pass
         mapping = getattr(self, "_mgl_retarget_joint_map", None)
-        if not isinstance(mapping, dict) or not mapping:
+        if not isinstance(mapping, dict):
+            return
+        if not mapping:
+            try:
+                scene.remove_by_tag("retarget-links")
+            except Exception:
+                pass
             return
         source_positions = self._mgl_retarget_visible_position_map("source")
         target_positions = self._mgl_retarget_visible_position_map("target")
         if not source_positions or not target_positions:
             positions = getattr(self, "_mgl_retarget_joint_positions", None)
             if not isinstance(positions, dict):
-                return
-            source_positions = positions.get("source") if isinstance(positions.get("source"), dict) else {}
-            target_positions = positions.get("target") if isinstance(positions.get("target"), dict) else {}
+                positions = {}
+            if not source_positions:
+                source_positions = positions.get("source") if isinstance(positions.get("source"), dict) else {}
+            if not target_positions:
+                target_positions = positions.get("target") if isinstance(positions.get("target"), dict) else {}
+        if not source_positions:
+            cached_source = getattr(self, "_mgl_retarget_last_link_source_positions", None)
+            source_positions = dict(cached_source) if isinstance(cached_source, dict) else {}
+        if not target_positions:
+            cached_target = getattr(self, "_mgl_retarget_last_link_target_positions", None)
+            target_positions = dict(cached_target) if isinstance(cached_target, dict) else {}
         if not source_positions or not target_positions:
             return
+        self._mgl_retarget_last_link_source_positions = dict(source_positions)
+        self._mgl_retarget_last_link_target_positions = dict(target_positions)
 
         all_pos = []
         for role_positions in (source_positions, target_positions):
@@ -12423,6 +13486,10 @@ class MGLRendererMixin:
         payload["xray"] = False
         item.payload = payload
         item.order = 18
+        try:
+            scene.remove_by_tag("retarget-links")
+        except Exception:
+            pass
         scene.add(item)
         try:
             now = float(time.time())
@@ -12542,6 +13609,21 @@ class MGLRendererMixin:
     def _mgl_retarget_owner_is_target_pose_joint(self, owner: str) -> bool:
         return bool(self._mgl_retarget_target_pose_joint_from_owner(owner))
 
+    def _mgl_retarget_selected_target_pose_gizmo_owner(self) -> str:
+        try:
+            if self._mgl_retarget_pick_mode() != "target_pose":
+                return ""
+        except Exception:
+            return ""
+        selected = getattr(self, "_mgl_retarget_selected_joint", None)
+        if not isinstance(selected, dict):
+            return ""
+        role = str(selected.get("role") or "").strip().lower()
+        if role != "target":
+            return ""
+        name = str(selected.get("name") or "").strip()
+        return self._mgl_retarget_target_pose_gizmo_owner(name)
+
     def _mgl_retarget_target_pose_world_to_local(self, world_pos) -> Tuple[float, float, float]:
         try:
             wx, wy, wz = float(world_pos[0]), float(world_pos[1]), float(world_pos[2])
@@ -12585,6 +13667,54 @@ class MGLRendererMixin:
             pos = positions[index]
             return (float(pos[0]), float(pos[1]), float(pos[2]))
         return None
+
+    def _mgl_retarget_target_pose_world_position_is_sane(self, joint_name: str, world_pos) -> bool:
+        try:
+            pos = np.asarray(world_pos, dtype=np.float32).reshape(3)
+        except Exception:
+            return False
+        if not bool(np.all(np.isfinite(pos))):
+            return False
+
+        target_owner = self._mgl_retarget_target_owner()
+        handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
+        handles = handles_by_owner.get(target_owner) if isinstance(handles_by_owner, dict) else None
+        if not isinstance(handles, list) or not handles:
+            return True
+        try:
+            positions, _radius_scale = self._mgl_retarget_pick_positions_for_owner(target_owner, handles)
+            positions = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
+            finite = np.all(np.isfinite(positions), axis=1)
+            positions = positions[finite]
+        except Exception:
+            positions = np.zeros((0, 3), dtype=np.float32)
+        if positions.size == 0:
+            return True
+
+        try:
+            mins = positions.min(axis=0)
+            maxs = positions.max(axis=0)
+            center = (mins + maxs) * 0.5
+            span = float(np.linalg.norm(maxs - mins))
+            limit = max(1.0, span * 3.0)
+            if float(np.linalg.norm(pos - center)) > limit:
+                return False
+        except Exception:
+            pass
+
+        current = self._mgl_retarget_target_pose_joint_world_position(joint_name)
+        if current is None:
+            return True
+        try:
+            cur = np.asarray(current, dtype=np.float32).reshape(3)
+            if not bool(np.all(np.isfinite(cur))):
+                return True
+            span = max(1.0, float(np.linalg.norm(positions.max(axis=0) - positions.min(axis=0))))
+            if float(np.linalg.norm(pos - cur)) > max(1.0, span * 1.5):
+                return False
+        except Exception:
+            pass
+        return True
 
     def _mgl_retarget_refresh_target_pose_contexts(self) -> None:
         target_owner = self._mgl_retarget_target_owner()
@@ -12668,6 +13798,12 @@ class MGLRendererMixin:
         if owner:
             self._xform_gizmo_owner = owner
             self._xform_gizmo_owner_kind = "retarget_target_joint"
+            try:
+                clear_overlay = getattr(self, "_clear_xform_overlay_state", None)
+                if callable(clear_overlay):
+                    clear_overlay()
+            except Exception:
+                pass
             pos = handle.get("position") or self._mgl_retarget_target_pose_joint_world_position(name) or (0.0, 0.0, 0.0)
             try:
                 self._xform_gizmo_pos = (float(pos[0]), float(pos[1]), float(pos[2]))
@@ -12694,7 +13830,17 @@ class MGLRendererMixin:
         node_item = getattr(self, "_mgl_retarget_node_item", None)
         if node_item is None:
             return False
+        if np is not None and not self._mgl_retarget_target_pose_world_position_is_sane(joint_name, world_pos):
+            self._mgl_retarget_reanchor_target_pose_gizmo(owner)
+            return False
         local_pos = self._mgl_retarget_target_pose_world_to_local(world_pos)
+        try:
+            if not all(math.isfinite(float(v)) for v in local_pos):
+                self._mgl_retarget_reanchor_target_pose_gizmo(owner)
+                return False
+        except Exception:
+            self._mgl_retarget_reanchor_target_pose_gizmo(owner)
+            return False
         try:
             from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
 
@@ -12767,6 +13913,40 @@ class MGLRendererMixin:
         except Exception:
             pass
         return (0.0, 0.0, 0.0)
+
+    def _mgl_retarget_reanchor_target_pose_gizmo(self, owner: str) -> bool:
+        joint_name = self._mgl_retarget_target_pose_joint_from_owner(owner)
+        if not joint_name:
+            return False
+        self._xform_gizmo_owner = owner
+        self._xform_gizmo_owner_kind = "retarget_target_joint"
+        try:
+            self._mgl_retarget_refresh_target_pose_handles()
+        except Exception:
+            try:
+                self._mgl_retarget_refresh_target_pose_contexts()
+            except Exception:
+                pass
+        new_world = self._mgl_retarget_target_pose_joint_world_position(joint_name)
+        if new_world is None:
+            try:
+                selected = getattr(self, "_mgl_retarget_selected_joint", None)
+                if isinstance(selected, dict) and str(selected.get("name") or "").strip() == joint_name:
+                    new_world = selected.get("position")
+            except Exception:
+                new_world = None
+        if new_world is None:
+            return False
+        try:
+            self._xform_gizmo_pos = (float(new_world[0]), float(new_world[1]), float(new_world[2]))
+            self._xform_gizmo_pos_locked = True
+        except Exception:
+            return False
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
 
     def _mgl_retarget_commit_target_pose_edit(self, *, notify_scene: bool = True) -> None:
         self._mgl_retarget_refresh_target_pose_contexts()
@@ -16617,7 +17797,23 @@ class MGLRendererMixin:
                 except Exception:
                     pass
             if vao is not None:
+                if tag == "retarget-handles":
+                    self._mgl_retarget_gl_state_snapshot(
+                        "retarget_handles_before",
+                        owner=str(payload.get("owner") or ""),
+                        item=str(getattr(item, "name", "") or ""),
+                        use_vertex_color=bool(use_vertex_color),
+                        use_texture=bool(use_texture),
+                    )
                 _render_entry(mesh_entry, vao)
+                if tag == "retarget-handles":
+                    self._mgl_retarget_gl_state_snapshot(
+                        "retarget_handles_after",
+                        owner=str(payload.get("owner") or ""),
+                        item=str(getattr(item, "name", "") or ""),
+                        use_vertex_color=bool(use_vertex_color),
+                        use_texture=bool(use_texture),
+                    )
             if wire_overlay and vao is not None:
                 try:
                     self._mgl_ctx.polygon_offset = (0.0, 0.0)
@@ -17399,7 +18595,23 @@ class MGLRendererMixin:
             color = _as_rgba(payload.get("color") or self._mgl_wire_color)
             _apply_uniforms(color)
             try:
+                if tag == "retarget-links":
+                    self._mgl_retarget_gl_state_snapshot(
+                        "retarget_links_before",
+                        owner=str(payload.get("owner") or ""),
+                        item=str(getattr(item, "name", "") or ""),
+                        wire_instanced=bool(wire_instanced),
+                        xray=bool(xray),
+                    )
                 _render()
+                if tag == "retarget-links":
+                    self._mgl_retarget_gl_state_snapshot(
+                        "retarget_links_after",
+                        owner=str(payload.get("owner") or ""),
+                        item=str(getattr(item, "name", "") or ""),
+                        wire_instanced=bool(wire_instanced),
+                        xray=bool(xray),
+                    )
             except Exception as exc:
                 self._mgl_error = f"Scene wire draw failed: {exc}"
                 if tag == "scene-rig-joints":
@@ -29024,6 +30236,7 @@ class MGLRendererMixin:
         self._mgl_retarget_preview_owner = ""
         self._mgl_retarget_node_item = None
         self._mgl_retarget_node_model = None
+        self._mgl_retarget_debug_enabled = False
         self._mgl_retarget_joint_handles_by_owner = {}
         self._mgl_retarget_joint_positions = {}
         self._mgl_retarget_joint_map = {}

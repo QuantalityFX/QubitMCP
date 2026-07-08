@@ -98,8 +98,10 @@ def _repo_logs_dir() -> Path:
     return out
 
 
-def _retarget_debug_log(event: str, **fields) -> None:
+def _retarget_debug_log(event: str, *, _model=None, **fields) -> None:
     try:
+        if not _retarget_debug_enabled(_model):
+            return
         payload = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "event": str(event)}
         payload.update(fields)
         with (_repo_logs_dir() / "anim_retarget_debug.log").open("a", encoding="utf-8") as handle:
@@ -1496,7 +1498,7 @@ def _preview_target_animation_asset(
     original_clip = rig_context.get("clip")
     target_skeleton = target_pose_skeleton_for_model(
         model,
-        _retarget_eval_target_skeleton(target_context.get("skeleton")),
+        _retarget_eval_target_skeleton(target_context.get("skeleton"), model=model),
     )
     rig_context["skeleton"] = target_skeleton
     rig_context["clip"] = retarget_clip
@@ -1539,6 +1541,7 @@ def _preview_target_animation_asset(
     )
     _retarget_debug_log(
         "build_preview_target_animation",
+        _model=model,
         node=str(getattr(model, "name", "") or ""),
         owner=owner,
         path=path_text,
@@ -1587,7 +1590,7 @@ def build_anim_retarget_preview_assets(
     target_pose_context = dict(target_context)
     target_pose_context["skeleton"] = target_pose_skeleton_for_model(
         model,
-        _retarget_eval_target_skeleton(target_context.get("skeleton")),
+        _retarget_eval_target_skeleton(target_context.get("skeleton"), model=model),
     )
     source_handle_radius = _handle_radius_for_context(source_context)
     target_handle_radius = _handle_radius_for_context(target_pose_context)
@@ -1601,6 +1604,7 @@ def build_anim_retarget_preview_assets(
     source_preview_context = _source_preview_context(
         source_context,
         rest_pose=bool(source_rest_pose),
+        model=model,
     )
     source_asset = _preview_asset_for_context(
         source_preview_context,
@@ -1691,10 +1695,12 @@ def build_anim_retarget_preview_assets(
         "target_handles": target_handles,
         "handle_radius": handle_radius,
         "curve_thickness": curve_thickness,
+        "debug_log": _retarget_debug_enabled(model),
     }
     target_log_skeleton = target_pose_context.get("skeleton")
     _retarget_debug_log(
         "build_preview_assets",
+        _model=model,
         node=base_name,
         source_name=result.source_name,
         source_kind=result.source_kind,
@@ -2126,6 +2132,7 @@ def target_pose_skeleton_for_model(model, skeleton, *, rebind_inverse_bind: bool
             pass
         _retarget_debug_log(
             "target_pose_skeleton",
+            _model=model,
             skeleton=str(getattr(skeleton, "name", "") or ""),
             joint_count=int(len(joints)),
             offset_count=int(len(payload)),
@@ -2136,13 +2143,14 @@ def target_pose_skeleton_for_model(model, skeleton, *, rebind_inverse_bind: bool
     except Exception as exc:
         _retarget_debug_log(
             "target_pose_skeleton_failed",
+            _model=model,
             skeleton=str(getattr(skeleton, "name", "") or ""),
             error=repr(exc),
         )
         return skeleton
 
 
-def _source_reference_pose_skeleton(skeleton, clip):
+def _source_reference_pose_skeleton(skeleton, clip, *, model=None):
     if skeleton is None or clip is None:
         return skeleton
     try:
@@ -2213,6 +2221,7 @@ def _source_reference_pose_skeleton(skeleton, clip):
             pass
         _retarget_debug_log(
             "source_reference_pose_skeleton",
+            _model=model,
             skeleton=str(getattr(skeleton, "name", "") or ""),
             clip=str(getattr(clip, "name", "") or ""),
             reference_time=round(float(start_time), 6),
@@ -2222,6 +2231,7 @@ def _source_reference_pose_skeleton(skeleton, clip):
     except Exception as exc:
         _retarget_debug_log(
             "source_reference_pose_skeleton_failed",
+            _model=model,
             skeleton=str(getattr(skeleton, "name", "") or ""),
             clip=str(getattr(clip, "name", "") or ""),
             error=repr(exc),
@@ -2229,12 +2239,16 @@ def _source_reference_pose_skeleton(skeleton, clip):
         return skeleton
 
 
-def _source_preview_context(context: Dict[str, Any], *, rest_pose: bool) -> Dict[str, Any]:
+def _source_preview_context(context: Dict[str, Any], *, rest_pose: bool, model=None) -> Dict[str, Any]:
     if not bool(rest_pose):
         return context
     source_format = str(context.get("source_format") or "").strip().lower()
     if source_format == "bvh" and context.get("clip") is not None:
-        reference_skeleton = _source_reference_pose_skeleton(context.get("skeleton"), context.get("clip"))
+        reference_skeleton = _source_reference_pose_skeleton(
+            context.get("skeleton"),
+            context.get("clip"),
+            model=model,
+        )
         pose_kind = "reference_clip_start"
     else:
         reference_skeleton = context.get("skeleton")
@@ -2255,6 +2269,7 @@ def _source_preview_context(context: Dict[str, Any], *, rest_pose: bool) -> Dict
     out["rig_context"] = rig_context
     _retarget_debug_log(
         "source_reference_pose_preview",
+        _model=model,
         skeleton=str(getattr(reference_skeleton, "name", "") or ""),
         source_format=source_format,
         pose_kind=pose_kind,
@@ -2263,7 +2278,7 @@ def _source_preview_context(context: Dict[str, Any], *, rest_pose: bool) -> Dict
     return out
 
 
-def _retarget_eval_target_skeleton(skeleton):
+def _retarget_eval_target_skeleton(skeleton, *, model=None):
     if skeleton is None:
         return None
     cached = getattr(skeleton, "_anim_retarget_inverse_bind_eval_skeleton", None)
@@ -2330,6 +2345,7 @@ def _retarget_eval_target_skeleton(skeleton):
         setattr(skeleton, "_anim_retarget_inverse_bind_eval_skeleton", out)
         _retarget_debug_log(
             "target_eval_skeleton_from_inverse_bind",
+            _model=model,
             skeleton=str(getattr(skeleton, "name", "") or ""),
             joint_count=int(len(new_joints)),
             inverse_bind=_points_summary(positions),
@@ -2339,6 +2355,7 @@ def _retarget_eval_target_skeleton(skeleton):
     except Exception as exc:
         _retarget_debug_log(
             "target_eval_skeleton_from_inverse_bind_failed",
+            _model=model,
             skeleton=str(getattr(skeleton, "name", "") or ""),
             error=repr(exc),
         )
@@ -2903,7 +2920,7 @@ def build_anim_retarget_clip(
     source_skeleton = source_context.get("skeleton")
     target_skeleton = target_pose_skeleton_for_model(
         model,
-        _retarget_eval_target_skeleton(target_context.get("skeleton")),
+        _retarget_eval_target_skeleton(target_context.get("skeleton"), model=model),
     )
     source_clip = source_context.get("clip")
     if source_skeleton is None or target_skeleton is None or source_clip is None:
@@ -2928,7 +2945,7 @@ def build_anim_retarget_clip(
     try:
         from echograph.rigging.fbx_canonical import AnimationClip, JointAnimationTrack
     except Exception as exc:
-        _retarget_debug_log("build_retarget_clip_import_failed", error=repr(exc))
+        _retarget_debug_log("build_retarget_clip_import_failed", _model=model, error=repr(exc))
         return None
 
     source_joints = list(getattr(source_skeleton, "joints", []) or [])
@@ -3030,7 +3047,7 @@ def build_anim_retarget_clip(
         used_targets.add(target_name)
 
     if not tracks:
-        _retarget_debug_log("build_retarget_clip_empty", skipped=skipped, mapping=mapping)
+        _retarget_debug_log("build_retarget_clip_empty", _model=model, skipped=skipped, mapping=mapping)
         return None
 
     clip_name = str(getattr(source_clip, "name", "") or "source").strip() or "source"
@@ -3055,7 +3072,7 @@ def build_anim_retarget_clip(
     try:
         retarget_clip.validate(skeleton=target_skeleton)
     except Exception as exc:
-        _retarget_debug_log("build_retarget_clip_validation_failed", error=repr(exc), skipped=skipped)
+        _retarget_debug_log("build_retarget_clip_validation_failed", _model=model, error=repr(exc), skipped=skipped)
         return None
     try:
         if model is not None:
@@ -3067,6 +3084,7 @@ def build_anim_retarget_clip(
         pass
     _retarget_debug_log(
         "build_retarget_clip",
+        _model=model,
         node=str(getattr(model, "name", "") or ""),
         source_clip=clip_name,
         tracks=int(len(tracks)),
@@ -3112,7 +3130,7 @@ def build_anim_retarget_scene_asset(
     rig_context = dict(target_context.get("rig_context") or {})
     target_skeleton = target_pose_skeleton_for_model(
         model,
-        _retarget_eval_target_skeleton(target_context.get("skeleton")),
+        _retarget_eval_target_skeleton(target_context.get("skeleton"), model=model),
         rebind_inverse_bind=False,
     )
     original_clip = rig_context.get("clip")
@@ -3160,6 +3178,7 @@ def build_anim_retarget_scene_asset(
         pass
     _retarget_debug_log(
         "build_scene_asset",
+        _model=model,
         node=base_name,
         path=path_text,
         target=str(target_context.get("name") or ""),
@@ -3409,7 +3428,7 @@ def write_anim_retarget_joint_debug_snapshot(
     target_skeleton_original = target_context.get("skeleton")
     target_skeleton = target_pose_skeleton_for_model(
         model,
-        _retarget_eval_target_skeleton(target_skeleton_original),
+        _retarget_eval_target_skeleton(target_skeleton_original, model=model),
     )
     source_clip = source_context.get("clip")
     if source_skeleton is None or target_skeleton is None or source_clip is None:
@@ -3570,6 +3589,7 @@ def write_anim_retarget_joint_debug_snapshot(
     out_path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")
     _retarget_debug_log(
         "joint_debug_snapshot_written",
+        _model=model,
         node=payload["node"],
         path=str(out_path),
         source=result.source_name,
@@ -3634,6 +3654,7 @@ def _maybe_write_anim_retarget_joint_debug_snapshot(
         path = write_anim_retarget_joint_debug_snapshot(node_item, result)
         _retarget_debug_log(
             "joint_debug_snapshot_auto",
+            _model=model,
             node=str(getattr(model, "name", "") or ""),
             reason=str(reason or ""),
             path=str(path),
@@ -3642,6 +3663,7 @@ def _maybe_write_anim_retarget_joint_debug_snapshot(
     except Exception as exc:
         _retarget_debug_log(
             "joint_debug_snapshot_auto_failed",
+            _model=model,
             node=str(getattr(model, "name", "") or ""),
             reason=str(reason or ""),
             error=repr(exc),

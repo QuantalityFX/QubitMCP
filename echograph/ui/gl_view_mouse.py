@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 # Mouse interaction methods extracted from gl_view.py to reduce GraphGLView size.
+import math
+
 from echograph.services.profiler import profile_scope
 
 _GV_MODULE = None
@@ -809,6 +811,12 @@ def _handle_mouse_press_moderngl_left_gizmo_build_context_dict(
     }
 
 def _handle_mouse_press_moderngl_left_gizmo_owner_pos(self):
+    try:
+        reattach = getattr(self, "_reattach_retarget_target_pose_gizmo_if_selected", None)
+        if callable(reattach):
+            reattach()
+    except Exception:
+        pass
     owner = getattr(self, "_xform_gizmo_owner", None)
     pos = getattr(self, "_xform_gizmo_pos", None)
     return owner, pos
@@ -1908,6 +1916,21 @@ def _handle_mouse_press_moderngl_left_gizmo_scale_start(
 ):
     if pick_axis is None:
         return False
+    try:
+        renderer = ctx["renderer"]
+        owner = ctx["owner"]
+        is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+        if callable(is_pose_joint) and bool(is_pose_joint(owner)):
+            reset_drag = getattr(self, "_handle_mouse_release_moderngl_reset_xform_drag_state", None)
+            if callable(reset_drag):
+                reset_drag()
+            self._mgl_pick_press_pos = None
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            self.update()
+            e.accept()
+            return True
+    except Exception:
+        pass
 
     owner = self._handle_mouse_press_moderngl_left_gizmo_scale_start_begin(ctx=ctx, pick_axis=pick_axis)
     self._handle_mouse_press_moderngl_left_gizmo_scale_start_mode(
@@ -3963,17 +3986,39 @@ def _handle_mouse_move_moderngl_xform_translate_axis_param(self, *, axis_world, 
     return _gv_axis_line_ray_param(axis_world=axis_world, g0=g0, ray_o=ray_o, ray_d=ray_d)
 
 def _handle_mouse_move_moderngl_xform_translate_apply_owner(self, new_pos, owner, renderer):
-    self._xform_gizmo_pos = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
+    try:
+        pos_tuple = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
+        if not all(math.isfinite(v) for v in pos_tuple):
+            return
+    except Exception:
+        return
 
     try:
         is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
         apply_pose_pos = getattr(renderer, "_mgl_retarget_apply_target_pose_joint_position", None)
         if callable(is_pose_joint) and callable(apply_pose_pos) and bool(is_pose_joint(owner)):
-            apply_pose_pos(owner, self._xform_gizmo_pos, notify_scene=False)
+            if not bool(apply_pose_pos(owner, pos_tuple, notify_scene=False)):
+                reanchor = getattr(renderer, "_mgl_retarget_reanchor_target_pose_gizmo", None)
+                if callable(reanchor):
+                    reanchor(owner)
             return
     except Exception:
         return
 
+    try:
+        selected_pose_owner = ""
+        get_selected_pose_owner = getattr(self, "_retarget_selected_target_pose_owner", None)
+        if callable(get_selected_pose_owner):
+            selected_pose_owner = str(get_selected_pose_owner() or "").strip()
+        if selected_pose_owner:
+            reattach = getattr(self, "_reattach_retarget_target_pose_gizmo_if_selected", None)
+            if callable(reattach):
+                reattach()
+            return
+    except Exception:
+        return
+
+    self._xform_gizmo_pos = pos_tuple
     is_splat = self._handle_mouse_press_moderngl_left_gizmo_owner_is_splat(
         renderer=renderer,
         owner=owner,
@@ -4226,6 +4271,20 @@ def _handle_mouse_move_moderngl_xform_scale_apply_owner(self, e, owner, new_scl,
         renderer = getattr(self, "_mgl_renderer", None) or self
         is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
         if callable(is_pose_joint) and bool(is_pose_joint(owner)):
+            self.update()
+            e.accept()
+            return
+    except Exception:
+        pass
+    try:
+        selected_pose_owner = ""
+        get_selected_pose_owner = getattr(self, "_retarget_selected_target_pose_owner", None)
+        if callable(get_selected_pose_owner):
+            selected_pose_owner = str(get_selected_pose_owner() or "").strip()
+        if selected_pose_owner:
+            reattach = getattr(self, "_reattach_retarget_target_pose_gizmo_if_selected", None)
+            if callable(reattach):
+                reattach()
             self.update()
             e.accept()
             return
@@ -4942,6 +5001,12 @@ def _handle_mouse_release_moderngl_commit_retarget_pose_if_needed(self, owner=No
         commit_pose = getattr(renderer, "_mgl_retarget_commit_target_pose_edit", None)
         if callable(is_pose_joint) and callable(commit_pose) and bool(is_pose_joint(owner)):
             commit_pose(notify_scene=True)
+            reanchor = getattr(renderer, "_mgl_retarget_reanchor_target_pose_gizmo", None)
+            if callable(reanchor):
+                try:
+                    reanchor(owner)
+                except Exception:
+                    pass
             return True
         decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
         apply_joint_keys = getattr(renderer, "_mgl_scene_skeleton_apply_timeline_keys", None)

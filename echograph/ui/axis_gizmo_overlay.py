@@ -19,6 +19,11 @@ GL_DEPTH_TEST = 0x0B71
 GL_BLEND = 0x0BE2
 GL_SRC_ALPHA = 0x0302
 GL_ONE_MINUS_SRC_ALPHA = 0x0303
+GL_CULL_FACE = 0x0B44
+GL_FRONT_AND_BACK = 0x0408
+GL_BACK = 0x0405
+GL_CCW = 0x0901
+GL_FILL = 0x1B02
 
 
 VERT = """
@@ -26,10 +31,12 @@ VERT = """
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_col;
 uniform mat4 u_mvp;
+uniform vec3 u_color;
+uniform int u_use_uniform_color;
 out vec3 v_col;
 void main() {
     gl_Position = u_mvp * vec4(in_pos, 1.0);
-    v_col = in_col;
+    v_col = (u_use_uniform_color != 0) ? u_color : in_col;
 }
 """
 
@@ -56,6 +63,14 @@ class AxisGizmoOverlay:
         self._scale_cube_vert_count = 0
         self._circle_vert_offset = 0
         self._circle_vert_count = 0
+        self._pos_loc = 0
+        self._col_loc = 1
+        self._line_axis_ranges: dict[str, tuple[int, int]] = {}
+        self._cone_axis_ranges: dict[str, tuple[int, int]] = {}
+        self._scale_cube_axis_ranges: dict[str, tuple[int, int]] = {}
+        self._scale_center_range: tuple[int, int] = (0, 0)
+        self._circle_axis_ranges: dict[str, tuple[int, int]] = {}
+        self._last_draw_summary: dict | None = None
 
     def ensure_gl(self, gl_view) -> bool:
         if self._ready:
@@ -70,8 +85,23 @@ class AxisGizmoOverlay:
             return False
         if not prog.addShaderFromSourceCode(QOpenGLShader.Fragment, FRAG):
             return False
+        try:
+            prog.bindAttributeLocation("in_pos", 0)
+            prog.bindAttributeLocation("in_col", 1)
+        except Exception:
+            pass
         if not prog.link():
             return False
+        try:
+            self._pos_loc = int(prog.attributeLocation("in_pos"))
+            self._col_loc = int(prog.attributeLocation("in_col"))
+        except Exception:
+            self._pos_loc = 0
+            self._col_loc = 1
+        if self._pos_loc < 0:
+            self._pos_loc = 0
+        if self._col_loc < 0:
+            self._col_loc = 1
         self._prog = prog
 
         verts: list[float] = []
@@ -149,6 +179,11 @@ class AxisGizmoOverlay:
         segs = 12
 
         # lines (6 verts)
+        self._line_axis_ranges = {
+            "x": (0, 2),
+            "y": (2, 2),
+            "z": (4, 2),
+        }
         verts.extend([0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
         verts.extend([line_end, 0.0, 0.0, 1.0, 0.0, 0.0])
 
@@ -161,9 +196,16 @@ class AxisGizmoOverlay:
         self._line_vert_count = 6
 
         # cones (triangles)
+        self._cone_axis_ranges = {}
+        start = len(verts) // 6
         add_cone((axis_len, 0.0, 0.0), (1.0, 0.0, 0.0), cone_radius, cone_height, segs, (1.0, 0.0, 0.0))
+        self._cone_axis_ranges["x"] = (start, (len(verts) // 6) - start)
+        start = len(verts) // 6
         add_cone((0.0, axis_len, 0.0), (0.0, 1.0, 0.0), cone_radius, cone_height, segs, (0.0, 1.0, 0.0))
+        self._cone_axis_ranges["y"] = (start, (len(verts) // 6) - start)
+        start = len(verts) // 6
         add_cone((0.0, 0.0, axis_len), (0.0, 0.0, 1.0), cone_radius, cone_height, segs, (0.0, 0.0, 1.0))
+        self._cone_axis_ranges["z"] = (start, (len(verts) // 6) - start)
 
         base_verts = len(verts) // 6
         self._tri_vert_count = base_verts - self._line_vert_count
@@ -172,10 +214,19 @@ class AxisGizmoOverlay:
         self._scale_cube_vert_offset = len(verts) // 6
         cube_size = 0.10
         cube_axis_pos = line_end + (cube_size * 0.5)
+        self._scale_cube_axis_ranges = {}
+        start = len(verts) // 6
         add_cube((cube_axis_pos, 0.0, 0.0), cube_size, (1.0, 0.0, 0.0))
+        self._scale_cube_axis_ranges["x"] = (start, (len(verts) // 6) - start)
+        start = len(verts) // 6
         add_cube((0.0, cube_axis_pos, 0.0), cube_size, (0.0, 1.0, 0.0))
+        self._scale_cube_axis_ranges["y"] = (start, (len(verts) // 6) - start)
+        start = len(verts) // 6
         add_cube((0.0, 0.0, cube_axis_pos), cube_size, (0.0, 0.0, 1.0))
+        self._scale_cube_axis_ranges["z"] = (start, (len(verts) // 6) - start)
+        start = len(verts) // 6
         add_cube((0.0, 0.0, 0.0), cube_size * 1.15, (0.7, 0.2, 0.8))
+        self._scale_center_range = (start, (len(verts) // 6) - start)
         self._scale_cube_vert_count = (len(verts) // 6) - self._scale_cube_vert_offset
 
         # rotation circles (3 rings)
@@ -203,9 +254,16 @@ class AxisGizmoOverlay:
 
         circle_radius = 0.9
         circle_segs = 64
+        self._circle_axis_ranges = {}
+        start = len(verts) // 6
         add_circle("x", circle_radius, circle_segs, (1.0, 0.0, 0.0))
+        self._circle_axis_ranges["x"] = (start, (len(verts) // 6) - start)
+        start = len(verts) // 6
         add_circle("y", circle_radius, circle_segs, (0.0, 1.0, 0.0))
+        self._circle_axis_ranges["y"] = (start, (len(verts) // 6) - start)
+        start = len(verts) // 6
         add_circle("z", circle_radius, circle_segs, (0.0, 0.0, 1.0))
+        self._circle_axis_ranges["z"] = (start, (len(verts) // 6) - start)
         self._circle_vert_count = (len(verts) // 6) - self._circle_vert_offset
 
         data = struct.pack(f"{len(verts)}f", *verts)
@@ -217,14 +275,15 @@ class AxisGizmoOverlay:
 
         vao = QOpenGLVertexArrayObject()
         vao.create()
-        vao.bind()
 
         prog.bind()
+        vao.bind()
+        vbo.bind()
         stride = 6 * 4
-        prog.enableAttributeArray(0)
-        prog.setAttributeBuffer(0, GL_FLOAT, 0, 3, stride)
-        prog.enableAttributeArray(1)
-        prog.setAttributeBuffer(1, GL_FLOAT, 3 * 4, 3, stride)
+        prog.enableAttributeArray(self._pos_loc)
+        prog.setAttributeBuffer(self._pos_loc, GL_FLOAT, 0, 3, stride)
+        prog.enableAttributeArray(self._col_loc)
+        prog.setAttributeBuffer(self._col_loc, GL_FLOAT, 3 * 4, 3, stride)
 
         vao.release()
         vbo.release()
@@ -241,11 +300,46 @@ class AxisGizmoOverlay:
         mode: str = "translate",
         draw_rotate_rings: bool = True,
         alpha: float = 1.0,
-    ) -> None:
-        if not self._ready or self._gl is None or self._prog is None or self._vao is None:
-            return
+    ) -> dict | None:
+        if not self._ready or self._gl is None or self._prog is None or self._vao is None or self._vbo is None:
+            self._last_draw_summary = {
+                "ready": bool(self._ready),
+                "mode": str(mode),
+                "skipped": True,
+            }
+            return self._last_draw_summary
+
+        draw_calls: list[dict] = []
+        summary: dict = {
+            "ready": True,
+            "mode": str(mode),
+            "alpha": round(float(alpha), 6),
+            "draw_rotate_rings": bool(draw_rotate_rings),
+            "pos_loc": int(self._pos_loc),
+            "col_loc": int(self._col_loc),
+            "line_ranges": dict(self._line_axis_ranges),
+            "cone_ranges": dict(self._cone_axis_ranges),
+            "scale_cube_ranges": dict(self._scale_cube_axis_ranges),
+            "scale_center_range": tuple(self._scale_center_range),
+            "circle_ranges": dict(self._circle_axis_ranges),
+            "draw_calls": draw_calls,
+        }
+        self._last_draw_summary = summary
 
         self._gl.glDisable(GL_DEPTH_TEST)
+        self._gl.glDisable(GL_CULL_FACE)
+        try:
+            self._gl.glCullFace(GL_BACK)
+        except Exception:
+            pass
+        try:
+            self._gl.glFrontFace(GL_CCW)
+        except Exception:
+            pass
+        try:
+            self._gl.glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
+        except Exception:
+            pass
         self._gl.glEnable(GL_BLEND)
         self._gl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         self._gl.glLineWidth(2.0)
@@ -261,20 +355,76 @@ class AxisGizmoOverlay:
         self._prog.setUniformValue("u_mvp", mvp)
 
         self._vao.bind()
+        self._vbo.bind()
+        stride = 6 * 4
+        self._prog.enableAttributeArray(self._pos_loc)
+        self._prog.setAttributeBuffer(self._pos_loc, GL_FLOAT, 0, 3, stride)
+        self._prog.enableAttributeArray(self._col_loc)
+        self._prog.setAttributeBuffer(self._col_loc, GL_FLOAT, 3 * 4, 3, stride)
+        self._prog.setUniformValue("u_mvp", mvp)
+
+        axis_colors = {
+            "x": (1.0, 0.0, 0.0),
+            "y": (0.0, 1.0, 0.0),
+            "z": (0.0, 0.0, 1.0),
+        }
+
+        def draw_range(
+            draw_mode: int,
+            first: int,
+            count: int,
+            color: tuple[float, float, float],
+            part: str,
+        ) -> None:
+            if int(count) <= 0:
+                return
+            call = {
+                "part": str(part),
+                "primitive": "lines" if int(draw_mode) == GL_LINES else "triangles",
+                "first": int(first),
+                "count": int(count),
+                "color": [round(float(color[0]), 6), round(float(color[1]), 6), round(float(color[2]), 6)],
+                "uniform_ok": True,
+            }
+            try:
+                self._prog.setUniformValue("u_use_uniform_color", 1)
+                self._prog.setUniformValue(
+                    "u_color",
+                    QtGui.QVector3D(float(color[0]), float(color[1]), float(color[2])),
+                )
+            except Exception as exc:
+                call["uniform_ok"] = False
+                call["uniform_error"] = repr(exc)
+            draw_calls.append(call)
+            self._gl.glDrawArrays(draw_mode, int(first), int(count))
+
         if mode == "rotate":
-            if draw_rotate_rings and self._circle_vert_count:
-                self._gl.glDrawArrays(GL_LINES, self._circle_vert_offset, self._circle_vert_count)
+            if draw_rotate_rings and self._circle_axis_ranges:
+                for axis in ("x", "y", "z"):
+                    first, count = self._circle_axis_ranges.get(axis, (0, 0))
+                    draw_range(GL_LINES, first, count, axis_colors[axis], f"circle_{axis}")
         elif mode == "scale":
-            self._gl.glDrawArrays(GL_LINES, 0, self._line_vert_count)
-            if self._scale_cube_vert_count:
-                self._gl.glDrawArrays(GL_TRIANGLES, self._scale_cube_vert_offset, self._scale_cube_vert_count)
+            for axis in ("x", "y", "z"):
+                first, count = self._line_axis_ranges.get(axis, (0, 0))
+                draw_range(GL_LINES, first, count, axis_colors[axis], f"line_{axis}")
+            for axis in ("x", "y", "z"):
+                first, count = self._scale_cube_axis_ranges.get(axis, (0, 0))
+                draw_range(GL_TRIANGLES, first, count, axis_colors[axis], f"scale_cube_{axis}")
+            first, count = self._scale_center_range
+            draw_range(GL_TRIANGLES, first, count, (0.7, 0.2, 0.8), "scale_center")
         else:
-            self._gl.glDrawArrays(GL_LINES, 0, self._line_vert_count)
-            self._gl.glDrawArrays(GL_TRIANGLES, self._line_vert_count, self._tri_vert_count)
+            for axis in ("x", "y", "z"):
+                first, count = self._line_axis_ranges.get(axis, (0, 0))
+                draw_range(GL_LINES, first, count, axis_colors[axis], f"line_{axis}")
+            for axis in ("x", "y", "z"):
+                first, count = self._cone_axis_ranges.get(axis, (0, 0))
+                draw_range(GL_TRIANGLES, first, count, axis_colors[axis], f"cone_{axis}")
         self._vao.release()
+        self._vbo.release()
 
         self._prog.release()
         try:
             self._gl.glColorMask(True, True, True, True)
         except Exception:
             pass
+        return summary

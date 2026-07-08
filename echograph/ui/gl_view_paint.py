@@ -51,6 +51,9 @@ def paint_gl(view: Any) -> None:
         except Exception:
             pass
 
+        if bool(getattr(view, "_mgl_gizmo_tips_test_enabled", False)):
+            setattr(view, "_mgl_gizmo_tips_test_last_drawn", False)
+
         # Axis overlay (debug) in ModernGL path
         if getattr(view, "_debug_show_axis_overlay", False):
             try:
@@ -69,7 +72,7 @@ def paint_gl(view: Any) -> None:
                 ):
                     return
 
-                if view._axis_overlay.ensure_gl(view):
+                if True:
                     renderer = getattr(view, "_mgl_renderer", None) or view
 
                     P = getattr(renderer, "_mgl_pick_proj", None)
@@ -98,23 +101,34 @@ def paint_gl(view: Any) -> None:
                         try:
                             owner = getattr(view, "_xform_gizmo_owner", None)
                             if owner:
-                                is_splat = False
+                                rot = None
                                 try:
-                                    splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
-                                    if not isinstance(splat_map, dict) or not splat_map:
-                                        splat_map = getattr(renderer, "_mgl_scene_splats", None)
-                                    if isinstance(splat_map, dict) and owner in splat_map:
-                                        is_splat = True
+                                    is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+                                    get_owner_rot = getattr(view, "_get_owner_rot_deg", None)
+                                    if callable(is_pose_joint) and callable(get_owner_rot) and bool(is_pose_joint(owner)):
+                                        rot_deg, _rot_is_splat = get_owner_rot(str(owner))
+                                        rot = tuple(rot_deg)
                                 except Exception:
-                                    is_splat = False
+                                    rot = None
 
-                                get_xf = (
-                                    getattr(renderer, "_mgl_get_scene_splat_xform", None)
-                                    if is_splat
-                                    else getattr(renderer, "_mgl_get_scene_asset_xform", None)
-                                )
-                                xf = get_xf(owner) if callable(get_xf) else {}
-                                rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
+                                if rot is None:
+                                    is_splat = False
+                                    try:
+                                        splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                                        if not isinstance(splat_map, dict) or not splat_map:
+                                            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                                        if isinstance(splat_map, dict) and owner in splat_map:
+                                            is_splat = True
+                                    except Exception:
+                                        is_splat = False
+
+                                    get_xf = (
+                                        getattr(renderer, "_mgl_get_scene_splat_xform", None)
+                                        if is_splat
+                                        else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                                    )
+                                    xf = get_xf(owner) if callable(get_xf) else {}
+                                    rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
                                 rx, ry, rz = float(rot[0]), float(rot[1]), float(rot[2])
                                 cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
                                 cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
@@ -220,12 +234,79 @@ def paint_gl(view: Any) -> None:
 
                     gizmo_visible = bool(getattr(view, "_mgl_gizmo_visible", True))
                     alpha = 1.0 if gizmo_visible else 0.0
-                    view._axis_overlay.draw(
-                        mvp,
-                        mode=mode,
-                        draw_rotate_rings=(mode != "rotate"),
-                        alpha=alpha,
+                    mgl_tips_active = bool(getattr(view, "_mgl_gizmo_tips_test_enabled", False)) and mode in (
+                        "translate",
+                        "scale",
                     )
+                    mgl_tips_drawn = False
+                    mgl_tips_drawn_after = False
+                    log_gl_state = getattr(renderer, "_mgl_retarget_gl_state_snapshot", None)
+                    if callable(log_gl_state):
+                        log_gl_state(
+                            "axis_overlay_before",
+                            gl=getattr(view, "_gl", None),
+                            mode=str(mode),
+                            owner=str(getattr(view, "_xform_gizmo_owner", "") or ""),
+                            owner_kind=str(getattr(view, "_xform_gizmo_owner_kind", "") or ""),
+                            gizmo_pos=tuple(getattr(view, "_xform_gizmo_pos", (0.0, 0.0, 0.0)) or (0.0, 0.0, 0.0)),
+                            gizmo_visible=bool(gizmo_visible),
+                            alpha=float(alpha),
+                        )
+
+                    if mgl_tips_active:
+                        try:
+                            draw_test = getattr(renderer, "_mgl_draw_gizmo_tips_test_overlay", None)
+                            mgl_tips_drawn = bool(draw_test(mvp_np, mode=mode, alpha=alpha)) if callable(draw_test) else False
+                            setattr(view, "_mgl_gizmo_tips_test_last_drawn", bool(mgl_tips_drawn))
+                            if callable(active_rect_fn):
+                                active_rect = active_rect_fn()
+                        except Exception:
+                            mgl_tips_drawn = False
+                            setattr(view, "_mgl_gizmo_tips_test_last_drawn", False)
+
+                    axis_draw_summary = {
+                        "ready": bool(mgl_tips_drawn),
+                        "mode": str(mode),
+                        "backend": "mgl_tips_test" if mgl_tips_drawn else "mgl_tips_test_failed",
+                    }
+
+                    if view._axis_overlay.ensure_gl(view):
+                        axis_draw_summary = view._axis_overlay.draw(
+                            mvp,
+                            mode=mode,
+                            draw_rotate_rings=(mode != "rotate"),
+                            alpha=alpha,
+                        )
+                    if mgl_tips_active:
+                        try:
+                            draw_test = getattr(renderer, "_mgl_draw_gizmo_tips_test_overlay", None)
+                            mgl_tips_drawn_after = (
+                                bool(draw_test(mvp_np, mode=mode, alpha=alpha)) if callable(draw_test) else False
+                            )
+                            setattr(
+                                view,
+                                "_mgl_gizmo_tips_test_last_drawn",
+                                bool(mgl_tips_drawn or mgl_tips_drawn_after),
+                            )
+                            if callable(active_rect_fn):
+                                active_rect = active_rect_fn()
+                        except Exception:
+                            pass
+                    if isinstance(axis_draw_summary, dict) and mgl_tips_active:
+                        axis_draw_summary["mgl_tips_before"] = bool(mgl_tips_drawn)
+                        axis_draw_summary["mgl_tips_after"] = bool(mgl_tips_drawn_after)
+                    if callable(log_gl_state):
+                        log_gl_state(
+                            "axis_overlay_after",
+                            gl=getattr(view, "_gl", None),
+                            mode=str(mode),
+                            owner=str(getattr(view, "_xform_gizmo_owner", "") or ""),
+                            owner_kind=str(getattr(view, "_xform_gizmo_owner_kind", "") or ""),
+                            gizmo_pos=tuple(getattr(view, "_xform_gizmo_pos", (0.0, 0.0, 0.0)) or (0.0, 0.0, 0.0)),
+                            gizmo_visible=bool(gizmo_visible),
+                            alpha=float(alpha),
+                            axis_draw=axis_draw_summary,
+                        )
 
                     # Hover highlight + center square for translate/scale
                     try:
@@ -280,7 +361,7 @@ def paint_gl(view: Any) -> None:
                                 axis_len = 1.0
                                 line_end = axis_len - 0.18
                                 cube_size = 0.12
-                                axis_end = line_end + (cube_size * 0.5) if mode == "scale" else line_end
+                                axis_end = line_end + (cube_size * 0.5) if mode == "scale" else axis_len
 
                                 axis_proj = {
                                     "x": project_local(axis_end, 0.0, 0.0),
@@ -348,6 +429,31 @@ def paint_gl(view: Any) -> None:
                                 setattr(view, "_xform_hover_axis_proj", (center, hover_p1))
                             else:
                                 setattr(view, "_xform_hover_axis_proj", None)
+                            if mgl_tips_active:
+                                try:
+                                    draw_test = getattr(renderer, "_mgl_draw_gizmo_tips_test_overlay", None)
+                                    mgl_hover_drawn = (
+                                        bool(
+                                            draw_test(
+                                                mvp_np,
+                                                mode=mode,
+                                                alpha=alpha,
+                                                hover_axis=hover_axis,
+                                                hover_center=bool(hover_center),
+                                            )
+                                        )
+                                        if callable(draw_test)
+                                        else False
+                                    )
+                                    setattr(
+                                        view,
+                                        "_mgl_gizmo_tips_test_last_drawn",
+                                        bool(mgl_tips_drawn or mgl_tips_drawn_after or mgl_hover_drawn),
+                                    )
+                                    if callable(active_rect_fn):
+                                        active_rect = active_rect_fn()
+                                except Exception:
+                                    pass
 
                         else:
                             setattr(view, "_xform_overlay_mode", None)
