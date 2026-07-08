@@ -4524,6 +4524,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
         seen = set()
         seen_camera = set()
         seen_light = set()
+
+        def _asset_seen_key(path_text, owner_text="", hidden_names=None):
+            key = str(path_text or "").strip()
+            if not key:
+                return ""
+            owner_key = str(owner_text or "").strip().lower()
+            if owner_key:
+                key = key + "::owner::" + owner_key
+            if hidden_names:
+                key = key + "::modeler_hidden::" + "|".join(sorted(str(name).lower() for name in hidden_names))
+            return key
+
         hidden = set()
         xforms = {}
         try:
@@ -5331,9 +5343,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     )
                 _scene_log(f"edge[{edge_idx}] skip: unsupported ext={ext} path={path!r}")
                 continue
-            seen_key = path
-            if modeler_hidden:
-                seen_key = seen_key + "::modeler_hidden::" + "|".join(sorted(name.lower() for name in modeler_hidden))
+            seen_key = _asset_seen_key(path, model_name or src_name, modeler_hidden)
             if seen_key in seen:
                 if isinstance(fx_asset, dict) and model_name:
                     aliases = _fx_target_owner_aliases(owner_item, owner_model, owner_kind)

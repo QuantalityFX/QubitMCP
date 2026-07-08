@@ -2196,6 +2196,15 @@ class GraphGLTimelineWidgetsMixin:
                     menu = QtWidgets.QMenu(self)
                     copy_act = menu.addAction("Copy Animation")
                     paste_act = menu.addAction("Paste Animation")
+                    menu.addSeparator()
+                    remove_act = menu.addAction("Remove Track")
+                    if bool(block.get("resolved", True)):
+                        remove_act.setToolTip(
+                            "Removes the timeline track and clears its saved animation keys. "
+                            "Connected scene assets may create a fresh default track again."
+                        )
+                    else:
+                        remove_act.setToolTip("Removes this stale track and clears its saved animation keys.")
                     try:
                         can_paste = getattr(self._view, "_timeline_can_paste_animation", None)
                         paste_act.setEnabled(bool(callable(can_paste) and can_paste("composition_block")))
@@ -2206,6 +2215,9 @@ class GraphGLTimelineWidgetsMixin:
                     )
                     paste_act.triggered.connect(
                         lambda _checked=False, b=block: getattr(self._view, "_timeline_paste_composition_animation", lambda *_: False)(b)
+                    )
+                    remove_act.triggered.connect(
+                        lambda _checked=False, b=block: getattr(self._view, "_timeline_remove_composition_block", lambda *_: False)(b)
                     )
                     try:
                         menu.exec(global_pos)

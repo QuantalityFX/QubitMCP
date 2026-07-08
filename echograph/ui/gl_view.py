@@ -933,6 +933,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_audio_duration_ms = 0
         self._timeline_audio_wave_samples: List[float] = []
         self._timeline_audio_loaded_key = None
+        self._timeline_scene_assets_scene_name = ""
         self._timeline_audio_player = None
         self._timeline_audio_output = None
         self._timeline_audio_muted = False
@@ -5910,6 +5911,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
 
     def load_scene_assets(self, assets: List[Dict[str, str]], frame: bool = True) -> None:
+        try:
+            scene_tag = str(self._timeline_default_scene_name() or "").strip()
+        except Exception:
+            scene_tag = str(getattr(self, "_timeline_scene_name", "") or "").strip()
+        self._timeline_scene_assets_scene_name = scene_tag
         try:
             self._timeline_scene_assets = [
                 dict(entry)

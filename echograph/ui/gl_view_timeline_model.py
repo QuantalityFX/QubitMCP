@@ -228,6 +228,16 @@ class GraphGLTimelineModelMixin:
         assets = getattr(self, "_timeline_scene_assets", None)
         if not isinstance(assets, list):
             assets = []
+        try:
+            asset_scene = str(getattr(self, "_timeline_scene_assets_scene_name", "") or "").strip()
+        except Exception:
+            asset_scene = ""
+        try:
+            current_scene = str(getattr(self, "_timeline_scene_name", "") or "").strip() or self._timeline_default_scene_name()
+        except Exception:
+            current_scene = str(getattr(self, "_timeline_scene_name", "") or "").strip()
+        if asset_scene and current_scene and asset_scene.lower() != str(current_scene).strip().lower():
+            return []
         out: List[Dict[str, object]] = []
         seen = set()
         for entry in assets:
@@ -2059,6 +2069,148 @@ class GraphGLTimelineModelMixin:
         }
         self._timeline_write_animation_clipboard_to_system(self._timeline_animation_clipboard)
         self._timeline_animation_clipboard_message(f"Copied animation keys from {key}.")
+        return True
+
+    def _timeline_delete_owner_animation_files(self, owner: str) -> int:
+        key = str(owner or "").strip()
+        if not key:
+            return 0
+        key_norm = self._timeline_owner_norm(key)
+        candidates: List[Path] = []
+        seen: set[str] = set()
+
+        def _add_candidate(path_obj) -> None:
+            if path_obj is None:
+                return
+            try:
+                path = Path(path_obj)
+            except Exception:
+                return
+            try:
+                pkey = str(path.resolve())
+            except Exception:
+                pkey = str(path)
+            if pkey in seen:
+                return
+            seen.add(pkey)
+            candidates.append(path)
+
+        _add_candidate(self._timeline_owner_animation_path(key))
+        try:
+            scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip()
+        except Exception:
+            scene_name = ""
+        if not scene_name:
+            try:
+                scene_name = self._timeline_default_scene_name()
+            except Exception:
+                scene_name = "scene"
+        try:
+            _add_candidate(
+                self._timeline_anim_file_path(
+                    scene_name or "scene",
+                    owner_name=key,
+                    legacy=True,
+                    create=False,
+                )
+            )
+        except Exception:
+            pass
+        try:
+            for path in self._timeline_owner_file_paths() or []:
+                try:
+                    file_owner, _file_keys = self._timeline_read_owner_keys_file(path)
+                except Exception:
+                    continue
+                if self._timeline_owner_norm(file_owner) == key_norm:
+                    _add_candidate(path)
+        except Exception:
+            pass
+
+        removed = 0
+        for path in candidates:
+            try:
+                if path.exists():
+                    path.unlink()
+                    removed += 1
+            except Exception:
+                pass
+        try:
+            self._timeline_owner_keys_cache = {}
+        except Exception:
+            pass
+        try:
+            self._timeline_invalidate_owner_animation_cache(key)
+        except Exception:
+            pass
+        return int(removed)
+
+    def _timeline_remove_composition_block(self, block) -> bool:
+        if not isinstance(block, dict):
+            return False
+        owner = str(block.get("owner") or "").strip()
+        owner_norm = self._timeline_owner_norm(owner)
+        block_id = str(block.get("id") or "").strip()
+        if not owner_norm and not block_id:
+            return False
+
+        blocks = self._timeline_composition_blocks_list()
+        kept: List[Dict[str, object]] = []
+        removed_any = False
+        for entry in list(blocks or []):
+            if not isinstance(entry, dict):
+                continue
+            entry_id = str(entry.get("id") or "").strip()
+            entry_owner_norm = self._timeline_owner_norm(str(entry.get("owner") or ""))
+            same = bool(block_id and entry_id == block_id) or bool(owner_norm and entry_owner_norm == owner_norm)
+            if same:
+                removed_any = True
+                continue
+            kept.append(entry)
+        if not removed_any:
+            return False
+
+        self._timeline_composition_blocks = kept
+        deleted_files = self._timeline_delete_owner_animation_files(owner)
+        try:
+            selected_owner = str(getattr(self, "_timeline_composition_selected_owner", "") or "").strip()
+            if owner_norm and self._timeline_owner_norm(selected_owner) == owner_norm:
+                self._timeline_select_composition_owner(None)
+        except Exception:
+            pass
+        try:
+            current_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+            if owner_norm and self._timeline_owner_norm(current_owner) == owner_norm:
+                self._timeline_owner_name = None
+                self._timeline_keys = {}
+        except Exception:
+            pass
+        try:
+            self._timeline_save_composition()
+        except Exception:
+            pass
+        try:
+            self._timeline_total_max = max(240, self._timeline_composition_max_frame())
+            self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+        except Exception:
+            pass
+        try:
+            self._timeline_refresh_speed_control()
+            self._timeline_update_key_count_label()
+            self._timeline_refresh_coord_labels()
+        except Exception:
+            pass
+        try:
+            frame = int(self._timeline_current_frame())
+            self._timeline_apply_other_owner_frames(frame)
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+        suffix = f" and deleted {deleted_files} timeline file(s)" if deleted_files else ""
+        self._timeline_animation_clipboard_message(f"Removed track {owner or block_id}{suffix}.")
         return True
 
     def _timeline_replace_owner_animation_keys(

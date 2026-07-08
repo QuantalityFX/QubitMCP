@@ -1874,6 +1874,18 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
     seen_wire = set()
     seen_camera = set()
     seen_light = set()
+
+    def _asset_seen_key(path_text, owner_text="", hidden_names=None):
+        key = str(path_text or "").strip()
+        if not key:
+            return ""
+        owner_key = str(owner_text or "").strip().lower()
+        if owner_key:
+            key = key + "::owner::" + owner_key
+        if hidden_names:
+            key = key + "::modeler_hidden::" + "|".join(sorted(str(name).lower() for name in hidden_names))
+        return key
+
     scene_owner_names = set()
     for edge in in_edges:
         src_item = getattr(edge, "src", None)
@@ -2954,9 +2966,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         f"target_owner={node_name or '<none>'} ext={ext!r} path={path!r}"
                     )
             continue
-        key = path.strip()
-        if modeler_hidden:
-            key = key + "::modeler_hidden::" + "|".join(sorted(name.lower() for name in modeler_hidden))
+        key = _asset_seen_key(path, node_name or src_name, modeler_hidden)
         if key in seen:
             if isinstance(fx_asset, dict) and node_name:
                 aliases = _fx_target_owner_aliases(scene, owner_item, owner_model, owner_kind)

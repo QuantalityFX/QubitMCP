@@ -4083,6 +4083,22 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         # Debounce duplicate loads (prevents repeated reload loops)
         try:
+            try:
+                if isinstance(preview_context, dict):
+                    scene_context_sig = (
+                        "preview",
+                        str(preview_context.get("scene_name") or preview_context.get("name") or ""),
+                        str(preview_context.get("node") or ""),
+                    )
+                else:
+                    active_scene = getattr(self, "_active_scene_node", None)
+                    scene_context_sig = (
+                        "scene",
+                        str(getattr(active_scene, "name", "") or ""),
+                        id(active_scene) if active_scene is not None else None,
+                    )
+            except Exception:
+                scene_context_sig = ("scene", "", None)
             sig = []
             for entry in clean:
                 xf = entry.get("xform") or {}
@@ -4190,7 +4206,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         repr(entry.get("aspect_height", None)),
                     )
                 )
-            sig = tuple(sorted(sig))
+            sig = (scene_context_sig, tuple(sorted(sig)))
             now = time.time()
             last_sig = getattr(self, "_scene_assets_sig", None)
             last_ts = float(getattr(self, "_scene_assets_ts", 0.0) or 0.0)
