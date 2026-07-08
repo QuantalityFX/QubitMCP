@@ -4602,6 +4602,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 pass
             try:
+                if self._frame_selected_retarget_joint():
+                    self.update()
+                    return
+            except Exception:
+                pass
+            try:
                 if self._frame_selected_owner():
                     self.update()
                     return
@@ -4663,6 +4669,136 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             return True
         except Exception:
             return False
+
+    def _validated_frame_point(self, point):
+        if np is None or point is None:
+            return None
+        try:
+            pos = np.asarray(point, dtype=np.float32).reshape(-1)[:3]
+            if pos.shape[0] < 3 or not bool(np.all(np.isfinite(pos))):
+                return None
+            return pos.astype(np.float32, copy=False)
+        except Exception:
+            return None
+
+    def _frame_mgl_point(self, point, radius: float = 0.5) -> bool:
+        pos = self._validated_frame_point(point)
+        if pos is None:
+            return False
+        try:
+            r = max(1.0e-4, float(radius))
+        except Exception:
+            r = 0.5
+        return self._frame_mgl_bounds(pos - r, pos + r)
+
+    def _retarget_joint_frame_position_for_owner(self, owner: str):
+        owner = str(owner or "").strip()
+        if not owner:
+            return None
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        try:
+            pose_from_owner = getattr(renderer, "_mgl_retarget_target_pose_joint_from_owner", None)
+            pose_joint = str(pose_from_owner(owner) or "").strip() if callable(pose_from_owner) else ""
+        except Exception:
+            pose_joint = ""
+        if pose_joint:
+            pos = None
+            try:
+                get_pose_pos = getattr(renderer, "_mgl_retarget_target_pose_joint_world_position", None)
+                pos = get_pose_pos(pose_joint) if callable(get_pose_pos) else None
+            except Exception:
+                pos = None
+            if pos is None:
+                try:
+                    selected = getattr(renderer, "_mgl_retarget_selected_joint", None)
+                    if isinstance(selected, dict) and str(selected.get("name") or "").strip() == pose_joint:
+                        pos = selected.get("position")
+                except Exception:
+                    pos = None
+            if pos is None and owner == str(getattr(self, "_xform_gizmo_owner", "") or "").strip():
+                pos = getattr(self, "_xform_gizmo_pos", None)
+            return self._validated_frame_point(pos)
+
+        try:
+            decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            decoded = decode_joint(owner) if callable(decode_joint) else None
+        except Exception:
+            decoded = None
+        if decoded:
+            pos = None
+            try:
+                get_joint_pos = getattr(renderer, "_mgl_scene_skeleton_joint_world_position", None)
+                pos = get_joint_pos(owner) if callable(get_joint_pos) else None
+            except Exception:
+                pos = None
+            if pos is None and owner == str(getattr(self, "_xform_gizmo_owner", "") or "").strip():
+                pos = getattr(self, "_xform_gizmo_pos", None)
+            return self._validated_frame_point(pos)
+        try:
+            owner_kind = str(getattr(self, "_xform_gizmo_owner_kind", "") or "").strip().lower()
+            if owner == str(getattr(self, "_xform_gizmo_owner", "") or "").strip() and owner_kind in {
+                "retarget_target_joint",
+                "scene_skeleton_joint",
+            }:
+                return self._validated_frame_point(getattr(self, "_xform_gizmo_pos", None))
+        except Exception:
+            pass
+        return None
+
+    def _selected_retarget_joint_frame_position(self):
+        owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+        pos = self._retarget_joint_frame_position_for_owner(owner)
+        if pos is not None:
+            return pos
+
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        selected = getattr(renderer, "_mgl_retarget_selected_joint", None)
+        if not isinstance(selected, dict):
+            return None
+        role = str(selected.get("role") or "").strip().lower()
+        name = str(selected.get("name") or "").strip()
+        if not role or not name:
+            return None
+        if role == "scene_skeleton":
+            return self._validated_frame_point(selected.get("position"))
+        if role == "target":
+            try:
+                get_pose_pos = getattr(renderer, "_mgl_retarget_target_pose_joint_world_position", None)
+                pos = self._validated_frame_point(get_pose_pos(name) if callable(get_pose_pos) else None)
+                if pos is not None:
+                    return pos
+            except Exception:
+                pass
+        try:
+            owners = getattr(renderer, "_mgl_retarget_role_owners", None)
+            handles_by_owner = getattr(renderer, "_mgl_retarget_joint_handles_by_owner", None)
+            owner_key = str((owners or {}).get(role) or "").strip() if isinstance(owners, dict) else ""
+            handles = handles_by_owner.get(owner_key) if isinstance(handles_by_owner, dict) else None
+            pick_positions = getattr(renderer, "_mgl_retarget_pick_positions_for_owner", None)
+            if owner_key and isinstance(handles, list) and callable(pick_positions):
+                positions, _radius_scale = pick_positions(owner_key, handles)
+                positions = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
+                for index, handle in enumerate(handles):
+                    if str((handle or {}).get("name") or "").strip() != name:
+                        continue
+                    if index < int(positions.shape[0]):
+                        return self._validated_frame_point(positions[index])
+        except Exception:
+            pass
+        return self._validated_frame_point(selected.get("position"))
+
+    def _frame_selected_retarget_joint(self) -> bool:
+        pos = self._selected_retarget_joint_frame_position()
+        if pos is None:
+            return False
+        try:
+            if self._reattach_retarget_target_pose_gizmo_if_selected():
+                refreshed = self._selected_retarget_joint_frame_position()
+                if refreshed is not None:
+                    pos = refreshed
+        except Exception:
+            pass
+        return self._frame_mgl_point(pos)
 
     def _selected_mesh_object_owner(self) -> str:
         try:
@@ -4789,6 +4925,25 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             owner = getattr(self, "_xform_gizmo_owner", None)
         if not owner:
             return False
+        joint_pos = self._retarget_joint_frame_position_for_owner(str(owner))
+        if joint_pos is not None:
+            return self._frame_mgl_point(joint_pos)
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            pose_from_owner = getattr(renderer, "_mgl_retarget_target_pose_joint_from_owner", None)
+            if callable(pose_from_owner) and str(pose_from_owner(str(owner)) or "").strip():
+                return False
+            decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            if callable(decode_joint) and decode_joint(str(owner)):
+                return False
+            owner_kind = str(getattr(self, "_xform_gizmo_owner_kind", "") or "").strip().lower()
+            if str(owner) == str(getattr(self, "_xform_gizmo_owner", "") or "").strip() and owner_kind in {
+                "retarget_target_joint",
+                "scene_skeleton_joint",
+            }:
+                return False
+        except Exception:
+            pass
         if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() == "object":
             bmin, bmax = self._scene_owner_selection_bounds(owner)
             if bmin is not None and bmax is not None:
