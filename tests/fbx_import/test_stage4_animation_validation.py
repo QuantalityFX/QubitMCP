@@ -39,12 +39,22 @@ class _FakeNodeItem:
         return self._scene
 
 
-class _FakeScene:
-    def _ordered_in_edges(self, _item):
-        return []
+@dataclass
+class _FakeEdge:
+    src: _FakeNodeItem
+    dst_port_name: str
+    src_port_name: str = ""
 
-    def _in_edges(self, _item):
-        return []
+
+class _FakeScene:
+    def __init__(self, edge_map: dict | None = None):
+        self._edge_map = dict(edge_map or {})
+
+    def _ordered_in_edges(self, item):
+        return list(self._edge_map.get(item, []))
+
+    def _in_edges(self, item):
+        return self._ordered_in_edges(item)
 
 
 def _param_list(**kwargs) -> list[dict]:
@@ -73,6 +83,28 @@ def _clip(name: str, joint_name: str = "hip") -> AnimationClip:
                 translation_keys=[
                     Vec3Keyframe(time=0.0, value=(0.0, 0.0, 0.0)),
                     Vec3Keyframe(time=1.0, value=(1.0, 0.0, 0.0)),
+                ],
+                rotation_keys=[
+                    QuatKeyframe(time=0.0, value=(0.0, 0.0, 0.0, 1.0)),
+                ],
+                scale_keys=[],
+            )
+        ],
+    )
+
+
+def _clip_with_frame0_translation(name: str, x_value: float) -> AnimationClip:
+    return AnimationClip(
+        name=name,
+        start_time=0.0,
+        end_time=1.0,
+        sample_rate_hz=30.0,
+        tracks=[
+            JointAnimationTrack(
+                joint_name="hip",
+                translation_keys=[
+                    Vec3Keyframe(time=0.0, value=(float(x_value), 0.0, 0.0)),
+                    Vec3Keyframe(time=1.0, value=(float(x_value) + 1.0, 0.0, 0.0)),
                 ],
                 rotation_keys=[
                     QuatKeyframe(time=0.0, value=(0.0, 0.0, 0.0, 1.0)),
@@ -124,6 +156,88 @@ class FbxImportStage4AnimationValidationTests(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(result.effective_sources["animated_pose"], str(animated))
         self.assertIs(getattr(model, "_fbx_anim_animated_result", None), animated_anim)
+
+    def test_animated_capture_pose_keeps_rest_skinning_bind(self) -> None:
+        rest = Path("V:/virtual/rest.fbx")
+        capture = Path("V:/virtual/capture_pose.fbx")
+        animated = Path("V:/virtual/anim.fbx")
+
+        capture_src = _FakeNodeItem(
+            _FakeModel(
+                name="CaptureSource",
+                kind="fbx_import",
+                params=_param_list(rest_geometry=str(capture), capture_pose="", animated_pose=str(capture)),
+            ),
+            None,
+        )
+        model = _FakeModel(
+            name="FBXImportStage4Capture",
+            kind="fbx_import",
+            params=_param_list(rest_geometry=str(rest), capture_pose="", animated_pose=str(animated)),
+        )
+        node = _FakeNodeItem(model)
+        scene = _FakeScene(
+            {
+                node: [
+                    _FakeEdge(
+                        src=capture_src,
+                        dst_port_name="capture_pose",
+                        src_port_name="animated_pose",
+                    )
+                ]
+            }
+        )
+        node._scene = scene
+
+        rest_bind = FBXBindIngestResult(source_path=str(rest), skeleton=_skeleton("Rig"))
+        rest_anim = FBXAnimationIngestResult(source_path=str(rest), clips=[_clip("RestClip")])
+        capture_anim = FBXAnimationIngestResult(
+            source_path=str(capture),
+            clips=[_clip_with_frame0_translation("CapturePose", 2.0)],
+        )
+        animated_anim = FBXAnimationIngestResult(
+            source_path=str(animated),
+            clips=[_clip_with_frame0_translation("RunClip", 2.0)],
+        )
+
+        def _resolve(raw, _base):
+            text = str(raw)
+            if text == str(rest):
+                return rest
+            if text == str(capture):
+                return capture
+            if text == str(animated):
+                return animated
+            return None
+
+        with patch("nodes.fbx_import.spec._resolve_existing_path", side_effect=_resolve), patch(
+            "nodes.fbx_import.spec.ingest_fbx_bind_data",
+            return_value=rest_bind,
+        ), patch(
+            "nodes.fbx_import.spec.ingest_fbx_animation_data",
+            side_effect=[rest_anim, capture_anim, animated_anim],
+        ):
+            result = resolve_fbx_import_sources(
+                node,
+                base_dir=Path("V:/virtual"),
+                persist=True,
+                validate_bind_data=True,
+                validate_animation_data=True,
+            )
+
+        self.assertEqual(result.status, "warning")
+        self.assertEqual(result.effective_sources["capture_pose"], str(capture))
+        self.assertEqual(getattr(model, "_fbx_source_role_capture_pose", ""), "animated_pose")
+        capture_bind = getattr(model, "_fbx_bind_capture_result", None)
+        self.assertIs(capture_bind, rest_bind)
+        hip = capture_bind.skeleton.joints[1]
+        self.assertEqual(tuple(hip.local_bind.translation), (0.0, 0.0, 0.0))
+        self.assertTrue(
+            any(msg.startswith("capture_pose: frame0 differs strongly") for msg in result.warnings)
+        )
+        self.assertTrue(
+            any(msg.startswith("animated_pose: frame0 differs strongly") for msg in result.warnings)
+        )
 
     def test_failed_animated_override_falls_back_to_rest(self) -> None:
         rest = Path("V:/virtual/rest.fbx")

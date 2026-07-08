@@ -352,7 +352,15 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
             or node_icons._librarian_icon()
             or node_icons._output_icon()
         )
-    elif key == "export_fbx":
+    elif key in (
+        "export_fbx",
+        "export_fbx_animation",
+        "export fbx animation",
+        "exportfbxanimation",
+        "fbx_animation_export",
+        "fbx animation export",
+        "fbxanimationexport",
+    ):
         icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
     elif key == "output":
         icon_pm = node_icons._output_icon()
@@ -402,7 +410,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "qubit_deck_controller",

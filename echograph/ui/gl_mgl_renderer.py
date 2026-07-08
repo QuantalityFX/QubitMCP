@@ -2388,6 +2388,16 @@ void main() {
                 metadata = getattr(mesh_obj, "metadata", None)
             except Exception:
                 metadata = None
+            inverse_bind_matrices = None
+            if isinstance(metadata, dict):
+                try:
+                    inv_raw = metadata.get("inverse_bind_matrices")
+                    if inv_raw is not None:
+                        inv_arr = np.asarray(inv_raw, dtype="f4").reshape(-1, 4, 4)
+                        if inv_arr.shape[0] > 0:
+                            inverse_bind_matrices = inv_arr.copy()
+                except Exception:
+                    inverse_bind_matrices = None
             if isinstance(metadata, dict):
                 for value in list(metadata.get("edge_indices") or []):
                     try:
@@ -2445,6 +2455,7 @@ void main() {
                     "bind_tri_normals": tri_normals,
                     "joint_indices": joint_indices,
                     "joint_weights": joint_weights,
+                    "inverse_bind_matrices": inverse_bind_matrices,
                 }
             )
         return specs
@@ -2467,7 +2478,14 @@ void main() {
             if normals.size != points.size:
                 normals = self._mgl_fbx_triangle_normals(points)
             uvs = np.zeros((points.shape[0], 2), dtype="f4")
-            submeshes.append(SubMeshData(points=points, normals=normals, uvs=uvs))
+            submeshes.append(
+                SubMeshData(
+                    points=points,
+                    normals=normals,
+                    uvs=uvs,
+                    name=str(spec.get("name", "") or "").strip() or None,
+                )
+            )
             points_all.append(points)
             normals_all.append(normals)
             uvs_all.append(uvs)
@@ -3368,6 +3386,7 @@ void main() {
                         "fit_rmse": float(rmse),
                         "name": str(spec.get("name", "") or ""),
                         "edge_indices": np.asarray(spec.get("edge_indices"), dtype=np.int64).ravel(),
+                        "inverse_bind_matrices": spec.get("inverse_bind_matrices"),
                     }
                 )
         if skinning_enabled and runtime_meshes:
@@ -3448,6 +3467,7 @@ void main() {
                         "affine": np.eye(4, dtype="f4"),
                         "name": str(spec.get("name", "") or ""),
                         "edge_indices": np.asarray(spec.get("edge_indices"), dtype=np.int64).ravel(),
+                        "inverse_bind_matrices": spec.get("inverse_bind_matrices"),
                     }
                 )
         if not entries:
@@ -3524,6 +3544,12 @@ void main() {
             return
         clip = runtime.get("clip")
         loop = bool(runtime.get("loop", True))
+        meshes = list(runtime.get("meshes") or [])
+        needs_mesh_inverse_binds = any(
+            mesh.get("inverse_bind_matrices") is not None
+            for mesh in meshes
+            if isinstance(mesh, dict)
+        )
         context = payload.get("fbx_rig_context")
         frame = self._mgl_timeline_frame_index()
         sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(
@@ -3540,7 +3566,7 @@ void main() {
                     clip,
                     sample_seconds,
                     loop=loop,
-                    include_debug_data=False,
+                    include_debug_data=bool(needs_mesh_inverse_binds),
                 )
         except Exception:
             return
@@ -3552,9 +3578,24 @@ void main() {
         except Exception:
             return
         joint_count = int(skin_mats.shape[0])
-        meshes = list(runtime.get("meshes") or [])
+        global_mats = None
+        if bool(needs_mesh_inverse_binds):
+            try:
+                global_mats = np.asarray(evaluation.global_matrices, dtype="f4").reshape(-1, 4, 4)
+            except Exception:
+                global_mats = None
         skin_deform_started = time.perf_counter()
         for mesh in meshes:
+            mesh_skin_mats = skin_mats
+            if global_mats is not None:
+                try:
+                    inv_bind_mats = np.asarray(mesh.get("inverse_bind_matrices"), dtype="f4").reshape(-1, 4, 4)
+                    count = min(int(global_mats.shape[0]), int(inv_bind_mats.shape[0]), int(joint_count))
+                    if count > 0:
+                        mesh_skin_mats = np.array(skin_mats, dtype="f4", copy=True)
+                        mesh_skin_mats[:count] = np.matmul(global_mats[:count], inv_bind_mats[:count])
+                except Exception:
+                    mesh_skin_mats = skin_mats
             bind_positions = np.asarray(mesh.get("bind_positions"), dtype="f4").reshape(-1, 3)
             triangle_indices = np.asarray(mesh.get("triangle_indices"), dtype=np.int64).ravel()
             joint_indices = np.asarray(mesh.get("joint_indices"), dtype=np.int32)
@@ -3574,14 +3615,14 @@ void main() {
                     ws = np.asarray(slot.get("weights"), dtype="f4").ravel()
                     if vids.size == 0 or js.size == 0 or ws.size == 0:
                         continue
-                    valid = (js >= 0) & (js < joint_count) & (ws > 1.0e-8)
+                    valid = (js >= 0) & (js < int(mesh_skin_mats.shape[0])) & (ws > 1.0e-8)
                     if not np.any(valid):
                         continue
                     if np.count_nonzero(valid) != vids.size:
                         vids = vids[valid]
                         js = js[valid]
                         ws = ws[valid]
-                    transformed = self._mgl_fbx_transform_points_row_major(skin_mats[js], bind_positions[vids])
+                    transformed = self._mgl_fbx_transform_points_row_major(mesh_skin_mats[js], bind_positions[vids])
                     deformed[vids] += transformed * ws[:, None]
                 if unweighted_indices.size:
                     deformed[unweighted_indices] = bind_positions[unweighted_indices]
@@ -3598,10 +3639,10 @@ void main() {
                 for slot in range(slots):
                     js = joint_indices[:, slot]
                     ws = joint_weights[:, slot]
-                    valid = (js >= 0) & (js < joint_count) & (ws > 1.0e-8)
+                    valid = (js >= 0) & (js < int(mesh_skin_mats.shape[0])) & (ws > 1.0e-8)
                     if not np.any(valid):
                         continue
-                    transformed = self._mgl_fbx_transform_points_row_major(skin_mats[js[valid]], bind_positions[valid])
+                    transformed = self._mgl_fbx_transform_points_row_major(mesh_skin_mats[js[valid]], bind_positions[valid])
                     deformed[valid] += transformed * ws[valid, None]
                     weighted_mask[valid] = True
                 if np.any(~weighted_mask):
@@ -29238,11 +29279,22 @@ void main() {
                     fbx_rig_context = None
                 if isinstance(fbx_rig_context, dict):
                     self._mgl_fbx_joints_log_enabled = bool(fbx_rig_context.get("fbx_debug_log", False))
+                fbx_skinning_flag = (
+                    fbx_rig_context.get("mesh_skinning_enabled")
+                    if isinstance(fbx_rig_context, dict)
+                    else None
+                )
+                fbx_skinning_enabled = bool(
+                    fbx_skinning_flag is not None
+                    and isinstance(fbx_rig_context, dict)
+                    and self._mgl_fbx_mesh_skinning_enabled(fbx_rig_context)
+                )
                 fbx_bind_geometry_only = bool(
                     isinstance(fbx_rig_context, dict)
-                    and not self._mgl_fbx_mesh_skinning_enabled(fbx_rig_context)
+                    and fbx_skinning_flag is not None
+                    and not fbx_skinning_enabled
                 )
-                if fbx_bind_geometry_only:
+                if isinstance(fbx_rig_context, dict) and (fbx_skinning_enabled or fbx_bind_geometry_only):
                     mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(fbx_rig_context)
                 if mesh_arrays is None:
                     try:
@@ -32040,11 +32092,22 @@ void main() {
                         normals = mesh_arrays.normals
                         uvs = mesh_arrays.uvs
                     elif ext == ".fbx":
+                        fbx_skinning_flag = (
+                            fbx_rig_context.get("mesh_skinning_enabled")
+                            if isinstance(fbx_rig_context, dict)
+                            else None
+                        )
+                        fbx_skinning_enabled = bool(
+                            fbx_skinning_flag is not None
+                            and isinstance(fbx_rig_context, dict)
+                            and self._mgl_fbx_mesh_skinning_enabled(fbx_rig_context)
+                        )
                         fbx_bind_geometry_only = bool(
                             isinstance(fbx_rig_context, dict)
-                            and not self._mgl_fbx_mesh_skinning_enabled(fbx_rig_context)
+                            and fbx_skinning_flag is not None
+                            and not fbx_skinning_enabled
                         )
-                        if fbx_bind_geometry_only:
+                        if isinstance(fbx_rig_context, dict) and (fbx_skinning_enabled or fbx_bind_geometry_only):
                             mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(
                                 fbx_rig_context if isinstance(fbx_rig_context, dict) else None
                             )

@@ -370,6 +370,14 @@ def _rebuild_inverse_bind_from_local_bind(
         )
 
 
+def rebuild_inverse_bind_from_local_bind(
+    skeleton: SkeletonAsset,
+    warnings: List[str] | None = None,
+) -> None:
+    """Recompute inverse bind matrices from the skeleton's current local bind pose."""
+    _rebuild_inverse_bind_from_local_bind(skeleton, warnings if warnings is not None else [])
+
+
 def _quat_from_rotation_matrix(m00, m01, m02, m10, m11, m12, m20, m21, m22):
     trace = m00 + m11 + m22
     if trace > 0.0:
@@ -760,6 +768,7 @@ def _build_mesh_assets(
     bone_name_to_joint_idx: Dict[str, int],
     *,
     max_influences: int,
+    transpose_bone_offsets: bool = False,
     warnings: List[str],
 ) -> List[SkeletalMeshAsset]:
     out: List[SkeletalMeshAsset] = []
@@ -779,6 +788,10 @@ def _build_mesh_assets(
         edge_indices = _authored_edge_indices(faces, vertex_count)
 
         per_vertex: Dict[int, Dict[int, float]] = {}
+        mesh_inverse_bind_matrices = [
+            [float(v) for v in tuple(joint.inverse_bind_matrix)]
+            for joint in list(getattr(skeleton, "joints", []) or [])
+        ]
         clamp_warning_count = 0
         clamp_warning_examples: List[str] = []
         max_warning_examples = 3
@@ -790,6 +803,12 @@ def _build_mesh_assets(
                     f"Mesh '{mesh_name}' bone '{bone_name}' does not map to skeleton; weights ignored."
                 )
                 continue
+
+            offset = _matrix4_from_obj(getattr(bone, "offsetmatrix", None))
+            if bool(transpose_bone_offsets):
+                offset = _matrix4_transpose(offset)
+            if 0 <= int(joint_idx) < len(mesh_inverse_bind_matrices):
+                mesh_inverse_bind_matrices[int(joint_idx)] = [float(v) for v in offset]
 
             weights = list(getattr(bone, "weights", None) or [])
             weights.sort(key=lambda w: (_weight_vertex_index(w), _weight_value(w)))
@@ -849,6 +868,8 @@ def _build_mesh_assets(
                 "source_mesh_name": raw_mesh_name,
                 "bind_positions": [list(v) for v in bind_positions],
                 "edge_indices": [int(i) for i in edge_indices],
+                "inverse_bind_matrices": mesh_inverse_bind_matrices,
+                "inverse_bind_source": "mesh_clusters",
             },
         )
         asset.validate(skeleton)
@@ -1276,10 +1297,12 @@ def _ingest_scene(
                 bone_offsets[bone_name] = off
             elif prev != off:
                 warnings.append(
-                    f"Bone '{bone_name}' had inconsistent inverse bind matrices; first value kept."
+                    f"Bone '{bone_name}' had inconsistent inverse bind matrices; "
+                    "first value kept on the skeleton, per-mesh cluster values preserved."
                 )
 
-    if _infer_row_vector_matrix_layout(node_records):
+    row_vector_layout = _infer_row_vector_matrix_layout(node_records)
+    if row_vector_layout:
         for rec in node_records:
             rec.transform = _matrix4_transpose(rec.transform)
         for bone_name, matrix in list(bone_offsets.items()):
@@ -1305,6 +1328,7 @@ def _ingest_scene(
         skeleton=skeleton,
         bone_name_to_joint_idx=source_name_to_joint_idx,
         max_influences=max(1, int(max_influences)),
+        transpose_bone_offsets=bool(row_vector_layout),
         warnings=warnings,
     )
 
@@ -1466,4 +1490,5 @@ __all__ = [
     "SkeletonCompatibilityReport",
     "ingest_fbx_bind_data",
     "compare_skeleton_layout",
+    "rebuild_inverse_bind_from_local_bind",
 ]

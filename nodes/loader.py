@@ -549,6 +549,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Export FBX plugin import failed:", e)
 
+    # 14.05) Export FBX Animation
+    try:
+        from nodes import fbx_animation_export
+        if hasattr(fbx_animation_export, "register"):
+            fbx_animation_export.register()
+            _safe_probe("export_fbx_animation")
+        else:
+            print("[EchoGraph] Export FBX Animation module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Export FBX Animation plugin import failed:", e)
+
     # 14.1) Export OBJ
     try:
         from nodes import export_obj

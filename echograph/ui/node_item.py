@@ -383,6 +383,21 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _export_fbx.register()
             except Exception:
                 pass
+        # Ensure Export FBX Animation spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "export_fbx_animation",
+            "exportfbxanimation",
+            "export fbx animation",
+            "fbx_animation_export",
+            "fbxanimationexport",
+            "fbx animation export",
+        ):
+            try:
+                from nodes import fbx_animation_export as _fbx_animation_export  # type: ignore
+                if hasattr(_fbx_animation_export, "register"):
+                    _fbx_animation_export.register()
+            except Exception:
+                pass
         # Ensure FBX Import spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("fbx_import", "fbx import", "fbximport"):
             try:
@@ -1360,6 +1375,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice", "splat_depth_test"})
         elif kind in ("export_fbx", "exportfbx", "export fbx"):
             hidden.update({"output", "include_hidden"})
+        elif kind in (
+            "export_fbx_animation",
+            "exportfbxanimation",
+            "export fbx animation",
+            "fbx_animation_export",
+            "fbxanimationexport",
+            "fbx animation export",
+        ):
+            hidden.update({"output", "export_animation", "export_scale", "start_frame", "end_frame", "fps"})
         elif kind in ("render", "render_sequence", "render node"):
             hidden.update({"output", "camera", "frame_rate", "format", "start_frame", "end_frame"})
         elif kind in ("video_player", "video player", "videoplayer"):
@@ -2190,6 +2214,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
             # Match embedded Export FBX controls and leave extra bottom frame room.
             body_h = 124
             node_w = self._BASE_W
+        elif kind in (
+            "export_fbx_animation",
+            "exportfbxanimation",
+            "export fbx animation",
+            "fbx_animation_export",
+            "fbxanimationexport",
+            "fbx animation export",
+        ):
+            body_h = 160
+            node_w = max(self._BASE_W, 260)
         elif kind in ("render", "render_sequence", "render node"):
             # Keep extra bottom frame space for Render node controls.
             body_h = 198
@@ -7746,6 +7780,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "export_fbx",
                 "exportfbx",
                 "export fbx",
+                "export_fbx_animation",
+                "exportfbxanimation",
+                "export fbx animation",
+                "fbx_animation_export",
+                "fbxanimationexport",
+                "fbx animation export",
                 "post_process",
                 "postprocess",
                 "post_processing",
@@ -8032,7 +8072,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._keyboard_sequence_icon() or node_icons._output_icon()
             elif kind_lower in ("serial_com", "serial com", "serial_port", "serial port"):
                 icon_pm = node_icons._serial_com_icon() or node_icons._output_icon()
-            elif kind_lower in ("export_fbx", "exportfbx", "export fbx"):
+            elif kind_lower in (
+                "export_fbx",
+                "exportfbx",
+                "export fbx",
+                "export_fbx_animation",
+                "exportfbxanimation",
+                "export fbx animation",
+                "fbx_animation_export",
+                "fbxanimationexport",
+                "fbx animation export",
+            ):
                 icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
             elif kind_lower == "output":
                 icon_pm = node_icons._output_icon()
