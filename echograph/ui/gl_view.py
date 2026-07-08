@@ -791,6 +791,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_grid_fx_enabled = True
         self._mgl_gizmo_visible = True
         self._mgl_gizmo_tips_test_enabled = False
+        self._mgl_gizmo_tips_size_scale = 1.0
         self._mgl_grid_visible = False
         self._mgl_fov = 60.0
         self._mgl_clip_far = 1000.0
@@ -1768,16 +1769,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 self._mgl_gizmo_toggle.toggled.connect(self._on_mgl_gizmo_toggled)
                 layout.addWidget(self._mgl_gizmo_toggle, 0)
 
-                self._mgl_gizmo_tips_test_toggle = QtWidgets.QCheckBox("MGL Tips")
-                self._mgl_gizmo_tips_test_toggle.setToolTip(
-                    "Test toggle for the experimental ModernGL transform/scale gizmo tips path."
-                )
-                self._mgl_gizmo_tips_test_toggle.setChecked(
-                    bool(getattr(self, "_mgl_gizmo_tips_test_enabled", False))
-                )
-                self._mgl_gizmo_tips_test_toggle.toggled.connect(self._on_mgl_gizmo_tips_test_toggled)
-                layout.addWidget(self._mgl_gizmo_tips_test_toggle, 0)
-
                 if self._turntable_ctrl is None:
                     self._turntable_ctrl = TurntableController(self)
                 try:
@@ -2652,6 +2643,24 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         try:
             renderer = getattr(self, "_mgl_renderer", None) or self
             setattr(renderer, "_mgl_gizmo_tips_test_enabled", enabled)
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _set_mgl_gizmo_tips_size_scale(self, scale: float) -> None:
+        try:
+            next_scale = float(scale)
+        except Exception:
+            next_scale = 1.0
+        next_scale = max(0.5, min(2.0, next_scale))
+        self._mgl_gizmo_tips_size_scale = next_scale
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            setattr(renderer, "_mgl_gizmo_tips_size_scale", next_scale)
+            setattr(renderer, "_mgl_gizmo_tips_test_version", 0)
         except Exception:
             pass
         try:
@@ -9195,4 +9204,3 @@ from echograph.ui.gl_view_mouse import (
 )
 _install_graph_gl_view_mouse_methods(GraphGLView)
 del _install_graph_gl_view_mouse_methods
-

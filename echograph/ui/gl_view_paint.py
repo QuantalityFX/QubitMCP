@@ -270,14 +270,19 @@ def paint_gl(view: Any) -> None:
                         "backend": "mgl_tips_test" if mgl_tips_drawn else "mgl_tips_test_failed",
                     }
 
-                    if view._axis_overlay.ensure_gl(view):
+                    legacy_axis_overlay_drawn = False
+                    draw_legacy_axis_overlay = not (mgl_tips_active and bool(mgl_tips_drawn))
+                    if draw_legacy_axis_overlay and view._axis_overlay.ensure_gl(view):
                         axis_draw_summary = view._axis_overlay.draw(
                             mvp,
                             mode=mode,
                             draw_rotate_rings=(mode != "rotate"),
                             alpha=alpha,
                         )
-                    if mgl_tips_active:
+                        legacy_axis_overlay_drawn = True
+                    elif isinstance(axis_draw_summary, dict) and mgl_tips_active:
+                        axis_draw_summary["legacy_axis_overlay_skipped"] = bool(mgl_tips_drawn)
+                    if isinstance(axis_draw_summary, dict) and mgl_tips_active and legacy_axis_overlay_drawn:
                         try:
                             draw_test = getattr(renderer, "_mgl_draw_gizmo_tips_test_overlay", None)
                             mgl_tips_drawn_after = (
@@ -358,10 +363,16 @@ def paint_gl(view: Any) -> None:
 
                             center = project_local(0.0, 0.0, 0.0)
                             if center is not None:
+                                try:
+                                    tips_size_scale = max(
+                                        0.5,
+                                        min(2.0, float(getattr(view, "_mgl_gizmo_tips_size_scale", 1.0))),
+                                    )
+                                except Exception:
+                                    tips_size_scale = 1.0
                                 axis_len = 1.0
-                                line_end = axis_len - 0.18
-                                cube_size = 0.12
-                                axis_end = line_end + (cube_size * 0.5) if mode == "scale" else axis_len
+                                scale_tip_axis_pos = 0.87
+                                axis_end = scale_tip_axis_pos if mode == "scale" else axis_len
 
                                 axis_proj = {
                                     "x": project_local(axis_end, 0.0, 0.0),

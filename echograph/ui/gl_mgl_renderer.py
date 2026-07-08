@@ -423,11 +423,29 @@ class MGLRendererMixin:
         except Exception:
             pass
 
+        try:
+            tips_size_scale = max(0.5, min(2.0, float(getattr(self, "_mgl_gizmo_tips_size_scale", 1.0))))
+        except Exception:
+            tips_size_scale = 1.0
+        tip_axis_len = 1.0
+        tip_cone_radius = 0.04 * tips_size_scale
+        tip_cone_height = 0.14 * tips_size_scale
+        translate_line_end = max(0.45, tip_axis_len - tip_cone_height)
+        scale_cube_size = 0.08 * tips_size_scale
+        scale_tip_axis_pos = 0.87
+        scale_line_end = max(0.05, scale_tip_axis_pos - (scale_cube_size * 0.5))
+
         prog = getattr(self, "_mgl_gizmo_tips_test_prog", None)
         vao = getattr(self, "_mgl_gizmo_tips_test_vao", None)
         vbo = getattr(self, "_mgl_gizmo_tips_test_vbo", None)
         count = int(getattr(self, "_mgl_gizmo_tips_test_vertex_count", 0) or 0)
         version = int(getattr(self, "_mgl_gizmo_tips_test_version", 0) or 0)
+        try:
+            cached_size_scale = float(getattr(self, "_mgl_gizmo_tips_test_size_scale", tips_size_scale))
+        except Exception:
+            cached_size_scale = tips_size_scale
+        if abs(float(cached_size_scale) - float(tips_size_scale)) > 0.0001:
+            version = 0
         if version != 12:
             for res in (
                 vao,
@@ -569,10 +587,10 @@ void main() {
                 blue = (0.0, 0.0, 1.0)
                 center_base = (0.62, 0.34, 0.70)
                 center_hover = (0.78, 0.46, 0.84)
-                axis_len = 1.0
-                cone_radius = 0.05
-                cone_height = 0.18
-                line_end = axis_len - cone_height
+                axis_len = tip_axis_len
+                cone_radius = tip_cone_radius
+                cone_height = tip_cone_height
+                line_end = translate_line_end
                 segs = 12
 
                 line_ranges = {"x": (0, 2), "y": (2, 2), "z": (4, 2)}
@@ -594,8 +612,8 @@ void main() {
                 add_cone((0.0, 0.0, axis_len), (0.0, 0.0, 1.0), cone_radius, cone_height, segs, blue)
                 cone_ranges["z"] = (start, len(rows) - start)
 
-                cube_size = 0.10
-                cube_axis_pos = line_end + (cube_size * 0.5)
+                cube_size = scale_cube_size
+                cube_axis_pos = scale_tip_axis_pos
                 scale_cube_ranges = {}
                 start = len(rows)
                 add_cube((cube_axis_pos, 0.0, 0.0), cube_size, red)
@@ -616,24 +634,24 @@ void main() {
                 add_cube((0.0, 0.0, 0.0), cube_size * 1.15, center_hover, shaded=True)
                 center_hover_range = (start, len(rows) - start)
 
-                def add_clipped_axis_lines(start_pos):
+                def add_clipped_axis_lines(start_pos, end_pos):
                     clipped = {}
                     start = len(rows)
                     add_vertex((start_pos, 0.0, 0.0), red)
-                    add_vertex((line_end, 0.0, 0.0), red)
+                    add_vertex((end_pos, 0.0, 0.0), red)
                     clipped["x"] = (start, len(rows) - start)
                     start = len(rows)
                     add_vertex((0.0, start_pos, 0.0), green)
-                    add_vertex((0.0, line_end, 0.0), green)
+                    add_vertex((0.0, end_pos, 0.0), green)
                     clipped["y"] = (start, len(rows) - start)
                     start = len(rows)
                     add_vertex((0.0, 0.0, start_pos), blue)
-                    add_vertex((0.0, 0.0, line_end), blue)
+                    add_vertex((0.0, 0.0, end_pos), blue)
                     clipped["z"] = (start, len(rows) - start)
                     return clipped
 
-                translate_line_ranges = add_clipped_axis_lines(cube_size * 0.70 * 0.5)
-                scale_line_ranges = add_clipped_axis_lines(cube_size * 1.15 * 0.5)
+                translate_line_ranges = add_clipped_axis_lines(cube_size * 0.70 * 0.5, translate_line_end)
+                scale_line_ranges = add_clipped_axis_lines(cube_size * 1.15 * 0.5, scale_line_end)
 
                 verts = np.asarray(rows, dtype="f4")
                 prog = self._mgl_ctx.program(vertex_shader=vert, fragment_shader=frag)
@@ -653,6 +671,7 @@ void main() {
                     "line_translate_center": translate_line_ranges,
                     "line_scale_center": scale_line_ranges,
                 }
+                self._mgl_gizmo_tips_test_size_scale = float(tips_size_scale)
                 self._mgl_gizmo_tips_test_version = 12
                 count = int(verts.shape[0])
             except Exception as exc:
@@ -812,8 +831,8 @@ void main() {
                 fallback = line_ranges_for_center(mode_name, big_center)
                 try:
                     mode_name_s = str(mode_name or "").strip().lower()
-                    center_half = 0.0575 if mode_name_s == "scale" or bool(big_center) else 0.035
-                    line_end = 0.82
+                    center_half = (0.0575 if mode_name_s == "scale" or bool(big_center) else 0.035) * tips_size_scale
+                    line_end = scale_line_end if mode_name_s == "scale" or bool(big_center) else translate_line_end
 
                     def project_ndc(x, y, z):
                         p = np.asarray([float(x), float(y), float(z), 1.0], dtype="f4")
@@ -1078,7 +1097,7 @@ void main() {
             if mode_s == "scale":
                 center_line_map = dynamic_line_ranges_for_center(mode_s, bool(hover_center))
                 tip_items = []
-                scale_tip_pos = 0.87
+                scale_tip_pos = scale_tip_axis_pos
                 for axis in ("x", "y", "z"):
                     first, vert_count = (ranges.get("scale_cube") or {}).get(axis, (0, 0))
                     color = axis_colors[axis]
@@ -1123,7 +1142,7 @@ void main() {
             elif mode_s == "translate":
                 center_line_map = dynamic_line_ranges_for_center(mode_s, bool(hover_center))
                 tip_items = []
-                cone_sort_pos = 0.91
+                cone_sort_pos = max(0.0, min(1.0, tip_axis_len - (tip_cone_height * 0.5)))
                 for axis in ("x", "y", "z"):
                     first, vert_count = (ranges.get("cone") or {}).get(axis, (0, 0))
                     color = axis_colors[axis]
@@ -1207,6 +1226,7 @@ void main() {
                 rows_2d = []
                 ndc_px = 2.0 / float(max(2, active_vp[2]))
                 ndc_py = 2.0 / float(max(2, active_vp[3]))
+                marker_px_scale = max(0.5, min(2.0, tips_size_scale))
                 def add_rect_ndc(cx, cy, half_px_x, half_px_y, color):
                     hx = float(half_px_x) * ndc_px
                     hy = float(half_px_y) * ndc_py
@@ -1243,11 +1263,11 @@ void main() {
                         rows_2d.append((float(x), float(y), float(r), float(g), float(b), float(a)))
 
                 def add_cross_ndc(cx, cy, color):
-                    add_rect_ndc(cx, cy, 13.0, 2.0, color)
-                    add_rect_ndc(cx, cy, 2.0, 13.0, color)
+                    add_rect_ndc(cx, cy, 10.0 * marker_px_scale, 1.8 * marker_px_scale, color)
+                    add_rect_ndc(cx, cy, 1.8 * marker_px_scale, 10.0 * marker_px_scale, color)
 
                 center_ndc = project_local(0.0, 0.0, 0.0)
-                marker_axis_pos = 0.87 if mode_s == "scale" else 1.0
+                marker_axis_pos = scale_tip_axis_pos if mode_s == "scale" else tip_axis_len
                 marker_hover_colors = {
                     "x": (1.0, 0.3215686275, 0.3215686275, 0.95),
                     "y": (0.3215686275, 1.0, 0.4705882353, 0.95),
@@ -1273,7 +1293,7 @@ void main() {
                                     center_ndc[1],
                                     p_ndc[0],
                                     p_ndc[1],
-                                    7.0,
+                                    6.0 * marker_px_scale,
                                     (hover_color[0], hover_color[1], hover_color[2], 0.38),
                                 )
                                 add_line_ndc(
@@ -1281,13 +1301,13 @@ void main() {
                                     center_ndc[1],
                                     p_ndc[0],
                                     p_ndc[1],
-                                    3.0,
+                                    2.6 * marker_px_scale,
                                     hover_color,
                                 )
-                            add_rect_ndc(p_ndc[0], p_ndc[1], 11.0, 11.0, hover_color)
-                            add_rect_ndc(p_ndc[0], p_ndc[1], 6.0, 6.0, (1.0, 1.0, 1.0, 0.95))
+                            add_rect_ndc(p_ndc[0], p_ndc[1], 9.0 * marker_px_scale, 9.0 * marker_px_scale, hover_color)
+                            add_rect_ndc(p_ndc[0], p_ndc[1], 5.0 * marker_px_scale, 5.0 * marker_px_scale, (1.0, 1.0, 1.0, 0.95))
                         else:
-                            add_rect_ndc(p_ndc[0], p_ndc[1], 7.0, 7.0, base_color)
+                            add_rect_ndc(p_ndc[0], p_ndc[1], 5.5 * marker_px_scale, 5.5 * marker_px_scale, base_color)
 
                 if rows_2d:
                     verts_2d = np.asarray(rows_2d, dtype="f4")

@@ -2708,6 +2708,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         
         self.view = GraphView(self.scene)
         self.gl_view = GraphGLView(self.scene)
+        QtCore.QTimer.singleShot(750, lambda: self._set_mgl_gizmo_tips_enabled(True))
         self._profiler_controller.attach_panel_to_view()
         self.view.setMinimumSize(400, 300)
         self.gl_view.setMinimumSize(400, 300)
@@ -4866,6 +4867,180 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to launch:\n{exc}")
 
+    def _mgl_gizmo_tips_enabled(self) -> bool:
+        gv = getattr(self, "gl_view", None)
+        if gv is None:
+            return True
+        return bool(getattr(gv, "_mgl_gizmo_tips_test_enabled", True))
+
+    def _mgl_gizmo_tips_size_scale(self) -> float:
+        gv = getattr(self, "gl_view", None)
+        if gv is None:
+            return 1.0
+        try:
+            return max(0.5, min(2.0, float(getattr(gv, "_mgl_gizmo_tips_size_scale", 1.0))))
+        except Exception:
+            return 1.0
+
+    def _set_mgl_gizmo_tips_enabled(self, checked: bool) -> None:
+        enabled = bool(checked)
+        gv = getattr(self, "gl_view", None)
+        if gv is not None:
+            try:
+                handler = getattr(gv, "_on_mgl_gizmo_tips_test_toggled", None)
+                if callable(handler):
+                    handler(enabled)
+                else:
+                    setattr(gv, "_mgl_gizmo_tips_test_enabled", enabled)
+                    renderer = getattr(gv, "_mgl_renderer", None) or gv
+                    setattr(renderer, "_mgl_gizmo_tips_test_enabled", enabled)
+            except Exception:
+                pass
+        self._sync_edit_preferences_menu()
+
+    def _set_mgl_gizmo_tips_size_percent(self, value: int) -> None:
+        try:
+            scale = float(value) / 100.0
+        except Exception:
+            scale = 1.0
+        scale = max(0.5, min(2.0, scale))
+        gv = getattr(self, "gl_view", None)
+        if gv is not None:
+            try:
+                handler = getattr(gv, "_set_mgl_gizmo_tips_size_scale", None)
+                if callable(handler):
+                    handler(scale)
+                else:
+                    setattr(gv, "_mgl_gizmo_tips_size_scale", scale)
+                    renderer = getattr(gv, "_mgl_renderer", None) or gv
+                    setattr(renderer, "_mgl_gizmo_tips_size_scale", scale)
+                    setattr(renderer, "_mgl_gizmo_tips_test_version", 0)
+                    try:
+                        gv.update()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        self._sync_edit_preferences_menu()
+
+    def _sync_edit_preferences_menu(self) -> None:
+        checkbox = getattr(self, "_edit_mgl_gizmo_tips_checkbox", None)
+        if checkbox is not None:
+            try:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(self._mgl_gizmo_tips_enabled())
+            except Exception:
+                pass
+            finally:
+                try:
+                    checkbox.blockSignals(False)
+                except Exception:
+                    pass
+        slider = getattr(self, "_edit_mgl_gizmo_tips_size_slider", None)
+        value_label = getattr(self, "_edit_mgl_gizmo_tips_size_value", None)
+        scale = self._mgl_gizmo_tips_size_scale()
+        if slider is not None:
+            try:
+                slider.blockSignals(True)
+                slider.setValue(int(round(scale * 100.0)))
+            except Exception:
+                pass
+            finally:
+                try:
+                    slider.blockSignals(False)
+                except Exception:
+                    pass
+        if value_label is not None:
+            try:
+                value_label.setText(f"{scale:.2f}x")
+            except Exception:
+                pass
+
+    def _build_edit_menu_button(self, bar, layout) -> None:
+        edit_btn = QtWidgets.QToolButton(bar)
+        edit_btn.setObjectName("EditButton")
+        edit_btn.setText("Edit")
+        edit_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        edit_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        edit_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        edit_btn.setFixedHeight(22)
+        edit_btn.setStyleSheet(
+            "QToolButton#EditButton{border-radius:2px;text-align:center;}"
+        )
+
+        edit_menu = QtWidgets.QMenu(edit_btn)
+        edit_menu.setObjectName("EditMenu")
+        preferences_menu = QtWidgets.QMenu("Preferences", edit_menu)
+        preferences_menu.setObjectName("PreferencesMenu")
+        menu_style = (
+            "QMenu{background:#1b2026;color:#e5e7eb;border:1px solid #333;padding:4px;}"
+            "QMenu::item{padding:5px 24px 5px 8px;}"
+            "QMenu::item:selected{background:#1f7a45;}"
+            "QMenu::indicator{width:13px;height:13px;}"
+        )
+        edit_menu.setStyleSheet(menu_style)
+        preferences_menu.setStyleSheet(menu_style)
+
+        preferences_panel = QtWidgets.QFrame(preferences_menu)
+        preferences_panel.setObjectName("EditPreferencesPanel")
+        preferences_panel.setFixedWidth(260)
+        preferences_panel.setStyleSheet(
+            "#EditPreferencesPanel{background:#1b2026;border:0px;border-radius:6px;}"
+            "#EditPreferencesPanel QLabel{color:#e5e7eb;}"
+            "#EditPreferencesPanel QCheckBox{color:#e5e7eb;spacing:6px;}"
+            "#EditPreferencesPanel QSlider::groove:horizontal{height:4px;background:#343a44;border-radius:2px;}"
+            "#EditPreferencesPanel QSlider::sub-page:horizontal{background:#1f7a45;border-radius:2px;}"
+            "#EditPreferencesPanel QSlider::handle:horizontal{width:12px;height:12px;margin:-5px 0px;background:#e5e7eb;border-radius:6px;}"
+        )
+        preferences_layout = QtWidgets.QGridLayout(preferences_panel)
+        preferences_layout.setContentsMargins(10, 8, 10, 8)
+        preferences_layout.setHorizontalSpacing(10)
+        preferences_layout.setVerticalSpacing(6)
+
+        mgl_tips_label = QtWidgets.QLabel("MGL Guizmo Tips", preferences_panel)
+        mgl_tips_checkbox = QtWidgets.QCheckBox(preferences_panel)
+        mgl_tips_checkbox.setChecked(True)
+        try:
+            mgl_tips_checkbox.setToolTip("Draw the stable ModernGL tips overlay on top of the legacy gizmo.")
+        except Exception:
+            pass
+        mgl_tips_checkbox.toggled.connect(self._set_mgl_gizmo_tips_enabled)
+        preferences_layout.addWidget(mgl_tips_label, 0, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        preferences_layout.addWidget(mgl_tips_checkbox, 0, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+        tips_size_label = QtWidgets.QLabel("Tips Size", preferences_panel)
+        tips_size_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, preferences_panel)
+        tips_size_slider.setRange(50, 200)
+        tips_size_slider.setSingleStep(5)
+        tips_size_slider.setPageStep(10)
+        tips_size_slider.setValue(100)
+        tips_size_slider.setToolTip("Scale the ModernGL gizmo tips and scale cubes.")
+        tips_size_value = QtWidgets.QLabel("1.00x", preferences_panel)
+        tips_size_value.setFixedWidth(42)
+        tips_size_value.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        tips_size_slider.valueChanged.connect(self._set_mgl_gizmo_tips_size_percent)
+        preferences_layout.addWidget(tips_size_label, 1, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        preferences_layout.addWidget(tips_size_slider, 1, 1, 1, 1)
+        preferences_layout.addWidget(tips_size_value, 1, 2, 1, 1, QtCore.Qt.AlignVCenter)
+        preferences_layout.setColumnStretch(1, 1)
+
+        preferences_action = QtWidgets.QWidgetAction(preferences_menu)
+        preferences_action.setDefaultWidget(preferences_panel)
+        preferences_menu.addAction(preferences_action)
+
+        edit_menu.addMenu(preferences_menu)
+        edit_menu.aboutToShow.connect(self._sync_edit_preferences_menu)
+        preferences_menu.aboutToShow.connect(self._sync_edit_preferences_menu)
+        edit_btn.setMenu(edit_menu)
+
+        layout.addWidget(edit_btn, 0)
+        self._edit_btn = edit_btn
+        self._edit_menu = edit_menu
+        self._edit_preferences_menu = preferences_menu
+        self._edit_mgl_gizmo_tips_checkbox = mgl_tips_checkbox
+        self._edit_mgl_gizmo_tips_size_slider = tips_size_slider
+        self._edit_mgl_gizmo_tips_size_value = tips_size_value
+
     def _build_topbar(self):
         bar = QtWidgets.QFrame(); bar.setObjectName("TopBar")
         bar.setStyleSheet(
@@ -4965,6 +5140,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_btn.setMenu(file_menu)
         h.addWidget(file_btn, 0)
         self._file_btn = file_btn
+
+        self._build_edit_menu_button(bar, h)
 
         create_btn = QtWidgets.QToolButton(bar)
         create_btn.setObjectName("CreateButton")
