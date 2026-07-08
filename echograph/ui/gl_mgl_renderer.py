@@ -831,7 +831,7 @@ void main() {
                 fallback = line_ranges_for_center(mode_name, big_center)
                 try:
                     mode_name_s = str(mode_name or "").strip().lower()
-                    center_half = (0.0575 if mode_name_s == "scale" or bool(big_center) else 0.035) * tips_size_scale
+                    center_half = (0.046 if mode_name_s == "scale" or bool(big_center) else 0.028) * tips_size_scale
                     line_end = scale_line_end if mode_name_s == "scale" or bool(big_center) else translate_line_end
 
                     def project_ndc(x, y, z):
@@ -841,6 +841,14 @@ void main() {
                         if w <= 1.0e-6:
                             return None
                         return (float(c[0] / w), float(c[1] / w))
+
+                    def project_depth(x, y, z):
+                        p = np.asarray([float(x), float(y), float(z), 1.0], dtype="f4")
+                        c = mvp_np @ p
+                        w = float(c[3])
+                        if abs(w) <= 1.0e-6:
+                            return 0.0
+                        return float(c[2] / w)
 
                     cube_pts = []
                     for cx in (-center_half, center_half):
@@ -915,6 +923,7 @@ void main() {
 
                     rows = []
                     dyn_map = {}
+                    dyn_depth = {}
                     axis_defs = {
                         "x": ((1.0, 0.0, 0.0), axis_colors["x"]),
                         "y": ((0.0, 1.0, 0.0), axis_colors["y"]),
@@ -968,6 +977,12 @@ void main() {
                             )
                         )
                         dyn_map[axis] = (start, 2)
+                        mid_t = (float(start_t) + float(line_end)) * 0.5
+                        dyn_depth[axis] = project_depth(
+                            float(axis_vec[0]) * mid_t,
+                            float(axis_vec[1]) * mid_t,
+                            float(axis_vec[2]) * mid_t,
+                        )
                     verts_dyn = np.asarray(rows, dtype="f4")
                     byte_count = int(verts_dyn.nbytes)
                     dyn_vbo = getattr(self, "_mgl_gizmo_tips_center_line_vbo", None)
@@ -989,6 +1004,7 @@ void main() {
                         self._mgl_gizmo_tips_center_line_vbo_capacity = int(dyn_cap)
                     dyn_vbo.write(verts_dyn.tobytes())
                     dyn_map["_vao"] = dyn_vao
+                    dyn_map["_depth"] = dyn_depth
                     return dyn_map
                 except Exception:
                     return fallback
@@ -1041,7 +1057,20 @@ void main() {
                     ctx.line_width = float(width)
                 except Exception:
                     pass
-                for axis in ("x", "y", "z"):
+                axes = ("x", "y", "z")
+                try:
+                    depth_map = line_map.get("_depth") if isinstance(line_map, dict) else None
+                    if isinstance(depth_map, dict):
+                        axes = tuple(
+                            sorted(
+                                axes,
+                                key=lambda axis_name: float(depth_map.get(axis_name, 0.0)),
+                                reverse=True,
+                            )
+                        )
+                except Exception:
+                    axes = ("x", "y", "z")
+                for axis in axes:
                     draw_line_segment(line_map, axis, axis_colors[axis])
                 try:
                     ctx.line_width = 2.0

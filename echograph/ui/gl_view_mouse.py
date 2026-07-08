@@ -1841,7 +1841,7 @@ def _handle_mouse_press_moderngl_left_gizmo_scale_axis_proj_pvtrs(self, *, P, V,
     return (P @ V @ M @ TRS).astype(np.float32)
 
 def _handle_mouse_press_moderngl_left_gizmo_scale_axis_proj_cube_axis_pos(self, *, axis_len):
-    return axis_len - 0.18 + (0.12 * 0.5)
+    return 0.87
 
 def _handle_mouse_press_moderngl_left_gizmo_scale_axis_proj_map(self, *, cube_axis_pos, PVTRS, vw, vh):
     return {
@@ -1888,19 +1888,34 @@ def _handle_mouse_press_moderngl_left_gizmo_scale_pick_axis(self, *, p0, axis_pr
     if (dx0 * dx0 + dy0 * dy0) <= (center_r * center_r):
         pick_axis = "u"
     else:
-        best_axis = None
-        best_d = 1e30
+        best_tip_axis = None
+        best_tip_d = 1e30
+        best_line_axis = None
+        best_line_d = 1e30
         for name, p1 in axis_proj.items():
             if p1 is None:
                 continue
             dx1 = float(px_dev) - float(p1[0])
             dy1 = float(py_dev) - float(p1[1])
-            d = (dx1 * dx1 + dy1 * dy1) ** 0.5
-            if d < best_d:
-                best_d = d
-                best_axis = name
-        if best_axis is not None and best_d <= 16.0:
-            pick_axis = best_axis
+            tip_d = (dx1 * dx1 + dy1 * dy1) ** 0.5
+            if tip_d < best_tip_d:
+                best_tip_d = tip_d
+                best_tip_axis = name
+            line_d = self._handle_mouse_press_moderngl_left_gizmo_dist_pt_seg(
+                px_dev,
+                py_dev,
+                float(p0[0]),
+                float(p0[1]),
+                float(p1[0]),
+                float(p1[1]),
+            )
+            if line_d < best_line_d:
+                best_line_d = line_d
+                best_line_axis = name
+        if best_tip_axis is not None and best_tip_d <= 16.0:
+            pick_axis = best_tip_axis
+        elif best_line_axis is not None and best_line_d <= 12.0:
+            pick_axis = best_line_axis
     return pick_axis, dx0, dy0
 
 def _handle_mouse_press_moderngl_left_gizmo_scale_start(
