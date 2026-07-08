@@ -2249,30 +2249,33 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         except Exception:
             pass
 
-    def _on_view_clicked():
+    def _on_view_clicked(_checked: bool = False, *, frame: bool = True, show_errors: bool = True):
         item = _node_item()
         if item is None:
-            QtWidgets.QMessageBox.warning(card, "FBXImport View", "Node item is not available.")
+            if show_errors:
+                QtWidgets.QMessageBox.warning(card, "FBXImport View", "Node item is not available.")
             return
         result = _refresh(persist=True, toast=False)
         if result is None:
             return
         if result.status == "error":
-            QtWidgets.QMessageBox.warning(
-                card,
-                "FBXImport View",
-                "\n".join(result.message_lines()),
-            )
+            if show_errors:
+                QtWidgets.QMessageBox.warning(
+                    card,
+                    "FBXImport View",
+                    "\n".join(result.message_lines()),
+                )
             return
 
         model = getattr(item, "model", None)
         asset = _build_preview_asset(model, result)
         if not isinstance(asset, dict):
-            QtWidgets.QMessageBox.warning(
-                card,
-                "FBXImport View",
-                "rest_geometry is not resolved. Validate sources first.",
-            )
+            if show_errors:
+                QtWidgets.QMessageBox.warning(
+                    card,
+                    "FBXImport View",
+                    "rest_geometry is not resolved. Validate sources first.",
+                )
             return
 
         win = card.window()
@@ -2301,10 +2304,16 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             pass
 
         opened = False
+        if not bool(frame):
+            try:
+                setattr(win, "_scene_assets_sig", None)
+                setattr(win, "_scene_assets_ts", 0.0)
+            except Exception:
+                pass
         scene_handler = getattr(win, "open_scene_assets", None) if win is not None else None
         if callable(scene_handler):
             try:
-                scene_handler([asset], frame=True)
+                scene_handler([asset], frame=bool(frame))
                 opened = True
             except Exception:
                 opened = False
@@ -2312,12 +2321,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             model_handler = getattr(win, "open_3d_model", None) if win is not None else None
             if callable(model_handler):
                 try:
-                    model_handler(str(asset.get("path") or ""), None, frame=True)
+                    model_handler(str(asset.get("path") or ""), None, frame=bool(frame))
                     opened = True
                 except Exception:
                     opened = False
         if not opened:
-            QtWidgets.QMessageBox.warning(card, "FBXImport View", "3D view is not available.")
+            if show_errors:
+                QtWidgets.QMessageBox.warning(card, "FBXImport View", "3D view is not available.")
             return
 
         try:
@@ -2362,6 +2372,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         value = "1" if bool(checked) else "0"
         _set_node_param("skin_weight_debug", value)
         _set_node_param("show_skin_weights", value)
+        try:
+            _on_view_clicked(frame=False, show_errors=False)
+        except Exception:
+            pass
 
     def _set_joint_debug_flags(capture_enabled: bool, animated_enabled: bool) -> None:
         capture_enabled, animated_enabled = _exclusive_joint_debug_flags(
@@ -2400,7 +2414,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         animated_enabled = bool(animated_joints_toggle.isChecked()) and (not capture_enabled)
         _set_joint_debug_flags(capture_enabled, animated_enabled)
         try:
-            _on_view_clicked()
+            _on_view_clicked(frame=False, show_errors=False)
         except Exception:
             pass
 
@@ -2409,7 +2423,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         capture_enabled = bool(capture_joints_toggle.isChecked()) and (not animated_enabled)
         _set_joint_debug_flags(capture_enabled, animated_enabled)
         try:
-            _on_view_clicked()
+            _on_view_clicked(frame=False, show_errors=False)
         except Exception:
             pass
 
