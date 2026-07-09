@@ -3416,6 +3416,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     )
                     input_label_only = (
                         (
+                            kind in ("anim_retarget", "anim retarget", "animretarget", "retarget")
+                            and pname_key in ("source", "target")
+                        )
+                        or
+                        (
                             kind in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform")
                             and pname_key in ("guides", "rig")
                         )

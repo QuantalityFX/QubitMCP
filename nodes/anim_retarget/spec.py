@@ -3846,7 +3846,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     target_pose_layout = QtWidgets.QVBoxLayout(target_pose_tab)
     target_pose_layout.setContentsMargins(8, 8, 8, 8)
     target_pose_layout.setSpacing(8)
-    target_pose_label = QtWidgets.QLabel("Selected Target Joint")
+    target_pose_label = QtWidgets.QLabel("Edited Target Joints")
     target_pose_label.setStyleSheet("color:#cbd5e1;")
     target_pose_label.setWordWrap(True)
     target_pose_table = QtWidgets.QTableWidget(0, 3)
@@ -3854,10 +3854,18 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     target_pose_table.setMinimumHeight(76)
     try:
         try:
-            no_edit = QtWidgets.QAbstractItemView.NoEditTriggers
+            edit_triggers = (
+                QtWidgets.QAbstractItemView.DoubleClicked
+                | QtWidgets.QAbstractItemView.SelectedClicked
+                | QtWidgets.QAbstractItemView.EditKeyPressed
+            )
         except Exception:
-            no_edit = QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
-        target_pose_table.setEditTriggers(no_edit)
+            edit_triggers = (
+                QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked
+                | QtWidgets.QAbstractItemView.EditTrigger.SelectedClicked
+                | QtWidgets.QAbstractItemView.EditTrigger.EditKeyPressed
+            )
+        target_pose_table.setEditTriggers(edit_triggers)
         target_pose_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         target_pose_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         header = target_pose_table.horizontalHeader()
@@ -3994,6 +4002,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     report_holder: Dict[str, str] = {"value": ""}
     settings_syncing: Dict[str, bool] = {"value": False}
+    target_pose_table_syncing: Dict[str, bool] = {"value": False}
     view_state: Dict[str, bool] = {"opened": False}
 
     def _node_item():
@@ -4148,6 +4157,46 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         x, y, z = _clean_vec3(values, default=default)
         return f"{x:.3f}, {y:.3f}, {z:.3f}"
 
+    def _parse_target_pose_vec(
+        text: str,
+        *,
+        previous=(0.0, 0.0, 0.0),
+    ) -> Tuple[float, float, float] | None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return None
+        for ch in "[](){}":
+            cleaned = cleaned.replace(ch, " ")
+        cleaned = cleaned.replace(";", ",").replace("\t", " ")
+        parts = [part for part in re.split(r"[,\s]+", cleaned) if part]
+        if len(parts) < 1 or len(parts) > 3:
+            return None
+        values = list(_clean_vec3(previous))
+        try:
+            for index, part in enumerate(parts):
+                values[index] = float(part)
+        except Exception:
+            return None
+        try:
+            if not all(math.isfinite(float(value)) for value in values):
+                return None
+        except Exception:
+            return None
+        return (float(values[0]), float(values[1]), float(values[2]))
+
+    def _target_pose_table_item(text: str, *, editable: bool) -> QtWidgets.QTableWidgetItem:
+        table_item = QtWidgets.QTableWidgetItem(str(text or ""))
+        try:
+            flags = table_item.flags()
+            if editable:
+                flags = flags | QtCore.Qt.ItemIsEditable
+            else:
+                flags = flags & ~QtCore.Qt.ItemIsEditable
+            table_item.setFlags(flags)
+        except Exception:
+            pass
+        return table_item
+
     def _refresh_target_pose_table_only(model_obj=None) -> None:
         if model_obj is None:
             item = _node_item()
@@ -4155,42 +4204,216 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         selected_name = _param_value(model_obj, TARGET_POSE_SELECTED_JOINT_PARAM)
         payload = _target_pose_offsets_payload(model_obj)
         selected_name = str(selected_name or "").strip()
+        names: List[str] = []
+        if selected_name and selected_name in payload:
+            names.append(selected_name)
+        names.extend(
+            name
+            for name in sorted(payload.keys(), key=lambda value: value.lower())
+            if name not in names
+        )
         try:
+            target_pose_table_syncing["value"] = True
             target_pose_table.setUpdatesEnabled(False)
-            if selected_name:
-                row = dict(payload.get(selected_name) or {})
-                target_pose_table.setRowCount(1)
-                target_pose_table.setItem(0, 0, QtWidgets.QTableWidgetItem(selected_name))
+            target_pose_table.setRowCount(len(names))
+            for row_index, joint_name in enumerate(names):
+                row = dict(payload.get(joint_name) or {})
+                target_pose_table.setItem(row_index, 0, _target_pose_table_item(joint_name, editable=False))
                 target_pose_table.setItem(
-                    0,
+                    row_index,
                     1,
-                    QtWidgets.QTableWidgetItem(
+                    _target_pose_table_item(
                         _format_target_pose_vec(row.get("position"))
                         if "position" in row
-                        else "bind"
+                        else "bind",
+                        editable=True,
                     ),
                 )
                 target_pose_table.setItem(
-                    0,
+                    row_index,
                     2,
-                    QtWidgets.QTableWidgetItem(
+                    _target_pose_table_item(
                         _format_target_pose_vec(row.get("rotation"))
                         if "rotation" in row
-                        else "0.000, 0.000, 0.000"
+                        else "0.000, 0.000, 0.000",
+                        editable=True,
                     ),
                 )
-            else:
-                target_pose_table.setRowCount(0)
+            if names and selected_name in names:
+                try:
+                    target_pose_table.selectRow(names.index(selected_name))
+                except Exception:
+                    pass
         finally:
             try:
                 target_pose_table.setUpdatesEnabled(True)
             except Exception:
                 pass
+            target_pose_table_syncing["value"] = False
         try:
             target_pose_reset_button.setEnabled(bool(selected_name and selected_name in payload))
             target_pose_reset_all_button.setEnabled(bool(payload))
         except Exception:
             pass
+
+    def _target_pose_joint_name_for_row(row_index: int) -> str:
+        try:
+            if int(row_index) < 0:
+                return ""
+            table_item = target_pose_table.item(int(row_index), 0)
+            return str(table_item.text() if table_item is not None else "").strip()
+        except Exception:
+            return ""
+
+    def _selected_target_pose_joint_name(model_obj=None) -> str:
+        name = _target_pose_joint_name_for_row(target_pose_table.currentRow())
+        if name:
+            return name
+        return str(_param_value(model_obj, TARGET_POSE_SELECTED_JOINT_PARAM) or "").strip()
+
+    def _target_pose_gl_view():
+        try:
+            win = card.window()
+            return getattr(win, "gl_view", None) if win is not None else None
+        except Exception:
+            return None
+
+    def _active_target_pose_edit_context():
+        glv = _target_pose_gl_view()
+        item = _node_item()
+        if glv is None:
+            return item, None
+
+        active_retarget = False
+        target_owner = getattr(glv, "_mgl_retarget_target_owner", None)
+        if callable(target_owner):
+            try:
+                active_retarget = bool(str(target_owner() or "").strip())
+            except Exception:
+                active_retarget = False
+        if not bool(active_retarget):
+            return item, None
+
+        active_item = getattr(glv, "_mgl_retarget_node_item", None)
+        if active_item is None:
+            return item, None
+
+        current_model = getattr(item, "model", None) if item is not None else node
+        active_model = getattr(active_item, "model", None)
+        current_name = str(getattr(current_model, "name", "") or getattr(node, "name", "") or "").strip()
+        active_name = str(getattr(active_model, "name", "") or "").strip()
+        if current_name and active_name and current_name != active_name:
+            return item, None
+        return active_item, glv
+
+    def _target_pose_stored_vec(model_obj, joint_name: str, column_index: int) -> Tuple[float, float, float]:
+        key = "position" if int(column_index) == 1 else "rotation"
+        payload = _target_pose_offsets_payload(model_obj)
+        row = payload.get(str(joint_name or "").strip()) if isinstance(payload, dict) else None
+        raw = row.get(key) if isinstance(row, dict) else None
+        return _clean_vec3(raw)
+
+    def _refresh_target_pose_view_after_table_edit(joint_name: str = "", *, notify_scene: bool = False) -> None:
+        refreshed = False
+        _item, glv = _active_target_pose_edit_context()
+        if glv is not None:
+            active_retarget = False
+            target_owner = getattr(glv, "_mgl_retarget_target_owner", None)
+            if callable(target_owner):
+                try:
+                    active_retarget = bool(str(target_owner() or "").strip())
+                except Exception:
+                    active_retarget = False
+            if bool(active_retarget):
+                refresh_handles = getattr(glv, "_mgl_retarget_refresh_target_pose_handles", None)
+                if callable(refresh_handles):
+                    try:
+                        refresh_handles()
+                        refreshed = True
+                    except Exception:
+                        pass
+                commit_pose = getattr(glv, "_mgl_retarget_commit_target_pose_edit", None)
+                if callable(commit_pose):
+                    try:
+                        commit_pose(notify_scene=bool(notify_scene))
+                        refreshed = True
+                    except Exception:
+                        pass
+                if str(joint_name or "").strip():
+                    owner_fn = getattr(glv, "_mgl_retarget_target_pose_gizmo_owner", None)
+                    reanchor = getattr(glv, "_mgl_retarget_reanchor_target_pose_gizmo", None)
+                    if callable(owner_fn) and callable(reanchor):
+                        try:
+                            owner = owner_fn(str(joint_name or "").strip())
+                            if owner:
+                                reanchor(owner)
+                                refreshed = True
+                        except Exception:
+                            pass
+                if bool(refreshed):
+                    try:
+                        glv.update()
+                    except Exception:
+                        pass
+        if not bool(refreshed):
+            _refresh_retarget_view_from_settings()
+
+    def _commit_target_pose_table_value(joint_name: str, column_index: int, parsed) -> object | None:
+        item, glv = _active_target_pose_edit_context()
+        if item is None:
+            return None
+
+        if glv is not None and int(column_index) == 2:
+            owner_fn = getattr(glv, "_mgl_retarget_target_pose_gizmo_owner", None)
+            set_rotation = getattr(glv, "_mgl_retarget_set_target_pose_joint_rotation", None)
+            if callable(owner_fn) and callable(set_rotation):
+                try:
+                    owner = owner_fn(joint_name)
+                    if owner and bool(set_rotation(owner, parsed, notify_scene=True)):
+                        return item
+                except Exception:
+                    pass
+
+        if int(column_index) == 1:
+            set_target_pose_joint_position(item, joint_name, parsed, notify_scene=glv is None)
+        else:
+            set_target_pose_joint_rotation(item, joint_name, parsed, notify_scene=glv is None)
+        if glv is not None:
+            _refresh_target_pose_view_after_table_edit(joint_name, notify_scene=True)
+        return item
+
+    def _on_target_pose_table_item_changed(table_item) -> None:
+        if bool(target_pose_table_syncing.get("value", False)):
+            return
+        if table_item is None:
+            return
+        try:
+            row_index = int(table_item.row())
+            column_index = int(table_item.column())
+        except Exception:
+            return
+        if column_index not in (1, 2):
+            return
+        joint_name = _target_pose_joint_name_for_row(row_index)
+        if not joint_name:
+            return
+        item, _glv = _active_target_pose_edit_context()
+        if item is None:
+            return
+        model_obj = getattr(item, "model", None)
+        previous = _target_pose_stored_vec(model_obj, joint_name, column_index)
+        parsed = _parse_target_pose_vec(str(table_item.text() or ""), previous=previous)
+        if parsed is None:
+            try:
+                QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Enter X, Y, Z values.", card)
+            except Exception:
+                pass
+            _refresh_target_pose_table_only(model_obj)
+            return
+        item = _commit_target_pose_table_value(joint_name, column_index, parsed)
+        model_obj = getattr(item, "model", None) if item is not None else model_obj
+        _refresh_target_pose_table_only(model_obj)
+        _refresh_target_pose_view_after_table_edit(joint_name)
 
     def _register_target_pose_refresh_callback() -> None:
         item = _node_item()
@@ -4410,8 +4633,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         if item is None:
             return
         model_obj = getattr(item, "model", None)
-        selected_name = _param_value(model_obj, TARGET_POSE_SELECTED_JOINT_PARAM)
-        selected_name = str(selected_name or "").strip()
+        selected_name = _selected_target_pose_joint_name(model_obj)
         if not selected_name:
             try:
                 QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Select a target joint first.", card)
@@ -4560,6 +4782,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     preview_target_animation_checkbox.stateChanged.connect(_on_preview_target_animation_changed)
     pelvis_select_button.clicked.connect(_on_pelvis_select_clicked)
     pelvis_mode_combo.currentIndexChanged.connect(_on_pelvis_mode_changed)
+    target_pose_table.itemChanged.connect(_on_target_pose_table_item_changed)
     target_pose_reset_button.clicked.connect(_on_target_pose_reset_joint_clicked)
     target_pose_reset_all_button.clicked.connect(_on_target_pose_reset_all_clicked)
     tab_widget.currentChanged.connect(_on_retarget_tab_changed)
