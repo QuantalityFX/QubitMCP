@@ -2381,13 +2381,35 @@ void main() {
             if tri_count <= 0:
                 continue
             tri_indices = np.asarray(tri_idx_list[:tri_count], dtype=np.int64)
-            tri_points = bind_positions[tri_indices].reshape(-1, 3).astype("f4", copy=False)
-            tri_normals = self._mgl_fbx_triangle_normals(tri_points)
-            edge_idx_list: List[int] = []
             try:
                 metadata = getattr(mesh_obj, "metadata", None)
             except Exception:
                 metadata = None
+            tri_points = bind_positions[tri_indices].reshape(-1, 3).astype("f4", copy=False)
+            tri_normals = None
+            tri_uvs = None
+            if isinstance(metadata, dict):
+                try:
+                    normal_raw = metadata.get("triangle_normals")
+                    if normal_raw is not None:
+                        normal_arr = np.asarray(normal_raw, dtype="f4").reshape(-1, 3)
+                        if normal_arr.shape[0] == tri_indices.shape[0]:
+                            tri_normals = normal_arr.astype("f4", copy=False)
+                except Exception:
+                    tri_normals = None
+                try:
+                    uv_raw = metadata.get("triangle_uvs")
+                    if uv_raw is not None:
+                        uv_arr = np.asarray(uv_raw, dtype="f4").reshape(-1, 2)
+                        if uv_arr.shape[0] == tri_indices.shape[0]:
+                            tri_uvs = uv_arr.astype("f4", copy=False)
+                except Exception:
+                    tri_uvs = None
+            if tri_normals is None:
+                tri_normals = self._mgl_fbx_triangle_normals(tri_points)
+            if tri_uvs is None:
+                tri_uvs = np.zeros((tri_points.shape[0], 2), dtype="f4")
+            edge_idx_list: List[int] = []
             inverse_bind_matrices = None
             if isinstance(metadata, dict):
                 try:
@@ -2453,12 +2475,110 @@ void main() {
                     "edge_indices": edge_indices,
                     "bind_tri_points": tri_points,
                     "bind_tri_normals": tri_normals,
+                    "bind_tri_uvs": tri_uvs,
                     "joint_indices": joint_indices,
                     "joint_weights": joint_weights,
                     "inverse_bind_matrices": inverse_bind_matrices,
                 }
             )
         return specs
+
+    @staticmethod
+    def _mgl_uvs_have_signal(uvs: object) -> bool:
+        if np is None:
+            return False
+        try:
+            arr = np.asarray(uvs, dtype="f4").reshape(-1, 2)
+        except Exception:
+            return False
+        if arr.size == 0:
+            return False
+        return bool(np.any(np.abs(arr) > 1.0e-7))
+
+    def _mgl_fbx_enrich_context_mesh_arrays(
+        self,
+        mesh_arrays: Optional[MeshArrays],
+        source_arrays: Optional[MeshArrays],
+    ) -> Optional[MeshArrays]:
+        if mesh_arrays is None or source_arrays is None:
+            return mesh_arrays
+
+        if mesh_arrays.texture_path is None and mesh_arrays.texture_image is None:
+            mesh_arrays.texture_path = source_arrays.texture_path
+            mesh_arrays.texture_image = source_arrays.texture_image
+        if mesh_arrays.base_color is None:
+            mesh_arrays.base_color = source_arrays.base_color
+
+        target_submeshes = list(mesh_arrays.submeshes or [])
+        source_submeshes = list(source_arrays.submeshes or [])
+        if not target_submeshes or not source_submeshes:
+            return mesh_arrays
+
+        source_by_name: Dict[str, SubMeshData] = {}
+        duplicate_names: set[str] = set()
+        for source_sub in source_submeshes:
+            key = str(getattr(source_sub, "name", "") or "").strip().lower()
+            if not key:
+                continue
+            if key in source_by_name:
+                duplicate_names.add(key)
+            else:
+                source_by_name[key] = source_sub
+        for key in duplicate_names:
+            source_by_name.pop(key, None)
+
+        for idx, target_sub in enumerate(target_submeshes):
+            key = str(getattr(target_sub, "name", "") or "").strip().lower()
+            source_sub = source_by_name.get(key) if key else None
+            if source_sub is None and idx < len(source_submeshes):
+                source_sub = source_submeshes[idx]
+            if source_sub is None:
+                continue
+
+            if target_sub.texture_path is None and target_sub.texture_image is None:
+                target_sub.texture_path = source_sub.texture_path
+                target_sub.texture_image = source_sub.texture_image
+            if target_sub.base_color is None:
+                target_sub.base_color = source_sub.base_color
+
+            try:
+                target_uvs = np.asarray(target_sub.uvs, dtype="f4").reshape(-1, 2)
+                source_uvs = np.asarray(source_sub.uvs, dtype="f4").reshape(-1, 2)
+            except Exception:
+                continue
+            if (
+                target_uvs.shape == source_uvs.shape
+                and not self._mgl_uvs_have_signal(target_uvs)
+                and self._mgl_uvs_have_signal(source_uvs)
+            ):
+                target_sub.uvs = source_uvs.astype("f4", copy=False)
+
+        try:
+            mesh_arrays.uvs = np.concatenate(
+                [
+                    np.asarray(sub.uvs, dtype="f4").reshape(-1, 2)
+                    for sub in target_submeshes
+                    if getattr(sub, "uvs", None) is not None
+                ],
+                axis=0,
+            ).astype("f4", copy=False)
+        except Exception:
+            pass
+
+        return mesh_arrays
+
+    def _mgl_fbx_enrich_context_mesh_arrays_from_path(
+        self,
+        mesh_arrays: Optional[MeshArrays],
+        path: Path,
+    ) -> Optional[MeshArrays]:
+        if mesh_arrays is None:
+            return None
+        try:
+            source_arrays = load_fbx_mesh_arrays_pyassimp(path)
+        except Exception:
+            return mesh_arrays
+        return self._mgl_fbx_enrich_context_mesh_arrays(mesh_arrays, source_arrays)
 
     def _mgl_fbx_mesh_arrays_from_context(self, context: dict | None) -> Optional[MeshArrays]:
         if np is None or not isinstance(context, dict):
@@ -2477,7 +2597,12 @@ void main() {
                 continue
             if normals.size != points.size:
                 normals = self._mgl_fbx_triangle_normals(points)
-            uvs = np.zeros((points.shape[0], 2), dtype="f4")
+            try:
+                uvs = np.asarray(spec.get("bind_tri_uvs"), dtype="f4").reshape(-1, 2)
+            except Exception:
+                uvs = np.zeros((points.shape[0], 2), dtype="f4")
+            if uvs.shape[0] != points.shape[0]:
+                uvs = np.zeros((points.shape[0], 2), dtype="f4")
             submeshes.append(
                 SubMeshData(
                     points=points,
@@ -3435,7 +3560,12 @@ void main() {
         for idx, spec in enumerate(specs):
             tri_points = np.asarray(spec["bind_tri_points"], dtype="f4").reshape(-1, 3)
             tri_normals = np.asarray(spec["bind_tri_normals"], dtype="f4").reshape(-1, 3)
-            tri_uvs = np.zeros((tri_points.shape[0], 2), dtype="f4")
+            try:
+                tri_uvs = np.asarray(spec.get("bind_tri_uvs"), dtype="f4").reshape(-1, 2)
+            except Exception:
+                tri_uvs = np.zeros((tri_points.shape[0], 2), dtype="f4")
+            if tri_uvs.shape[0] != tri_points.shape[0]:
+                tri_uvs = np.zeros((tri_points.shape[0], 2), dtype="f4")
             entry = self._mgl_build_mesh_entry(tri_points, tri_normals, tri_uvs)
             if entry is None:
                 continue
@@ -29294,8 +29424,12 @@ void main() {
                     and fbx_skinning_flag is not None
                     and not fbx_skinning_enabled
                 )
+                context_mesh_arrays = False
                 if isinstance(fbx_rig_context, dict) and (fbx_skinning_enabled or fbx_bind_geometry_only):
                     mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(fbx_rig_context)
+                    context_mesh_arrays = mesh_arrays is not None
+                if context_mesh_arrays:
+                    mesh_arrays = self._mgl_fbx_enrich_context_mesh_arrays_from_path(mesh_arrays, path)
                 if mesh_arrays is None:
                     try:
                         mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
@@ -32107,10 +32241,14 @@ void main() {
                             and fbx_skinning_flag is not None
                             and not fbx_skinning_enabled
                         )
+                        context_mesh_arrays = False
                         if isinstance(fbx_rig_context, dict) and (fbx_skinning_enabled or fbx_bind_geometry_only):
                             mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(
                                 fbx_rig_context if isinstance(fbx_rig_context, dict) else None
                             )
+                            context_mesh_arrays = mesh_arrays is not None
+                        if context_mesh_arrays:
+                            mesh_arrays = self._mgl_fbx_enrich_context_mesh_arrays_from_path(mesh_arrays, path)
                         if mesh_arrays is None:
                             try:
                                 mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
