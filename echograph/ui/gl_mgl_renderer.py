@@ -2192,6 +2192,30 @@ void main() {
                 "static" if static_frame else "clip",
             )
         )
+        scene_skeleton_overlay = bool(payload.get("scene_skeleton_overlay", False))
+        if scene_skeleton_overlay:
+            def _display_sig_tuple(raw, default):
+                try:
+                    vals = raw if raw is not None else default
+                    return tuple(round(float(v), 6) for v in list(vals)[:3])
+                except Exception:
+                    return tuple(round(float(v), 6) for v in default)
+
+            display_scale = (1.0, 1.0, 1.0)
+            display_xform = {}
+            display_kind = "mesh"
+            try:
+                display_scale, display_xform, display_kind = self._mgl_scene_skeleton_display_xform(owner_for_pose)
+            except Exception:
+                pass
+            frame_key = (
+                frame_key,
+                "scene_skeleton_display",
+                tuple(round(float(v), 6) for v in list(display_scale)[:3]),
+                _display_sig_tuple((display_xform or {}).get("pos"), (0.0, 0.0, 0.0)),
+                _display_sig_tuple((display_xform or {}).get("rot"), (0.0, 0.0, 0.0)),
+                str(display_kind or "mesh"),
+            )
         if payload.get("_fbx_rig_frame", None) == frame_key and payload.get("vao") is not None:
             return
 
@@ -2235,7 +2259,7 @@ void main() {
             prefer_inverse_bind=bool(prefer_inverse_bind),
         )
         owner = payload.get("owner")
-        if bool(payload.get("scene_skeleton_overlay", False)) and np is not None:
+        if scene_skeleton_overlay and np is not None:
             try:
                 line_points, _display_info = self._mgl_scene_skeleton_display_positions(str(owner or ""), line_points)
             except Exception:
@@ -14778,7 +14802,11 @@ void main() {
     def pick_retarget_joint_at(self, px: int, py: int, viewport_w: int, viewport_h: int, role: Optional[str] = None):
         scene_handles_by_owner = getattr(self, "_mgl_scene_skeleton_handles_by_owner", None)
         active_scene_owner = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip().lower()
-        if isinstance(scene_handles_by_owner, dict):
+        retarget_preview_active = bool(getattr(self, "_mgl_retarget_preview_active", False))
+        if retarget_preview_active:
+            # Active scene-skeleton handles can share the target owner and mask the real retarget handles.
+            scene_handles_by_owner = {}
+        elif isinstance(scene_handles_by_owner, dict):
             if active_scene_owner:
                 scene_handles_by_owner = {
                     key: value

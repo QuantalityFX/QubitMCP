@@ -669,7 +669,8 @@ def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
     renderer = getattr(self, "_mgl_renderer", None) or self
     try:
         scene_skeleton_active = bool(str(getattr(renderer, "_mgl_scene_skeleton_active_owner", "") or "").strip())
-        if e.button() == QtCore.Qt.RightButton and scene_skeleton_active:
+        retarget_preview_active = bool(getattr(renderer, "_mgl_retarget_preview_active", False))
+        if e.button() == QtCore.Qt.RightButton and scene_skeleton_active and not retarget_preview_active:
             return False
     except Exception:
         pass
