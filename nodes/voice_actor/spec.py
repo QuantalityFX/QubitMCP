@@ -58,6 +58,7 @@ VOICE_ACTOR_SELECTED_PARAM_KEY = "__voice_actor_selected_param"
 VOICE_ACTOR_MODE_KEY = "__voice_actor_mode"
 VOICE_ACTOR_VOICE_KEY = "__voice_actor_voice"
 VOICE_ACTOR_STT_METHOD_KEY = "__voice_actor_stt_method"
+VOICE_ACTOR_STT_LANGUAGE_KEY = "__voice_actor_stt_language"
 VOICE_ACTOR_SEND_MODE_KEY = "__voice_actor_send_mode"
 VOICE_ACTOR_SEND_TOKEN_KEY = "__voice_actor_send_token"
 VOICE_TANYA_GOOGLE = "__google_tanya__"
@@ -69,6 +70,13 @@ STT_SEND_MODE_ASK_FIRST = "ask_first"
 STT_SEND_MODE_MANUAL = "manual"
 LOCAL_WHISPER_MODEL_NAME = "base"
 LOCAL_WHISPER_LANGUAGE = "en"
+STT_LANGUAGE_OPTIONS = (
+    {"id": "en", "name": "English", "whisper": "en", "google": "en-US", "tts": "en"},
+    {"id": "es", "name": "Spanish", "whisper": "es", "google": "es-ES", "tts": "es"},
+    {"id": "ja", "name": "Japanese", "whisper": "ja", "google": "ja-JP", "tts": "ja"},
+    {"id": "ko", "name": "Korean", "whisper": "ko", "google": "ko-KR", "tts": "ko"},
+    {"id": "zh", "name": "Chinese", "whisper": "zh", "google": "zh-CN", "tts": "zh-CN"},
+)
 STT_IDLE_CONFIRM_SECONDS = 2.2
 STT_IDLE_CONFIRM_RESPONSE_SECONDS = 10.0
 STT_SEND_CONFIRM_WORDS = {"yes", "yeah", "yep", "yup", "done", "send", "okay", "ok"}
@@ -144,23 +152,30 @@ _VOICE_CONTROL_TAG_RE = re.compile(
 _MULTI_BLANK_RE = re.compile(r"\n{3,}")
 
 
-def _new_gtts(text: str):
+def _new_gtts(text: str, language: str = LOCAL_WHISPER_LANGUAGE):
     if gTTS is None:
         return None
+    lang = _tts_google_language(language)
     # Newer gTTS builds support timeout; older builds may not.
     try:
-        return gTTS(text=text, lang="en", timeout=8)
+        return gTTS(text=text, lang=lang, timeout=8)
     except TypeError:
-        return gTTS(text=text, lang="en")
+        return gTTS(text=text, lang=lang)
 
 
-def _save_gtts_mp3(text: str, target_path: Path, *, timeout_seconds: float = 12.0) -> str:
+def _save_gtts_mp3(
+    text: str,
+    target_path: Path,
+    *,
+    timeout_seconds: float = 12.0,
+    language: str = LOCAL_WHISPER_LANGUAGE,
+) -> str:
     done = threading.Event()
     errors = []
 
     def _worker():
         try:
-            tts = _new_gtts(text)
+            tts = _new_gtts(text, language=language)
             if tts is None:
                 raise RuntimeError("Google voice dependency is unavailable.")
             tts.save(str(target_path))
@@ -723,6 +738,66 @@ def _normalize_stt_method(value: str) -> str:
     return STT_METHOD_LOCAL_WHISPER
 
 
+def _normalize_stt_language(value: str) -> str:
+    key = str(value or "").strip().lower().replace("_", "-")
+    if not key:
+        return LOCAL_WHISPER_LANGUAGE
+    aliases = {
+        "english": "en",
+        "en-us": "en",
+        "en-gb": "en",
+        "spanish": "es",
+        "es-es": "es",
+        "es-us": "es",
+        "es-mx": "es",
+        "japanese": "ja",
+        "jp": "ja",
+        "ja-jp": "ja",
+        "korean": "ko",
+        "kr": "ko",
+        "ko-kr": "ko",
+        "chinese": "zh",
+        "mandarin": "zh",
+        "zh-cn": "zh",
+        "zh-hans": "zh",
+        "zh-hans-cn": "zh",
+        "cmn-hans-cn": "zh",
+    }
+    key = aliases.get(key, key)
+    for option in STT_LANGUAGE_OPTIONS:
+        if key == str(option.get("id", "")).lower():
+            return str(option.get("id", "") or LOCAL_WHISPER_LANGUAGE)
+        if key == str(option.get("whisper", "")).lower():
+            return str(option.get("id", "") or LOCAL_WHISPER_LANGUAGE)
+        if key == str(option.get("google", "")).lower():
+            return str(option.get("id", "") or LOCAL_WHISPER_LANGUAGE)
+    return LOCAL_WHISPER_LANGUAGE
+
+
+def _stt_language_option(value: str) -> dict:
+    key = _normalize_stt_language(value)
+    for option in STT_LANGUAGE_OPTIONS:
+        if str(option.get("id", "") or "") == key:
+            return option
+    return STT_LANGUAGE_OPTIONS[0]
+
+
+def _stt_language_name(value: str) -> str:
+    return str(_stt_language_option(value).get("name", "") or "English")
+
+
+def _stt_whisper_language(value: str) -> str:
+    return str(_stt_language_option(value).get("whisper", "") or LOCAL_WHISPER_LANGUAGE)
+
+
+def _stt_google_language(value: str) -> str:
+    return str(_stt_language_option(value).get("google", "") or "en-US")
+
+
+def _tts_google_language(value: str) -> str:
+    return str(_stt_language_option(value).get("tts", "") or LOCAL_WHISPER_LANGUAGE)
+
+
 def _normalize_stt_send_mode(value: str) -> str:
     key = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     if key in {"ask", "ask_first", "ask_for_approval", "approval"}:
@@ -778,7 +853,7 @@ def _whisper_model():
         return _WHISPER_MODEL, ""
 
 
-def _transcribe_local_whisper(audio_wav: bytes) -> tuple[str, str]:
+def _transcribe_local_whisper(audio_wav: bytes, language: str = LOCAL_WHISPER_LANGUAGE) -> tuple[str, str]:
     model, err = _whisper_model()
     if err or model is None:
         return "", err or "Local Whisper model is unavailable."
@@ -787,7 +862,7 @@ def _transcribe_local_whisper(audio_wav: bytes) -> tuple[str, str]:
         wav_path.write_bytes(audio_wav)
         segments, _info = model.transcribe(
             str(wav_path),
-            language=LOCAL_WHISPER_LANGUAGE,
+            language=_stt_whisper_language(language),
             vad_filter=True,
         )
         parts = []
@@ -969,6 +1044,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._tts_voice_options = []
         self._syncing_voice_combo = False
         self._syncing_stt_combo = False
+        self._syncing_stt_language_combo = False
         self._syncing_send_mode_combo = False
         self._stt_state_lock = threading.Lock()
         self._stt_listening = False
@@ -999,6 +1075,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._selected_voice_key = saved_voice_key or VOICE_TANYA_GOOGLE
         saved_stt_method = _param_value(model, VOICE_ACTOR_STT_METHOD_KEY, "").strip()
         self._selected_stt_method = _normalize_stt_method(saved_stt_method or STT_METHOD_LOCAL_WHISPER)
+        saved_stt_language = _param_value(model, VOICE_ACTOR_STT_LANGUAGE_KEY, "").strip()
+        self._selected_stt_language = _normalize_stt_language(saved_stt_language or LOCAL_WHISPER_LANGUAGE)
         saved_send_mode = _param_value(model, VOICE_ACTOR_SEND_MODE_KEY, "").strip()
         self._selected_send_mode = _normalize_stt_send_mode(saved_send_mode or STT_SEND_MODE_AUTO_RESPOND)
         self._had_note_input = False
@@ -1010,6 +1088,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
             _ensure_hidden_params(model, [VOICE_ACTOR_VOICE_KEY])
         if saved_stt_method:
             _ensure_hidden_params(model, [VOICE_ACTOR_STT_METHOD_KEY])
+        if saved_stt_language:
+            _ensure_hidden_params(model, [VOICE_ACTOR_STT_LANGUAGE_KEY])
         if saved_send_mode:
             _ensure_hidden_params(model, [VOICE_ACTOR_SEND_MODE_KEY])
 
@@ -1112,6 +1192,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._stt_combo.setToolTip("Select speech-to-text engine for Listen mode.")
         self._stt_combo.currentIndexChanged.connect(self._on_stt_method_changed)
 
+        self._stt_language_label = QtWidgets.QLabel("Lang:")
+        self._stt_language_label.setStyleSheet("QLabel{color:#94a3b8;}")
+        self._stt_language_combo = QtWidgets.QComboBox()
+        self._stt_language_combo.setStyleSheet(
+            "QComboBox{background:#11151c;color:#e6edf3;border:1px solid #334155;border-radius:4px;padding:3px 8px;}"
+            "QComboBox:disabled{background:#1f2937;color:#94a3b8;border-color:#334155;}"
+            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
+        )
+        self._stt_language_combo.setToolTip("Select recognition and Google voice language.")
+        self._stt_language_combo.currentIndexChanged.connect(self._on_stt_language_changed)
+
         self._send_mode_label = QtWidgets.QLabel("Response:")
         self._send_mode_label.setStyleSheet("QLabel{color:#94a3b8;}")
         self._send_mode_combo = QtWidgets.QComboBox()
@@ -1148,6 +1239,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         response_row.setSpacing(6)
         response_row.addWidget(self._send_mode_label, 0)
         response_row.addWidget(self._send_mode_combo, 1)
+        response_row.addWidget(self._stt_language_label, 0)
+        response_row.addWidget(self._stt_language_combo, 1)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -1171,6 +1264,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._ensure_scene_connections()
         self._refresh_voice_options()
         self._refresh_stt_method_options()
+        self._refresh_stt_language_options()
         self._refresh_send_mode_options()
         self._refresh_source_param_options()
         self._queue_deferred_scene_bootstrap()
@@ -1355,6 +1449,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
         self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
         self._stt_combo.setEnabled(not self._busy)
+        self._stt_language_combo.setEnabled(not self._busy)
         self._send_mode_combo.setEnabled(not self._busy)
 
     def _set_mode(self, mode: str, *, persist: bool = True) -> None:
@@ -1590,7 +1685,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         else:
             self._voice_combo.setEnabled(True)
             self._voice_combo.setToolTip(
-                "Google (Tanya) matches Tanya project voice. Local voices use system TTS."
+                "Google (Tanya) uses the Lang setting. Local voices use installed system TTS voices."
             )
 
     def _refresh_stt_method_options(self) -> None:
@@ -1631,6 +1726,37 @@ class VoiceActorWidget(QtWidgets.QWidget):
         else:
             self._stt_combo.setEnabled(True)
             self._stt_combo.setToolTip("Local Whisper is the default transcription method.")
+
+    def _refresh_stt_language_options(self) -> None:
+        selected_key = _normalize_stt_language(self._selected_stt_language)
+        if selected_key != str(self._selected_stt_language or "").strip():
+            self._selected_stt_language = selected_key
+            _set_node_param(self._node_item, VOICE_ACTOR_STT_LANGUAGE_KEY, selected_key)
+
+        self._syncing_stt_language_combo = True
+        try:
+            self._stt_language_combo.blockSignals(True)
+            self._stt_language_combo.clear()
+            selected_index = 0
+            for idx, option in enumerate(STT_LANGUAGE_OPTIONS):
+                label = str(option.get("name", "") or "")
+                value = str(option.get("id", "") or "")
+                self._stt_language_combo.addItem(label, value)
+                if value == selected_key:
+                    selected_index = idx
+            self._stt_language_combo.setCurrentIndex(selected_index)
+        finally:
+            self._stt_language_combo.blockSignals(False)
+            self._syncing_stt_language_combo = False
+
+        if self._busy:
+            self._stt_language_combo.setEnabled(False)
+            self._stt_language_combo.setToolTip("Language is disabled while the node is busy.")
+        else:
+            self._stt_language_combo.setEnabled(True)
+            self._stt_language_combo.setToolTip(
+                "Language used by recognition and Google voice output."
+            )
 
     def _refresh_send_mode_options(self) -> None:
         options = [
@@ -1697,6 +1823,16 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         self._selected_stt_method = selected_key
         _set_node_param(self._node_item, VOICE_ACTOR_STT_METHOD_KEY, selected_key)
+
+    def _on_stt_language_changed(self, _index: int) -> None:
+        if self._syncing_stt_language_combo:
+            return
+        selected_key = _normalize_stt_language(self._stt_language_combo.currentData() or "")
+        if selected_key == str(self._selected_stt_language or "").strip():
+            return
+        self._selected_stt_language = selected_key
+        _set_node_param(self._node_item, VOICE_ACTOR_STT_LANGUAGE_KEY, selected_key)
+        self._refresh_stt_language_options()
 
     def _on_send_mode_changed(self, _index: int) -> None:
         if self._syncing_send_mode_combo:
@@ -1937,6 +2073,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 error=True,
             )
             return
+        stt_language = _normalize_stt_language(self._selected_stt_language)
         send_mode = _normalize_stt_send_mode(self._selected_send_mode)
         self._stop_stt_send_confirmation_prompt()
         # Start each listen session as a fresh message transcription.
@@ -1955,11 +2092,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
             send_hint = "Ask First confirms before sending."
         else:
             send_hint = "Auto Respond sends after a pause."
+        language_label = _stt_language_name(stt_language)
         if stt_method == STT_METHOD_LOCAL_WHISPER:
-            self._set_status(f"Listening... (Local Whisper). {send_hint}")
+            self._set_status(f"Listening... (Local Whisper, {language_label}). {send_hint}")
         else:
-            self._set_status(f"Listening... (Google). {send_hint}")
-        threading.Thread(target=self._stt_worker, args=(stt_method, send_mode), daemon=True).start()
+            self._set_status(f"Listening... (Google, {language_label}). {send_hint}")
+        threading.Thread(target=self._stt_worker, args=(stt_method, send_mode, stt_language), daemon=True).start()
 
     @QtCore.Slot(str)
     def _on_stt_status(self, message: str) -> None:
@@ -2398,11 +2536,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 except Exception:
                     pass
 
-    def _stt_worker(self, stt_method: str, send_mode: str) -> None:
+    def _stt_worker(self, stt_method: str, send_mode: str, stt_language: str = LOCAL_WHISPER_LANGUAGE) -> None:
         transcript_parts = []
         error = ""
         selected_method = _normalize_stt_method(stt_method)
         selected_send_mode = _normalize_stt_send_mode(send_mode)
+        selected_language = _normalize_stt_language(stt_language)
         wait_timeout = getattr(sr, "WaitTimeoutError", None) if sr is not None else None
         unknown_value = getattr(sr, "UnknownValueError", None) if sr is not None else None
         request_error = getattr(sr, "RequestError", None) if sr is not None else None
@@ -2487,7 +2626,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                         chunk = ""
                         if selected_method == STT_METHOD_LOCAL_WHISPER:
                             wav_data = audio.get_wav_data(convert_rate=16000, convert_width=2)
-                            chunk, chunk_error = _transcribe_local_whisper(wav_data)
+                            chunk, chunk_error = _transcribe_local_whisper(wav_data, selected_language)
                             if chunk_error:
                                 if chunk_error == "Speech detected but transcript was empty.":
                                     if _maybe_handle_idle_send(time.monotonic()):
@@ -2497,7 +2636,13 @@ class VoiceActorWidget(QtWidgets.QWidget):
                                 break
                         else:
                             try:
-                                chunk = (recognizer.recognize_google(audio) or "").strip()
+                                chunk = (
+                                    recognizer.recognize_google(
+                                        audio,
+                                        language=_stt_google_language(selected_language),
+                                    )
+                                    or ""
+                                ).strip()
                             except Exception as exc:
                                 if unknown_value and isinstance(exc, unknown_value):
                                     if _maybe_handle_idle_send(time.monotonic()):
@@ -2702,6 +2847,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
     def _speak_text(self, text: str, *, source: str) -> bool:
         voice_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
+        tts_language = _normalize_stt_language(self._selected_stt_language)
         if voice_key == VOICE_TANYA_GOOGLE:
             if gTTS is None or pygame is None:
                 self._set_status(
@@ -2727,16 +2873,19 @@ class VoiceActorWidget(QtWidgets.QWidget):
             else:
                 self._set_status("No text to speak. Connect input 'text' or type transcript.", error=True)
             return False
+        language_suffix = ""
+        if voice_key == VOICE_TANYA_GOOGLE:
+            language_suffix = f" ({_stt_language_name(tts_language)})"
         if source == "selected_param":
-            self._set_status("Speaking selected parameter value...")
+            self._set_status(f"Speaking selected parameter value{language_suffix}...")
         elif source in ("chatbot_auto", "chatbot_latest"):
-            self._set_status("Auto-speaking latest response...")
+            self._set_status(f"Auto-speaking latest response{language_suffix}...")
         elif source == "replay":
-            self._set_status("Replaying last output...")
+            self._set_status(f"Replaying last output{language_suffix}...")
         elif source == "input":
-            self._set_status("Speaking text from wired input...")
+            self._set_status(f"Speaking text from wired input{language_suffix}...")
         else:
-            self._set_status("Speaking transcript...")
+            self._set_status(f"Speaking transcript{language_suffix}...")
         self._last_tts_text = clean
         # Clear any stale turn-taking pause list from an interrupted prior playback.
         self._resume_turn_taking_paused_actors()
@@ -2747,7 +2896,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._tts_engine = None
             self._tts_using_pygame = False
         self._set_busy(True, "speaking")
-        threading.Thread(target=self._tts_worker, args=(clean, voice_key), daemon=True).start()
+        threading.Thread(target=self._tts_worker, args=(clean, voice_key, tts_language), daemon=True).start()
         return True
 
     def _resolve_tts_text(self) -> tuple[str, str]:
@@ -2816,13 +2965,14 @@ class VoiceActorWidget(QtWidgets.QWidget):
         text, source = self._resolve_tts_text()
         self._speak_text(text, source=source)
 
-    def _tts_worker(self, text: str, voice_key: str) -> None:
+    def _tts_worker(self, text: str, voice_key: str, tts_language: str = LOCAL_WHISPER_LANGUAGE) -> None:
         error = ""
         user_stopped = False
         engine = None
         temp_file = None
         used_pygame = False
         playback_slot = False
+        selected_language = _normalize_stt_language(tts_language)
 
         def _speak_with_local(local_voice_key: str) -> None:
             nonlocal engine
@@ -2873,7 +3023,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 if gTTS is not None and pygame is not None:
                     try:
                         temp_file = Path(tempfile.gettempdir()) / f"voice_actor_{uuid.uuid4().hex}.mp3"
-                        save_err = _save_gtts_mp3(text, temp_file, timeout_seconds=12.0)
+                        save_err = _save_gtts_mp3(
+                            text,
+                            temp_file,
+                            timeout_seconds=12.0,
+                            language=selected_language,
+                        )
                         if save_err:
                             raise RuntimeError(save_err)
                         if not pygame.mixer.get_init():
@@ -2979,12 +3134,15 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setZValue(node_item.zValue() + 0.1)
     proxy.setPos(0, y_cursor)
 
-    h = body.sizeHint().height()
+    size_hint = body.sizeHint()
+    minimum_hint = body.minimumSizeHint()
+    h = max(int(size_hint.height()), int(minimum_hint.height()), VOICE_ACTOR_BODY_H)
     try:
         pad = float(getattr(node_item, "_PADDING", 0))
         available = float(node_item.height) - float(y_cursor) - pad
         if available > h:
             h = int(available)
+        node_item.height = max(float(node_item.height), float(y_cursor) + float(h) + pad)
     except Exception:
         pass
     proxy.resize(node_item.width, h)

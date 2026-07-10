@@ -42,11 +42,21 @@ MEDIGATOR_DEFAULT_SYSTEM_PROMPT = (
 MEDIGATOR_MAX_SYSTEM_CHARS = 4000
 MEDIGATOR_MAX_HISTORY_CHARS = 24000
 MEDIGATOR_MAX_VOICE_CHARS = 8000
+MEDIGATOR_MAX_OUTPUT_CONTEXT_CHARS = 2000
 MEDIGATOR_MAX_PROMPT_LOG_FILES = 15
 MEDIGATOR_MAX_CONSOLE_LOG_LINES = 5000
 MEDIGATOR_CODEX_MODEL = "gpt-5.5"
 VOICE_ACTOR_KINDS = {"voice_actor", "voice actor", "voiceactor"}
+VOICE_ACTOR_LANGUAGE_PARAM = "__voice_actor_stt_language"
 VOICE_ACTOR_SEND_TOKEN_PARAM = "__voice_actor_send_token"
+VOICE_ACTOR_LANGUAGE_LABELS = {
+    "en": "English",
+    "es": "Spanish",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+}
+TRANSLATOR_DOWNSTREAM_PASS_THROUGH_KINDS = {"python", "output", "wire", "switch"}
 QDECK_CONTROLLER_KINDS = {
     "qubit_deck_controller",
     "qubit deck controller",
@@ -71,8 +81,11 @@ AGENT_POPUP_CLOSE_ICON_COLOR = "#d1d5db"
 SECURITY_GUARD_PROMPT_PROFILE = "security_guard"
 SECURITY_GUARD_POPUP_NAME = "Security Guard popup"
 TANYA_PROMPT_PROFILE = "assistant_tanya"
+TRANSLATOR_PROMPT_PROFILE = "translator"
 MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "romantic_dark_assistant": TANYA_PROMPT_PROFILE,
+    "translator_agent": TRANSLATOR_PROMPT_PROFILE,
+    "translation_agent": TRANSLATOR_PROMPT_PROFILE,
 }
 SECURITY_AGENT_ICON_FILENAMES = ("ScurityAgent_Icon.png", "SecurityAgent_Icon.png")
 OPERATOR_AGENT_ICON_FILENAMES = ("ITOperatorAgent_Icon.png", "OperatorAgent_Icon.png")
@@ -311,6 +324,16 @@ def _ordered_in_edges(scene, node_item) -> list:
         return []
 
 
+def _ordered_out_edges(scene, node_item) -> list:
+    if not scene or not node_item:
+        return []
+    try:
+        edges = list(getattr(scene, "_edges", []) or [])
+    except Exception:
+        return []
+    return [edge for edge in edges if getattr(edge, "src", None) is node_item]
+
+
 def _edge_port_name(edge) -> str:
     for attr in ("dst_port_name", "dst_label", "dst_name"):
         if hasattr(edge, attr):
@@ -370,6 +393,41 @@ def _param_value_from_item(node_item, name: str, default: str = "") -> str:
         if key == target:
             return str(entry.get("value", "") or "")
     return str(default or "")
+
+
+def _normalize_voice_actor_language(value: str) -> str:
+    key = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "english": "en",
+        "en-us": "en",
+        "en-gb": "en",
+        "spanish": "es",
+        "es-es": "es",
+        "es-us": "es",
+        "es-mx": "es",
+        "japanese": "ja",
+        "jp": "ja",
+        "ja-jp": "ja",
+        "korean": "ko",
+        "kr": "ko",
+        "ko-kr": "ko",
+        "chinese": "zh",
+        "mandarin": "zh",
+        "zh-cn": "zh",
+        "zh-hans": "zh",
+        "zh-hans-cn": "zh",
+        "cmn-hans-cn": "zh",
+    }
+    key = aliases.get(key, key)
+    if key in VOICE_ACTOR_LANGUAGE_LABELS:
+        return key
+    return "en"
+
+
+def _voice_actor_language_from_item(node_item) -> tuple[str, str]:
+    raw = _param_value_from_item(node_item, VOICE_ACTOR_LANGUAGE_PARAM, "en")
+    code = _normalize_voice_actor_language(raw)
+    return code, VOICE_ACTOR_LANGUAGE_LABELS.get(code, "English")
 
 
 def _parse_int(value) -> int | None:
@@ -631,6 +689,52 @@ def _voice_actor_send_token(node_item) -> str:
     return _param_value(model, VOICE_ACTOR_SEND_TOKEN_PARAM, "").strip()
 
 
+def _find_downstream_voice_actor(scene, node_item, max_depth: int = 6):
+    if scene is None or node_item is None:
+        return None
+    queue = [(node_item, 0)]
+    visited = set()
+    while queue:
+        current, depth = queue.pop(0)
+        if current is None:
+            continue
+        marker = id(current)
+        if marker in visited:
+            continue
+        visited.add(marker)
+
+        kind = _kind_of_item(current)
+        if depth > 0 and kind in VOICE_ACTOR_KINDS:
+            return current
+        if depth >= max(1, int(max_depth)):
+            continue
+        if depth > 0 and kind not in TRANSLATOR_DOWNSTREAM_PASS_THROUGH_KINDS:
+            continue
+
+        for edge in _ordered_out_edges(scene, current):
+            dst = getattr(edge, "dst", None)
+            if dst is not None and id(dst) not in visited:
+                queue.append((dst, depth + 1))
+    return None
+
+
+def _translator_output_context(scene, node_item) -> str:
+    target = _find_downstream_voice_actor(scene, node_item)
+    if target is None:
+        return ""
+    model = getattr(target, "model", None)
+    name = str(getattr(model, "name", "") or "Voice Actor").strip() or "Voice Actor"
+    language_code, language_name = _voice_actor_language_from_item(target)
+    mode = _voice_actor_mode_from_item(target)
+    return (
+        "Target output voice actor:\n"
+        f"Name: {name}\n"
+        f"Language: {language_name} ({language_code})\n"
+        f"Mode: {mode or 'unknown'}\n"
+        f"Instruction: Translate the latest voice input into {language_name} for this Voice Actor."
+    )
+
+
 def _set_node_info(node_item, text: str) -> None:
     model = getattr(node_item, "model", None)
     if model is None:
@@ -865,26 +969,36 @@ def _compose_mediator_prompt(
     chatbot_history: str,
     voice_input: str,
     default_system_prompt: str = "",
+    output_context: str = "",
 ) -> tuple[str, str]:
     clean_system = _trim_text(system_prompt, MEDIGATOR_MAX_SYSTEM_CHARS, keep_tail=False)
     clean_history = _trim_text(chatbot_history, MEDIGATOR_MAX_HISTORY_CHARS, keep_tail=True)
     clean_voice = _trim_text(voice_input, MEDIGATOR_MAX_VOICE_CHARS, keep_tail=True)
     clean_default = _trim_text(default_system_prompt, MEDIGATOR_MAX_SYSTEM_CHARS, keep_tail=False)
+    clean_output_context = _trim_text(output_context, MEDIGATOR_MAX_OUTPUT_CONTEXT_CHARS, keep_tail=False)
     effective_system = clean_system or clean_default or MEDIGATOR_DEFAULT_SYSTEM_PROMPT
     payload = "\n\n".join(
         [
             effective_system,
             clean_history,
             clean_voice,
+            clean_output_context,
         ]
     )
     signature = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    output_block = (
+        "Output context:\n"
+        f"{clean_output_context}\n\n"
+        if clean_output_context
+        else ""
+    )
     prompt = (
         f"{effective_system}\n\n"
         "Task:\n"
-        "1. Read the conversation history and the latest voice input.\n"
+        "1. Read the conversation history, latest voice input, and output context.\n"
         "2. Produce the best next assistant reply.\n"
         "3. Return only the assistant response text.\n\n"
+        f"{output_block}"
         "Conversation history:\n"
         f"{clean_history or '(none)'}\n\n"
         "Latest voice input:\n"
@@ -2581,11 +2695,16 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         if profile == QDECK_PROMPT_PROFILE:
             prompt_voice_input = _normalize_qdeck_voice_input(clean_voice_input)
 
+        output_context = ""
+        if profile == TRANSLATOR_PROMPT_PROFILE:
+            output_context = _translator_output_context(scene, self._node_item)
+
         prompt, signature = _compose_mediator_prompt(
             system_prompt,
             chatbot_history,
             prompt_voice_input,
             self._selected_profile_prompt(),
+            output_context,
         )
         if not force and current_voice_token:
             signature = hashlib.sha1(f"{signature}\nvoice:{current_voice_token}".encode("utf-8")).hexdigest()

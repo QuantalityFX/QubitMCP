@@ -1745,6 +1745,159 @@ def build_anim_retarget_preview_assets(
     return [asset for asset in (source_asset, target_asset, preview_asset) if isinstance(asset, dict)]
 
 
+def _resolve_window(node_item, parent=None):
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    if scene is not None:
+        try:
+            views = scene.views()
+            if views:
+                return views[0].window()
+        except Exception:
+            pass
+    try:
+        win = node_item.window()
+        if win is not None:
+            return win
+    except Exception:
+        pass
+    try:
+        win = parent.window() if parent is not None else None
+        if win is not None:
+            return win
+    except Exception:
+        pass
+    try:
+        active = QtWidgets.QApplication.activeWindow() if QtWidgets is not None else None
+        if active is not None and active.isWindow():
+            return active
+    except Exception:
+        pass
+    return None
+
+
+def open_anim_retarget_preview(
+    node_item,
+    *,
+    frame: bool = True,
+    quiet: bool = False,
+    parent=None,
+    result: RetargetSourceTargetResult | None = None,
+) -> bool:
+    def _warn(message: str) -> None:
+        if quiet or QtWidgets is None:
+            return
+        try:
+            QtWidgets.QMessageBox.warning(parent, "Anim Retarget View", str(message))
+        except Exception:
+            pass
+
+    if node_item is None:
+        _warn("Node item is not available.")
+        return False
+    try:
+        _ensure_display_params(node_item)
+    except Exception:
+        pass
+    if result is None:
+        try:
+            result = resolve_anim_retarget_inputs(node_item, persist=True)
+        except Exception as exc:
+            _warn(f"Retarget inputs could not be resolved: {exc}")
+            return False
+    if result is None:
+        return False
+    if result.status == "error":
+        _warn("\n".join(result.message_lines()))
+        return False
+    assets = build_anim_retarget_preview_assets(node_item, result)
+    if len(assets) < 2:
+        _warn("Source and target skeleton preview assets could not be built.")
+        return False
+
+    win = _resolve_window(node_item, parent)
+    scene_handler = getattr(win, "open_scene_assets", None) if win is not None else None
+    if not callable(scene_handler):
+        _warn("3D view is not available.")
+        return False
+    try:
+        scene_handler(assets, frame=bool(frame))
+    except TypeError:
+        try:
+            scene_handler(assets)
+        except Exception as exc:
+            _warn(f"3D view failed: {exc}")
+            return False
+    except Exception as exc:
+        _warn(f"3D view failed: {exc}")
+        return False
+    return True
+
+
+class AnimRetargetNodeViewButton(QtWidgets.QWidget if QtWidgets is not None else object):
+    def __init__(self, node_item):
+        super().__init__()
+        self._node_item = node_item
+        try:
+            self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        except Exception:
+            pass
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+        self._view_btn = QtWidgets.QPushButton("View")
+        self._view_btn.setFixedWidth(64)
+        self._view_btn.setToolTip("Open the source and target skeleton preview in the 3D viewport.")
+        self._view_btn.setStyleSheet(
+            "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+            "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+        )
+        self._view_btn.clicked.connect(self._on_view_clicked)
+        layout.addWidget(self._view_btn, 0, QtCore.Qt.AlignLeft)
+        layout.addStretch(1)
+
+    def sizeHint(self):
+        return QtCore.QSize(88, 36)
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(76, 32)
+
+    def _on_view_clicked(self):
+        open_anim_retarget_preview(self._node_item, frame=True, quiet=False, parent=self)
+
+
+def render_node_body(node_item, y_cursor: int) -> int:
+    if QtWidgets is None:
+        return y_cursor
+    body = AnimRetargetNodeViewButton(node_item)
+    proxy = QtWidgets.QGraphicsProxyWidget(node_item)
+    proxy.setWidget(body)
+    proxy.setZValue(node_item.zValue() + 0.1)
+    proxy.setPos(0, y_cursor)
+    hint = body.sizeHint().expandedTo(body.minimumSizeHint())
+    h = max(30, int(hint.height()))
+    proxy.resize(node_item.width, h)
+    try:
+        node_item._plugin_proxies.append(proxy)
+    except Exception:
+        pass
+    try:
+        pad = int(getattr(node_item, "_PADDING", 6) or 6)
+        required_height = int(y_cursor + h + pad)
+        if required_height > int(getattr(node_item, "height", 0) or 0):
+            try:
+                node_item.prepareGeometryChange()
+            except Exception:
+                pass
+            node_item.height = required_height
+    except Exception:
+        pass
+    return y_cursor + h
+
+
 def _quat_normalize(q) -> Tuple[float, float, float, float]:
     try:
         x, y, z, w = (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
@@ -4772,49 +4925,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         result = _refresh(persist=True, toast=False)
         if result is None:
             return
-        if result.status == "error":
-            if quiet:
-                return
-            QtWidgets.QMessageBox.warning(
-                card,
-                "Anim Retarget View",
-                "\n".join(result.message_lines()),
-            )
-            return
-        assets = build_anim_retarget_preview_assets(item, result)
-        if len(assets) < 2:
-            if quiet:
-                return
-            QtWidgets.QMessageBox.warning(
-                card,
-                "Anim Retarget View",
-                "Source and target skeleton preview assets could not be built.",
-            )
-            return
-
-        win = card.window()
-        scene_handler = getattr(win, "open_scene_assets", None) if win is not None else None
-        if not callable(scene_handler):
-            if quiet:
-                return
-            QtWidgets.QMessageBox.warning(card, "Anim Retarget View", "3D view is not available.")
-            return
-        try:
-            scene_handler(assets, frame=bool(frame))
-        except TypeError:
-            try:
-                scene_handler(assets)
-            except Exception as exc:
-                if quiet:
-                    return
-                QtWidgets.QMessageBox.warning(card, "Anim Retarget View", f"3D view failed: {exc}")
-                return
-        except Exception as exc:
-            if quiet:
-                return
-            QtWidgets.QMessageBox.warning(card, "Anim Retarget View", f"3D view failed: {exc}")
-            return
-        view_state["opened"] = True
+        if open_anim_retarget_preview(item, frame=bool(frame), quiet=bool(quiet), parent=card, result=result):
+            view_state["opened"] = True
 
     view_button.clicked.connect(lambda: _on_view_clicked(frame=True, quiet=False))
     joint_handle_slider.valueChanged.connect(_on_joint_handle_changed)
@@ -4868,6 +4980,7 @@ ANIM_RETARGET_SPEC = Spec(
     stripe_color="#ec4899",
     augment_infocard_footer=augment_infocard_footer,
     build_ports=build_ports,
+    render_node_body=render_node_body,
 )
 
 
@@ -4877,8 +4990,10 @@ __all__ = [
     "TARGET_KIND_ALIASES",
     "RetargetSourceTargetResult",
     "build_ports",
+    "render_node_body",
     "resolve_anim_retarget_inputs",
     "build_anim_retarget_preview_assets",
+    "open_anim_retarget_preview",
     "build_anim_retarget_clip",
     "build_anim_retarget_scene_asset",
     "write_anim_retarget_joint_debug_snapshot",
