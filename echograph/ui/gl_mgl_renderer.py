@@ -13864,6 +13864,10 @@ void main() {
                 callback()
             except Exception:
                 pass
+        try:
+            self._mgl_retarget_refresh_target_pose_contexts(rebuild_clip=True)
+        except Exception:
+            pass
 
     def _mgl_retarget_notify_target_pose_changed(self) -> None:
         model = getattr(self, "_mgl_retarget_node_model", None)
@@ -14027,11 +14031,79 @@ void main() {
             pass
         return True
 
-    def _mgl_retarget_refresh_target_pose_contexts(self) -> None:
+    def _mgl_retarget_context_uses_retarget_clip(self, context: dict | None) -> bool:
+        if not isinstance(context, dict):
+            return False
+        role = str(context.get("retarget_preview_role") or "").strip().lower()
+        return bool(
+            context.get("retarget_preview_target_animated")
+            or context.get("retarget_result")
+            or role == "target_animation"
+        )
+
+    def _mgl_retarget_target_pose_offset_count_for_context(self) -> int:
+        model = self._mgl_retarget_node_model_for_pose()
+        try:
+            from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
+
+            payload_fn = getattr(anim_retarget_spec, "_target_pose_offsets_payload", None)
+            payload = payload_fn(model) if callable(payload_fn) else {}
+            return int(len(payload)) if isinstance(payload, dict) else 0
+        except Exception:
+            return 0
+
+    def _mgl_retarget_rebuild_active_target_clip(self):
+        node_item = getattr(self, "_mgl_retarget_node_item", None)
+        if node_item is None:
+            return None
+        try:
+            from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
+
+            resolve_inputs = getattr(anim_retarget_spec, "resolve_anim_retarget_inputs", None)
+            build_clip = getattr(anim_retarget_spec, "build_anim_retarget_clip", None)
+            if not callable(resolve_inputs) or not callable(build_clip):
+                return None
+            result = resolve_inputs(node_item, persist=True)
+            if str(getattr(result, "status", "") or "").strip().lower() == "error":
+                return None
+            clip = build_clip(node_item, result)
+        except Exception:
+            return None
+        if clip is not None:
+            try:
+                self._mgl_retarget_node_model = getattr(node_item, "model", None)
+            except Exception:
+                pass
+        return clip
+
+    def _mgl_retarget_apply_clip_to_context(self, context: dict | None, clip) -> bool:
+        if not isinstance(context, dict) or clip is None:
+            return False
+        try:
+            context["clip"] = clip
+            context["clips"] = [clip]
+            context["retarget_clip_name"] = str(getattr(clip, "name", "") or "")
+            context["retarget_track_count"] = int(len(getattr(clip, "tracks", []) or []))
+            context["retarget_target_pose_offset_count"] = self._mgl_retarget_target_pose_offset_count_for_context()
+            return True
+        except Exception:
+            return False
+
+    def _mgl_retarget_clear_rig_payload_frames(self, payload: dict) -> None:
+        for key in ("_fbx_rig_frame", "_fbx_skin_frame", "_fbx_skin_context_sig"):
+            try:
+                payload.pop(key, None)
+            except Exception:
+                pass
+
+    def _mgl_retarget_refresh_target_pose_contexts(self, *, rebuild_clip: bool = False) -> None:
         target_owner = self._mgl_retarget_target_owner()
         if not target_owner:
             return
         context = self._mgl_scene_owner_fbx_rig_context(target_owner)
+        rebuilt_clip = None
+        if bool(rebuild_clip) and self._mgl_retarget_context_uses_retarget_clip(context):
+            rebuilt_clip = self._mgl_retarget_rebuild_active_target_clip()
         if isinstance(context, dict):
             posed = self._mgl_retarget_target_pose_skeleton_for_context(context)
             if posed is not None:
@@ -14039,6 +14111,8 @@ void main() {
                     context["skeleton"] = posed
                 except Exception:
                     pass
+            if rebuilt_clip is not None:
+                self._mgl_retarget_apply_clip_to_context(context, rebuilt_clip)
 
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
@@ -14061,18 +14135,19 @@ void main() {
                     posed = self._mgl_retarget_target_pose_skeleton_for_context(item_context)
                     if posed is not None:
                         item_context["skeleton"] = posed
-                if str(getattr(item, "tag", "") or "") == "scene-rig-joints":
-                    payload.pop("_fbx_rig_frame", None)
+                    if rebuilt_clip is not None and self._mgl_retarget_context_uses_retarget_clip(item_context):
+                        self._mgl_retarget_apply_clip_to_context(item_context, rebuilt_clip)
+                self._mgl_retarget_clear_rig_payload_frames(payload)
                 try:
                     item.payload = payload
                 except Exception:
                     pass
 
-    def _mgl_retarget_refresh_target_pose_handles(self) -> None:
+    def _mgl_retarget_refresh_target_pose_handles(self, *, rebuild_clip: bool = False) -> None:
         target_owner = self._mgl_retarget_target_owner()
         if not target_owner:
             return
-        self._mgl_retarget_refresh_target_pose_contexts()
+        self._mgl_retarget_refresh_target_pose_contexts(rebuild_clip=bool(rebuild_clip))
         try:
             self._mgl_retarget_update_owner_handles(target_owner, "target", force=True)
         except Exception:
@@ -14488,7 +14563,7 @@ void main() {
         return True
 
     def _mgl_retarget_commit_target_pose_edit(self, *, notify_scene: bool = True) -> None:
-        self._mgl_retarget_refresh_target_pose_contexts()
+        self._mgl_retarget_refresh_target_pose_contexts(rebuild_clip=True)
         self._mgl_retarget_notify_target_pose_changed()
         if not bool(notify_scene):
             return

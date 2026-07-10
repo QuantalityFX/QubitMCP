@@ -269,7 +269,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _NOTE_FEATURED_MAX_H = 1200
     _NOTE_FEATURED_CTRL_H = 28
     _NOTE_FEATURED_HANDLE_H = 10
-    _PORT_HIT_TOL = 9.0
+    _PORT_DOT_RADIUS = 5.0
+    _PORT_HIT_TOL = 18.0
+    _PORT_EDGE_HIT_INSET = 24.0
+    _PORT_EDGE_HIT_OUTSET = 18.0
     _PARAM_EMIT_DEBOUNCE_MS = 250
     _IMG_CANVAS_W = 720
     _IMG_CANVAS_H = 420
@@ -1532,13 +1535,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return None
 
         tol = float(self._PORT_HIT_TOL if tolerance is None else tolerance)
+        tol_sq = tol * tol
+        best_name = None
+        best_dist_sq = None
         for name_key, entry in getattr(self, "_input_port_pos", {}).items():
             pos, canonical = entry
             dx = lx - float(pos.x())
             dy = ly - float(pos.y())
-            if (dx * dx + dy * dy) ** 0.5 <= tol:
-                return canonical or name_key
-        return None
+            dist_sq = dx * dx + dy * dy
+            if dist_sq <= tol_sq and (best_dist_sq is None or dist_sq < best_dist_sq):
+                best_name = canonical or name_key
+                best_dist_sq = dist_sq
+        return best_name
 
     def output_port_hit(self, local_point, tolerance: float | None = None) -> str | None:
         """
@@ -1554,13 +1562,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return None
 
         tol = float(self._PORT_HIT_TOL if tolerance is None else tolerance)
+        tol_sq = tol * tol
+        best_name = None
+        best_dist_sq = None
         for name_key, entry in getattr(self, "_output_port_pos", {}).items():
             pos, canonical = entry
             dx = lx - float(pos.x())
             dy = ly - float(pos.y())
-            if (dx * dx + dy * dy) ** 0.5 <= tol:
-                return canonical or name_key
-        return None
+            dist_sq = dx * dx + dy * dy
+            if dist_sq <= tol_sq and (best_dist_sq is None or dist_sq < best_dist_sq):
+                best_name = canonical or name_key
+                best_dist_sq = dist_sq
+        return best_name
 
     def _edge_state(self) -> tuple[set[str], bool]:
         sc = self.scene()
@@ -7608,7 +7621,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 pass
 
     def boundingRect(self):
-        m = 6
+        m = max(
+            6.0,
+            float(getattr(self, "_PORT_HIT_TOL", 6.0)),
+            float(getattr(self, "_PORT_EDGE_HIT_OUTSET", 6.0)),
+        )
         extra_top = 0.0
         try:
             kind_lower = (self.model.kind or "").lower()
@@ -7862,9 +7879,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def shape(self):
         path = QtGui.QPainterPath()
+        hit_outset = max(6.0, float(getattr(self, "_PORT_EDGE_HIT_OUTSET", 6.0)))
+        hit_inset = max(6.0, float(getattr(self, "_PORT_EDGE_HIT_INSET", 6.0)))
         path.addRoundedRect(QtCore.QRectF(0, 0, self.width, self.height), self.radius, self.radius)
-        path.addRect(QtCore.QRectF(-6.0, 0.0, 12.0, self.height))
-        path.addRect(QtCore.QRectF(self.width - 6.0, 0.0, 12.0, self.height))
+        path.addRect(QtCore.QRectF(-hit_outset, 0.0, hit_outset + hit_inset, self.height))
+        path.addRect(QtCore.QRectF(self.width - hit_inset, 0.0, hit_inset + hit_outset, self.height))
         return path
 
     def paint(self, p: QtGui.QPainter, opt: QtWidgets.QStyleOptionGraphicsItem, w: QtWidgets.QWidget | None = None):
@@ -8202,13 +8221,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         # --- IO sockets ---
         try:
+            dot_r = float(getattr(self, "_PORT_DOT_RADIUS", 4.0))
+            dot_d = dot_r * 2.0
             p.setPen(QtCore.Qt.NoPen)
             p.setBrush(QtGui.QColor("#cbd5e1"))
-            p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
+            p.drawEllipse(QtCore.QRectF(self.width - dot_r, self._BASE_H / 2.0 - dot_r, dot_d, dot_d))
             output_entries = list(getattr(self, "_output_port_pos", {}).items())
             for _key, (pos, _) in output_entries:
                 p.setBrush(QtGui.QColor("#cbd5e1"))
-                p.drawEllipse(QtCore.QRectF(float(pos.x()) - 4.0, float(pos.y()) - 4.0, 8.0, 8.0))
+                p.drawEllipse(QtCore.QRectF(float(pos.x()) - dot_r, float(pos.y()) - dot_r, dot_d, dot_d))
             entries = list(getattr(self, "_input_port_pos", {}).items())
             wired = self._wired_named_inputs()
             draw_default_input = bool(getattr(self, "_show_default_input_with_named", False))
@@ -8216,13 +8237,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 if draw_default_input:
                     default_color = QtGui.QColor("#facc15" if self._has_default_input_edge() else "#cbd5e1")
                     p.setBrush(default_color)
-                    p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
+                    p.drawEllipse(QtCore.QRectF(-dot_r, self._BASE_H / 2.0 - dot_r, dot_d, dot_d))
                 for key, (pos, _) in entries:
                     color = QtGui.QColor("#facc15" if key in wired else "#cbd5e1")
                     p.setBrush(color)
-                    p.drawEllipse(QtCore.QRectF(float(pos.x()) - 4.0, float(pos.y()) - 4.0, 8.0, 8.0))
+                    p.drawEllipse(QtCore.QRectF(float(pos.x()) - dot_r, float(pos.y()) - dot_r, dot_d, dot_d))
             else:
-                p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
+                p.drawEllipse(QtCore.QRectF(-dot_r, self._BASE_H / 2.0 - dot_r, dot_d, dot_d))
         except Exception as e:
             print("[EchoGraph][paint] sockets fail:", e)
 
@@ -8444,8 +8465,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 src_port_name = self.output_port_hit(e.pos())
             except Exception:
                 src_port_name = None
+            edge_inset = float(getattr(self, "_PORT_EDGE_HIT_INSET", 12.0))
+            edge_outset = float(getattr(self, "_PORT_EDGE_HIT_OUTSET", 6.0))
             on_right_socket = bool(src_port_name) or (
-                (self.width - 12 <= e.pos().x() <= self.width + 6) and (0 <= e.pos().y() <= self._BASE_H)
+                (self.width - edge_inset <= e.pos().x() <= self.width + edge_outset)
+                and (-edge_outset <= e.pos().y() <= self._BASE_H + edge_outset)
             )
             if on_right_socket:
                 if scene:

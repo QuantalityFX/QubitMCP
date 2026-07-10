@@ -2457,6 +2457,31 @@ def _sample_quat_keys(keys: List[Any], time_seconds: float, default_value) -> Tu
     )
 
 
+def _clip_rotation_sample_times(clip, tracks_by_name: Dict[str, Any]) -> List[float]:
+    values = set()
+    try:
+        start = float(getattr(clip, "start_time", 0.0) or 0.0)
+        if math.isfinite(start):
+            values.add(round(start, 8))
+    except Exception:
+        pass
+    try:
+        end = float(getattr(clip, "end_time", 0.0) or 0.0)
+        if math.isfinite(end):
+            values.add(round(end, 8))
+    except Exception:
+        pass
+    for track in list((tracks_by_name or {}).values()):
+        for key in list(getattr(track, "rotation_keys", []) or []):
+            try:
+                t = float(getattr(key, "time", 0.0) or 0.0)
+            except Exception:
+                continue
+            if math.isfinite(t):
+                values.add(round(t, 8))
+    return [float(value) for value in sorted(values)]
+
+
 def _global_bind_rotations(skeleton) -> List[Tuple[float, float, float, float]]:
     joints = list(getattr(skeleton, "joints", []) or [])
     out: List[Tuple[float, float, float, float]] = []
@@ -2539,6 +2564,7 @@ def _build_global_rotation_key_sets(
         if s_name and t_name and t_name not in target_to_source:
             target_to_source[t_name] = s_name
 
+    fallback_sample_times = _clip_rotation_sample_times(source_clip, source_tracks)
     sample_cache: Dict[float, Dict[str, Tuple[float, float, float, float]]] = {}
 
     def _target_locals_at(time_seconds: float) -> Dict[str, Tuple[float, float, float, float]]:
@@ -2596,11 +2622,24 @@ def _build_global_rotation_key_sets(
             continue
         source_track = source_tracks.get(s_name)
         source_rotation_keys = list(getattr(source_track, "rotation_keys", []) or []) if source_track is not None else []
-        if not source_rotation_keys:
+        if source_rotation_keys:
+            sample_rows = [
+                (
+                    float(getattr(key, "time", 0.0) or 0.0),
+                    str(getattr(key, "interpolation", "linear") or "linear"),
+                )
+                for key in source_rotation_keys
+            ]
+        else:
+            sample_rows = [(float(t), "linear") for t in fallback_sample_times]
+        if not sample_rows:
             continue
         keyframes = []
-        for key in source_rotation_keys:
-            t = float(getattr(key, "time", 0.0) or 0.0)
+        previous_time: float | None = None
+        for t, interpolation in sample_rows:
+            if previous_time is not None and float(t) <= previous_time + 1.0e-8:
+                continue
+            previous_time = float(t)
             local = _target_locals_at(t).get(t_name)
             if local is None:
                 continue
@@ -2614,7 +2653,7 @@ def _build_global_rotation_key_sets(
                 QuatKeyframe(
                     time=t,
                     value=local,
-                    interpolation=str(getattr(key, "interpolation", "linear") or "linear"),
+                    interpolation=interpolation,
                 )
             )
         if keyframes:
@@ -2982,10 +3021,6 @@ def build_anim_retarget_clip(
         if target_name in used_targets:
             skipped.append(f"{source_name}->{target_name}: target already mapped")
             continue
-        source_track = source_tracks.get(source_name)
-        if source_track is None:
-            skipped.append(f"{source_name}->{target_name}: source track missing")
-            continue
         si = source_index.get(source_name)
         ti = target_index.get(target_name)
         if si is None or si < 0 or si >= len(source_joints):
@@ -2998,11 +3033,16 @@ def build_anim_retarget_clip(
         target_joint_obj = target_joints[ti]
         source_bind = getattr(source_joint_obj, "local_bind", None)
         target_bind = getattr(target_joint_obj, "local_bind", None)
+        source_track = source_tracks.get(source_name)
         rotation_keys = list(rotation_key_sets.get(target_name) or [])
-        if not rotation_keys:
+        if not rotation_keys and source_track is not None:
             rotation_keys = _copy_rotation_keys(source_track, source_bind, target_bind)
         translation_keys = []
-        source_translation_keys = list(getattr(source_track, "translation_keys", []) or [])
+        source_translation_keys = (
+            list(getattr(source_track, "translation_keys", []) or [])
+            if source_track is not None
+            else []
+        )
         if source_translation_keys:
             if _is_pelvis_constraint_mapping(pelvis_constraint, source_name, target_name):
                 pelvis_mode = _normalize_pelvis_constraint_mode(pelvis_constraint.get("mode", "none"))
@@ -3034,7 +3074,10 @@ def build_anim_retarget_clip(
             else:
                 skipped.append(f"{source_name}->{target_name}: translation keys ignored to preserve target bone lengths")
         if not rotation_keys and not translation_keys:
-            skipped.append(f"{source_name}->{target_name}: no animation keys")
+            if source_track is None:
+                skipped.append(f"{source_name}->{target_name}: no source track or inherited global motion")
+            else:
+                skipped.append(f"{source_name}->{target_name}: no animation keys")
             continue
         tracks.append(
             JointAnimationTrack(

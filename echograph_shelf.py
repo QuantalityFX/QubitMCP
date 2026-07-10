@@ -2313,18 +2313,42 @@ class GraphScene(QtWidgets.QGraphicsScene):
         super().mouseReleaseEvent(e)
 
     def _node_at_left_socket(self, scene_pos: QtCore.QPointF):
-        items = self.items(scene_pos)
-        for it in items:
-            if isinstance(it, NodeItem):
+        candidates = []
+        seen_ids = set()
+
+        def _add_candidate(item):
+            if isinstance(item, NodeItem) and id(item) not in seen_ids:
+                candidates.append(item)
+                seen_ids.add(id(item))
+
+        for it in self.items(scene_pos):
+            _add_candidate(it)
+
+        for it in getattr(self, "_node_items", {}).values():
+            if id(it) in seen_ids:
+                continue
+            try:
                 lp = it.mapFromScene(scene_pos)
-                h = getattr(it, "height", getattr(it, "_BASE_H", 0))
-                port_name = None
-                if hasattr(it, "input_port_hit"):
-                    port_name = it.input_port_hit(lp)
-                if port_name:
-                    return it, port_name
-                if -12 <= lp.x() <= 24 and 0 <= lp.y() <= h:
-                    return it, None
+                h = float(getattr(it, "height", getattr(it, "_BASE_H", 0)) or 0)
+                edge_inset = float(getattr(it, "_PORT_EDGE_HIT_INSET", 24.0))
+                edge_outset = float(getattr(it, "_PORT_EDGE_HIT_OUTSET", 18.0))
+            except Exception:
+                continue
+            if -edge_outset <= lp.x() <= edge_inset and -edge_outset <= lp.y() <= h + edge_outset:
+                _add_candidate(it)
+
+        for it in candidates:
+            lp = it.mapFromScene(scene_pos)
+            h = float(getattr(it, "height", getattr(it, "_BASE_H", 0)) or 0)
+            port_name = None
+            if hasattr(it, "input_port_hit"):
+                port_name = it.input_port_hit(lp)
+            if port_name:
+                return it, port_name
+            edge_inset = float(getattr(it, "_PORT_EDGE_HIT_INSET", 24.0))
+            edge_outset = float(getattr(it, "_PORT_EDGE_HIT_OUTSET", 18.0))
+            if -edge_outset <= lp.x() <= edge_inset and -edge_outset <= lp.y() <= h + edge_outset:
+                return it, None
         return None, None
 
     def _cancel_temp_wire(self):
