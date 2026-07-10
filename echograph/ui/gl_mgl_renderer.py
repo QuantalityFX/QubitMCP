@@ -10289,9 +10289,72 @@ void main() {
             setattr(self, name, None)
         self._mgl_grid_model_count = 0
 
+    def _mgl_clear_retarget_scene_skeleton_state(self) -> None:
+        active_owner = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip()
+        if not active_owner:
+            return
+        retarget_owners = set()
+        try:
+            role_owners = getattr(self, "_mgl_retarget_role_owners", None)
+            if isinstance(role_owners, dict):
+                for value in role_owners.values():
+                    owner = str(value or "").strip().lower()
+                    if owner:
+                        retarget_owners.add(owner)
+        except Exception:
+            pass
+        try:
+            handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
+            if isinstance(handles_by_owner, dict):
+                for value in handles_by_owner.keys():
+                    owner = str(value or "").strip().lower()
+                    if owner:
+                        retarget_owners.add(owner)
+        except Exception:
+            pass
+        active_key = active_owner.lower()
+        if active_key not in retarget_owners:
+            return
+        try:
+            self._mgl_scene_skeleton_remove_active_items(active_owner)
+        except Exception:
+            pass
+        self._mgl_scene_skeleton_active_owner = ""
+        self._mgl_scene_skeleton_requested_owner = None
+        self._mgl_scene_skeleton_failed_owner = ""
+        self._mgl_scene_skeleton_selected_joint = ""
+        try:
+            handles_by_owner = getattr(self, "_mgl_scene_skeleton_handles_by_owner", None)
+            if isinstance(handles_by_owner, dict):
+                for key in list(handles_by_owner.keys()):
+                    if str(key or "").strip().lower() == active_key:
+                        handles_by_owner.pop(key, None)
+        except Exception:
+            pass
+        try:
+            frame_keys = getattr(self, "_mgl_scene_skeleton_handle_frame_keys", None)
+            if isinstance(frame_keys, dict):
+                for key in list(frame_keys.keys()):
+                    if str(key or "").strip().lower() == active_key:
+                        frame_keys.pop(key, None)
+        except Exception:
+            pass
+        try:
+            gizmo_owner = str(getattr(self, "_xform_gizmo_owner", "") or "")
+            if gizmo_owner.startswith(f"{active_owner}::skeleton_joint::"):
+                self._xform_gizmo_owner = None
+                self._xform_gizmo_owner_kind = None
+                self._xform_gizmo_pos_locked = False
+        except Exception:
+            pass
+
     def _mgl_clear_scene_models(self) -> None:
         try:
             self._mgl_clear_mesh_selection_overlay_cache()
+        except Exception:
+            pass
+        try:
+            self._mgl_clear_retarget_scene_skeleton_state()
         except Exception:
             pass
         scene = getattr(self, "_mgl_scene", None)
@@ -10315,6 +10378,7 @@ void main() {
             "retarget-selection",
             "retarget-links",
             "retarget-drag-link",
+            "scene-skeleton-handles",
         ):
             scene.remove_by_tag(tag)
         try:
