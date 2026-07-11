@@ -798,6 +798,329 @@ def _tts_google_language(value: str) -> str:
     return str(_stt_language_option(value).get("tts", "") or LOCAL_WHISPER_LANGUAGE)
 
 
+_KO_BASE_KEY_TO_JAMO = {
+    "r": "ㄱ",
+    "s": "ㄴ",
+    "e": "ㄷ",
+    "f": "ㄹ",
+    "a": "ㅁ",
+    "q": "ㅂ",
+    "t": "ㅅ",
+    "d": "ㅇ",
+    "w": "ㅈ",
+    "c": "ㅊ",
+    "z": "ㅋ",
+    "x": "ㅌ",
+    "v": "ㅍ",
+    "g": "ㅎ",
+    "k": "ㅏ",
+    "o": "ㅐ",
+    "i": "ㅑ",
+    "j": "ㅓ",
+    "p": "ㅔ",
+    "u": "ㅕ",
+    "h": "ㅗ",
+    "y": "ㅛ",
+    "n": "ㅜ",
+    "b": "ㅠ",
+    "m": "ㅡ",
+    "l": "ㅣ",
+}
+_KO_SHIFT_KEY_TO_JAMO = {
+    "R": "ㄲ",
+    "E": "ㄸ",
+    "Q": "ㅃ",
+    "T": "ㅆ",
+    "W": "ㅉ",
+    "O": "ㅒ",
+    "P": "ㅖ",
+}
+_KO_KEY_TO_JAMO = dict(_KO_BASE_KEY_TO_JAMO)
+for _ko_key, _ko_jamo in list(_KO_BASE_KEY_TO_JAMO.items()):
+    _KO_KEY_TO_JAMO.setdefault(_ko_key.upper(), _ko_jamo)
+_KO_KEY_TO_JAMO.update(_KO_SHIFT_KEY_TO_JAMO)
+
+_KO_INITIALS = (
+    "ㄱ",
+    "ㄲ",
+    "ㄴ",
+    "ㄷ",
+    "ㄸ",
+    "ㄹ",
+    "ㅁ",
+    "ㅂ",
+    "ㅃ",
+    "ㅅ",
+    "ㅆ",
+    "ㅇ",
+    "ㅈ",
+    "ㅉ",
+    "ㅊ",
+    "ㅋ",
+    "ㅌ",
+    "ㅍ",
+    "ㅎ",
+)
+_KO_VOWELS = (
+    "ㅏ",
+    "ㅐ",
+    "ㅑ",
+    "ㅒ",
+    "ㅓ",
+    "ㅔ",
+    "ㅕ",
+    "ㅖ",
+    "ㅗ",
+    "ㅘ",
+    "ㅙ",
+    "ㅚ",
+    "ㅛ",
+    "ㅜ",
+    "ㅝ",
+    "ㅞ",
+    "ㅟ",
+    "ㅠ",
+    "ㅡ",
+    "ㅢ",
+    "ㅣ",
+)
+_KO_FINALS = (
+    "",
+    "ㄱ",
+    "ㄲ",
+    "ㄳ",
+    "ㄴ",
+    "ㄵ",
+    "ㄶ",
+    "ㄷ",
+    "ㄹ",
+    "ㄺ",
+    "ㄻ",
+    "ㄼ",
+    "ㄽ",
+    "ㄾ",
+    "ㄿ",
+    "ㅀ",
+    "ㅁ",
+    "ㅂ",
+    "ㅄ",
+    "ㅅ",
+    "ㅆ",
+    "ㅇ",
+    "ㅈ",
+    "ㅊ",
+    "ㅋ",
+    "ㅌ",
+    "ㅍ",
+    "ㅎ",
+)
+_KO_INITIAL_INDEX = {value: idx for idx, value in enumerate(_KO_INITIALS)}
+_KO_VOWEL_INDEX = {value: idx for idx, value in enumerate(_KO_VOWELS)}
+_KO_FINAL_INDEX = {value: idx for idx, value in enumerate(_KO_FINALS)}
+_KO_CONSONANTS = set(_KO_INITIALS)
+_KO_VOWEL_SET = set(_KO_VOWELS)
+_KO_VOWEL_COMBOS = {
+    ("ㅗ", "ㅏ"): "ㅘ",
+    ("ㅗ", "ㅐ"): "ㅙ",
+    ("ㅗ", "ㅣ"): "ㅚ",
+    ("ㅜ", "ㅓ"): "ㅝ",
+    ("ㅜ", "ㅔ"): "ㅞ",
+    ("ㅜ", "ㅣ"): "ㅟ",
+    ("ㅡ", "ㅣ"): "ㅢ",
+}
+_KO_FINAL_COMBOS = {
+    ("ㄱ", "ㅅ"): "ㄳ",
+    ("ㄴ", "ㅈ"): "ㄵ",
+    ("ㄴ", "ㅎ"): "ㄶ",
+    ("ㄹ", "ㄱ"): "ㄺ",
+    ("ㄹ", "ㅁ"): "ㄻ",
+    ("ㄹ", "ㅂ"): "ㄼ",
+    ("ㄹ", "ㅅ"): "ㄽ",
+    ("ㄹ", "ㅌ"): "ㄾ",
+    ("ㄹ", "ㅍ"): "ㄿ",
+    ("ㄹ", "ㅎ"): "ㅀ",
+    ("ㅂ", "ㅅ"): "ㅄ",
+}
+_KO_JAMO_TO_KEYS = {
+    "ㄱ": "r",
+    "ㄲ": "R",
+    "ㄳ": "rt",
+    "ㄴ": "s",
+    "ㄵ": "sw",
+    "ㄶ": "sg",
+    "ㄷ": "e",
+    "ㄸ": "E",
+    "ㄹ": "f",
+    "ㄺ": "fr",
+    "ㄻ": "fa",
+    "ㄼ": "fq",
+    "ㄽ": "ft",
+    "ㄾ": "fx",
+    "ㄿ": "fv",
+    "ㅀ": "fg",
+    "ㅁ": "a",
+    "ㅂ": "q",
+    "ㅃ": "Q",
+    "ㅄ": "qt",
+    "ㅅ": "t",
+    "ㅆ": "T",
+    "ㅇ": "d",
+    "ㅈ": "w",
+    "ㅉ": "W",
+    "ㅊ": "c",
+    "ㅋ": "z",
+    "ㅌ": "x",
+    "ㅍ": "v",
+    "ㅎ": "g",
+    "ㅏ": "k",
+    "ㅐ": "o",
+    "ㅑ": "i",
+    "ㅒ": "O",
+    "ㅓ": "j",
+    "ㅔ": "p",
+    "ㅕ": "u",
+    "ㅖ": "P",
+    "ㅗ": "h",
+    "ㅘ": "hk",
+    "ㅙ": "ho",
+    "ㅚ": "hl",
+    "ㅛ": "y",
+    "ㅜ": "n",
+    "ㅝ": "nj",
+    "ㅞ": "np",
+    "ㅟ": "nl",
+    "ㅠ": "b",
+    "ㅡ": "m",
+    "ㅢ": "ml",
+    "ㅣ": "l",
+}
+
+
+def _is_hangul_syllable(ch: str) -> bool:
+    if not ch:
+        return False
+    code = ord(ch)
+    return 0xAC00 <= code <= 0xD7A3
+
+
+def _is_korean_keyboard_segment_char(ch: str) -> bool:
+    return bool(
+        ch in _KO_KEY_TO_JAMO
+        or ch in _KO_JAMO_TO_KEYS
+        or _is_hangul_syllable(ch)
+    )
+
+
+def _compose_korean_syllable(initial: str, vowel: str, final: str = "") -> str:
+    if initial not in _KO_INITIAL_INDEX or vowel not in _KO_VOWEL_INDEX:
+        return f"{initial}{vowel}{final}"
+    final_idx = _KO_FINAL_INDEX.get(final, 0)
+    code = 0xAC00 + (
+        (_KO_INITIAL_INDEX[initial] * len(_KO_VOWELS) + _KO_VOWEL_INDEX[vowel])
+        * len(_KO_FINALS)
+    ) + final_idx
+    return chr(code)
+
+
+def _hangul_syllable_to_keys(ch: str) -> str:
+    if not _is_hangul_syllable(ch):
+        return ""
+    syllable = ord(ch) - 0xAC00
+    final_idx = syllable % len(_KO_FINALS)
+    vowel_idx = (syllable // len(_KO_FINALS)) % len(_KO_VOWELS)
+    initial_idx = syllable // (len(_KO_FINALS) * len(_KO_VOWELS))
+    return (
+        _KO_JAMO_TO_KEYS.get(_KO_INITIALS[initial_idx], "")
+        + _KO_JAMO_TO_KEYS.get(_KO_VOWELS[vowel_idx], "")
+        + _KO_JAMO_TO_KEYS.get(_KO_FINALS[final_idx], "")
+    )
+
+
+def _korean_text_to_keyboard_sequence(text: str) -> str:
+    parts = []
+    for ch in str(text or ""):
+        if ch in _KO_KEY_TO_JAMO:
+            parts.append(ch)
+        elif _is_hangul_syllable(ch):
+            parts.append(_hangul_syllable_to_keys(ch))
+        elif ch in _KO_JAMO_TO_KEYS:
+            parts.append(_KO_JAMO_TO_KEYS.get(ch, ""))
+    return "".join(parts)
+
+
+def _consume_korean_vowel(tokens: list[str], index: int) -> tuple[str, int]:
+    if index >= len(tokens) or tokens[index] not in _KO_VOWEL_SET:
+        return "", index
+    vowel = tokens[index]
+    if index + 1 < len(tokens):
+        combined = _KO_VOWEL_COMBOS.get((vowel, tokens[index + 1]))
+        if combined:
+            return combined, index + 2
+    return vowel, index + 1
+
+
+def _consume_korean_final(tokens: list[str], index: int) -> tuple[str, int]:
+    if index >= len(tokens) or tokens[index] not in _KO_CONSONANTS:
+        return "", index
+    first = tokens[index]
+    if index + 1 < len(tokens) and tokens[index + 1] in _KO_VOWEL_SET:
+        return "", index
+    if index + 1 < len(tokens) and tokens[index + 1] in _KO_CONSONANTS:
+        combined = _KO_FINAL_COMBOS.get((first, tokens[index + 1]))
+        if combined:
+            if index + 2 < len(tokens) and tokens[index + 2] in _KO_VOWEL_SET:
+                if first in _KO_FINAL_INDEX:
+                    return first, index + 1
+                return "", index
+            return combined, index + 2
+    if first in _KO_FINAL_INDEX:
+        return first, index + 1
+    return "", index
+
+
+def _korean_keyboard_to_hangul(keys: str) -> str:
+    tokens = [_KO_KEY_TO_JAMO[ch] for ch in str(keys or "") if ch in _KO_KEY_TO_JAMO]
+    out = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in _KO_CONSONANTS:
+            if index + 1 < len(tokens) and tokens[index + 1] in _KO_VOWEL_SET:
+                vowel, after_vowel = _consume_korean_vowel(tokens, index + 1)
+                final, after_final = _consume_korean_final(tokens, after_vowel)
+                out.append(_compose_korean_syllable(token, vowel, final))
+                index = after_final
+            else:
+                out.append(token)
+                index += 1
+            continue
+        if token in _KO_VOWEL_SET:
+            vowel, after_vowel = _consume_korean_vowel(tokens, index)
+            out.append(vowel)
+            index = after_vowel
+            continue
+        out.append(token)
+        index += 1
+    return "".join(out)
+
+
+def _convert_korean_keyboard_runs(text: str) -> str:
+    source = str(text or "")
+    out = []
+    run = []
+    for ch in source:
+        if ch in _KO_KEY_TO_JAMO:
+            run.append(ch)
+            continue
+        if run:
+            out.append(_korean_keyboard_to_hangul("".join(run)))
+            run = []
+        out.append(ch)
+    if run:
+        out.append(_korean_keyboard_to_hangul("".join(run)))
+    return "".join(out)
+
+
 def _normalize_stt_send_mode(value: str) -> str:
     key = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     if key in {"ask", "ask_first", "ask_for_approval", "approval"}:
@@ -997,6 +1320,130 @@ def _format_stt_error(exc: Exception) -> str:
     return f"Speech capture failed: {exc}"
 
 
+class VoiceActorTranscriptEdit(QtWidgets.QPlainTextEdit):
+    def __init__(self, owner, parent=None):
+        super().__init__(parent)
+        self._owner = owner
+
+    def _language(self) -> str:
+        try:
+            return _normalize_stt_language(getattr(self._owner, "_selected_stt_language", ""))
+        except Exception:
+            return LOCAL_WHISPER_LANGUAGE
+
+    def _korean_keyboard_enabled(self) -> bool:
+        return self._language() == "ko"
+
+    def _qt_enum_value(self, group_name: str, member_name: str):
+        group = getattr(QtCore.Qt, group_name, None)
+        if group is not None:
+            value = getattr(group, member_name, None)
+            if value is not None:
+                return value
+        return getattr(QtCore.Qt, member_name, None)
+
+    def _event_key_is(self, event, member_name: str) -> bool:
+        expected = self._qt_enum_value("Key", member_name)
+        if expected is None:
+            return False
+        try:
+            return int(event.key()) == int(expected)
+        except Exception:
+            try:
+                return int(event.key()) == int(expected.value)
+            except Exception:
+                return event.key() == expected
+
+    def _has_shortcut_modifier(self, event) -> bool:
+        modifiers = event.modifiers()
+        for member_name in ("ControlModifier", "AltModifier", "MetaModifier"):
+            flag = self._qt_enum_value("KeyboardModifier", member_name)
+            if flag is None:
+                continue
+            try:
+                if modifiers & flag:
+                    return True
+            except Exception:
+                try:
+                    if int(modifiers) & int(flag):
+                        return True
+                except Exception:
+                    pass
+        return False
+
+    def _keep_anchor(self):
+        value = getattr(QtGui.QTextCursor, "KeepAnchor", None)
+        if value is not None:
+            return value
+        move_mode = getattr(QtGui.QTextCursor, "MoveMode", None)
+        return getattr(move_mode, "KeepAnchor", None)
+
+    def _replace_range(self, start: int, end: int, text: str) -> None:
+        cursor = self.textCursor()
+        cursor.setPosition(max(0, int(start)))
+        keep_anchor = self._keep_anchor()
+        if keep_anchor is not None:
+            cursor.setPosition(max(0, int(end)), keep_anchor)
+        else:
+            cursor.setPosition(max(0, int(end)), QtGui.QTextCursor.KeepAnchor)
+        cursor.insertText(text or "")
+        self.setTextCursor(cursor)
+
+    def _korean_segment_start(self, text: str, pos: int) -> int:
+        start = max(0, min(int(pos), len(text)))
+        while start > 0 and _is_korean_keyboard_segment_char(text[start - 1]):
+            start -= 1
+        return start
+
+    def _insert_korean_key(self, key_text: str) -> bool:
+        if key_text not in _KO_KEY_TO_JAMO:
+            return False
+        cursor = self.textCursor()
+        replacement = _korean_keyboard_to_hangul(key_text)
+        if cursor.hasSelection():
+            self._replace_range(cursor.selectionStart(), cursor.selectionEnd(), replacement)
+            return True
+        text = self.toPlainText()
+        pos = cursor.position()
+        start = self._korean_segment_start(text, pos)
+        keys = _korean_text_to_keyboard_sequence(text[start:pos]) + key_text
+        self._replace_range(start, pos, _korean_keyboard_to_hangul(keys))
+        return True
+
+    def _backspace_korean_key(self) -> bool:
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            return False
+        text = self.toPlainText()
+        pos = cursor.position()
+        start = self._korean_segment_start(text, pos)
+        if start >= pos:
+            return False
+        keys = _korean_text_to_keyboard_sequence(text[start:pos])
+        if not keys:
+            return False
+        self._replace_range(start, pos, _korean_keyboard_to_hangul(keys[:-1]))
+        return True
+
+    def keyPressEvent(self, event) -> None:
+        if self._korean_keyboard_enabled() and not self._has_shortcut_modifier(event):
+            if self._event_key_is(event, "Key_Backspace") and self._backspace_korean_key():
+                return
+            text = event.text()
+            if len(text or "") == 1 and self._insert_korean_key(text):
+                return
+        super().keyPressEvent(event)
+
+    def insertFromMimeData(self, source) -> None:
+        try:
+            if self._korean_keyboard_enabled() and source is not None and source.hasText():
+                self.textCursor().insertText(_convert_korean_keyboard_runs(source.text()))
+                return
+        except Exception:
+            pass
+        super().insertFromMimeData(source)
+
+
 def build_ports(node_item) -> None:
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("text")
@@ -1146,7 +1593,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._copy_btn.setIcon(copy_icon)
         self._copy_btn.clicked.connect(self._copy_transcript)
 
-        self._transcript = QtWidgets.QPlainTextEdit()
+        self._transcript = VoiceActorTranscriptEdit(self, self)
         self._transcript.setPlaceholderText(
             "Transcript appears here in Voice -> Text mode.\n"
             "In Text -> Voice mode, this text is spoken if no input is wired."
