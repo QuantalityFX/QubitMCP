@@ -57,6 +57,7 @@ set "LIB_VENV=%APP_HOME%\librarian\.venv"
 set "LIB_PY=%LIB_VENV%\Scripts\python.exe"
 set "QDECK_SETUP_SCRIPT=%REPO_DIR%\nodes\qubit_deck_controller\setup_qubit_deck_controller.bat"
 set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio gTTS pygame faster-whisper pymongo"
+set "KOKORO_DEPS=kokoro"
 set "BASE_PY_EXE="
 set "BASE_PY_ARG="
 set "BASE_PY_MM="
@@ -123,6 +124,7 @@ call :ensure_venv "%ROOT_VENV%" "root" || goto :fail
 call :install_requirements "%ROOT_PY%" "%MAIN_REQ%" "root requirements" || goto :fail
 call :check_ffmpeg_runtime "%ROOT_PY%"
 call :install_voice_deps "%ROOT_PY%" "root voice dependencies" || goto :fail
+call :install_optional_deps "%ROOT_PY%" "%KOKORO_DEPS%" "Kokoro-82M voice dependencies"
 call :check_mediator_runtime
 call :check_keyboard_sequence_runtime "%ROOT_PY%"
 call :setup_fbx_sdk "%ROOT_PY%"
@@ -243,6 +245,25 @@ if errorlevel 1 (
 )
 echo [setup] Completed %LABEL%.
 echo [setup] Completed %LABEL%. >> "%LOG%"
+exit /b 0
+
+:install_optional_deps
+set "PY=%~1"
+set "DEPS=%~2"
+set "LABEL=%~3"
+
+if "%DEPS%"=="" exit /b 0
+echo [setup] Installing optional %LABEL%...
+echo [setup] Installing optional %LABEL%: %DEPS% >> "%LOG%"
+echo [setup] Live pip output follows for optional %LABEL%. >> "%LOG%"
+"%PY%" -m pip install --progress-bar on %DEPS%
+if errorlevel 1 (
+  echo [setup] WARNING: Failed to install optional %LABEL%. >> "%LOG%"
+  echo [setup] WARNING: Optional %LABEL% failed. Kokoro voice will remain disabled until installed.
+  exit /b 0
+)
+echo [setup] Completed optional %LABEL%.
+echo [setup] Completed optional %LABEL%. >> "%LOG%"
 exit /b 0
 
 :check_ffmpeg_runtime

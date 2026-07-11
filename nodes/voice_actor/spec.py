@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import importlib.util
 import io
 import re
 import threading
 import tempfile
 import time
 import uuid
+import wave
 from pathlib import Path
 
 from nodes.core import Spec
@@ -62,6 +64,7 @@ VOICE_ACTOR_STT_LANGUAGE_KEY = "__voice_actor_stt_language"
 VOICE_ACTOR_SEND_MODE_KEY = "__voice_actor_send_mode"
 VOICE_ACTOR_SEND_TOKEN_KEY = "__voice_actor_send_token"
 VOICE_TANYA_GOOGLE = "__google_tanya__"
+VOICE_KOKORO_82M = "__kokoro_82m__"
 VOICE_AUTO_FEMALE = "__auto_female__"
 STT_METHOD_LOCAL_WHISPER = "local_whisper"
 STT_METHOD_GOOGLE = "google"
@@ -70,6 +73,14 @@ STT_SEND_MODE_ASK_FIRST = "ask_first"
 STT_SEND_MODE_MANUAL = "manual"
 LOCAL_WHISPER_MODEL_NAME = "base"
 LOCAL_WHISPER_LANGUAGE = "en"
+KOKORO_DEFAULT_VOICE = "af_heart"
+KOKORO_LANG_CODES = {
+    "en": "a",
+    "es": "e",
+    "ja": "j",
+    "ko": "k",
+    "zh": "z",
+}
 STT_LANGUAGE_OPTIONS = (
     {"id": "en", "name": "English", "whisper": "en", "google": "en-US", "tts": "en"},
     {"id": "es", "name": "Spanish", "whisper": "es", "google": "es-ES", "tts": "es"},
@@ -134,6 +145,8 @@ MALE_VOICE_HINTS = (
 
 _WHISPER_MODEL = None
 _WHISPER_MODEL_LOCK = threading.Lock()
+_KOKORO_PIPELINES = {}
+_KOKORO_PIPELINE_LOCK = threading.Lock()
 _TTS_PLAYBACK_LOCK = threading.Lock()
 _USER_FEEDBACK_TAG_RE = re.compile(
     r"<\s*(?:user[\s_-]*feedback|user[\s_-]*feed[\s_-]*back|feedback)\s*>"
@@ -192,6 +205,94 @@ def _save_gtts_mp3(
     if errors:
         return errors[0]
     return ""
+
+
+def _kokoro_available() -> bool:
+    try:
+        return importlib.util.find_spec("kokoro") is not None
+    except Exception:
+        return False
+
+
+def _kokoro_lang_code(language: str) -> str:
+    normalized = _normalize_stt_language(language)
+    return str(KOKORO_LANG_CODES.get(normalized, "a") or "a")
+
+
+def _kokoro_pipeline(language: str):
+    lang_code = _kokoro_lang_code(language)
+    with _KOKORO_PIPELINE_LOCK:
+        cached = _KOKORO_PIPELINES.get(lang_code)
+        if cached is not None:
+            return cached, ""
+        try:
+            from kokoro import KPipeline  # type: ignore
+        except Exception as exc:
+            return None, f"Missing dependency: kokoro. Run setup.bat or pip install kokoro. ({exc})"
+        try:
+            pipeline = KPipeline(lang_code=lang_code)
+        except TypeError:
+            try:
+                pipeline = KPipeline(lang_code)
+            except Exception as exc:
+                return None, f"Kokoro init failed for language '{lang_code}': {exc}"
+        except Exception as exc:
+            return None, f"Kokoro init failed for language '{lang_code}': {exc}"
+        _KOKORO_PIPELINES[lang_code] = pipeline
+        return pipeline, ""
+
+
+def _audio_to_pcm16_bytes(audio) -> bytes:
+    try:
+        import numpy as np  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"Missing dependency: numpy. ({exc})") from exc
+    if hasattr(audio, "detach"):
+        audio = audio.detach()
+    if hasattr(audio, "cpu"):
+        audio = audio.cpu()
+    if hasattr(audio, "numpy"):
+        audio = audio.numpy()
+    arr = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if arr.size <= 0:
+        raise RuntimeError("Kokoro produced empty audio.")
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    arr = np.clip(arr, -1.0, 1.0)
+    return (arr * 32767.0).astype("<i2").tobytes()
+
+
+def _save_kokoro_wav(
+    text: str,
+    target_path: Path,
+    *,
+    language: str = LOCAL_WHISPER_LANGUAGE,
+    voice: str = KOKORO_DEFAULT_VOICE,
+    sample_rate: int = 24000,
+) -> str:
+    pipeline, err = _kokoro_pipeline(language)
+    if err or pipeline is None:
+        return err or "Kokoro is unavailable."
+    try:
+        generator = pipeline(text, voice=voice, speed=1)
+        chunks = []
+        for item in generator:
+            if isinstance(item, (tuple, list)) and item:
+                audio = item[-1]
+            else:
+                audio = item
+            chunks.append(_audio_to_pcm16_bytes(audio))
+        if not chunks:
+            return "Kokoro produced no audio."
+        with wave.open(str(target_path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(int(sample_rate))
+            for chunk in chunks:
+                wav.writeframes(chunk)
+        return ""
+    except Exception as exc:
+        lang_name = _stt_language_name(language)
+        return f"Kokoro-82M failed for {lang_name}: {exc}"
 
 
 def _ordered_in_edges(scene, node_item) -> list:
@@ -2115,11 +2216,14 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
     def _refresh_voice_options(self) -> None:
         google_ready = gTTS is not None and pygame is not None
+        kokoro_ready = _kokoro_available() and pygame is not None
         google_label = "Google (Tanya)" if google_ready else "Google (Tanya) - install gTTS + pygame"
+        kokoro_label = "Kokoro-82M (Local)" if kokoro_ready else "Kokoro-82M - install kokoro + pygame"
         options = [
             {"id": VOICE_TANYA_GOOGLE, "name": google_label},
+            {"id": VOICE_KOKORO_82M, "name": kokoro_label},
         ]
-        seen_ids = {VOICE_TANYA_GOOGLE}
+        seen_ids = {VOICE_TANYA_GOOGLE, VOICE_KOKORO_82M}
         for voice in _available_tts_voices():
             voice_id = str(voice.get("id", "") or "").strip()
             if not voice_id or voice_id in seen_ids:
@@ -2154,20 +2258,25 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if self._busy:
             self._voice_combo.setEnabled(False)
             self._voice_combo.setToolTip("Voice selection is disabled while audio is active.")
-        elif not google_ready and pyttsx3 is None:
+        elif not google_ready and not kokoro_ready and pyttsx3 is None:
             self._voice_combo.setEnabled(True)
             self._voice_combo.setToolTip(
-                "Install dependencies for speech: pip install gTTS pygame pyttsx3"
+                "Install dependencies for speech: pip install gTTS pygame pyttsx3 kokoro"
             )
         elif not google_ready:
             self._voice_combo.setEnabled(True)
             self._voice_combo.setToolTip(
-                "Google (Tanya) needs gTTS + pygame. Local voices are still available."
+                "Google (Tanya) needs gTTS + pygame. Kokoro and local voices may still be available."
+            )
+        elif not kokoro_ready:
+            self._voice_combo.setEnabled(True)
+            self._voice_combo.setToolTip(
+                "Kokoro-82M needs kokoro + pygame. Google and local voices are still available."
             )
         else:
             self._voice_combo.setEnabled(True)
             self._voice_combo.setToolTip(
-                "Google (Tanya) uses the Lang setting. Local voices use installed system TTS voices."
+                "Google and Kokoro use the Lang setting. Local voices use installed system TTS voices."
             )
 
     def _refresh_stt_method_options(self) -> None:
@@ -3365,6 +3474,19 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     error=True,
                 )
                 return False
+        elif voice_key == VOICE_KOKORO_82M:
+            if pygame is None:
+                self._set_status(
+                    "Kokoro voice needs pygame for playback. Install: pip install pygame",
+                    error=True,
+                )
+                return False
+            if not _kokoro_available():
+                self._set_status(
+                    "Missing dependency: kokoro. Run setup.bat or pip install kokoro.",
+                    error=True,
+                )
+                return False
         elif pyttsx3 is None:
             self._set_status(
                 "Missing dependency: pyttsx3. Install: pip install pyttsx3",
@@ -3384,7 +3506,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 self._set_status("No text to speak. Connect input 'text' or type transcript.", error=True)
             return False
         language_suffix = ""
-        if voice_key == VOICE_TANYA_GOOGLE:
+        if voice_key in {VOICE_TANYA_GOOGLE, VOICE_KOKORO_82M}:
             language_suffix = f" ({_stt_language_name(tts_language)})"
         if source == "selected_param":
             self._set_status(f"Speaking selected parameter value{language_suffix}...")
@@ -3514,6 +3636,29 @@ class VoiceActorWidget(QtWidgets.QWidget):
             engine.say(text)
             engine.runAndWait()
 
+        def _play_with_pygame(audio_path: Path) -> None:
+            nonlocal user_stopped
+            nonlocal used_pygame
+            if pygame is None:
+                raise RuntimeError("Missing dependency: pygame. Install: pip install pygame")
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+            with self._tts_lock:
+                self._tts_using_pygame = True
+            used_pygame = True
+            pygame.mixer.music.load(str(audio_path))
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                with self._tts_lock:
+                    user_stopped = bool(self._tts_user_stopped)
+                if user_stopped:
+                    try:
+                        pygame.mixer.music.stop()
+                    except Exception:
+                        pass
+                    break
+                time.sleep(0.05)
+
         try:
             selected_voice_key = str(voice_key or "").strip() or VOICE_TANYA_GOOGLE
             while not playback_slot:
@@ -3541,29 +3686,39 @@ class VoiceActorWidget(QtWidgets.QWidget):
                         )
                         if save_err:
                             raise RuntimeError(save_err)
-                        if not pygame.mixer.get_init():
-                            pygame.mixer.init()
-                        with self._tts_lock:
-                            self._tts_using_pygame = True
-                        used_pygame = True
-                        pygame.mixer.music.load(str(temp_file))
-                        pygame.mixer.music.play()
-                        while pygame.mixer.music.get_busy():
-                            with self._tts_lock:
-                                user_stopped = bool(self._tts_user_stopped)
-                            if user_stopped:
-                                try:
-                                    pygame.mixer.music.stop()
-                                except Exception:
-                                    pass
-                                break
-                            time.sleep(0.05)
+                        _play_with_pygame(temp_file)
                     except Exception as exc:
                         google_error = str(exc)
                 else:
                     google_error = "Google voice dependencies are missing."
                 if google_error and not user_stopped:
                     error = f"Tanya (Google) voice failed: {google_error}"
+                    return
+            elif selected_voice_key == VOICE_KOKORO_82M:
+                kokoro_error = ""
+                if pygame is not None:
+                    try:
+                        temp_file = Path(tempfile.gettempdir()) / f"voice_actor_kokoro_{uuid.uuid4().hex}.wav"
+                        save_err = _save_kokoro_wav(
+                            text,
+                            temp_file,
+                            language=selected_language,
+                            voice=KOKORO_DEFAULT_VOICE,
+                        )
+                        if save_err:
+                            raise RuntimeError(save_err)
+                        with self._tts_lock:
+                            user_stopped = bool(self._tts_user_stopped)
+                        if user_stopped:
+                            error = "__stopped__"
+                            return
+                        _play_with_pygame(temp_file)
+                    except Exception as exc:
+                        kokoro_error = str(exc)
+                else:
+                    kokoro_error = "Kokoro playback dependency pygame is missing."
+                if kokoro_error and not user_stopped:
+                    error = f"Kokoro-82M voice failed: {kokoro_error}"
                     return
             else:
                 _speak_with_local(selected_voice_key)
