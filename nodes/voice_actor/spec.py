@@ -1021,6 +1021,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._replay_icon = _voice_action_icon("PlayButton_icon.png")
         self._eraser_icon = _voice_action_icon("Eraser_Icon.png")
         self._pause_icon = _voice_action_icon("Pause_Icon.png")
+        self._send_icon = _voice_action_icon("Send_Icon.png")
         self._stop_icon = _voice_action_icon("StopButton_icon.png")
         self._scene = None
         self._scene_connected = False
@@ -1064,6 +1065,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._pause_flash_timer.setInterval(420)
         self._pause_flash_timer.timeout.connect(self._on_pause_flash_tick)
         self._action_role = "action"
+        self._pause_button_role = "pause"
         self._replay_role = "replay"
         self._stop_role = "erase"
         self._transcript_undo_stack = []
@@ -1125,7 +1127,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._pause_btn.setStyleSheet(_pause_button_style(paused=False, flash=False))
         if not self._pause_icon.isNull():
             self._pause_btn.setIcon(self._pause_icon)
-        self._pause_btn.clicked.connect(self._toggle_pause_listening)
+        self._pause_btn.clicked.connect(self._on_pause_or_send_clicked)
 
         self._stop_btn = QtWidgets.QToolButton()
         self._configure_icon_button(self._stop_btn)
@@ -1414,25 +1416,55 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 self._stt_stop_requested = bool(stop_requested)
 
     def _update_pause_button_ui(self) -> None:
-        listening, paused, _stop_requested = self._stt_state()
-        flashing = bool(paused and listening and self._pause_flash_state)
-        self._pause_btn.setText("Paused" if paused and listening else "Pause")
-        self._pause_btn.setStyleSheet(_pause_button_style(paused=bool(paused and listening), flash=flashing))
-        if paused and listening:
-            if not self._pause_flash_timer.isActive():
-                self._pause_flash_timer.start()
+        listening, paused, stop_requested = self._stt_state()
+        if listening:
+            self._pause_button_role = "pause"
+            if not self._pause_icon.isNull():
+                self._pause_btn.setIcon(self._pause_icon)
+            self._pause_btn.setText("Paused" if paused and not stop_requested else "Pause")
+            self._pause_btn.setToolTip("Pause/resume active listening.")
+            flashing = bool(paused and not stop_requested and self._pause_flash_state)
+            self._pause_btn.setStyleSheet(_pause_button_style(paused=bool(paused and not stop_requested), flash=flashing))
+            if paused and not stop_requested:
+                if not self._pause_flash_timer.isActive():
+                    self._pause_flash_timer.start()
+            else:
+                if self._pause_flash_timer.isActive():
+                    self._pause_flash_timer.stop()
+                self._pause_flash_state = False
+            return
+
+        if self._mode == "voice_to_text" and not self._chatbot_connected:
+            self._pause_button_role = "send"
+            self._pause_btn.setText("Send")
+            if not self._send_icon.isNull():
+                self._pause_btn.setIcon(self._send_icon)
+            self._pause_btn.setStyleSheet(_tool_button_style("#0f766e", "#14b8a6", "#0d9488", text="#ecfeff"))
+            self._pause_btn.setToolTip("Send the transcript text.")
         else:
-            if self._pause_flash_timer.isActive():
-                self._pause_flash_timer.stop()
-            self._pause_flash_state = False
+            self._pause_button_role = "pause"
+            self._pause_btn.setText("Pause")
+            if not self._pause_icon.isNull():
+                self._pause_btn.setIcon(self._pause_icon)
+            self._pause_btn.setStyleSheet(_pause_button_style(paused=False, flash=False))
+            self._pause_btn.setToolTip("Pause is available in Voice -> Text listen mode.")
+        if self._pause_flash_timer.isActive():
+            self._pause_flash_timer.stop()
+        self._pause_flash_state = False
 
     def _update_control_states(self) -> None:
         self._update_contextual_action_roles()
+        self._update_pause_button_ui()
         listening, _paused, stop_requested = self._stt_state()
         can_control_listening = bool(listening and not stop_requested)
         can_stop_action = bool(self._tts_playing or can_control_listening)
         can_backspace = self._can_backspace_transcript()
         can_erase = self._can_erase_last_spoken()
+        can_send = bool(
+            getattr(self, "_pause_button_role", "") == "send"
+            and not self._busy
+            and (self._transcript.toPlainText() or "").strip()
+        )
         self._mode_btn.setEnabled(not self._busy and not self._chatbot_connected)
         if self._action_role == "stop":
             self._action_btn.setEnabled(bool(self._busy and can_stop_action))
@@ -1444,7 +1476,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._replay_btn.setEnabled(not self._busy)
         if self._stop_role == "erase":
             self._stop_btn.setEnabled(bool(can_erase))
-        self._pause_btn.setEnabled(bool(self._busy and can_control_listening))
+        if getattr(self, "_pause_button_role", "") == "send":
+            self._pause_btn.setEnabled(can_send)
+        else:
+            self._pause_btn.setEnabled(bool(self._busy and can_control_listening))
         self._copy_btn.setEnabled(not self._busy)
         self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
         self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
@@ -1915,6 +1950,34 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if not self._busy:
             self._transcript_undo_stack.clear()
         _set_node_info(self._node_item, self._transcript.toPlainText())
+        self._update_control_states()
+
+    def _on_pause_or_send_clicked(self) -> None:
+        listening, _paused, stop_requested = self._stt_state()
+        if listening and not stop_requested:
+            self._toggle_pause_listening()
+            return
+        if getattr(self, "_pause_button_role", "") == "send":
+            self._send_manual_transcript()
+            return
+        self._set_status("Pause is available only while listening.")
+
+    def _send_manual_transcript(self) -> None:
+        if self._busy:
+            self._set_status("Cannot send while the node is busy.", error=True)
+            return
+        if self._mode != "voice_to_text":
+            self._set_status("Switch to Voice -> Text mode before sending transcript text.", error=True)
+            return
+        text = (self._transcript.toPlainText() or "").strip()
+        if not text:
+            self._set_status("Transcript is empty.", error=True)
+            self._update_control_states()
+            return
+        _publish_voice_command(self._node_item, text)
+        self._stt_session_has_new_text = False
+        self._transcript_undo_stack.clear()
+        self._set_status("Message sent.")
         self._update_control_states()
 
     def _toggle_pause_listening(self) -> None:
