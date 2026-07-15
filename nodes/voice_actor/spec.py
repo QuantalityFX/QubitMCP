@@ -247,6 +247,8 @@ def _audio_to_pcm16_bytes(audio) -> bytes:
         import numpy as np  # type: ignore
     except Exception as exc:
         raise RuntimeError(f"Missing dependency: numpy. ({exc})") from exc
+    if audio is None:
+        raise RuntimeError("Kokoro produced empty audio.")
     if hasattr(audio, "detach"):
         audio = audio.detach()
     if hasattr(audio, "cpu"):
@@ -259,6 +261,19 @@ def _audio_to_pcm16_bytes(audio) -> bytes:
     arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
     arr = np.clip(arr, -1.0, 1.0)
     return (arr * 32767.0).astype("<i2").tobytes()
+
+
+def _kokoro_result_audio(item):
+    audio = getattr(item, "audio", None)
+    if audio is not None:
+        return audio
+    output = getattr(item, "output", None)
+    audio = getattr(output, "audio", None)
+    if audio is not None:
+        return audio
+    if isinstance(item, (tuple, list)) and item:
+        return item[-1]
+    return item
 
 
 def _save_kokoro_wav(
@@ -276,11 +291,7 @@ def _save_kokoro_wav(
         generator = pipeline(text, voice=voice, speed=1)
         chunks = []
         for item in generator:
-            if isinstance(item, (tuple, list)) and item:
-                audio = item[-1]
-            else:
-                audio = item
-            chunks.append(_audio_to_pcm16_bytes(audio))
+            chunks.append(_audio_to_pcm16_bytes(_kokoro_result_audio(item)))
         if not chunks:
             return "Kokoro produced no audio."
         with wave.open(str(target_path), "wb") as wav:
@@ -2640,6 +2651,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 self._set_status("Stopping listening...")
             return
         if not self._tts_playing:
+            if self._busy:
+                self._pending_chatbot_text = ""
+                self._set_busy(False, "")
+                self._resume_turn_taking_paused_actors()
+                self._set_status("Speech playback ended.")
+                return
             self._set_status("Nothing is playing.")
             return
         self._pending_chatbot_text = ""
@@ -3671,9 +3688,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     error = "__stopped__"
                     break
             if error:
-                return
-
-            if selected_voice_key == VOICE_TANYA_GOOGLE:
+                pass
+            elif selected_voice_key == VOICE_TANYA_GOOGLE:
                 google_error = ""
                 if gTTS is not None and pygame is not None:
                     try:
@@ -3693,7 +3709,6 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     google_error = "Google voice dependencies are missing."
                 if google_error and not user_stopped:
                     error = f"Tanya (Google) voice failed: {google_error}"
-                    return
             elif selected_voice_key == VOICE_KOKORO_82M:
                 kokoro_error = ""
                 if pygame is not None:
@@ -3711,15 +3726,14 @@ class VoiceActorWidget(QtWidgets.QWidget):
                             user_stopped = bool(self._tts_user_stopped)
                         if user_stopped:
                             error = "__stopped__"
-                            return
-                        _play_with_pygame(temp_file)
+                        else:
+                            _play_with_pygame(temp_file)
                     except Exception as exc:
                         kokoro_error = str(exc)
                 else:
                     kokoro_error = "Kokoro playback dependency pygame is missing."
                 if kokoro_error and not user_stopped:
                     error = f"Kokoro-82M voice failed: {kokoro_error}"
-                    return
             else:
                 _speak_with_local(selected_voice_key)
         except Exception as exc:
@@ -3755,9 +3769,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 self._tts_using_pygame = False
                 user_stopped = bool(self._tts_user_stopped)
                 self._tts_playing = False
-        if user_stopped and not error:
-            error = "__stopped__"
-        self._tts_done.emit(error)
+            if user_stopped and not error:
+                error = "__stopped__"
+            self._tts_done.emit(error)
 
     @QtCore.Slot(str)
     def _finish_tts(self, error: str) -> None:
