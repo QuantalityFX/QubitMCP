@@ -44,6 +44,7 @@ Or run the script directly:
 `setup.bat` prepares:
 - `.venv` for the main app
 - `nodes/librarian/.venv` for librarian dependencies
+- Voice Actor speech dependencies, including local Kokoro-82M and the bundled Japanese MeCab dictionary
 
 ## Optional: Autodesk FBX SDK Runtime
 
@@ -107,3 +108,5 @@ After `setup.bat` completes:
    Check internet/proxy/firewall settings, then rerun `setup.bat`.
 3. Double-click launch gives no window:
    Run from terminal with `.\.venv\Scripts\python.exe echograph_app.py` to see errors.
+4. Japanese Kokoro voice reports a MeCab dictionary error:
+   Rerun `setup.bat`; it installs `unidic-lite`, the compact dictionary required by Kokoro Japanese speech.

@@ -562,7 +562,7 @@
             <li>If Gantt group order is stale after append reorder, press <strong>Apply Order</strong> on the append node so downstream charts refresh.</li>
             <li>FBX import or retarget validation issues: run <code>check_fbx_sdk.ps1</code>, or rerun <code>setup.bat full "C:\path\to\fbx_runtime"</code> with the Autodesk FBX runtime folder.</li>
             <li>Sequence to MP4 issues: confirm setup reported bundled ffmpeg as ready, or install ffmpeg on <code>PATH</code>.</li>
-            <li>Voice Actor speech issues: rerun <code>setup.bat</code> so voice dependencies are installed; Local Whisper requires <code>faster-whisper</code>, and Tanya/Google voice uses <code>gTTS</code> plus <code>pygame</code>.</li>
+            <li>Voice Actor speech issues: rerun <code>setup.bat</code> so voice dependencies are installed; Local Whisper requires <code>faster-whisper</code>, Tanya/Google voice uses <code>gTTS</code> plus <code>pygame</code>, and Japanese Kokoro-82M requires the bundled <code>unidic-lite</code> MeCab dictionary.</li>
             <li>Mediator issues: confirm Node.js, <code>npx</code>, and <code>tools\codex.ps1</code> are available; Mediator logs are under <code>logs\mediator_agents</code>.</li>
             <li>Qubit Deck control issues: use <code>qubit_deck_controller</code> Context mode first to confirm button names before sending Executor JSON from Mediator.</li>
             <li>Keyboard Auto Runner issues: make sure the intended target app has focus before the lead-in delay ends, and increase key hold time for apps that miss fast input.</li>

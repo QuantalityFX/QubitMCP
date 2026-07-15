@@ -59,21 +59,43 @@ VOICE_ACTOR_ICON_BTN_SIDE = 56
 VOICE_ACTOR_SELECTED_PARAM_KEY = "__voice_actor_selected_param"
 VOICE_ACTOR_MODE_KEY = "__voice_actor_mode"
 VOICE_ACTOR_VOICE_KEY = "__voice_actor_voice"
+VOICE_ACTOR_VOICE_GENDER_KEY = "__voice_actor_voice_gender"
 VOICE_ACTOR_STT_METHOD_KEY = "__voice_actor_stt_method"
 VOICE_ACTOR_STT_LANGUAGE_KEY = "__voice_actor_stt_language"
 VOICE_ACTOR_SEND_MODE_KEY = "__voice_actor_send_mode"
 VOICE_ACTOR_SEND_TOKEN_KEY = "__voice_actor_send_token"
 VOICE_TANYA_GOOGLE = "__google_tanya__"
 VOICE_KOKORO_82M = "__kokoro_82m__"
+VOICE_LOCAL_DESKTOP = "__local_desktop__"
 VOICE_AUTO_FEMALE = "__auto_female__"
 STT_METHOD_LOCAL_WHISPER = "local_whisper"
 STT_METHOD_GOOGLE = "google"
 STT_SEND_MODE_AUTO_RESPOND = "auto_respond"
 STT_SEND_MODE_ASK_FIRST = "ask_first"
 STT_SEND_MODE_MANUAL = "manual"
+VOICE_GENDER_FEMALE = "female"
+VOICE_GENDER_MALE = "male"
 LOCAL_WHISPER_MODEL_NAME = "base"
 LOCAL_WHISPER_LANGUAGE = "en"
 KOKORO_DEFAULT_VOICE = "af_heart"
+KOKORO_DEFAULT_VOICES_BY_LANGUAGE = {
+    "en": {
+        VOICE_GENDER_FEMALE: "af_heart",
+        VOICE_GENDER_MALE: "am_adam",
+    },
+    "es": {
+        VOICE_GENDER_FEMALE: "ef_dora",
+        VOICE_GENDER_MALE: "em_alex",
+    },
+    "ja": {
+        VOICE_GENDER_FEMALE: "jf_alpha",
+        VOICE_GENDER_MALE: "jm_kumo",
+    },
+    "zh": {
+        VOICE_GENDER_FEMALE: "zf_xiaoxiao",
+        VOICE_GENDER_MALE: "zm_yunjian",
+    },
+}
 KOKORO_LANG_CODES = {
     "en": "a",
     "es": "e",
@@ -131,6 +153,13 @@ FEMALE_VOICE_HINTS = (
     "sonia",
     "jenny",
     "emma",
+    "haruka",
+    "ayumi",
+    "sayaka",
+    "sabina",
+    "helena",
+    "huihui",
+    "yaoyao",
 )
 MALE_VOICE_HINTS = (
     "male",
@@ -141,6 +170,10 @@ MALE_VOICE_HINTS = (
     "james",
     "richard",
     "guy",
+    "ichiro",
+    "pablo",
+    "raul",
+    "kangkang",
 )
 
 _WHISPER_MODEL = None
@@ -219,6 +252,84 @@ def _kokoro_lang_code(language: str) -> str:
     return str(KOKORO_LANG_CODES.get(normalized, "a") or "a")
 
 
+def _normalize_voice_gender(value: str) -> str:
+    key = str(value or "").strip().lower()
+    if key in {"m", "male", "man", "masculine"}:
+        return VOICE_GENDER_MALE
+    return VOICE_GENDER_FEMALE
+
+
+def _kokoro_voice_for_language(language: str, gender: str = VOICE_GENDER_FEMALE) -> str:
+    normalized = _normalize_stt_language(language)
+    voices = KOKORO_DEFAULT_VOICES_BY_LANGUAGE.get(normalized)
+    if isinstance(voices, dict):
+        selected_gender = _normalize_voice_gender(gender)
+        voice = voices.get(selected_gender) or voices.get(VOICE_GENDER_FEMALE) or KOKORO_DEFAULT_VOICE
+    else:
+        voice = KOKORO_DEFAULT_VOICE
+    return str(voice or KOKORO_DEFAULT_VOICE)
+
+
+def _mecab_dictionary_ready(dicdir) -> bool:
+    if not dicdir:
+        return False
+    try:
+        return (Path(str(dicdir)) / "mecabrc").exists()
+    except Exception:
+        return False
+
+
+def _prepare_kokoro_japanese_backend() -> str:
+    try:
+        import unidic  # type: ignore
+    except Exception:
+        unidic = None
+
+    if unidic is not None and _mecab_dictionary_ready(getattr(unidic, "DICDIR", "")):
+        return ""
+
+    try:
+        import unidic_lite  # type: ignore
+    except Exception:
+        return (
+            "Kokoro Japanese voice needs a MeCab dictionary. "
+            "Install the compact bundled dictionary: pip install unidic-lite. "
+            "Full UniDic also works after: python -m unidic download."
+        )
+
+    lite_dicdir = getattr(unidic_lite, "DICDIR", "")
+    if not _mecab_dictionary_ready(lite_dicdir):
+        return (
+            "Kokoro Japanese voice found unidic-lite, but its MeCab dictionary is incomplete. "
+            "Reinstall it with: pip install --force-reinstall unidic-lite."
+        )
+
+    if unidic is not None:
+        try:
+            unidic.DICDIR = lite_dicdir
+            unidic.VERSION = getattr(unidic_lite, "VERSION", getattr(unidic, "VERSION", ""))
+        except Exception:
+            pass
+    return ""
+
+
+def _kokoro_init_error(lang_code: str, exc: Exception) -> str:
+    detail = str(exc).strip() or exc.__class__.__name__
+    if lang_code == "j":
+        return (
+            "Kokoro Japanese voice dependencies are incomplete. "
+            "Run setup.bat or install: pip install \"misaki[ja]\" unidic-lite. "
+            f"({detail})"
+        )
+    if lang_code == "z":
+        return (
+            "Kokoro Chinese voice dependencies are missing. "
+            "Run setup.bat or install: pip install \"misaki[zh]\". "
+            f"({detail})"
+        )
+    return f"Kokoro init failed for language '{lang_code}': {detail}"
+
+
 def _kokoro_pipeline(language: str):
     lang_code = _kokoro_lang_code(language)
     with _KOKORO_PIPELINE_LOCK:
@@ -229,15 +340,19 @@ def _kokoro_pipeline(language: str):
             from kokoro import KPipeline  # type: ignore
         except Exception as exc:
             return None, f"Missing dependency: kokoro. Run setup.bat or pip install kokoro. ({exc})"
+        if lang_code == "j":
+            japanese_err = _prepare_kokoro_japanese_backend()
+            if japanese_err:
+                return None, japanese_err
         try:
             pipeline = KPipeline(lang_code=lang_code)
         except TypeError:
             try:
                 pipeline = KPipeline(lang_code)
             except Exception as exc:
-                return None, f"Kokoro init failed for language '{lang_code}': {exc}"
+                return None, _kokoro_init_error(lang_code, exc)
         except Exception as exc:
-            return None, f"Kokoro init failed for language '{lang_code}': {exc}"
+            return None, _kokoro_init_error(lang_code, exc)
         _KOKORO_PIPELINES[lang_code] = pipeline
         return pipeline, ""
 
@@ -783,9 +898,12 @@ def _proxy_auto_speech_text(source_item, text: str, *, fallback_text: str = "") 
     return stripped or clean
 
 
-def _pick_female_voice_id(engine) -> str:
+def _pick_desktop_voice_id(engine, gender: str = VOICE_GENDER_FEMALE) -> str:
     if engine is None:
         return ""
+    selected_gender = _normalize_voice_gender(gender)
+    positive_hints = MALE_VOICE_HINTS if selected_gender == VOICE_GENDER_MALE else FEMALE_VOICE_HINTS
+    negative_hints = FEMALE_VOICE_HINTS if selected_gender == VOICE_GENDER_MALE else MALE_VOICE_HINTS
     try:
         voices = list(engine.getProperty("voices") or [])
     except Exception:
@@ -801,10 +919,10 @@ def _pick_female_voice_id(engine) -> str:
         if not blob:
             continue
         score = 0.0
-        for hint in FEMALE_VOICE_HINTS:
+        for hint in positive_hints:
             if hint in blob:
                 score += 2.0
-        for hint in MALE_VOICE_HINTS:
+        for hint in negative_hints:
             if hint in blob:
                 score -= 2.0
         if "english" in blob or " en" in blob:
@@ -816,6 +934,10 @@ def _pick_female_voice_id(engine) -> str:
     if best_score <= 0.0:
         return ""
     return best_id
+
+
+def _pick_female_voice_id(engine) -> str:
+    return _pick_desktop_voice_id(engine, VOICE_GENDER_FEMALE)
 
 
 def _available_tts_voices() -> list[dict]:
@@ -1603,6 +1725,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._tts_using_pygame = False
         self._tts_voice_options = []
         self._syncing_voice_combo = False
+        self._syncing_voice_gender_combo = False
         self._syncing_stt_combo = False
         self._syncing_stt_language_combo = False
         self._syncing_send_mode_combo = False
@@ -1634,6 +1757,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._selected_param_key = _param_value(model, VOICE_ACTOR_SELECTED_PARAM_KEY, "")
         saved_voice_key = _param_value(model, VOICE_ACTOR_VOICE_KEY, "").strip()
         self._selected_voice_key = saved_voice_key or VOICE_TANYA_GOOGLE
+        saved_voice_gender = _param_value(model, VOICE_ACTOR_VOICE_GENDER_KEY, "").strip()
+        self._selected_voice_gender = _normalize_voice_gender(saved_voice_gender)
         saved_stt_method = _param_value(model, VOICE_ACTOR_STT_METHOD_KEY, "").strip()
         self._selected_stt_method = _normalize_stt_method(saved_stt_method or STT_METHOD_LOCAL_WHISPER)
         saved_stt_language = _param_value(model, VOICE_ACTOR_STT_LANGUAGE_KEY, "").strip()
@@ -1647,6 +1772,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
             _ensure_hidden_params(model, [VOICE_ACTOR_MODE_KEY])
         if saved_voice_key:
             _ensure_hidden_params(model, [VOICE_ACTOR_VOICE_KEY])
+        if saved_voice_gender:
+            _ensure_hidden_params(model, [VOICE_ACTOR_VOICE_GENDER_KEY])
         if saved_stt_method:
             _ensure_hidden_params(model, [VOICE_ACTOR_STT_METHOD_KEY])
         if saved_stt_language:
@@ -1742,6 +1869,19 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._voice_combo.setToolTip("Select which installed speech voice to use.")
         self._voice_combo.currentIndexChanged.connect(self._on_voice_selection_changed)
 
+        self._voice_gender_label = QtWidgets.QLabel("M/F:")
+        self._voice_gender_label.setStyleSheet("QLabel{color:#94a3b8;}")
+        self._voice_gender_combo = QtWidgets.QComboBox()
+        self._voice_gender_combo.setStyleSheet(
+            "QComboBox{background:#11151c;color:#e6edf3;border:1px solid #334155;border-radius:4px;padding:3px 8px;}"
+            "QComboBox:disabled{background:#1f2937;color:#94a3b8;border-color:#334155;}"
+            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
+        )
+        self._voice_gender_combo.setToolTip("Select male or female local voice.")
+        self._voice_gender_combo.setMinimumWidth(78)
+        self._voice_gender_combo.setMaximumWidth(92)
+        self._voice_gender_combo.currentIndexChanged.connect(self._on_voice_gender_changed)
+
         self._stt_label = QtWidgets.QLabel("STT:")
         self._stt_label.setStyleSheet("QLabel{color:#94a3b8;}")
         self._stt_combo = QtWidgets.QComboBox()
@@ -1802,6 +1942,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         response_row.addWidget(self._send_mode_combo, 1)
         response_row.addWidget(self._stt_language_label, 0)
         response_row.addWidget(self._stt_language_combo, 1)
+        response_row.addWidget(self._voice_gender_label, 0)
+        response_row.addWidget(self._voice_gender_combo, 0)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -1826,6 +1968,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._refresh_voice_options()
         self._refresh_stt_method_options()
         self._refresh_stt_language_options()
+        self._refresh_voice_gender_options()
         self._refresh_send_mode_options()
         self._refresh_source_param_options()
         self._queue_deferred_scene_bootstrap()
@@ -2042,6 +2185,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._copy_btn.setEnabled(not self._busy)
         self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
         self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
+        self._voice_gender_combo.setEnabled(self._voice_gender_control_available() and not self._busy)
         self._stt_combo.setEnabled(not self._busy)
         self._stt_language_combo.setEnabled(not self._busy)
         self._send_mode_combo.setEnabled(not self._busy)
@@ -2228,24 +2372,23 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _refresh_voice_options(self) -> None:
         google_ready = gTTS is not None and pygame is not None
         kokoro_ready = _kokoro_available() and pygame is not None
+        desktop_ready = pyttsx3 is not None
         google_label = "Google (Tanya)" if google_ready else "Google (Tanya) - install gTTS + pygame"
         kokoro_label = "Kokoro-82M (Local)" if kokoro_ready else "Kokoro-82M - install kokoro + pygame"
+        desktop_label = "Desktop Voice (Local)" if desktop_ready else "Desktop Voice - install pyttsx3"
         options = [
             {"id": VOICE_TANYA_GOOGLE, "name": google_label},
             {"id": VOICE_KOKORO_82M, "name": kokoro_label},
+            {"id": VOICE_LOCAL_DESKTOP, "name": desktop_label},
         ]
-        seen_ids = {VOICE_TANYA_GOOGLE, VOICE_KOKORO_82M}
-        for voice in _available_tts_voices():
-            voice_id = str(voice.get("id", "") or "").strip()
-            if not voice_id or voice_id in seen_ids:
-                continue
-            seen_ids.add(voice_id)
-            voice_name = str(voice.get("name", "") or "").strip() or voice_id
-            options.append({"id": voice_id, "name": voice_name})
 
         selected_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
+        if selected_key == VOICE_AUTO_FEMALE:
+            selected_key = VOICE_LOCAL_DESKTOP
+            self._selected_voice_key = selected_key
+            _set_node_param(self._node_item, VOICE_ACTOR_VOICE_KEY, selected_key)
         if not any(str(opt.get("id", "")) == selected_key for opt in options):
-            selected_key = VOICE_TANYA_GOOGLE
+            selected_key = VOICE_LOCAL_DESKTOP if desktop_ready else VOICE_TANYA_GOOGLE
             self._selected_voice_key = selected_key
             _set_node_param(self._node_item, VOICE_ACTOR_VOICE_KEY, selected_key)
 
@@ -2287,8 +2430,55 @@ class VoiceActorWidget(QtWidgets.QWidget):
         else:
             self._voice_combo.setEnabled(True)
             self._voice_combo.setToolTip(
-                "Google and Kokoro use the Lang setting. Local voices use installed system TTS voices."
+                "Google and Kokoro use the Lang setting. Kokoro and Desktop Voice use the M/F setting."
             )
+        self._refresh_voice_gender_options()
+
+    def _voice_gender_control_available(self) -> bool:
+        selected_voice = str(self._selected_voice_key or "").strip()
+        return selected_voice in {VOICE_KOKORO_82M, VOICE_LOCAL_DESKTOP, VOICE_AUTO_FEMALE}
+
+    def _refresh_voice_gender_options(self) -> None:
+        selected_key = _normalize_voice_gender(self._selected_voice_gender)
+        if selected_key != str(self._selected_voice_gender or "").strip():
+            self._selected_voice_gender = selected_key
+            _set_node_param(self._node_item, VOICE_ACTOR_VOICE_GENDER_KEY, selected_key)
+
+        options = [
+            {"id": VOICE_GENDER_FEMALE, "name": "Female"},
+            {"id": VOICE_GENDER_MALE, "name": "Male"},
+        ]
+
+        self._syncing_voice_gender_combo = True
+        try:
+            self._voice_gender_combo.blockSignals(True)
+            self._voice_gender_combo.clear()
+            selected_index = 0
+            for idx, option in enumerate(options):
+                label = str(option.get("name", "") or "")
+                value = str(option.get("id", "") or "")
+                self._voice_gender_combo.addItem(label, value)
+                if value == selected_key:
+                    selected_index = idx
+            self._voice_gender_combo.setCurrentIndex(selected_index)
+        finally:
+            self._voice_gender_combo.blockSignals(False)
+            self._syncing_voice_gender_combo = False
+
+        available = self._voice_gender_control_available()
+        self._voice_gender_label.setVisible(available)
+        self._voice_gender_combo.setVisible(available)
+        self._voice_gender_combo.setEnabled(available and not self._busy)
+        selected_voice = str(self._selected_voice_key or "").strip()
+        if selected_voice == VOICE_KOKORO_82M:
+            voice_id = _kokoro_voice_for_language(self._selected_stt_language, selected_key)
+            self._voice_gender_combo.setToolTip(
+                f"Select local Kokoro voice gender. Current {selected_key}: {voice_id}."
+            )
+        elif selected_voice in {VOICE_LOCAL_DESKTOP, VOICE_AUTO_FEMALE}:
+            self._voice_gender_combo.setToolTip("Select the installed desktop voice gender automatically.")
+        else:
+            self._voice_gender_combo.setToolTip("Available for Kokoro-82M and Desktop Voice.")
 
     def _refresh_stt_method_options(self) -> None:
         whisper_ready = WhisperModel is not None
@@ -2416,6 +2606,18 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         self._selected_voice_key = selected_key
         _set_node_param(self._node_item, VOICE_ACTOR_VOICE_KEY, selected_key)
+        self._refresh_voice_gender_options()
+        self._update_control_states()
+
+    def _on_voice_gender_changed(self, _index: int) -> None:
+        if self._syncing_voice_gender_combo:
+            return
+        selected_key = _normalize_voice_gender(self._voice_gender_combo.currentData() or "")
+        if selected_key == str(self._selected_voice_gender or "").strip():
+            return
+        self._selected_voice_gender = selected_key
+        _set_node_param(self._node_item, VOICE_ACTOR_VOICE_GENDER_KEY, selected_key)
+        self._refresh_voice_gender_options()
 
     def _on_stt_method_changed(self, _index: int) -> None:
         if self._syncing_stt_combo:
@@ -2435,6 +2637,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._selected_stt_language = selected_key
         _set_node_param(self._node_item, VOICE_ACTOR_STT_LANGUAGE_KEY, selected_key)
         self._refresh_stt_language_options()
+        self._refresh_voice_gender_options()
 
     def _on_send_mode_changed(self, _index: int) -> None:
         if self._syncing_send_mode_combo:
@@ -3063,6 +3266,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _speak_stt_send_confirmation_prompt(self) -> None:
         prompt = "Are you ready to send? Say yes, done, or send."
         selected_voice_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
+        selected_voice_gender = _normalize_voice_gender(self._selected_voice_gender)
         stop_event = self._stt_prompt_stop_event
         prompt_slot = False
         with self._stt_prompt_lock:
@@ -3135,17 +3339,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 with self._stt_prompt_lock:
                     self._stt_prompt_engine = engine
                 voice_applied = False
-                if selected_voice_key and selected_voice_key not in {VOICE_TANYA_GOOGLE, VOICE_AUTO_FEMALE}:
+                if selected_voice_key and selected_voice_key not in {VOICE_TANYA_GOOGLE, VOICE_LOCAL_DESKTOP, VOICE_AUTO_FEMALE}:
                     try:
                         engine.setProperty("voice", selected_voice_key)
                         voice_applied = True
                     except Exception:
                         voice_applied = False
                 if not voice_applied:
-                    female_voice_id = _pick_female_voice_id(engine)
-                    if female_voice_id:
+                    desktop_voice_id = _pick_desktop_voice_id(engine, selected_voice_gender)
+                    if desktop_voice_id:
                         try:
-                            engine.setProperty("voice", female_voice_id)
+                            engine.setProperty("voice", desktop_voice_id)
                         except Exception:
                             pass
                 if stop_event.is_set():
@@ -3484,6 +3688,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _speak_text(self, text: str, *, source: str) -> bool:
         voice_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
         tts_language = _normalize_stt_language(self._selected_stt_language)
+        voice_gender = _normalize_voice_gender(self._selected_voice_gender)
         if voice_key == VOICE_TANYA_GOOGLE:
             if gTTS is None or pygame is None:
                 self._set_status(
@@ -3545,7 +3750,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._tts_engine = None
             self._tts_using_pygame = False
         self._set_busy(True, "speaking")
-        threading.Thread(target=self._tts_worker, args=(clean, voice_key, tts_language), daemon=True).start()
+        threading.Thread(target=self._tts_worker, args=(clean, voice_key, tts_language, voice_gender), daemon=True).start()
         return True
 
     def _resolve_tts_text(self) -> tuple[str, str]:
@@ -3614,7 +3819,13 @@ class VoiceActorWidget(QtWidgets.QWidget):
         text, source = self._resolve_tts_text()
         self._speak_text(text, source=source)
 
-    def _tts_worker(self, text: str, voice_key: str, tts_language: str = LOCAL_WHISPER_LANGUAGE) -> None:
+    def _tts_worker(
+        self,
+        text: str,
+        voice_key: str,
+        tts_language: str = LOCAL_WHISPER_LANGUAGE,
+        voice_gender: str = VOICE_GENDER_FEMALE,
+    ) -> None:
         error = ""
         user_stopped = False
         engine = None
@@ -3622,8 +3833,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         used_pygame = False
         playback_slot = False
         selected_language = _normalize_stt_language(tts_language)
+        selected_gender = _normalize_voice_gender(voice_gender)
 
-        def _speak_with_local(local_voice_key: str) -> None:
+        def _speak_with_local(local_voice_key: str, local_voice_gender: str) -> None:
             nonlocal engine
             nonlocal user_stopped
             nonlocal error
@@ -3631,17 +3843,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 raise RuntimeError("Missing dependency: pyttsx3. Install: pip install pyttsx3")
             engine = pyttsx3.init()
             voice_applied = False
-            if local_voice_key != VOICE_AUTO_FEMALE:
+            if local_voice_key not in {VOICE_LOCAL_DESKTOP, VOICE_AUTO_FEMALE}:
                 try:
                     engine.setProperty("voice", local_voice_key)
                     voice_applied = True
                 except Exception:
                     voice_applied = False
             if not voice_applied:
-                female_voice_id = _pick_female_voice_id(engine)
-                if female_voice_id:
+                desktop_voice_id = _pick_desktop_voice_id(engine, local_voice_gender)
+                if desktop_voice_id:
                     try:
-                        engine.setProperty("voice", female_voice_id)
+                        engine.setProperty("voice", desktop_voice_id)
                     except Exception:
                         pass
             with self._tts_lock:
@@ -3718,7 +3930,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                             text,
                             temp_file,
                             language=selected_language,
-                            voice=KOKORO_DEFAULT_VOICE,
+                            voice=_kokoro_voice_for_language(selected_language, selected_gender),
                         )
                         if save_err:
                             raise RuntimeError(save_err)
@@ -3735,7 +3947,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 if kokoro_error and not user_stopped:
                     error = f"Kokoro-82M voice failed: {kokoro_error}"
             else:
-                _speak_with_local(selected_voice_key)
+                _speak_with_local(selected_voice_key, selected_gender)
         except Exception as exc:
             error = f"Text-to-speech failed: {exc}"
         finally:
