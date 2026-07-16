@@ -240,6 +240,21 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             setattr(python_item, "_python_busy_timer", timer)
             timer.start()
 
+    def _add_to_shelf():
+        shelf = None
+        try:
+            window = card.window()
+            shelf = getattr(window, "_shelf_bar", None)
+        except Exception:
+            shelf = None
+        if shelf is None or not hasattr(shelf, "add_python_node_snapshot"):
+            QtWidgets.QMessageBox.warning(card, "EchoGraph", "Shelf tools are not available in this window.")
+            return
+        try:
+            shelf.add_python_node_snapshot(node)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(card, "EchoGraph", f"Failed to add Python node to shelf:\n{exc}")
+
     btn_edit = QtWidgets.QPushButton("Edit Code…")
     btn_edit.setToolTip("Edit and save this node's Python script")
     btn_edit.setStyleSheet(
@@ -258,8 +273,19 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         "QPushButton:disabled{background:#334155;color:#94a3b8;}"
     )
     btn_run.clicked.connect(_run_code)
+
+    btn_shelf = QtWidgets.QPushButton("Add to Shelf")
+    btn_shelf.setToolTip("Save this Python node as a shelf tool")
+    btn_shelf.setStyleSheet(
+        "QPushButton{background:#334155;color:#e5e7eb;border-radius:2px;padding:4px 10px;}"
+        "QPushButton:hover{background:#475569;}"
+        "QPushButton:pressed{background:#64748b;}"
+        "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+    )
+    btn_shelf.clicked.connect(_add_to_shelf)
     footer_layout.addWidget(btn_edit)
     footer_layout.addWidget(btn_run)
+    footer_layout.addWidget(btn_shelf)
 
     return True  # we fully own the footer for python
 

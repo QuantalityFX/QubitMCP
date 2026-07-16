@@ -25,6 +25,7 @@ from echograph.ui import hotkeys_config
 from echograph.ui.timeline_controller import TimelineController
 from echograph.ui.timeline_menu import build_timeline_panels_menu
 from echograph.ui.profiler_controller import ProfilerController
+from echograph.ui.shelf_bar import ShelfBar
 from echograph.services.profiler import profiled, profile_scope
 from echograph.services import runtime_logging
 
@@ -918,6 +919,18 @@ core.register_defaults()
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
 _SKIP_RECENT_DIALOG = "--skip-recent" in sys.argv
+
+def _argv_value(flag: str) -> str:
+    try:
+        idx = sys.argv.index(flag)
+    except ValueError:
+        return ""
+    try:
+        return str(sys.argv[idx + 1] or "").strip()
+    except Exception:
+        return ""
+
+_OPEN_WORKFLOW_PATH = _argv_value("--open-workflow")
 maya_cmds = None
 omui = None
 hou_mod = None
@@ -2723,6 +2736,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._topbar = topbar
         v.addWidget(topbar, 0)
 
+        self._shelf_bar = ShelfBar(self)
+        v.addWidget(self._shelf_bar, 0)
+
         # Scene/View
         self.scene = GraphScene(on_info=self.add_info_card, on_branch=self.populate_branch_info)
         try:
@@ -2778,6 +2794,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._fullscreen_prev_split_sizes = None
         self._fullscreen_prev_info_visible = None
         self._fullscreen_prev_topbar_visible = None
+        self._fullscreen_prev_shelf_visible = None
         self._fullscreen_target = None
         self._fullscreen_exit_pending = False
         self._fullscreen_prev_was_max = False
@@ -3092,9 +3109,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._shortcut_node_paste = None
 
         if HOST == "standalone":
-            if not _SKIP_RECENT_DIALOG:
+            if _OPEN_WORKFLOW_PATH:
+                QtCore.QTimer.singleShot(0, self.showMaximized)
+                QtCore.QTimer.singleShot(160, lambda p=_OPEN_WORKFLOW_PATH: self._load_startup_workflow(p))
+            elif not _SKIP_RECENT_DIALOG:
                 QtCore.QTimer.singleShot(0, self._maybe_show_recent_dialog)
-            QtCore.QTimer.singleShot(0, self.showMaximized)
+                QtCore.QTimer.singleShot(0, self.showMaximized)
+            else:
+                QtCore.QTimer.singleShot(0, self.showMaximized)
 
     def _register_bigedit_target(self, edit: QtWidgets.QWidget, node_item, param_name: str):
         if not hasattr(self, "_bigedit_registry"):
@@ -4903,6 +4925,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
         self._open_recent_dialog()
 
+    def _load_startup_workflow(self, path: str) -> None:
+        if not self._load_graph_file(path):
+            return
+        for delay in (0, 160, 420):
+            try:
+                QtCore.QTimer.singleShot(delay, self._frame_all_nodes)
+            except Exception:
+                pass
+
     def _open_recent_dialog(self):
         recents = [p for p in getattr(self, "_recent_files", []) if p]
         dlg = RecentGraphsDialog(self, recents)
@@ -4915,14 +4946,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 if not self._load_graph_file(path):
                     self._forget_recent(path)
 
-    def _launch_new_instance(self):
+    def _launch_new_instance(self, workflow_path: str | None = None):
         script = Path(__file__).resolve().parent / "echograph_app.py"
         python = sys.executable or "python"
         if not script.exists():
             QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Unable to find launcher:\n{script}")
             return
+        args = [python, str(script), "--skip-recent"]
+        if workflow_path:
+            args.extend(["--open-workflow", str(workflow_path)])
         try:
-            subprocess.Popen([python, str(script), "--skip-recent"])
+            subprocess.Popen(args)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to launch:\n{exc}")
 
@@ -8114,6 +8148,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._fullscreen_prev_topbar_visible = bool(self._topbar.isVisible())
             except Exception:
                 self._fullscreen_prev_topbar_visible = None
+            try:
+                self._fullscreen_prev_shelf_visible = bool(self._shelf_bar.isVisible())
+            except Exception:
+                self._fullscreen_prev_shelf_visible = None
 
             target = None
             try:
@@ -8134,6 +8172,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 if getattr(self, "_topbar", None) is not None:
                     self._topbar.setVisible(False)
+            except Exception:
+                pass
+            try:
+                if getattr(self, "_shelf_bar", None) is not None:
+                    self._shelf_bar.setVisible(False)
             except Exception:
                 pass
             try:
@@ -8210,6 +8253,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         try:
             if getattr(self, "_topbar", None) is not None:
                 self._topbar.setVisible(bool(self._fullscreen_prev_topbar_visible))
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_shelf_bar", None) is not None:
+                self._shelf_bar.setVisible(bool(self._fullscreen_prev_shelf_visible))
         except Exception:
             pass
         try:
