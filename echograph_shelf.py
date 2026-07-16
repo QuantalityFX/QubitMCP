@@ -2726,17 +2726,24 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             _SCENE_SKELETON_JOINT_NAMES_DEFAULT,
         )
 
-        central = QtWidgets.QWidget(self)
-        v = QtWidgets.QVBoxLayout(central)
-        v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
-
+        header = QtWidgets.QWidget(self)
+        header.setObjectName("MainHeader")
+        header_layout = QtWidgets.QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
         topbar = self._build_topbar()
         self._topbar = topbar
-        v.addWidget(topbar, 0)
+        header_layout.addWidget(topbar, 0)
 
         self._shelf_bar = ShelfBar(self)
         self._shelf_bar.setVisible(bool(getattr(self, "_shelf_visible", True)))
-        v.addWidget(self._shelf_bar, 0)
+        header_layout.addWidget(self._shelf_bar, 0)
+        self._main_header = header
+        self.setMenuWidget(header)
+
+        central = QtWidgets.QWidget(self)
+        v = QtWidgets.QVBoxLayout(central)
+        v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
 
         # Scene/View
         self.scene = GraphScene(on_info=self.add_info_card, on_branch=self.populate_branch_info)
