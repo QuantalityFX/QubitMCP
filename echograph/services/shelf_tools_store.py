@@ -11,7 +11,7 @@ from echograph.constants import script_dir
 
 
 SCHEMA_VERSION = 1
-SUPPORTED_TOOL_TYPES = {"python_script", "python_code", "workflow_shortcut"}
+SUPPORTED_TOOL_TYPES = {"python_script", "python_code", "workflow_shortcut", "graph_snippet"}
 WORKFLOW_OPEN_MODES = {"new_instance", "current_window"}
 SHELF_TOOLS_PATH = script_dir() / "shelf_tools.json"
 
@@ -119,6 +119,27 @@ def _normalize_workflow_open_mode(value: Any) -> str:
     return "new_instance"
 
 
+def _normalize_graph_snippet_payload(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"format": "EchoGraphClipboard", "version": 1, "nodes": [], "edges": [], "centroid": [0.0, 0.0]}
+    payload = deepcopy(value)
+    payload["format"] = "EchoGraphClipboard"
+    try:
+        payload["version"] = int(payload.get("version", 1) or 1)
+    except Exception:
+        payload["version"] = 1
+    if not isinstance(payload.get("nodes"), list):
+        payload["nodes"] = []
+    if not isinstance(payload.get("edges"), list):
+        payload["edges"] = []
+    if not isinstance(payload.get("comments"), list):
+        payload["comments"] = []
+    centroid = payload.get("centroid")
+    if not isinstance(centroid, list) or len(centroid) < 2:
+        payload["centroid"] = [0.0, 0.0]
+    return payload
+
+
 def normalize_tool(raw: Dict[str, Any], index: int = 0, existing_ids: Iterable[str] = ()) -> Dict[str, Any]:
     tool = dict(raw or {})
     tool_type = str(tool.get("type", "") or "").strip().lower() or "python_script"
@@ -166,6 +187,12 @@ def normalize_tool(raw: Dict[str, Any], index: int = 0, existing_ids: Iterable[s
                 "workflow_path": str(tool.get("workflow_path", "") or "").strip(),
                 "path_mode": str(tool.get("path_mode", "") or "").strip() or "absolute",
                 "open_mode": _normalize_workflow_open_mode(tool.get("open_mode")),
+            }
+        )
+    elif tool_type == "graph_snippet":
+        normalized.update(
+            {
+                "payload": _normalize_graph_snippet_payload(tool.get("payload")),
             }
         )
     else:

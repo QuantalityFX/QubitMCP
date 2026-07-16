@@ -662,8 +662,12 @@ class CommentGroup(QtWidgets.QGraphicsObject):
                     peers = [self]
                 for peer in peers:
                     self._drag_peer_starts.append((peer, QtCore.QPointF(peer.pos())))
-                if not (e.modifiers() & QtCore.Qt.ControlModifier):
-                    self._select_members()
+                preserve_selection = bool(
+                    e.modifiers() & (QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier)
+                )
+                preserve_selection = preserve_selection or self.isSelected()
+                preserve_selection = preserve_selection or self._has_extended_member_selection(sc)
+                self._select_members(preserve_existing=preserve_selection)
                 e.accept()
                 return
         # Let clicks in the body fall through so rubber-band selection can start inside the wrapper.
@@ -750,13 +754,34 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         self.unsetCursor()
         super().hoverLeaveEvent(e)
 
-    def _select_members(self):
+    def _has_extended_member_selection(self, scene) -> bool:
+        if not scene:
+            return False
+        member_names = {str(name) for name in self._members if name}
+        if not member_names:
+            return False
+        has_member = False
+        has_external = False
+        for it in scene.selectedItems():
+            if not isinstance(it, NodeItem):
+                continue
+            name = str(getattr(getattr(it, "model", None), "name", "") or "")
+            if name in member_names:
+                has_member = True
+            else:
+                has_external = True
+            if has_member and has_external:
+                return True
+        return False
+
+    def _select_members(self, *, preserve_existing: bool = False):
         scene = self.scene()
         if not scene:
             return
-        for it in scene.selectedItems():
-            if not isinstance(it, CommentGroup):
-                it.setSelected(False)
+        if not preserve_existing:
+            for it in scene.selectedItems():
+                if not isinstance(it, CommentGroup):
+                    it.setSelected(False)
         for name in self._members:
             node = scene._node_items.get(name)
             if node:
@@ -1830,10 +1855,23 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     pass
         return snap
 
-    def copy_selection_to_clipboard(self) -> bool:
-        items = [it for it in self.selectedItems() if isinstance(it, NodeItem)]
+    def selection_clipboard_payload(self) -> dict | None:
+        selected_items = list(self.selectedItems())
+        selected_groups = [it for it in selected_items if isinstance(it, CommentGroup)]
+        items = [it for it in selected_items if isinstance(it, NodeItem)]
+        if selected_groups:
+            seen_names = {getattr(getattr(it, "model", None), "name", "") for it in items}
+            for group in selected_groups:
+                for name in group.members():
+                    if name in seen_names:
+                        continue
+                    node_item = self._node_items.get(name)
+                    if node_item is None:
+                        continue
+                    items.append(node_item)
+                    seen_names.add(name)
         if not items:
-            return False
+            return None
 
         nodes_data = []
         selected_names = set()
@@ -1851,7 +1889,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     positions.append((0.0, 0.0))
 
         if not positions:
-            return False
+            return None
 
         centroid = [
             sum(p[0] for p in positions) / len(positions),
@@ -1872,14 +1910,36 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     entry["src_port"] = e.src_port_name
                 edges_data.append(entry)
 
-        payload = {
+        comments_data = []
+        selected_group_ids = {id(group) for group in selected_groups}
+        for group in list(getattr(self, "_comment_groups", [])):
+            active_members = [name for name in group.members() if name in self._node_items]
+            copied_members = [name for name in active_members if name in selected_names]
+            include_group = id(group) in selected_group_ids or (
+                bool(active_members) and len(copied_members) == len(active_members)
+            )
+            if not include_group or not copied_members:
+                continue
+            try:
+                data = group.to_dict()
+            except Exception:
+                continue
+            data["members"] = copied_members
+            comments_data.append(data)
+
+        return {
             "format": "EchoGraphClipboard",
             "version": 1,
             "nodes": nodes_data,
             "edges": edges_data,
+            "comments": comments_data,
             "centroid": centroid,
         }
 
+    def copy_selection_to_clipboard(self) -> bool:
+        payload = self.selection_clipboard_payload()
+        if not payload:
+            return False
         QtWidgets.QApplication.clipboard().setText(json.dumps(payload, ensure_ascii=False))
         return True
 
@@ -1896,6 +1956,11 @@ class GraphScene(QtWidgets.QGraphicsScene):
         if not payload:
             return False
 
+        return self.paste_payload(payload)
+
+    def paste_payload(self, payload: dict) -> bool:
+        if not isinstance(payload, dict) or payload.get("format") != "EchoGraphClipboard":
+            return False
         nodes_data = payload.get("nodes") or []
         if not nodes_data:
             return False
@@ -2016,6 +2081,39 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     )
                 except Exception:
                     pass
+
+        for comment in payload.get("comments", []) or []:
+            if not isinstance(comment, dict):
+                continue
+            members = []
+            for old_name in comment.get("members", []) or []:
+                new_name = name_map.get(str(old_name))
+                if new_name:
+                    members.append(new_name)
+            if not members:
+                continue
+
+            rect = comment.get("rect") or [0.0, 0.0, 200.0, 120.0]
+            try:
+                ox = float(rect[0])
+                oy = float(rect[1])
+                width = float(rect[2])
+                height = float(rect[3])
+            except Exception:
+                ox, oy, width, height = 0.0, 0.0, 200.0, 120.0
+
+            data = dict(comment)
+            data["members"] = members
+            data["rect"] = [
+                anchor.x() + (ox - cx),
+                anchor.y() + (oy - cy),
+                width,
+                height,
+            ]
+            try:
+                self._add_comment_group_from_data(data)
+            except Exception:
+                pass
 
         return True
 
@@ -2138,6 +2236,20 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     pass
                 _move_nodes_for_group(cg)
                 _move_pins_for_rect(child_rect, allow_ids)
+
+            if getattr(self, "_comment_drag_active", False):
+                for it in list(self.selectedItems()):
+                    if not isinstance(it, NodeItem):
+                        continue
+                    name = str(getattr(getattr(it, "model", None), "name", "") or "")
+                    if name and name in moved_nodes:
+                        continue
+                    try:
+                        it.setPos(it.pos() + delta)
+                        if name:
+                            moved_nodes.add(name)
+                    except Exception:
+                        pass
         finally:
             self._moving_comment_group = False
 

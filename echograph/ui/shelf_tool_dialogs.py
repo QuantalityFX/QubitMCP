@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import shlex
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -12,6 +14,7 @@ _TYPE_LABELS = {
     "python_script": "Python Script",
     "python_code": "Python Code",
     "workflow_shortcut": "Workflow Shortcut",
+    "graph_snippet": "Node Snippet",
 }
 
 
@@ -52,6 +55,8 @@ class ShelfToolDialog(QtWidgets.QDialog):
         self.setWindowTitle("Shelf Tool")
         self.resize(640, 520)
         self._tool = dict(tool or {})
+        payload = self._tool.get("payload") if isinstance(self._tool.get("payload"), dict) else {}
+        self._snippet_payload: Dict[str, Any] = deepcopy(payload)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -65,7 +70,7 @@ class ShelfToolDialog(QtWidgets.QDialog):
         layout.addLayout(form, 0)
 
         self.type_combo = QtWidgets.QComboBox(self)
-        for key in ("python_script", "python_code", "workflow_shortcut"):
+        for key in ("python_script", "python_code", "workflow_shortcut", "graph_snippet"):
             self.type_combo.addItem(_TYPE_LABELS[key], key)
         form.addRow("Type", self.type_combo)
 
@@ -95,9 +100,11 @@ class ShelfToolDialog(QtWidgets.QDialog):
         self._script_page = self._build_script_page()
         self._code_page = self._build_code_page()
         self._workflow_page = self._build_workflow_page()
+        self._snippet_page = self._build_snippet_page()
         self.stack.addWidget(self._script_page)
         self.stack.addWidget(self._code_page)
         self.stack.addWidget(self._workflow_page)
+        self.stack.addWidget(self._snippet_page)
 
         self.show_output_check = QtWidgets.QCheckBox("Show output after run", self)
         self.show_output_check.setChecked(True)
@@ -193,6 +200,37 @@ class ShelfToolDialog(QtWidgets.QDialog):
         form.addRow("Open In", self.workflow_open_mode_combo)
         return page
 
+    def _build_snippet_page(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget(self)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.snippet_summary_label = QtWidgets.QLabel(page)
+        self.snippet_summary_label.setWordWrap(True)
+        self.snippet_summary_label.setStyleSheet("QLabel{color:#cbd5e1;}")
+        layout.addWidget(self.snippet_summary_label, 0)
+
+        actions = QtWidgets.QWidget(page)
+        actions_layout = QtWidgets.QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(6)
+        self.snippet_paste_button = QtWidgets.QPushButton("Paste Update", actions)
+        self.snippet_paste_button.clicked.connect(self._paste_snippet_update)
+        actions_layout.addWidget(self.snippet_paste_button, 0)
+        self.snippet_status_label = QtWidgets.QLabel(actions)
+        self.snippet_status_label.setStyleSheet("QLabel{color:#8ab4f8;}")
+        actions_layout.addWidget(self.snippet_status_label, 1)
+        layout.addWidget(actions, 0)
+
+        self.snippet_preview = QtWidgets.QPlainTextEdit(page)
+        self.snippet_preview.setReadOnly(True)
+        self.snippet_preview.setMaximumBlockCount(200)
+        self.snippet_preview.setStyleSheet(
+            "QPlainTextEdit{background:#0f1216;color:#94a3b8;border:1px solid #334;}"
+        )
+        layout.addWidget(self.snippet_preview, 1)
+        return page
+
     def _load_tool(self, tool: Dict[str, Any], default_type: str) -> None:
         tool_type = str(tool.get("type", default_type) or default_type)
         idx = self.type_combo.findData(tool_type)
@@ -217,13 +255,105 @@ class ShelfToolDialog(QtWidgets.QDialog):
         workflow_open_mode = str(tool.get("open_mode", "new_instance") or "new_instance")
         idx = self.workflow_open_mode_combo.findData(workflow_open_mode)
         self.workflow_open_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._load_snippet_summary(tool)
         self._sync_page()
 
     def _sync_page(self) -> None:
         tool_type = self.type_combo.currentData()
-        index = {"python_script": 0, "python_code": 1, "workflow_shortcut": 2}.get(tool_type, 0)
+        index = {"python_script": 0, "python_code": 1, "workflow_shortcut": 2, "graph_snippet": 3}.get(tool_type, 0)
         self.stack.setCurrentIndex(index)
         self.show_output_check.setVisible(tool_type in {"python_script", "python_code"})
+
+    def _load_snippet_summary(self, tool: Dict[str, Any]) -> None:
+        payload = tool.get("payload") if isinstance(tool.get("payload"), dict) else {}
+        self._snippet_payload = deepcopy(payload)
+        self._render_snippet_summary()
+
+    def _render_snippet_summary(self) -> None:
+        payload = self._snippet_payload if isinstance(self._snippet_payload, dict) else {}
+        nodes = payload.get("nodes") if isinstance(payload, dict) else []
+        edges = payload.get("edges") if isinstance(payload, dict) else []
+        comments = payload.get("comments") if isinstance(payload, dict) else []
+        nodes = nodes if isinstance(nodes, list) else []
+        edges = edges if isinstance(edges, list) else []
+        comments = comments if isinstance(comments, list) else []
+        names = []
+        for entry in nodes[:8]:
+            if isinstance(entry, dict):
+                names.append(str(entry.get("name", "") or entry.get("kind", "") or "node"))
+        more = "" if len(nodes) <= 8 else f"\n...and {len(nodes) - 8} more"
+        summary = f"{len(nodes)} nodes, {len(edges)} connections"
+        if comments:
+            wrapper_word = "wrapper" if len(comments) == 1 else "wrappers"
+            summary = f"{summary}, {len(comments)} comment {wrapper_word}"
+        self.snippet_summary_label.setText(summary)
+        self.snippet_preview.setPlainText("\n".join(names) + more)
+
+    def _validate_snippet_payload(self, payload: Any) -> tuple[Dict[str, Any] | None, str]:
+        if not isinstance(payload, dict):
+            return None, "Clipboard does not contain a node snippet."
+        if payload.get("format") != "EchoGraphClipboard":
+            return None, "Clipboard is not an EchoGraph node selection."
+        nodes = payload.get("nodes")
+        if not isinstance(nodes, list) or not nodes:
+            return None, "Clipboard node selection has no nodes."
+
+        normalized = deepcopy(payload)
+        normalized["format"] = "EchoGraphClipboard"
+        try:
+            normalized["version"] = int(normalized.get("version", 1) or 1)
+        except Exception:
+            normalized["version"] = 1
+        if not isinstance(normalized.get("edges"), list):
+            normalized["edges"] = []
+        if not isinstance(normalized.get("comments"), list):
+            normalized["comments"] = []
+        centroid = normalized.get("centroid")
+        if not isinstance(centroid, list) or len(centroid) < 2:
+            normalized["centroid"] = [0.0, 0.0]
+        return normalized, ""
+
+    def _default_snippet_tooltip(self, payload: Dict[str, Any]) -> str:
+        nodes = payload.get("nodes") if isinstance(payload, dict) else []
+        edges = payload.get("edges") if isinstance(payload, dict) else []
+        comments = payload.get("comments") if isinstance(payload, dict) else []
+        node_count = len(nodes) if isinstance(nodes, list) else 0
+        edge_count = len(edges) if isinstance(edges, list) else 0
+        comment_count = len(comments) if isinstance(comments, list) else 0
+        text = f"Paste {node_count} nodes and {edge_count} connections"
+        if comment_count:
+            wrapper_word = "wrapper" if comment_count == 1 else "wrappers"
+            text = f"{text} with {comment_count} comment {wrapper_word}"
+        return f"{text} into the graph"
+
+    def _looks_like_default_snippet_tooltip(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        return lowered.startswith("paste ") and " nodes" in lowered and lowered.endswith(" into the graph")
+
+    def _paste_snippet_update(self) -> None:
+        try:
+            text = QtWidgets.QApplication.clipboard().text()
+        except Exception:
+            text = ""
+        if not str(text or "").strip():
+            QtWidgets.QMessageBox.warning(self, "Shelf Tool", "Clipboard is empty. Copy nodes from the graph first.")
+            return
+        try:
+            payload = json.loads(text)
+        except Exception:
+            QtWidgets.QMessageBox.warning(self, "Shelf Tool", "Clipboard does not contain valid node selection JSON.")
+            return
+        normalized, error = self._validate_snippet_payload(payload)
+        if error or normalized is None:
+            QtWidgets.QMessageBox.warning(self, "Shelf Tool", error or "Clipboard does not contain a node snippet.")
+            return
+
+        self._snippet_payload = normalized
+        tooltip_text = self.tooltip_edit.text()
+        if not tooltip_text.strip() or self._looks_like_default_snippet_tooltip(tooltip_text):
+            self.tooltip_edit.setText(self._default_snippet_tooltip(normalized))
+        self.snippet_status_label.setText("Update ready")
+        self._render_snippet_summary()
 
     def _browse_script(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -326,7 +456,7 @@ class ShelfToolDialog(QtWidgets.QDialog):
                     },
                 }
             )
-        else:
+        elif tool_type == "workflow_shortcut":
             workflow_stored, workflow_mode = make_stored_path(self.workflow_path_edit.text().strip())
             base.update(
                 {
@@ -335,6 +465,8 @@ class ShelfToolDialog(QtWidgets.QDialog):
                     "open_mode": str(self.workflow_open_mode_combo.currentData() or "new_instance"),
                 }
             )
+        else:
+            base.update({"payload": deepcopy(self._snippet_payload or {})})
         return base
 
     def accept(self) -> None:
@@ -351,6 +483,12 @@ class ShelfToolDialog(QtWidgets.QDialog):
         if tool_type == "workflow_shortcut" and not self.workflow_path_edit.text().strip():
             QtWidgets.QMessageBox.warning(self, "Shelf Tool", "Select a workflow.")
             return
+        if tool_type == "graph_snippet":
+            payload = self._snippet_payload if isinstance(self._snippet_payload, dict) else None
+            nodes = payload.get("nodes") if isinstance(payload, dict) else []
+            if not isinstance(nodes, list) or not nodes:
+                QtWidgets.QMessageBox.warning(self, "Shelf Tool", "This node snippet has no nodes.")
+                return
         super().accept()
 
 

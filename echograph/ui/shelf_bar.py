@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Dict
 
@@ -307,6 +308,15 @@ class ShelfBar(QtWidgets.QFrame):
         add_workflow = QAction("Add Current Workflow", menu)
         add_workflow.triggered.connect(self._add_current_workflow)
         menu.addAction(add_workflow)
+
+        menu.addSeparator()
+        add_selected_nodes = QAction("Add Selected Nodes", menu)
+        add_selected_nodes.triggered.connect(self._add_selected_nodes)
+        menu.addAction(add_selected_nodes)
+
+        add_copied_nodes = QAction("Add Copied Nodes", menu)
+        add_copied_nodes.triggered.connect(self._add_copied_nodes)
+        menu.addAction(add_copied_nodes)
         return menu
 
     def _build_tool_button(self, tool: Dict[str, Any]) -> QtWidgets.QToolButton:
@@ -346,6 +356,8 @@ class ShelfBar(QtWidgets.QFrame):
             return QtGui.QIcon(str(script_dir() / "icons" / "Python_Icon.png"))
         if tool_type == "workflow_shortcut":
             return QtGui.QIcon(str(script_dir() / "icons" / "Out_Node_Icon.png"))
+        if tool_type == "graph_snippet":
+            return QtGui.QIcon(str(script_dir() / "icons" / "Copy_Icon.png"))
         return QtGui.QIcon()
 
     def _tool_tooltip(self, tool: Dict[str, Any]) -> str:
@@ -358,6 +370,19 @@ class ShelfBar(QtWidgets.QFrame):
             parts.append(str(resolve_stored_path(tool.get("script_path", ""), tool.get("path_mode"))))
         elif tool_type == "workflow_shortcut":
             parts.append(str(resolve_stored_path(tool.get("workflow_path", ""), tool.get("path_mode"))))
+        elif tool_type == "graph_snippet":
+            payload = tool.get("payload") if isinstance(tool.get("payload"), dict) else {}
+            nodes = payload.get("nodes") if isinstance(payload, dict) else []
+            edges = payload.get("edges") if isinstance(payload, dict) else []
+            comments = payload.get("comments") if isinstance(payload, dict) else []
+            node_count = len(nodes) if isinstance(nodes, list) else 0
+            edge_count = len(edges) if isinstance(edges, list) else 0
+            comment_count = len(comments) if isinstance(comments, list) else 0
+            summary = f"{node_count} nodes, {edge_count} connections"
+            if comment_count:
+                wrapper_word = "wrapper" if comment_count == 1 else "wrappers"
+                summary = f"{summary}, {comment_count} comment {wrapper_word}"
+            parts.append(summary)
         elif tool_type not in SUPPORTED_TOOL_TYPES:
             parts.append(f"Unsupported shelf tool type: {tool_type}")
         missing = self._tool_missing_path(tool)
@@ -402,7 +427,12 @@ class ShelfBar(QtWidgets.QFrame):
             "QMenu::item{padding:5px 24px 5px 8px;}"
             "QMenu::item:selected{background:#1f7a45;}"
         )
-        run_action = QAction("Run" if tool.get("type") != "workflow_shortcut" else "Open", menu)
+        action_label = "Run"
+        if tool.get("type") == "workflow_shortcut":
+            action_label = "Open"
+        elif tool.get("type") == "graph_snippet":
+            action_label = "Paste"
+        run_action = QAction(action_label, menu)
         run_action.triggered.connect(lambda: self._run_tool_by_id(tool_id))
         menu.addAction(run_action)
 
@@ -473,6 +503,69 @@ class ShelfBar(QtWidgets.QFrame):
         if edited is not None:
             self._save_new_tool(edited)
 
+    def _add_selected_nodes(self) -> None:
+        scene = getattr(self._window, "scene", None)
+        builder = getattr(scene, "selection_clipboard_payload", None)
+        payload = builder() if callable(builder) else None
+        if not payload:
+            QtWidgets.QMessageBox.information(self, APP_TITLE, "Select one or more nodes first.")
+            return
+        self._add_graph_snippet_payload(payload)
+
+    def _add_copied_nodes(self) -> None:
+        payload = self._clipboard_graph_payload()
+        if not payload:
+            QtWidgets.QMessageBox.information(
+                self,
+                APP_TITLE,
+                "Copy nodes from the graph first, then add them to the shelf.",
+            )
+            return
+        self._add_graph_snippet_payload(payload)
+
+    def _clipboard_graph_payload(self) -> Dict[str, Any] | None:
+        try:
+            text = QtWidgets.QApplication.clipboard().text()
+        except Exception:
+            text = ""
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return None
+        if not isinstance(payload, dict) or payload.get("format") != "EchoGraphClipboard":
+            return None
+        nodes = payload.get("nodes")
+        if not isinstance(nodes, list) or not nodes:
+            return None
+        return payload
+
+    def _add_graph_snippet_payload(self, payload: Dict[str, Any]) -> None:
+        nodes = payload.get("nodes") if isinstance(payload, dict) else []
+        edges = payload.get("edges") if isinstance(payload, dict) else []
+        comments = payload.get("comments") if isinstance(payload, dict) else []
+        nodes = nodes if isinstance(nodes, list) else []
+        edges = edges if isinstance(edges, list) else []
+        comments = comments if isinstance(comments, list) else []
+        label = "Node Snippet"
+        if len(nodes) == 1 and isinstance(nodes[0], dict):
+            label = str(nodes[0].get("name", "") or nodes[0].get("kind", "") or label)
+        tooltip = f"Paste {len(nodes)} nodes and {len(edges)} connections"
+        if comments:
+            wrapper_word = "wrapper" if len(comments) == 1 else "wrappers"
+            tooltip = f"{tooltip} with {len(comments)} comment {wrapper_word}"
+        tooltip = f"{tooltip} into the graph"
+        tool = {
+            "type": "graph_snippet",
+            "label": label,
+            "tooltip": tooltip,
+            "payload": payload,
+        }
+        edited = edit_shelf_tool(self, tool=tool, default_type="graph_snippet")
+        if edited is not None:
+            self._save_new_tool(edited)
+
     def _save_new_tool(self, tool: Dict[str, Any]) -> None:
         try:
             self._store.add_tool(tool)
@@ -538,8 +631,23 @@ class ShelfBar(QtWidgets.QFrame):
             self._run_python_code(tool)
         elif tool_type == "workflow_shortcut":
             self._open_workflow_shortcut(tool)
+        elif tool_type == "graph_snippet":
+            self._paste_graph_snippet(tool)
         else:
             QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Unsupported shelf tool type:\n{tool_type}")
+
+    def _paste_graph_snippet(self, tool: Dict[str, Any]) -> None:
+        payload = tool.get("payload") if isinstance(tool.get("payload"), dict) else None
+        if not payload:
+            QtWidgets.QMessageBox.warning(self, APP_TITLE, "This shelf node snippet has no saved payload.")
+            return
+        scene = getattr(self._window, "scene", None)
+        paste = getattr(scene, "paste_payload", None)
+        if not callable(paste):
+            QtWidgets.QMessageBox.warning(self, APP_TITLE, "This graph cannot paste node snippets.")
+            return
+        if not paste(payload):
+            QtWidgets.QMessageBox.warning(self, APP_TITLE, "Failed to paste node snippet.")
 
     def _run_python_script(self, tool: Dict[str, Any]) -> None:
         path = resolve_stored_path(tool.get("script_path", ""), tool.get("path_mode"))

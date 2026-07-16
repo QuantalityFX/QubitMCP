@@ -8306,17 +8306,63 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     it for it in selected_items
                     if getattr(it, "__class__", type(it)).__name__ == "EdgePin"
                 ]
-                if (len(selected_nodes) + len(selected_pins)) > 1:
+                selected_comment_groups = [
+                    it for it in selected_items
+                    if getattr(it, "__class__", type(it)).__name__ == "CommentGroup"
+                ]
+                if (len(selected_nodes) + len(selected_pins) + len(selected_comment_groups)) > 1:
                     delta = value - self.pos()
                     if isinstance(delta, QtCore.QPointF) and delta.manhattanLength() > 0:
                         sc._group_move_lock = True
                         try:
+                            self_name = str(getattr(getattr(self, "model", None), "name", "") or "")
+                            normal_comment_groups = []
+                            suspended_comment_groups = []
+                            normal_comment_members = set()
+                            normal_comment_rects = []
+                            for group in selected_comment_groups:
+                                try:
+                                    members = {str(name) for name in group.members() if name}
+                                except Exception:
+                                    members = set()
+                                if self_name and self_name in members:
+                                    suspended_comment_groups.append(group)
+                                else:
+                                    normal_comment_groups.append(group)
+                                    normal_comment_members.update(members)
+                                    try:
+                                        normal_comment_rects.append(group.mapRectToScene(group._rect))
+                                    except Exception:
+                                        pass
+
+                            for group in normal_comment_groups:
+                                try:
+                                    group.setPos(group.pos() + delta)
+                                except Exception:
+                                    pass
+                            for group in suspended_comment_groups:
+                                try:
+                                    group._suspend_member_move = True
+                                    group.setPos(group.pos() + delta)
+                                except Exception:
+                                    pass
+                                finally:
+                                    try:
+                                        group._suspend_member_move = False
+                                    except Exception:
+                                        pass
+
                             for it in selected_nodes:
                                 if it is self:
+                                    continue
+                                name = str(getattr(getattr(it, "model", None), "name", "") or "")
+                                if name and name in normal_comment_members:
                                     continue
                                 it.setPos(it.pos() + delta)
                             for it in selected_pins:
                                 try:
+                                    if any(rect.contains(it.scenePos()) for rect in normal_comment_rects):
+                                        continue
                                     it.setPos(it.pos() + delta)
                                 except Exception:
                                     pass
@@ -8492,7 +8538,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         it for it in selected_items
                         if getattr(it, "__class__", type(it)).__name__ == "EdgePin"
                     ]
-                    scene._group_drag_active = (len(selected_nodes) + len(selected_pins)) > 1
+                    selected_comment_groups = [
+                        it for it in selected_items
+                        if getattr(it, "__class__", type(it)).__name__ == "CommentGroup"
+                    ]
+                    scene._group_drag_active = (
+                        len(selected_nodes) + len(selected_pins) + len(selected_comment_groups)
+                    ) > 1
                 try:
                     self.clicked.emit(self.model)
                 except Exception:
