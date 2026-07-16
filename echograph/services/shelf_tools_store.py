@@ -340,6 +340,25 @@ class ShelfToolsStore:
             self.save()
         return True
 
+    def move_tool_to_index(self, tool_id: str, target_index: int, *, save: bool = True) -> bool:
+        idx = self._index_of(tool_id)
+        if idx < 0:
+            return False
+        try:
+            requested = int(target_index)
+        except Exception:
+            return False
+        tool = self.tools.pop(idx)
+        target = max(0, min(len(self.tools), requested))
+        if target == idx:
+            self.tools.insert(idx, tool)
+            return False
+        self.tools.insert(target, tool)
+        self._renumber()
+        if save:
+            self.save()
+        return True
+
     def tool_by_id(self, tool_id: str) -> Dict[str, Any] | None:
         idx = self._index_of(tool_id)
         if idx < 0:

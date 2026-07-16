@@ -20,6 +20,9 @@ from echograph.services.shelf_tools_store import (
 from echograph.ui.shelf_tool_dialogs import edit_shelf_tool
 
 
+_SHELF_TOOL_MIME = "application/x-qubit-shelf-tool-id"
+
+
 class _ShelfToolButton(QtWidgets.QToolButton):
     def __init__(self, parent=None, *, normal_icon_opacity: float = 0.55):
         super().__init__(parent)
@@ -72,9 +75,114 @@ class _ShelfToolButton(QtWidgets.QToolButton):
 
 
 class _ShelfItemButton(QtWidgets.QToolButton):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, owner=None):
         super().__init__(parent)
+        self._owner = owner
+        self._tool_id = ""
+        self._drag_start_pos = QtCore.QPoint()
+        self._dragging_tool = False
+        self._suppress_click_after_drag = False
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)
+
+    def setShelfToolId(self, tool_id: str) -> None:
+        self._tool_id = str(tool_id or "")
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self._drag_start_pos = event.pos()
+            self._dragging_tool = False
+            self._suppress_click_after_drag = False
+        try:
+            super().mousePressEvent(event)
+        except Exception:
+            pass
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._tool_id
+            and event.buttons() & QtCore.Qt.LeftButton
+            and (event.pos() - self._drag_start_pos).manhattanLength() >= QtWidgets.QApplication.startDragDistance()
+        ):
+            self._start_reorder_drag()
+            event.accept()
+            return
+        try:
+            super().mouseMoveEvent(event)
+        except Exception:
+            pass
+
+    def mouseReleaseEvent(self, event):
+        if (self._dragging_tool or self._suppress_click_after_drag) and event.button() == QtCore.Qt.LeftButton:
+            self._dragging_tool = False
+            self._suppress_click_after_drag = False
+            event.accept()
+            return
+        try:
+            super().mouseReleaseEvent(event)
+        except Exception:
+            pass
+
+    def dragEnterEvent(self, event):
+        owner = self._owner
+        if owner and owner._handle_shelf_drag_enter(event, self):
+            return
+        try:
+            super().dragEnterEvent(event)
+        except Exception:
+            pass
+
+    def dragMoveEvent(self, event):
+        owner = self._owner
+        if owner and owner._handle_shelf_drag_move(event, self):
+            return
+        try:
+            super().dragMoveEvent(event)
+        except Exception:
+            pass
+
+    def dragLeaveEvent(self, event):
+        owner = self._owner
+        if owner:
+            owner._hide_drop_indicator()
+        try:
+            super().dragLeaveEvent(event)
+        except Exception:
+            pass
+
+    def dropEvent(self, event):
+        owner = self._owner
+        if owner and owner._handle_shelf_drop(event, self):
+            return
+        try:
+            super().dropEvent(event)
+        except Exception:
+            pass
+
+    def _start_reorder_drag(self) -> None:
+        self._dragging_tool = True
+        self._suppress_click_after_drag = True
+        self.setDown(False)
+        mime = QtCore.QMimeData()
+        mime.setData(_SHELF_TOOL_MIME, self._tool_id.encode("utf-8"))
+        drag = QtGui.QDrag(self)
+        drag.setMimeData(mime)
+        try:
+            pixmap = self.grab()
+            drag.setPixmap(pixmap)
+            drag.setHotSpot(self._drag_start_pos)
+        except Exception:
+            pass
+        try:
+            exec_fn = getattr(drag, "exec", None) or getattr(drag, "exec_", None)
+            if exec_fn is None:
+                return
+            exec_fn(QtCore.Qt.MoveAction)
+        finally:
+            self._dragging_tool = False
+            owner = self._owner
+            if owner:
+                owner._hide_drop_indicator()
 
     def paintEvent(self, event):
         del event
@@ -160,6 +268,32 @@ class _ShelfItemButton(QtWidgets.QToolButton):
         return [line1, line2]
 
 
+class _ShelfToolsWidget(QtWidgets.QWidget):
+    def __init__(self, owner, parent=None):
+        super().__init__(parent)
+        self._owner = owner
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if self._owner._handle_shelf_drag_enter(event, self):
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self._owner._handle_shelf_drag_move(event, self):
+            return
+        super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event):
+        self._owner._hide_drop_indicator()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        if self._owner._handle_shelf_drop(event, self):
+            return
+        super().dropEvent(event)
+
+
 class _ShelfDivider(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -229,12 +363,18 @@ class ShelfBar(QtWidgets.QFrame):
         self._scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self._scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet("QScrollArea{background:transparent;border:0px;}")
-        self._tools_widget = QtWidgets.QWidget(self._scroll)
+        self._tools_widget = _ShelfToolsWidget(self, self._scroll)
         self._tools_layout = QtWidgets.QHBoxLayout(self._tools_widget)
         self._tools_layout.setContentsMargins(0, 0, 0, 0)
         self._tools_layout.setSpacing(4)
         self._scroll.setWidget(self._tools_widget)
         root.addWidget(self._scroll, 1)
+
+        self._drop_indicator = QtWidgets.QFrame(self._tools_widget)
+        self._drop_indicator.setObjectName("ShelfDropIndicator")
+        self._drop_indicator.setFixedWidth(2)
+        self._drop_indicator.setStyleSheet("#ShelfDropIndicator{background:#60a5fa;border:0px;}")
+        self._drop_indicator.hide()
 
         self._bottom_divider = _ShelfDivider(self)
         self._bottom_divider.setObjectName("ShelfBottomDivider")
@@ -263,6 +403,7 @@ class ShelfBar(QtWidgets.QFrame):
         QtWidgets.QMessageBox.warning(self, APP_TITLE, self._store.load_error)
 
     def refresh(self) -> None:
+        self._hide_drop_indicator()
         while self._tools_layout.count():
             item = self._tools_layout.takeAt(0)
             widget = item.widget()
@@ -320,8 +461,9 @@ class ShelfBar(QtWidgets.QFrame):
         return menu
 
     def _build_tool_button(self, tool: Dict[str, Any]) -> QtWidgets.QToolButton:
-        button = _ShelfItemButton(self._tools_widget)
+        button = _ShelfItemButton(self._tools_widget, owner=self)
         tool_id = str(tool.get("id", "") or "")
+        button.setShelfToolId(tool_id)
         button.setText(str(tool.get("label", "") or "Tool"))
         button.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
         button.setCursor(QtCore.Qt.PointingHandCursor)
@@ -599,6 +741,117 @@ class ShelfBar(QtWidgets.QFrame):
                 self.refresh()
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Failed to reorder shelf tool:\n{exc}")
+
+    def _reorder_tool_to_index(self, tool_id: str, target_index: int) -> None:
+        try:
+            if self._store.move_tool_to_index(tool_id, target_index):
+                self.refresh()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Failed to reorder shelf tool:\n{exc}")
+
+    def _shelf_drag_tool_id(self, event) -> str:
+        try:
+            mime = event.mimeData()
+        except Exception:
+            return ""
+        if not mime or not mime.hasFormat(_SHELF_TOOL_MIME):
+            return ""
+        try:
+            return bytes(mime.data(_SHELF_TOOL_MIME)).decode("utf-8").strip()
+        except Exception:
+            return ""
+
+    def _event_pos_in_tools_widget(self, event, source_widget) -> QtCore.QPoint:
+        try:
+            raw = event.position() if hasattr(event, "position") else event.pos()
+            if hasattr(raw, "toPoint"):
+                raw = raw.toPoint()
+            local = QtCore.QPoint(int(raw.x()), int(raw.y()))
+            return self._tools_widget.mapFromGlobal(source_widget.mapToGlobal(local))
+        except Exception:
+            return QtCore.QPoint(0, 0)
+
+    def _ordered_tool_buttons(self, *, exclude_tool_id: str = "") -> list[tuple[str, QtWidgets.QToolButton]]:
+        ordered = []
+        exclude = str(exclude_tool_id or "")
+        for tool in self._store.all_tools():
+            tool_id = str(tool.get("id", "") or "")
+            if not tool_id or tool_id == exclude:
+                continue
+            button = self._buttons.get(tool_id)
+            if button is not None:
+                ordered.append((tool_id, button))
+        return ordered
+
+    def _drop_index_for_pos(self, pos: QtCore.QPoint, source_tool_id: str) -> int:
+        buttons = self._ordered_tool_buttons(exclude_tool_id=source_tool_id)
+        for index, (_tool_id, button) in enumerate(buttons):
+            if pos.x() < button.geometry().center().x():
+                return index
+        return len(buttons)
+
+    def _show_drop_indicator(self, target_index: int, source_tool_id: str) -> None:
+        buttons = self._ordered_tool_buttons(exclude_tool_id=source_tool_id)
+        if buttons:
+            index = max(0, min(int(target_index), len(buttons)))
+            if index <= 0:
+                x = max(0, buttons[0][1].geometry().left() - 3)
+            elif index >= len(buttons):
+                x = buttons[-1][1].geometry().right() + 3
+            else:
+                x = max(0, buttons[index][1].geometry().left() - 3)
+        else:
+            x = 0
+        height = max(24, self._tools_widget.height() - 8)
+        self._drop_indicator.setGeometry(int(x), 4, 2, int(height))
+        self._drop_indicator.show()
+        self._drop_indicator.raise_()
+
+    def _hide_drop_indicator(self) -> None:
+        indicator = getattr(self, "_drop_indicator", None)
+        if indicator is not None:
+            indicator.hide()
+
+    def _handle_shelf_drag_enter(self, event, source_widget) -> bool:
+        tool_id = self._shelf_drag_tool_id(event)
+        if not tool_id or not self._store.tool_by_id(tool_id):
+            return False
+        try:
+            event.setDropAction(QtCore.Qt.MoveAction)
+            event.accept()
+        except Exception:
+            event.acceptProposedAction()
+        pos = self._event_pos_in_tools_widget(event, source_widget)
+        self._show_drop_indicator(self._drop_index_for_pos(pos, tool_id), tool_id)
+        return True
+
+    def _handle_shelf_drag_move(self, event, source_widget) -> bool:
+        tool_id = self._shelf_drag_tool_id(event)
+        if not tool_id or not self._store.tool_by_id(tool_id):
+            return False
+        pos = self._event_pos_in_tools_widget(event, source_widget)
+        self._show_drop_indicator(self._drop_index_for_pos(pos, tool_id), tool_id)
+        try:
+            event.setDropAction(QtCore.Qt.MoveAction)
+            event.accept()
+        except Exception:
+            event.acceptProposedAction()
+        return True
+
+    def _handle_shelf_drop(self, event, source_widget) -> bool:
+        tool_id = self._shelf_drag_tool_id(event)
+        if not tool_id or not self._store.tool_by_id(tool_id):
+            return False
+        pos = self._event_pos_in_tools_widget(event, source_widget)
+        target_index = self._drop_index_for_pos(pos, tool_id)
+        self._hide_drop_indicator()
+        self._reorder_tool_to_index(tool_id, target_index)
+        try:
+            event.setDropAction(QtCore.Qt.MoveAction)
+            event.accept()
+        except Exception:
+            event.acceptProposedAction()
+        return True
 
     def _remove_tool(self, tool_id: str) -> None:
         tool = self._store.tool_by_id(tool_id)
