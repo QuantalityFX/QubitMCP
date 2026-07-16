@@ -75,6 +75,20 @@ class ShelfToolDialog(QtWidgets.QDialog):
         self.tooltip_edit = QtWidgets.QLineEdit(self)
         form.addRow("Tooltip", self.tooltip_edit)
 
+        self.icon_edit = QtWidgets.QLineEdit(self)
+        icon_row = QtWidgets.QWidget(self)
+        icon_layout = QtWidgets.QHBoxLayout(icon_row)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setSpacing(6)
+        icon_layout.addWidget(self.icon_edit, 1)
+        icon_browse = QtWidgets.QPushButton("Browse", icon_row)
+        icon_browse.clicked.connect(self._browse_icon)
+        icon_layout.addWidget(icon_browse, 0)
+        icon_clear = QtWidgets.QPushButton("Clear", icon_row)
+        icon_clear.clicked.connect(self.icon_edit.clear)
+        icon_layout.addWidget(icon_clear, 0)
+        form.addRow("Icon", icon_row)
+
         self.stack = QtWidgets.QStackedWidget(self)
         layout.addWidget(self.stack, 1)
 
@@ -172,6 +186,11 @@ class ShelfToolDialog(QtWidgets.QDialog):
         browse.clicked.connect(self._browse_workflow)
         row_layout.addWidget(browse, 0)
         form.addRow("Workflow", row)
+
+        self.workflow_open_mode_combo = QtWidgets.QComboBox(page)
+        self.workflow_open_mode_combo.addItem("New Instance", "new_instance")
+        self.workflow_open_mode_combo.addItem("Current Window", "current_window")
+        form.addRow("Open In", self.workflow_open_mode_combo)
         return page
 
     def _load_tool(self, tool: Dict[str, Any], default_type: str) -> None:
@@ -180,6 +199,7 @@ class ShelfToolDialog(QtWidgets.QDialog):
         self.type_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.label_edit.setText(str(tool.get("label", "") or ""))
         self.tooltip_edit.setText(str(tool.get("tooltip", "") or ""))
+        self.icon_edit.setText(str(tool.get("icon", "") or ""))
 
         self.script_path_edit.setText(str(tool.get("script_path", "") or ""))
         self.working_dir_edit.setText(str(tool.get("working_dir", "") or ""))
@@ -194,6 +214,9 @@ class ShelfToolDialog(QtWidgets.QDialog):
 
         self.code_edit.setPlainText(str(tool.get("code", "") or ""))
         self.workflow_path_edit.setText(str(tool.get("workflow_path", "") or ""))
+        workflow_open_mode = str(tool.get("open_mode", "new_instance") or "new_instance")
+        idx = self.workflow_open_mode_combo.findData(workflow_open_mode)
+        self.workflow_open_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self._sync_page()
 
     def _sync_page(self) -> None:
@@ -218,6 +241,18 @@ class ShelfToolDialog(QtWidgets.QDialog):
             self.working_dir_edit.setText(wd)
         if not self.label_edit.text().strip():
             self.label_edit.setText(Path(path).stem.replace("_", " ").title())
+
+    def _browse_icon(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select Icon",
+            str(Path(self.icon_edit.text() or ".").expanduser().parent),
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.ico);;All Files (*.*)",
+        )
+        if not path:
+            return
+        stored, _ = make_stored_path(path)
+        self.icon_edit.setText(stored)
 
     def _browse_working_dir(self) -> None:
         start = self.working_dir_edit.text().strip() or "."
@@ -254,6 +289,12 @@ class ShelfToolDialog(QtWidgets.QDialog):
             "tooltip": tooltip,
             "enabled": True,
         }
+        icon_text = self.icon_edit.text().strip()
+        if icon_text:
+            icon_stored, _ = make_stored_path(icon_text)
+            base["icon"] = icon_stored
+        else:
+            base["icon"] = ""
         existing_id = str(self._tool.get("id", "") or "").strip()
         if existing_id:
             base["id"] = existing_id
@@ -291,7 +332,7 @@ class ShelfToolDialog(QtWidgets.QDialog):
                 {
                     "workflow_path": workflow_stored,
                     "path_mode": workflow_mode,
-                    "open_mode": "new_instance",
+                    "open_mode": str(self.workflow_open_mode_combo.currentData() or "new_instance"),
                 }
             )
         return base

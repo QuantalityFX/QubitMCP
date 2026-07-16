@@ -76,6 +76,29 @@ def _toggle_profiler_panel(window, checked: bool) -> None:
             pass
 
 
+def _shelf_enabled(window) -> bool:
+    checker = getattr(window, "_shelf_enabled", None)
+    if callable(checker):
+        try:
+            return bool(checker())
+        except Exception:
+            return True
+    try:
+        shelf = getattr(window, "_shelf_bar", None)
+        return bool(shelf is None or shelf.isVisible())
+    except Exception:
+        return True
+
+
+def _toggle_shelf(window, checked: bool) -> None:
+    toggler = getattr(window, "_toggle_shelf_from_menu", None)
+    if callable(toggler):
+        try:
+            toggler(bool(checked))
+        except Exception:
+            pass
+
+
 def _save_layout_preset(window) -> None:
     ctl = _controller(window)
     if ctl is not None:
@@ -185,6 +208,17 @@ def build_timeline_panels_menu(
     profiler_toggle.clicked.connect(lambda checked=False: _toggle_profiler_panel(window, bool(checked)))
     timeline_layout.addWidget(profiler_toggle, 0)
 
+    shelf_toggle = QtWidgets.QPushButton("Shelf", timeline_panel)
+    shelf_toggle.setToolTip("Show shelf tools row below the top bar")
+    shelf_toggle.setFixedHeight(22)
+    shelf_toggle.setCursor(QtCore.Qt.PointingHandCursor)
+    shelf_toggle.setFlat(True)
+    shelf_toggle.setCheckable(True)
+    shelf_toggle.setChecked(_shelf_enabled(window))
+    shelf_toggle.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+    shelf_toggle.clicked.connect(lambda checked=False: _toggle_shelf(window, bool(checked)))
+    timeline_layout.addWidget(shelf_toggle, 0)
+
     save_layout_btn = QtWidgets.QPushButton("Save Layout", timeline_panel)
     save_layout_btn.setToolTip("Save current panel visibility and view mode as the app default layout")
     save_layout_btn.setFixedHeight(22)
@@ -199,6 +233,7 @@ def build_timeline_panels_menu(
     timeline_menu.addAction(timeline_action)
 
     timeline_menu.aboutToShow.connect(lambda: _sync_timeline_menu_state(window))
+    timeline_menu.aboutToShow.connect(lambda: shelf_toggle.setChecked(_shelf_enabled(window)))
     timeline_menu.aboutToShow.connect(lambda: _set_timeline_menu_active(window, True))
     timeline_menu.aboutToHide.connect(lambda: _set_timeline_menu_active(window, False))
     timeline_btn.setMenu(timeline_menu)

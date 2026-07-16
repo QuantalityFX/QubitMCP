@@ -159,6 +159,26 @@ class _ShelfItemButton(QtWidgets.QToolButton):
         return [line1, line2]
 
 
+class _ShelfDivider(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(1)
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+
+    def paintEvent(self, event):
+        del event
+        painter = QtGui.QPainter(self)
+        try:
+            pen = QtGui.QPen(QtGui.QColor("#1c1f23"))
+            pen.setWidth(0)
+            painter.setPen(pen)
+            y = self.height() - 1
+            painter.drawLine(0, y, self.width(), y)
+        finally:
+            painter.end()
+
+
 class ShelfBar(QtWidgets.QFrame):
     def __init__(self, window):
         super().__init__(window)
@@ -171,7 +191,7 @@ class ShelfBar(QtWidgets.QFrame):
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_background_menu)
         self.setStyleSheet(
-            "#ShelfBar{background:#1a1f24;border-bottom:1px solid #2f3640;}"
+            "#ShelfBar{background:#1a1f24;}"
             "#ShelfBar QToolButton{background:transparent;color:#e5e7eb;border:0px;"
             "border-radius:2px;padding:2px 4px;font-size:9px;}"
             "#ShelfBar QToolButton:hover{background:#2b313a;}"
@@ -215,7 +235,22 @@ class ShelfBar(QtWidgets.QFrame):
         self._scroll.setWidget(self._tools_widget)
         root.addWidget(self._scroll, 1)
 
+        self._bottom_divider = _ShelfDivider(self)
+        self._bottom_divider.setObjectName("ShelfBottomDivider")
+        self._bottom_divider.raise_()
+
         self._load()
+
+    def resizeEvent(self, event):
+        try:
+            self._bottom_divider.setGeometry(0, max(0, self.height() - 1), self.width(), 1)
+            self._bottom_divider.raise_()
+        except Exception:
+            pass
+        try:
+            super().resizeEvent(event)
+        except Exception:
+            pass
 
     def _load(self) -> None:
         self._store.load()
@@ -605,8 +640,71 @@ class ShelfBar(QtWidgets.QFrame):
         if not path.exists():
             QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Workflow does not exist:\n{path}")
             return
+        open_mode = str(tool.get("open_mode", "new_instance") or "new_instance")
+        if open_mode == "current_window":
+            self._open_workflow_in_current_window(str(path))
+            return
         launcher = getattr(self._window, "_launch_new_instance", None)
         if not callable(launcher):
             QtWidgets.QMessageBox.warning(self, APP_TITLE, "This window cannot launch a new workflow instance.")
             return
         launcher(workflow_path=str(path))
+
+    def _open_workflow_in_current_window(self, path: str) -> None:
+        current = str(getattr(self._window, "_current_path", "") or "").strip()
+        if current and str(Path(current).resolve()) == str(Path(path).resolve()):
+            loader = getattr(self._window, "_load_graph_file", None)
+            if callable(loader):
+                loader(path)
+            return
+        if not self._confirm_replace_current_workflow():
+            return
+        loader = getattr(self._window, "_load_graph_file", None)
+        if not callable(loader):
+            QtWidgets.QMessageBox.warning(self, APP_TITLE, "This window cannot open workflows.")
+            return
+        loader(path)
+
+    def _confirm_replace_current_workflow(self) -> bool:
+        if not self._current_window_has_workflow_content():
+            return True
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle(APP_TITLE)
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setText("Open this workflow in the current window?")
+        box.setInformativeText("The current workflow will be replaced. Save it first or discard changes.")
+        save_btn = box.addButton(QtWidgets.QMessageBox.Save)
+        discard_btn = box.addButton(QtWidgets.QMessageBox.Discard)
+        box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.setDefaultButton(save_btn)
+        box.exec() if hasattr(box, "exec") else box.exec_()
+        clicked = box.clickedButton()
+        if clicked is save_btn:
+            before = str(getattr(self._window, "_current_path", "") or "").strip()
+            try:
+                self._window._save_graph()
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to save workflow:\n{exc}")
+                return False
+            after = str(getattr(self._window, "_current_path", "") or "").strip()
+            return bool(before or after)
+        return clicked is discard_btn
+
+    def _current_window_has_workflow_content(self) -> bool:
+        scene = getattr(self._window, "scene", None)
+        if scene is None:
+            return bool(getattr(self._window, "_current_path", "") or "")
+        try:
+            if getattr(scene, "_nodes_by_name", None):
+                return True
+        except Exception:
+            pass
+        try:
+            if getattr(scene, "_edges", None):
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(getattr(self._window, "_current_path", "") or "")
+        except Exception:
+            return False

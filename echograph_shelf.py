@@ -28,6 +28,11 @@ from echograph.ui.profiler_controller import ProfilerController
 from echograph.ui.shelf_bar import ShelfBar
 from echograph.services.profiler import profiled, profile_scope
 from echograph.services import runtime_logging
+from echograph.services.workflow_launcher import (
+    OPEN_WORKFLOW_FLAG,
+    arg_value,
+    build_workflow_launch_args,
+)
 
 
 from echograph.qt_compat import (
@@ -327,6 +332,7 @@ def _load_app_settings() -> Dict[str, Any]:
     panel_layout = _normalize_panel_layout_preset(raw.get("panel_layout"), _DEFAULT_PANEL_LAYOUT_PRESET)
     view_mode = _normalize_view_mode_preset(raw.get("view_mode"), "2d")
     save_layout = _coerce_bool(raw.get("save_layout"), True)
+    shelf_visible = _coerce_bool(raw.get("shelf_visible"), True)
     voice_audio_mode = _normalize_voice_audio_mode(raw.get("voice_audio_mode"), _VOICE_AUDIO_MODE_DEFAULT)
     voice_mic_device_index = _normalize_voice_mic_device_index(
         raw.get("voice_mic_device_index"),
@@ -349,6 +355,7 @@ def _load_app_settings() -> Dict[str, Any]:
     )
     return {
         "save_layout": bool(save_layout),
+        "shelf_visible": bool(shelf_visible),
         "panel_layout": panel_layout,
         "view_mode": view_mode or "2d",
         "voice_audio_mode": voice_audio_mode,
@@ -368,6 +375,7 @@ def _load_app_settings() -> Dict[str, Any]:
 def _save_app_settings(settings: Dict[str, Any]) -> None:
     payload = {
         "save_layout": _coerce_bool((settings or {}).get("save_layout"), True),
+        "shelf_visible": _coerce_bool((settings or {}).get("shelf_visible"), True),
         "panel_layout": _normalize_panel_layout_preset((settings or {}).get("panel_layout"), _DEFAULT_PANEL_LAYOUT_PRESET),
         "view_mode": _normalize_view_mode_preset((settings or {}).get("view_mode"), "2d") or "2d",
         "voice_audio_mode": _normalize_voice_audio_mode((settings or {}).get("voice_audio_mode"), _VOICE_AUDIO_MODE_DEFAULT),
@@ -919,18 +927,7 @@ core.register_defaults()
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
 _SKIP_RECENT_DIALOG = "--skip-recent" in sys.argv
-
-def _argv_value(flag: str) -> str:
-    try:
-        idx = sys.argv.index(flag)
-    except ValueError:
-        return ""
-    try:
-        return str(sys.argv[idx + 1] or "").strip()
-    except Exception:
-        return ""
-
-_OPEN_WORKFLOW_PATH = _argv_value("--open-workflow")
+_OPEN_WORKFLOW_PATH = arg_value(sys.argv, OPEN_WORKFLOW_FLAG)
 maya_cmds = None
 omui = None
 hou_mod = None
@@ -2693,6 +2690,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._suspend_panel_layout_persist = False
         app_settings = _load_app_settings()
         self._save_layout_enabled = _coerce_bool(app_settings.get("save_layout"), True)
+        self._shelf_visible = _coerce_bool(app_settings.get("shelf_visible"), True)
         self._panel_layout_master_preset = _normalize_panel_layout_preset(
             app_settings.get("panel_layout"),
             _DEFAULT_PANEL_LAYOUT_PRESET,
@@ -2737,6 +2735,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         v.addWidget(topbar, 0)
 
         self._shelf_bar = ShelfBar(self)
+        self._shelf_bar.setVisible(bool(getattr(self, "_shelf_visible", True)))
         v.addWidget(self._shelf_bar, 0)
 
         # Scene/View
@@ -4952,9 +4951,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if not script.exists():
             QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Unable to find launcher:\n{script}")
             return
-        args = [python, str(script), "--skip-recent"]
-        if workflow_path:
-            args.extend(["--open-workflow", str(workflow_path)])
+        args = build_workflow_launch_args(python, script, workflow_path)
         try:
             subprocess.Popen(args)
         except Exception as exc:
@@ -6252,6 +6249,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
     def _persist_app_layout_settings(self) -> None:
         payload = {
             "save_layout": bool(getattr(self, "_save_layout_enabled", True)),
+            "shelf_visible": bool(getattr(self, "_shelf_visible", True)),
             "panel_layout": _normalize_panel_layout_preset(
                 getattr(self, "_panel_layout_master_preset", None),
                 _DEFAULT_PANEL_LAYOUT_PRESET,
@@ -6297,6 +6295,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if not bool(getattr(self, "_save_layout_enabled", True)):
             return
         self._view_mode_master_preset = self._current_layout_view_mode_preset()
+        self._persist_app_layout_settings()
+
+    def _shelf_enabled(self) -> bool:
+        return bool(getattr(self, "_shelf_visible", True))
+
+    def _toggle_shelf_from_menu(self, checked: bool) -> None:
+        self._shelf_visible = bool(checked)
+        try:
+            if getattr(self, "_shelf_bar", None) is not None:
+                self._shelf_bar.setVisible(bool(checked))
+        except Exception:
+            pass
         self._persist_app_layout_settings()
 
     def _voice_audio_mode_is_bilateral(self) -> bool:
@@ -6885,6 +6895,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._splat_log_enabled = False
         self._scene_skeleton_joint_names_enabled = _SCENE_SKELETON_JOINT_NAMES_DEFAULT
         self._save_layout_enabled = True
+        self._shelf_visible = True
         self._panel_layout_master_preset = dict(_DEFAULT_PANEL_LAYOUT_PRESET)
         self._view_mode_master_preset = "2d"
         self._voice_audio_mode = _VOICE_AUDIO_MODE_DEFAULT
@@ -6995,6 +7006,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._save_layout_toggle.blockSignals(False)
             except Exception:
                 pass
+        try:
+            if getattr(self, "_shelf_bar", None) is not None:
+                self._shelf_bar.setVisible(bool(self._shelf_visible))
+        except Exception:
+            pass
         if hasattr(self, "_voice_audio_toggle"):
             try:
                 self._voice_audio_toggle.blockSignals(True)

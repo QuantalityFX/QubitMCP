@@ -12,6 +12,7 @@ from echograph.constants import script_dir
 
 SCHEMA_VERSION = 1
 SUPPORTED_TOOL_TYPES = {"python_script", "python_code", "workflow_shortcut"}
+WORKFLOW_OPEN_MODES = {"new_instance", "current_window"}
 SHELF_TOOLS_PATH = script_dir() / "shelf_tools.json"
 
 
@@ -111,6 +112,13 @@ def _normalize_params(value: Any) -> List[Dict[str, str]]:
     return out
 
 
+def _normalize_workflow_open_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in WORKFLOW_OPEN_MODES:
+        return text
+    return "new_instance"
+
+
 def normalize_tool(raw: Dict[str, Any], index: int = 0, existing_ids: Iterable[str] = ()) -> Dict[str, Any]:
     tool = dict(raw or {})
     tool_type = str(tool.get("type", "") or "").strip().lower() or "python_script"
@@ -157,12 +165,16 @@ def normalize_tool(raw: Dict[str, Any], index: int = 0, existing_ids: Iterable[s
             {
                 "workflow_path": str(tool.get("workflow_path", "") or "").strip(),
                 "path_mode": str(tool.get("path_mode", "") or "").strip() or "absolute",
-                "open_mode": str(tool.get("open_mode", "") or "").strip() or "new_instance",
+                "open_mode": _normalize_workflow_open_mode(tool.get("open_mode")),
             }
         )
     else:
         # Preserve unsupported tool payloads so future versions do not lose data.
         normalized.update({k: deepcopy(v) for k, v in tool.items() if k not in normalized})
+
+    for key, value in tool.items():
+        if key not in normalized:
+            normalized[key] = deepcopy(value)
 
     return normalized
 
