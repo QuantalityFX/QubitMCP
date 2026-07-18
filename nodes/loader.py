@@ -406,6 +406,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Database plugin import failed:", e)
 
+    # 11.4) Audio Capture
+    try:
+        from nodes import audio_capture
+        if hasattr(audio_capture, "register"):
+            audio_capture.register()
+            _safe_probe("audio_capture")
+        else:
+            print("[EchoGraph] Audio Capture module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Audio Capture plugin import failed:", e)
+
     # 11.5) Voice Actor
     try:
         from nodes import voice_actor

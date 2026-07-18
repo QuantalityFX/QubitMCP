@@ -106,6 +106,7 @@ def register_defaults() -> None:
     register("llm",       stripe_color="#14b8a6")
     register("local_server", stripe_color="#14b8a6")
     register("database",  stripe_color="#16a34a")
+    register("audio_capture", stripe_color="#14b8a6")
     # librarian plugins can override this later
     register("librarian", stripe_color="#74d603")
     register("qubit_deck_controller", stripe_color="#0f766e")

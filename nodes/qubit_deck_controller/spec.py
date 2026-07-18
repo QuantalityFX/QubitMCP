@@ -18,6 +18,7 @@ from nodes.core import Spec
 
 
 DEFAULT_API_BASE = "http://127.0.0.1:8765"
+MASKED_ADDRESS_TEXT = "******"
 QUBIT_DECK_CONTROLLER_KINDS = {
     "qubit_deck_controller",
     "qubit deck controller",
@@ -48,6 +49,71 @@ _HIDDEN_PARAM = "__ui_hidden_params"
 _MODE_PARAM = "__qdeck_mode"
 _MODE_CONTEXT = "context"
 _MODE_EXECUTOR = "executor"
+
+
+def _api_base_mask_variants(*api_bases: str) -> list[str]:
+    seen: set[str] = set()
+    variants: list[str] = []
+    for raw in api_bases:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        candidates = [text]
+        trimmed = text.rstrip("/")
+        if trimmed and trimmed != text:
+            candidates.append(trimmed)
+        for candidate in candidates:
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                variants.append(candidate)
+    variants.sort(key=len, reverse=True)
+    return variants
+
+
+def _mask_api_base_text(text: str, *api_bases: str) -> str:
+    out = str(text or "")
+    for api_base in _api_base_mask_variants(*api_bases):
+        out = out.replace(api_base, MASKED_ADDRESS_TEXT)
+    return out
+
+
+def _line_edit_echo_mode(mode_name: str):
+    mode = getattr(QtWidgets.QLineEdit, mode_name, None)
+    if mode is not None:
+        return mode
+    echo_mode = getattr(QtWidgets.QLineEdit, "EchoMode", None)
+    if echo_mode is not None:
+        return getattr(echo_mode, mode_name, None)
+    return None
+
+
+class _RevealOnFocusLineEditFilter(QtCore.QObject):
+    def __init__(self, edit: QtWidgets.QLineEdit):
+        super().__init__(edit)
+        self._edit = edit
+
+    def eventFilter(self, obj, ev):
+        if obj is self._edit:
+            event_type = ev.type()
+            if event_type == QtCore.QEvent.FocusIn:
+                _set_line_edit_masked(self._edit, False)
+            elif event_type == QtCore.QEvent.FocusOut:
+                _set_line_edit_masked(self._edit, True)
+        return False
+
+
+def _set_line_edit_masked(edit: QtWidgets.QLineEdit, masked: bool) -> None:
+    mode = _line_edit_echo_mode("Password" if masked else "Normal")
+    if mode is not None:
+        edit.setEchoMode(mode)
+
+
+def _mask_line_edit_when_unfocused(edit: QtWidgets.QLineEdit) -> None:
+    _set_line_edit_masked(edit, not edit.hasFocus())
+    focus_filter = _RevealOnFocusLineEditFilter(edit)
+    edit._reveal_on_focus_filter = focus_filter
+    edit.installEventFilter(focus_filter)
+
 
 _ACTION_ALIASES = {
     "run": "invoke",
@@ -652,7 +718,7 @@ def _execute_command_on_node_item(node_item, command: dict[str, str]) -> tuple[b
             pass
 
     try:
-        model.info = str(message or "").strip()
+        model.info = _mask_api_base_text(str(message or "").strip(), api_base)
     except Exception:
         pass
     if scene is not None:
@@ -660,7 +726,7 @@ def _execute_command_on_node_item(node_item, command: dict[str, str]) -> tuple[b
             scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
         except Exception:
             pass
-    return success, str(message or "")
+    return success, _mask_api_base_text(str(message or ""), api_base)
 
 
 def _maybe_auto_execute_on_scene(node_item, *, changed_name: str = "", force: bool = False) -> None:
@@ -1149,6 +1215,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     api_edit = QtWidgets.QLineEdit(_param_value("api_base") or DEFAULT_API_BASE)
     api_edit.setPlaceholderText(DEFAULT_API_BASE)
     api_edit.setMinimumWidth(220)
+    _mask_line_edit_when_unfocused(api_edit)
     row_api.addWidget(api_label, 0)
     row_api.addWidget(api_edit, 1)
     root.addLayout(row_api)
@@ -1207,6 +1274,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     def _set_status(message: str, *, error: bool = False) -> None:
         text = str(message or "").strip()
+        display_text = _mask_api_base_text(
+            text,
+            api_edit.text().strip(),
+            _param_value("api_base"),
+            DEFAULT_API_BASE,
+        )
         if error:
             status_view.setStyleSheet(
                 "QTextEdit{background:#1f0f12;color:#fecaca;border:1px solid #7f1d1d;border-radius:4px;padding:4px;}"
@@ -1215,8 +1288,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             status_view.setStyleSheet(
                 "QTextEdit{background:#0f1216;color:#9ca3af;border:1px solid #334155;border-radius:4px;padding:4px;}"
             )
-        status_view.setPlainText(text)
-        _set_info_text(text)
+        status_view.setPlainText(display_text)
+        _set_info_text(display_text)
 
     def _persist_manual_fields() -> None:
         _set_param_value(_MODE_PARAM, _normalize_mode(str(mode_combo.currentData() or _MODE_EXECUTOR), _MODE_EXECUTOR))
@@ -1315,7 +1388,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     button_slot=button_slot,
                 )
             _set_status(message, error=False)
-            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), message[:220], card)
+            display_message = _mask_api_base_text(message, api_base)
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), display_message[:220], card)
             return True
         except Exception as exc:
             _set_status(f"Action failed: {exc}", error=True)

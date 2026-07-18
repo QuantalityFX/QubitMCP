@@ -286,6 +286,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._chatbot_icon()
     elif key in ("voice_actor", "voice actor", "voiceactor"):
         icon_pm = node_icons._voice_actor_icon() or node_icons._output_icon()
+    elif key in ("audio_capture", "audio capture", "audiocapture"):
+        icon_pm = node_icons._audio_capture_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
     elif key in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
         icon_pm = node_icons._mediator_icon() or node_icons._python_icon() or node_icons._output_icon()
     elif key == "scene":
@@ -413,6 +415,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
             "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "serial_com",
+            "audio_capture",
             "qubit_deck_controller",
             "llm_prompt","chatbot","voice_actor","mediator_agent","librarian","note","append","image_collection","database"
         ]

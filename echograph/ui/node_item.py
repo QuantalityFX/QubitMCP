@@ -55,6 +55,44 @@ _LIGHT_NODE_KINDS = (
 )
 
 
+def _line_edit_echo_mode(mode_name: str):
+    mode = getattr(QtWidgets.QLineEdit, mode_name, None)
+    if mode is not None:
+        return mode
+    echo_mode = getattr(QtWidgets.QLineEdit, "EchoMode", None)
+    if echo_mode is not None:
+        return getattr(echo_mode, mode_name, None)
+    return None
+
+
+class _RevealOnFocusLineEditFilter(QtCore.QObject):
+    def __init__(self, edit: QtWidgets.QLineEdit):
+        super().__init__(edit)
+        self._edit = edit
+
+    def eventFilter(self, obj, ev):
+        if obj is self._edit:
+            event_type = ev.type()
+            if event_type == QtCore.QEvent.FocusIn:
+                _set_line_edit_masked(self._edit, False)
+            elif event_type == QtCore.QEvent.FocusOut:
+                _set_line_edit_masked(self._edit, True)
+        return False
+
+
+def _set_line_edit_masked(edit: QtWidgets.QLineEdit, masked: bool) -> None:
+    mode = _line_edit_echo_mode("Password" if masked else "Normal")
+    if mode is not None:
+        edit.setEchoMode(mode)
+
+
+def _mask_line_edit_when_unfocused(edit: QtWidgets.QLineEdit) -> None:
+    _set_line_edit_masked(edit, not edit.hasFocus())
+    focus_filter = _RevealOnFocusLineEditFilter(edit)
+    edit._reveal_on_focus_filter = focus_filter
+    edit.installEventFilter(focus_filter)
+
+
 def _normalize_light_type(value) -> str:
     text = str(value or "").strip().lower().replace("-", "_")
     text = " ".join(text.replace("_", " ").split())
@@ -2272,6 +2310,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = max(node_w, int(getattr(_serial_com_spec, "SERIAL_COM_BODY_W", node_w)))
             except Exception:
                 pass
+        elif kind in ("audio_capture", "audio capture", "audiocapture"):
+            body_h = 172
+            node_w = max(self._BASE_W, 420)
+            try:
+                from nodes.audio_capture import spec as _audio_capture_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_audio_capture_spec, "AUDIO_CAPTURE_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_audio_capture_spec, "AUDIO_CAPTURE_BODY_W", node_w)))
+            except Exception:
+                pass
         elif kind in ("qubit_deck_controller", "qubit deck controller", "qubitdeckcontroller"):
             # Keep extra lower frame space so deck params do not crowd the bottom border.
             body_h = 44
@@ -3623,6 +3670,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 completion_refs["edit"] = edit
                             except Exception:
                                 pass
+                        if (
+                            kind in ("qubit_deck_controller", "qubit deck controller", "qubitdeckcontroller")
+                            and pname_key == "api_base"
+                        ):
+                            _mask_line_edit_when_unfocused(edit)
                         is_note = (kind == "note")
                         edit.textChanged.connect(
                             lambda txt, idx=i, emit=not is_note: self._on_param_changed(idx, txt, emit_scene=emit)
@@ -7642,6 +7694,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower in ("voice_actor", "voice actor", "voiceactor"):
                 # Voice icon sits larger and higher than default.
                 extra_top = 120.0
+            elif kind_lower in ("audio_capture", "audio capture", "audiocapture"):
+                extra_top = 120.0
             elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
                 # Mediator console icon also floats above the node body.
                 extra_top = 120.0
@@ -8052,6 +8106,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._chatbot_icon()
             elif kind_lower in ("voice_actor", "voice actor", "voiceactor"):
                 icon_pm = node_icons._voice_actor_icon() or node_icons._output_icon()
+            elif kind_lower in ("audio_capture", "audio capture", "audiocapture"):
+                icon_pm = node_icons._audio_capture_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
             elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
                 icon_pm = node_icons._mediator_icon() or node_icons._python_icon() or node_icons._output_icon()
             elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
@@ -8174,6 +8230,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 if kind_lower in ("voice_actor", "voice actor", "voiceactor"):
                     size = int(size * 1.28)
                     size = int(min(170, max(58, size)))
+                if kind_lower in ("audio_capture", "audio capture", "audiocapture"):
+                    size = int(size * 1.44)
+                    size = int(min(192, max(67, size)))
                 if kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
                     size = int(size * 1.35)
                     size = int(min(190, max(64, size)))
@@ -8187,6 +8246,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     y = -pm_scaled.height() * 0.45
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     y = -pm_scaled.height() * 0.7
+                if kind_lower in ("audio_capture", "audio capture", "audiocapture"):
+                    y = -pm_scaled.height() * 0.5
                 if kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
                     y = -pm_scaled.height() * 0.65
                 p.drawPixmap(QtCore.QPointF(x, y), pm_scaled)

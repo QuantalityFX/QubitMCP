@@ -36,6 +36,45 @@ def _hash_to_links(text: str) -> str:
         text or "",
     )
 
+
+_MASKED_VALUE_TEXT = "******"
+_QUBIT_DECK_CONTROLLER_KINDS = {
+    "qubit_deck_controller",
+    "qubit deck controller",
+    "qubitdeckcontroller",
+    "qubitdeck controller",
+}
+_QUBIT_DECK_SENSITIVE_PARAMS = {
+    "api_base",
+    "server_address",
+    "server address",
+    "address",
+    "url",
+    "endpoint",
+}
+
+
+def _is_qubit_deck_controller_kind(kind: str) -> bool:
+    return str(kind or "").strip().lower() in _QUBIT_DECK_CONTROLLER_KINDS
+
+
+class _SensitiveParamValueDelegate(QtWidgets.QStyledItemDelegate):
+    def _is_sensitive_value(self, index: QtCore.QModelIndex) -> bool:
+        if not index.isValid() or index.column() != 2:
+            return False
+        table = self.parent()
+        names = getattr(table, "_masked_value_param_names", set())
+        if not names:
+            return False
+        name_index = index.sibling(index.row(), 1)
+        param_name = str(name_index.data(QtCore.Qt.DisplayRole) or "").strip().lower()
+        return param_name in names
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        if self._is_sensitive_value(index) and str(option.text or ""):
+            option.text = _MASKED_VALUE_TEXT
+
 class InfoCard(QtWidgets.QFrame):
     requestJump = QtCore.Signal(str)
     closedForNode = QtCore.Signal(str)
@@ -1093,6 +1132,9 @@ class InfoCard(QtWidgets.QFrame):
             QtWidgets.QAbstractItemView.EditKeyPressed |
             QtWidgets.QAbstractItemView.SelectedClicked
         )
+        if _is_qubit_deck_controller_kind(getattr(self._node_ref, "kind", "")):
+            tbl._masked_value_param_names = set(_QUBIT_DECK_SENSITIVE_PARAMS)
+            tbl.setItemDelegate(_SensitiveParamValueDelegate(tbl))
 
         # make columns auto-fit the card width (Value stretches)
         hdr = tbl.horizontalHeader()

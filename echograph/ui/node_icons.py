@@ -49,6 +49,7 @@ _CAMERA_NODE_ICON = None
 _LIGHT_NODE_ICON = None
 _VOLUME_SPLIT_ICON = None
 _VOICE_ACTOR_ICON = None
+_AUDIO_CAPTURE_ICON = None
 _MEDIGATOR_ICON = None
 _GENX_ICON = None
 _MOCAP_IMPORT_ICON = None
@@ -452,6 +453,14 @@ def _voice_actor_icon():
         return _VOICE_ACTOR_ICON
     _VOICE_ACTOR_ICON = _load_pm("TanyaAI_Icon.png")
     return _VOICE_ACTOR_ICON
+
+
+def _audio_capture_icon():
+    global _AUDIO_CAPTURE_ICON
+    if _AUDIO_CAPTURE_ICON is not None:
+        return _AUDIO_CAPTURE_ICON
+    _AUDIO_CAPTURE_ICON = _load_pm("AudioCapture_Icon.png")
+    return _AUDIO_CAPTURE_ICON
 
 
 def _mediator_icon():

@@ -52,6 +52,8 @@ VOICE_ACTOR_NODE_ALIASES = [
     "voiceactor",
 ]
 VOICE_ACTOR_NODE_KINDS = {VOICE_ACTOR_NODE_KIND, *VOICE_ACTOR_NODE_ALIASES}
+AUDIO_CAPTURE_NODE_KINDS = {"audio_capture", "audio capture", "audiocapture"}
+AUDIO_INPUT_PORT = "audio"
 
 VOICE_ACTOR_BODY_W = 460
 VOICE_ACTOR_BODY_H = 330
@@ -779,6 +781,23 @@ def _find_input_node(scene, node_item, port_names: set[str], kind_set: set[str] 
                 continue
             if _kind_of_item(src) in kind_set:
                 return src
+    return None
+
+
+def _audio_capture_source_item(scene, node_item):
+    if scene is None or node_item is None:
+        return None
+    for edge in _ordered_in_edges(scene, node_item):
+        src = getattr(edge, "src", None)
+        if src is None or _kind_of_item(src) not in AUDIO_CAPTURE_NODE_KINDS:
+            continue
+        dst_port = _edge_port_name(edge).strip().lower()
+        if not dst_port or dst_port == AUDIO_INPUT_PORT:
+            return src
+    for edge in _ordered_in_edges(scene, node_item):
+        src = getattr(edge, "src", None)
+        if src is not None and _kind_of_item(src) in AUDIO_CAPTURE_NODE_KINDS:
+            return src
     return None
 
 
@@ -1681,6 +1700,7 @@ class VoiceActorTranscriptEdit(QtWidgets.QPlainTextEdit):
 def build_ports(node_item) -> None:
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("text")
+        node_item.ensure_input(AUDIO_INPUT_PORT)
 
 
 class VoiceActorWidget(QtWidgets.QWidget):
@@ -2259,6 +2279,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
             if src_model is None:
                 continue
             kind = str(getattr(src_model, "kind", "") or "").strip().lower()
+            if kind in AUDIO_CAPTURE_NODE_KINDS:
+                continue
             if kind == "note":
                 note_input_connected = True
             if kind in CHATBOT_NODE_KINDS or kind in MEDIGATOR_NODE_KINDS:
@@ -2925,6 +2947,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._pause_flash_state = False
         self._update_pause_button_ui()
         self._set_busy(True, "listening")
+        capture_config, capture_label = self._connected_audio_capture_config()
+        if capture_config:
+            capture_config = dict(capture_config)
+            if str(capture_config.get("source_mode", "") or "").strip().lower() == "output_device":
+                capture_config["threshold"] = min(float(capture_config.get("threshold", 0.001) or 0.001), 0.001)
         if send_mode == STT_SEND_MODE_MANUAL:
             send_hint = "Press Stop to send."
         elif send_mode == STT_SEND_MODE_ASK_FIRST:
@@ -2932,11 +2959,16 @@ class VoiceActorWidget(QtWidgets.QWidget):
         else:
             send_hint = "Auto Respond sends after a pause."
         language_label = _stt_language_name(stt_language)
+        source_hint = f" from {capture_label}" if capture_config and capture_label else ""
         if stt_method == STT_METHOD_LOCAL_WHISPER:
-            self._set_status(f"Listening... (Local Whisper, {language_label}). {send_hint}")
+            self._set_status(f"Listening{source_hint}... (Local Whisper, {language_label}). {send_hint}")
         else:
-            self._set_status(f"Listening... (Google, {language_label}). {send_hint}")
-        threading.Thread(target=self._stt_worker, args=(stt_method, send_mode, stt_language), daemon=True).start()
+            self._set_status(f"Listening{source_hint}... (Google, {language_label}). {send_hint}")
+        threading.Thread(
+            target=self._stt_worker,
+            args=(stt_method, send_mode, stt_language, capture_config, capture_label),
+            daemon=True,
+        ).start()
 
     @QtCore.Slot(str)
     def _on_stt_status(self, message: str) -> None:
@@ -3086,6 +3118,29 @@ class VoiceActorWidget(QtWidgets.QWidget):
             except Exception:
                 raw = VOICE_MIC_DEVICE_DEFAULT
         return _normalize_voice_mic_device_index(raw)
+
+    def _connected_audio_capture_item(self):
+        self._ensure_scene_connections()
+        return _audio_capture_source_item(self._scene, self._node_item)
+
+    def _connected_audio_capture_config(self) -> tuple[dict | None, str]:
+        source_item = self._connected_audio_capture_item()
+        if source_item is None:
+            return None, ""
+        try:
+            from nodes.audio_capture import spec as audio_capture_spec  # type: ignore
+        except Exception as exc:
+            return None, f"Audio Capture module unavailable: {exc}"
+        try:
+            config = audio_capture_spec.config_from_node_item(source_item)
+        except Exception as exc:
+            return None, f"Audio Capture config failed: {exc}"
+        model = getattr(source_item, "model", None)
+        label = str(getattr(model, "name", "") or "Audio Capture").strip() or "Audio Capture"
+        device = str(config.get("device_name", "") or "").strip()
+        if device:
+            label = f"{label}: {device}"
+        return config, label
 
     def _pause_listening_for_turn_taking(self) -> bool:
         listening, _paused, stop_requested = self._stt_state()
@@ -3376,12 +3431,21 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 except Exception:
                     pass
 
-    def _stt_worker(self, stt_method: str, send_mode: str, stt_language: str = LOCAL_WHISPER_LANGUAGE) -> None:
+    def _stt_worker(
+        self,
+        stt_method: str,
+        send_mode: str,
+        stt_language: str = LOCAL_WHISPER_LANGUAGE,
+        capture_config: dict | None = None,
+        capture_label: str = "",
+    ) -> None:
         transcript_parts = []
         error = ""
         selected_method = _normalize_stt_method(stt_method)
         selected_send_mode = _normalize_stt_send_mode(send_mode)
         selected_language = _normalize_stt_language(stt_language)
+        audio_capture_config = dict(capture_config or {})
+        audio_capture_label = str(capture_label or "").strip()
         wait_timeout = getattr(sr, "WaitTimeoutError", None) if sr is not None else None
         unknown_value = getattr(sr, "UnknownValueError", None) if sr is not None else None
         request_error = getattr(sr, "RequestError", None) if sr is not None else None
@@ -3421,8 +3485,153 @@ class VoiceActorWidget(QtWidgets.QWidget):
             last_voice_activity = awaiting_started_at
             return True
 
+        def _handle_transcribed_chunk(chunk: str) -> bool:
+            nonlocal awaiting_send_confirmation
+            nonlocal prompt_response_until
+            nonlocal last_voice_activity
+            nonlocal send_confirmed
+
+            clean_chunk = str(chunk or "").strip()
+            if not clean_chunk:
+                return _maybe_handle_idle_send(time.monotonic())
+            if self._is_stop_speaking_command(clean_chunk):
+                awaiting_send_confirmation = False
+                prompt_response_until = 0.0
+                self._stop_stt_send_confirmation_prompt()
+                last_voice_activity = time.monotonic()
+                self._stt_status.emit("Stopping speech playback...")
+                self._stt_command.emit("stop_speaking")
+                return False
+            confirmation_window_active = awaiting_send_confirmation or (time.monotonic() <= prompt_response_until)
+            if confirmation_window_active:
+                lowered = clean_chunk.lower()
+                prompt_phrase_heard = "are you ready to send" in lowered
+                command_text = lowered.replace("are you ready to send", " ").strip() if prompt_phrase_heard else clean_chunk
+                action = self._stt_confirmation_action(command_text)
+                if action == "send":
+                    send_confirmed = True
+                    awaiting_send_confirmation = False
+                    prompt_response_until = 0.0
+                    self._stop_stt_send_confirmation_prompt()
+                    self._stt_status.emit("Sending message...")
+                    self._set_stt_state(stop_requested=True, paused=False)
+                    return True
+                if action == "continue":
+                    awaiting_send_confirmation = False
+                    prompt_response_until = 0.0
+                    self._stop_stt_send_confirmation_prompt()
+                    last_voice_activity = time.monotonic()
+                    self._stt_status.emit("Continuing to listen...")
+                    return False
+                if prompt_phrase_heard:
+                    return False
+                # User continued talking; treat it as transcript and leave confirmation mode.
+                awaiting_send_confirmation = False
+                prompt_response_until = 0.0
+                self._stop_stt_send_confirmation_prompt()
+                transcript_parts.append(clean_chunk)
+                last_voice_activity = time.monotonic()
+                self._stt_status.emit("Continuing to listen...")
+                self._stt_chunk.emit(clean_chunk)
+                return False
+            self._stop_stt_send_confirmation_prompt()
+            transcript_parts.append(clean_chunk)
+            last_voice_activity = time.monotonic()
+            self._stt_chunk.emit(clean_chunk)
+            return False
+
+        class _AudioCaptureLoopComplete(Exception):
+            pass
+
         try:
             recognizer = sr.Recognizer()
+            if audio_capture_label and not audio_capture_config:
+                error = audio_capture_label
+                raise RuntimeError(error)
+            if audio_capture_config:
+                try:
+                    from nodes.audio_capture import spec as audio_capture_spec  # type: ignore
+                except Exception as exc:
+                    raise RuntimeError(f"Audio Capture module unavailable: {exc}") from exc
+                if audio_capture_label:
+                    self._stt_status.emit(f"Audio Capture active: {audio_capture_label}")
+
+                def _capture_should_stop() -> bool:
+                    listening, _paused, stop_requested = self._stt_state()
+                    return bool((not listening) or stop_requested)
+
+                def _capture_is_paused() -> bool:
+                    _listening, paused, _stop_requested = self._stt_state()
+                    return bool(paused)
+
+                while True:
+                    listening, paused, stop_requested = self._stt_state()
+                    if not listening or stop_requested:
+                        break
+                    if paused:
+                        if awaiting_send_confirmation:
+                            awaiting_send_confirmation = False
+                            prompt_response_until = 0.0
+                            self._stop_stt_send_confirmation_prompt()
+                        last_voice_activity = time.monotonic()
+                        time.sleep(0.08)
+                        continue
+                    now = time.monotonic()
+                    if awaiting_send_confirmation and (now - awaiting_started_at) >= STT_IDLE_CONFIRM_RESPONSE_SECONDS:
+                        awaiting_send_confirmation = False
+                        prompt_response_until = 0.0
+                        last_voice_activity = now
+                        self._stt_status.emit("Continuing to listen...")
+                    audio_chunk, capture_error = audio_capture_spec.capture_next_phrase(
+                        audio_capture_config,
+                        should_stop=_capture_should_stop,
+                        is_paused=_capture_is_paused,
+                    )
+                    if capture_error:
+                        error = capture_error
+                        break
+                    if audio_chunk is None:
+                        if _maybe_handle_idle_send(time.monotonic()):
+                            break
+                        continue
+                    chunk = ""
+                    if selected_method == STT_METHOD_LOCAL_WHISPER:
+                        chunk, chunk_error = _transcribe_local_whisper(audio_chunk.wav_bytes(), selected_language)
+                        if chunk_error:
+                            if chunk_error == "Speech detected but transcript was empty.":
+                                if _maybe_handle_idle_send(time.monotonic()):
+                                    break
+                                continue
+                            error = chunk_error
+                            break
+                    else:
+                        try:
+                            audio_data = sr.AudioData(
+                                audio_chunk.pcm,
+                                int(audio_chunk.sample_rate),
+                                int(audio_chunk.sample_width),
+                            )
+                            chunk = (
+                                recognizer.recognize_google(
+                                    audio_data,
+                                    language=_stt_google_language(selected_language),
+                                )
+                                or ""
+                            ).strip()
+                        except Exception as exc:
+                            if unknown_value and isinstance(exc, unknown_value):
+                                if _maybe_handle_idle_send(time.monotonic()):
+                                    break
+                                continue
+                            if request_error and isinstance(exc, request_error):
+                                error = f"Speech recognition service failed: {exc}"
+                            else:
+                                error = _format_stt_error(exc)
+                            break
+                    if _handle_transcribed_chunk(chunk):
+                        break
+                raise _AudioCaptureLoopComplete
+
             mic_index = _normalize_voice_mic_device_index(self._scene_voice_mic_device_index())
             mic_kwargs = {}
             if mic_index is not None:
@@ -3493,57 +3702,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
                                 else:
                                     error = _format_stt_error(exc)
                                 break
-                        clean_chunk = str(chunk or "").strip()
-                        if not clean_chunk:
-                            if _maybe_handle_idle_send(time.monotonic()):
-                                break
-                            continue
-                        if self._is_stop_speaking_command(clean_chunk):
-                            awaiting_send_confirmation = False
-                            prompt_response_until = 0.0
-                            self._stop_stt_send_confirmation_prompt()
-                            last_voice_activity = time.monotonic()
-                            self._stt_status.emit("Stopping speech playback...")
-                            self._stt_command.emit("stop_speaking")
-                            continue
-                        confirmation_window_active = awaiting_send_confirmation or (time.monotonic() <= prompt_response_until)
-                        if confirmation_window_active:
-                            lowered = clean_chunk.lower()
-                            prompt_phrase_heard = "are you ready to send" in lowered
-                            command_text = lowered.replace("are you ready to send", " ").strip() if prompt_phrase_heard else clean_chunk
-                            action = self._stt_confirmation_action(command_text)
-                            if action == "send":
-                                send_confirmed = True
-                                awaiting_send_confirmation = False
-                                prompt_response_until = 0.0
-                                self._stop_stt_send_confirmation_prompt()
-                                self._stt_status.emit("Sending message...")
-                                self._set_stt_state(stop_requested=True, paused=False)
-                                break
-                            if action == "continue":
-                                awaiting_send_confirmation = False
-                                prompt_response_until = 0.0
-                                self._stop_stt_send_confirmation_prompt()
-                                last_voice_activity = time.monotonic()
-                                self._stt_status.emit("Continuing to listen...")
-                                continue
-                            if prompt_phrase_heard:
-                                continue
-                            # User continued talking; treat it as transcript and leave confirmation mode.
-                            awaiting_send_confirmation = False
-                            prompt_response_until = 0.0
-                            self._stop_stt_send_confirmation_prompt()
-                            transcript_parts.append(clean_chunk)
-                            last_voice_activity = time.monotonic()
-                            self._stt_status.emit("Continuing to listen...")
-                            self._stt_chunk.emit(clean_chunk)
-                            continue
-                        self._stop_stt_send_confirmation_prompt()
-                        transcript_parts.append(clean_chunk)
-                        last_voice_activity = time.monotonic()
-                        self._stt_chunk.emit(clean_chunk)
+                        if _handle_transcribed_chunk(chunk):
+                            break
                 if error:
                     break
+        except _AudioCaptureLoopComplete:
+            pass
         except Exception as exc:
             error = _format_stt_error(exc)
         self._stop_stt_send_confirmation_prompt()
