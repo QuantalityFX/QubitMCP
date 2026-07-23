@@ -134,20 +134,33 @@ def _asset_has_scene_skeleton(asset: dict, source_kind: str = "") -> bool:
         return False
     if bool(asset.get("has_skeleton", False)):
         return True
-    if _is_anim_retarget_kind(source_kind or str(asset.get("kind") or "")):
+    source_key = str(
+        source_kind
+        or asset.get("source_kind")
+        or asset.get("kind")
+        or ""
+    ).strip().lower()
+    if _is_anim_retarget_kind(source_key):
+        return True
+    if source_key in _FBX_KIND_ALIASES or source_key in _MOCAP_KIND_ALIASES:
         return True
     context = asset.get("fbx_rig_context")
-    if not isinstance(context, dict):
-        return False
-    if context.get("skeleton") is not None:
-        return True
-    if bool(context.get("retarget_result", False)):
-        return True
-    clip = context.get("clip")
-    try:
-        return clip is not None and bool(getattr(clip, "tracks", None))
-    except Exception:
-        return clip is not None
+    if isinstance(context, dict):
+        if context.get("skeleton") is not None:
+            return True
+        if bool(context.get("retarget_result", False)):
+            return True
+        clip = context.get("clip")
+        try:
+            if clip is not None and bool(getattr(clip, "tracks", None)):
+                return True
+        except Exception:
+            if clip is not None:
+                return True
+    ext = str(asset.get("ext") or "").strip().lower()
+    if not ext:
+        ext = Path(str(asset.get("path") or "")).suffix.lower()
+    return ext in {".fbx", ".bvh"}
 _COPY_TO_POINTS_KIND_ALIASES = {
     "copy_to_points",
     "copy to points",
@@ -3118,6 +3131,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "texture": texture,
             "node": node_name,
             "ext": ext,
+            "source_kind": owner_kind or kind,
             "visible": node_name not in hidden,
             "xform": xf if isinstance(xf, dict) else None,
         }
@@ -4917,9 +4931,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                             "node": name,
                             "path": path,
                             "kind": asset_kind,
+                            "source_kind": kind,
                             "ext": ext,
                             "_quick": True,
-                            "has_skeleton": bool(_is_anim_retarget_kind(kind)),
+                            "has_skeleton": bool(
+                                _is_anim_retarget_kind(kind)
+                                or kind in _FBX_KIND_ALIASES
+                                or kind in _MOCAP_KIND_ALIASES
+                                or ext in {".fbx", ".bvh"}
+                            ),
                         }
                     )
             return rows

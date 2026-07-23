@@ -11237,56 +11237,31 @@ void main() {
         pivot = np.zeros(3, dtype=np.float32)
 
         out = rows.astype(np.float32, copy=True)
-        if xform_kind == "splat":
-            try:
-                out = out - pivot[None, :]
-                out[:, 0] *= np.float32(scl[0])
-                out[:, 1] *= np.float32(scl[1])
-                out[:, 2] *= np.float32(scl[2])
-
-                rx, ry, rz = rot
-                if (rx != 0.0) or (ry != 0.0) or (rz != 0.0):
-                    def _quat_mul(a, b):
-                        ax, ay, az, aw = a
-                        bx, by, bz, bw = b
-                        return np.array(
-                            [
-                                aw * bx + ax * bw + ay * bz - az * by,
-                                aw * by - ax * bz + ay * bw + az * bx,
-                                aw * bz + ax * by - ay * bx + az * bw,
-                                aw * bw - ax * bx - ay * by - az * bz,
-                            ],
-                            dtype=np.float32,
-                        )
-
-                    def _quat_from_euler_deg(rx_deg, ry_deg, rz_deg):
-                        hx = math.radians(rx_deg) * 0.5
-                        hy = math.radians(ry_deg) * 0.5
-                        hz = math.radians(rz_deg) * 0.5
-                        sxv, cxv = math.sin(hx), math.cos(hx)
-                        syv, cyv = math.sin(hy), math.cos(hy)
-                        szv, czv = math.sin(hz), math.cos(hz)
-                        qx = np.array([sxv, 0.0, 0.0, cxv], dtype=np.float32)
-                        qy = np.array([0.0, syv, 0.0, cyv], dtype=np.float32)
-                        qz = np.array([0.0, 0.0, szv, czv], dtype=np.float32)
-                        return _quat_mul(_quat_mul(qz, qy), qx)
-
-                    qg = _quat_from_euler_deg(-float(rx), -float(ry), -float(rz))
-                    qv = np.array([float(qg[0]), float(qg[1]), float(qg[2])], dtype=np.float32)
-                    qw = float(qg[3])
-                    t = 2.0 * np.cross(qv[None, :], out)
-                    out = out + (qw * t) + np.cross(qv[None, :], t)
-
-                out = out + pivot[None, :] + np.asarray(pos, dtype=np.float32).reshape(1, 3)
-            except Exception:
-                out = rows.astype(np.float32, copy=True)
-        else:
-            try:
-                out[:, 0] *= np.float32(scl[0])
-                out[:, 1] *= np.float32(scl[1])
-                out[:, 2] *= np.float32(scl[2])
-            except Exception:
-                pass
+        transform_label = "identity"
+        try:
+            model = None
+            if xform_kind == "splat":
+                model_fn = getattr(self, "_mgl_scene_splat_display_model_matrix_for_owner", None)
+                model = model_fn(owner_key) if callable(model_fn) else None
+            if model is None:
+                model_fn = getattr(self, "_mgl_scene_model_matrix_for_owner", None)
+                model = model_fn(owner_key) if callable(model_fn) else None
+            if model is None:
+                model_fn = getattr(self, "_mgl_build_scene_asset_model_matrix", None)
+                model = model_fn(owner_key) if callable(model_fn) else None
+            if model is not None:
+                matrix = np.asarray(model, dtype=np.float32).reshape(4, 4)
+                ones = np.ones((out.shape[0], 1), dtype=np.float32)
+                points = np.concatenate([out, ones], axis=1) @ matrix
+                w = points[:, 3:4]
+                valid_w = np.abs(w[:, 0]) > np.float32(1.0e-8)
+                if bool(np.any(valid_w)):
+                    points[valid_w, :3] /= w[valid_w]
+                out = points[:, :3].astype(np.float32, copy=False)
+                transform_label = "splat_model_matrix" if xform_kind == "splat" else "mesh_model_matrix"
+        except Exception:
+            out = rows.astype(np.float32, copy=True)
+            transform_label = "identity"
 
         info = {
             "xform": xform,
@@ -11295,7 +11270,7 @@ void main() {
             "display_pos": [float(v) for v in pos],
             "display_rot": [float(v) for v in rot],
             "display_pivot": [float(v) for v in np.asarray(pivot, dtype=np.float32).reshape(-1)[:3]],
-            "display_transform": "splat_origin_xform" if xform_kind == "splat" else "scale_only_no_translation",
+            "display_transform": transform_label,
         }
         return out, info
 
@@ -17262,6 +17237,13 @@ void main() {
             self._mgl_shadow_dirty = True
             self._mgl_shadow_valid = False
             self._mgl_shadow_signature = None
+        except Exception:
+            pass
+        try:
+            active_owner = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip().lower()
+            if active_owner and active_owner == owner_norm:
+                self._mgl_scene_skeleton_invalidate_owner(owner)
+                self._mgl_scene_skeleton_update_owner_handles(str(owner).strip(), force=True)
         except Exception:
             pass
         try:
