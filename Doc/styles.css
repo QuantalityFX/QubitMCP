@@ -8,6 +8,8 @@
   --text: #e6edf3;
   --muted: #98a2b3;
   --accent: #22c55e;
+  --accent-2: #38bdf8;
+  --accent-3: #f59e0b;
   --border: #2b313b;
 }
 
@@ -86,6 +88,55 @@ body {
   padding: 28px 36px 80px;
 }
 
+.landing-hero {
+  position: relative;
+  overflow: hidden;
+  min-height: 520px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 18px;
+  padding: 60px 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(15, 18, 22, 0.98) 0%, rgba(15, 18, 22, 0.88) 48%, rgba(15, 18, 22, 0.4) 100%),
+    url("../icons/QubitMCP_Icon_s.png") right 9% center / min(36vw, 360px) auto no-repeat,
+    #10151b;
+}
+
+.hero-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.hero-kicker,
+.landing-hero h1,
+.hero-lead,
+.hero-actions,
+.hero-strip {
+  position: relative;
+  z-index: 1;
+}
+
+.hero-kicker {
+  color: var(--accent-2);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.landing-hero h1 {
+  margin: 0;
+  font-size: 72px;
+  line-height: 0.98;
+  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.58);
+}
+
 .page-header h1 {
   margin: 0 0 8px;
   font-size: 30px;
@@ -95,6 +146,69 @@ body {
   color: var(--muted);
   margin: 0;
   max-width: 900px;
+}
+
+.hero-lead {
+  max-width: 760px;
+  color: #d6e2ec;
+  font-size: 18px;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 9px 14px;
+  border: 1px solid #425061;
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(27, 32, 39, 0.92);
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.button:hover {
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+
+.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #07120b;
+}
+
+.button.primary:hover {
+  background: #4ade80;
+  color: #07120b;
+}
+
+.button.ghost {
+  background: rgba(15, 18, 22, 0.56);
+}
+
+.hero-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  max-width: 860px;
+}
+
+.hero-strip span {
+  border: 1px solid #354252;
+  border-radius: 999px;
+  background: rgba(16, 21, 27, 0.76);
+  color: #c9d6e2;
+  padding: 5px 9px;
+  font-size: 13px;
 }
 
 code {
@@ -138,11 +252,57 @@ code {
   gap: 16px;
 }
 
+.grid.three {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.grid.latest-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+@media (max-width: 1500px) {
+  .grid.latest-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1220px) {
+  .grid.latest-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .grid.latest-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .card {
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 14px 16px;
+}
+
+.link-card p {
+  color: var(--muted);
+  margin: 8px 0 12px;
+}
+
+.text-link {
+  color: var(--accent-2);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.text-link:hover {
+  color: var(--accent);
 }
 
 .feature-card h3 {
@@ -205,9 +365,9 @@ code {
 .tool-wrap {
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 6px;
-  width: 20%;
+  width: min(100%, 760px);
 }
 
 .tool-item {
@@ -235,7 +395,7 @@ code {
 .table-wrap {
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 6px;
   overflow-x: auto;
   max-width: 960px;
@@ -285,6 +445,23 @@ th {
   }
   .content {
     padding: 20px 18px 60px;
+  }
+  .landing-hero {
+    min-height: 420px;
+    padding: 38px 20px;
+    background:
+      linear-gradient(180deg, rgba(15, 18, 22, 0.96) 0%, rgba(15, 18, 22, 0.88) 58%, rgba(15, 18, 22, 0.68) 100%),
+      url("../icons/QubitMCP_Icon_s.png") right 18px bottom 24px / 150px auto no-repeat,
+      #10151b;
+  }
+  .hero-lead {
+    font-size: 16px;
+  }
+  .landing-hero h1 {
+    font-size: 46px;
+  }
+  .button {
+    width: 100%;
   }
   .tool-wrap {
     width: 100%;

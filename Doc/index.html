@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>QubitMCP 1.2.5 Manual</title>
+    <title>QubitMCP 1.2.5 Documentation</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -12,14 +12,18 @@
         <div class="brand">
           <img class="brand-logo" src="../icons/QubitMCP_Icon_s.png" alt="QubitMCP icon" />
           <div class="brand-title">QubitMCP 1.2.5</div>
-          <div class="brand-sub">User + Developer Manual</div>
+          <div class="brand-sub">Docs + Download</div>
         </div>
         <nav class="nav">
+          <a href="#home">Home</a>
+          <a href="#download">Download</a>
           <a href="#overview">Overview</a>
           <a href="#latest-updates">Latest Updates</a>
           <a href="#quick-start">Quick Start</a>
           <a href="#setup-launch">Setup and Launch</a>
           <a href="#ui-tour">UI Tour</a>
+          <a href="#top-bar-menus">Top Bar Menus</a>
+          <a href="#top-shelf">Top Shelf</a>
           <a href="#workflows">Workflows</a>
           <a href="#graph-basics">Graph Basics</a>
           <a href="#viewport">3D Viewport</a>
@@ -28,6 +32,7 @@
           <a href="#viewport-left-panel">Viewport Left Panel</a>
           <a href="#animation-timeline">Animation Timeline</a>
           <a href="#audio-panel">Audio Panel</a>
+          <a href="#profiler-panel">Profiler Panel</a>
           <a href="#panel-layouts">Panel Layout Presets</a>
           <a href="#hotkeys">Hotkeys</a>
           <a href="#settings">Settings</a>
@@ -39,34 +44,70 @@
       </aside>
 
       <main class="content">
-        <header class="page-header">
-          <h1>QubitMCP Manual</h1>
-          <p class="lead">
-            QubitMCP is a node based workflow tool with a graph canvas, a 3D viewport,
-            and AI plus librarian integrations. This manual covers setup, daily use,
-            and the current node ecosystem.
+        <header id="home" class="landing-hero">
+          <canvas class="hero-canvas" aria-hidden="true"></canvas>
+          <div class="hero-kicker">Windows desktop node workspace</div>
+          <h1>QubitMCP</h1>
+          <p class="lead hero-lead">
+            Build AI-assisted creative, production, mocap, asset, and Unreal workflows
+            with a visual graph, a 3D viewport, librarian tools, voice automation,
+            and a growing node ecosystem.
           </p>
+          <div class="hero-actions">
+            <a class="button primary" href="../setup.bat" download>Download Setup</a>
+            <a class="button" href="https://github.com/QuantalityFX/QubitMCP" target="_blank" rel="noreferrer">GitHub Repository</a>
+            <a class="button ghost" href="#nodes">Browse Nodes</a>
+          </div>
+          <div class="hero-strip" aria-label="QubitMCP capability highlights">
+            <span>Visual graph editor</span>
+            <span>3D scene viewport</span>
+            <span>AI and voice workflows</span>
+            <span>Mocap, grooming, and export tools</span>
+          </div>
         </header>
+
+        <section id="download" class="section download-panel">
+          <h2>Download and Links</h2>
+          <div class="grid three">
+            <div class="card link-card">
+              <h3>Windows Setup</h3>
+              <p>Run <code>setup.bat</code> once to create the app environment, install dependencies, and check optional runtime support.</p>
+              <a class="text-link" href="../setup.bat" download>Download setup.bat</a>
+            </div>
+            <div class="card link-card">
+              <h3>Source Repository</h3>
+              <p>Open the repository for source access, issue tracking, release notes, and partner evaluation.</p>
+              <a class="text-link" href="https://github.com/QuantalityFX/QubitMCP" target="_blank" rel="noreferrer">github.com/QuantalityFX/QubitMCP</a>
+            </div>
+            <div class="card link-card">
+              <h3>Manual</h3>
+              <p>Continue below for setup, workflows, viewport controls, node coverage, pipelines, and troubleshooting.</p>
+              <a class="text-link" href="#quick-start">Read the manual</a>
+            </div>
+          </div>
+        </section>
 
         <section id="overview" class="section">
           <h2>Overview</h2>
           <div class="callout">
             <strong>What QubitMCP does:</strong> connect nodes, process text and AI workflows,
-            assemble 3D scenes, and export results from a single graph.
+            assemble 3D scenes, drive automation, process mocap, generate grooming assets,
+            and export results from a single graph.
           </div>
           <ul class="bullet">
             <li>Node graph editor with links, grouping, and per node info cards.</li>
             <li>3D viewport with camera controls, grid, wireframe, and gizmos.</li>
-            <li>AI stack with Local Server, LLM Prompt, Chatbot, Voice Actor, Mediator, Database, Librarian, and Qubit Deck control.</li>
-            <li>3D stack with import, FBX ingest, mocap ingest, retargeting, primitive, texturing, split volume, transforms, scene, render, post-process, and export nodes.</li>
-            <li>Automation stack with Keyboard Sequence actions and voice-driven Qubit Deck commands.</li>
+            <li>AI stack with Local Server, LLM Prompt, Chatbot, Voice Actor, Audio Capture, Mediator, Database, Librarian, and Qubit Deck control.</li>
+            <li>3D stack with import, FBX ingest, mocap ingest, Gen-X video mocap, retargeting, primitives, curves, modeler selection, lighting, texturing, masks, normals, transforms, scene assembly, render, post-process, and export nodes.</li>
+            <li>Character and hair stack with groom guides, guide deformation, guide pose/simulation, guide tubes, skinned volume collision meshes, and skinned splat render proxies.</li>
+            <li>Automation stack with Keyboard Sequence actions, Serial COM/Pico HID support, and voice-driven Qubit Deck commands.</li>
             <li>Configurable hotkeys saved in <code>hotkeys.json</code>.</li>
           </ul>
         </section>
 
         <section id="latest-updates" class="section">
           <h2>Latest Updates</h2>
-          <div class="grid two">
+          <div class="grid latest-grid">
             <div class="card feature-card">
               <h3><img class="inline-icon" src="../icons/TanyaAI_Icon.png" alt="Voice Actor icon" /> Voice Actor Send Modes</h3>
               <ul class="bullet">
@@ -136,6 +177,54 @@
                 <li>Transfer works even when the destination chart has additional note groups connected.</li>
               </ul>
             </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/Gen-X_Icon_s.png" alt="Gen-X icon" /> Gen-X Video Mocap</h3>
+              <ul class="bullet">
+                <li><code>genx_video_mocap</code> runs the GEM-X/GEN-X video mocap pipeline from a video file.</li>
+                <li>Rig export targets include SOMA BVH and Unitree G1 output options.</li>
+                <li>Successful runs can create a connected <code>mocap_import</code> node from the generated BVH.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/ObjectSelect_Icon.png" alt="Modeler icon" /> Modeling and Instancing Helpers</h3>
+              <ul class="bullet">
+                <li><code>modeler</code> adds an outliner for object, point, edge, and face selection groups.</li>
+                <li><code>curve</code> generates line, circle, and spiral scene assets.</li>
+                <li><code>copy_to_points</code> instances copy geometry onto point inputs with optional material or texture propagation.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom guides icon" /> Grooming Pipeline</h3>
+              <ul class="bullet">
+                <li><code>mask</code> paints mesh masks used to seed <code>groom_guides</code>.</li>
+                <li><code>groom_deform</code>, <code>groom_guide_pose</code>, and <code>groom_guide_sim</code> bind, pose, and simulate guide curves.</li>
+                <li><code>groom_guide_tube</code> converts guide curves into tube geometry with radius, caps, smoothing, and profile controls.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/volume_split_icon.png" alt="Volume mesh icon" /> Skinned Mesh and Splat Proxies</h3>
+              <ul class="bullet">
+                <li><code>skinned_volume_mesh</code> builds voxel-derived collision meshes from rigged FBX or retargeted character data.</li>
+                <li><code>skinned_splat_proxy</code> creates skinned splat render proxies from FBX, retarget, or guide tube sources.</li>
+                <li>Generated proxy manifests and caches are stored beside the workflow or in the configured output folder.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/SerialCom_Icon_s.png" alt="Serial COM icon" /> Serial and Pico HID Control</h3>
+              <ul class="bullet">
+                <li><code>serial_com</code> stores COM port, baud rate, and timeout settings for downstream automation.</li>
+                <li>Keyboard automation can use connected Pico serial sessions for key taps, key-down/release, and mouse commands.</li>
+                <li>The node can prompt for <code>pyserial</code> when the runtime dependency is missing.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/AudioCapture_Icon.png" alt="Audio capture icon" /> Audio Capture Sources</h3>
+              <ul class="bullet">
+                <li><code>audio_capture</code> captures output-device, input-device, or application audio.</li>
+                <li>Controls include backend selection, sample rate, threshold, silence window, and phrase duration.</li>
+                <li>Use it to feed speech/audio workflows that need captured system or microphone audio.</li>
+              </ul>
+            </div>
           </div>
         </section>
 
@@ -143,7 +232,7 @@
           <h2>Quick Start</h2>
           <ol class="steps">
             <li>Run setup once with <code>.\setup.bat</code>.</li>
-            <li>Launch with <code>.\run_QubitMCP.bat</code> or run <code>echograph_app.py</code> from the project venv.</li>
+            <li>Launch with <code>.\Run_QubitMCP.bat</code> or run <code>echograph_app.py</code> from the project venv.</li>
             <li>Create nodes with <strong>Create - Node</strong> or press <strong>Tab</strong>.</li>
             <li>Connect outputs to inputs by dragging from one port to another.</li>
             <li>Select a node to edit parameters in the info panel and run its actions.</li>
@@ -163,17 +252,23 @@
             <li>Upgrades packaging tools in each venv (<code>pip</code>, <code>setuptools</code>, <code>wheel</code>).</li>
             <li>Checks bundled ffmpeg support used by <code>sequence_to_mp4</code>.</li>
             <li>Installs voice dependencies used by <code>voice_actor</code>, including local Whisper and TTS support when available.</li>
+            <li>Installs or checks audio capture dependencies used by <code>audio_capture</code>.</li>
             <li>Runs a <code>keyboard_sequence</code> sanity check so Keyboard Auto Runner can load its runtime.</li>
+            <li>Checks Serial COM dependencies used by Pico/COM automation paths.</li>
             <li>Checks Mediator runtime support for <code>tools\codex.ps1</code>, Node.js, and <code>npx</code>.</li>
             <li>Checks or prompts for Autodesk FBX SDK runtime files used by full FBX import and retargeting workflows.</li>
           </ul>
+
+          <h3>Optional Gen-X video mocap setup</h3>
+          <pre><code>Mocap\setup.bat</code></pre>
+          <p>Use the Mocap setup when <code>genx_video_mocap</code> needs the GEM-X runtime and its dedicated environment.</p>
 
           <h3>Optional FBX SDK setup</h3>
           <pre><code>setup.bat full "C:\path\to\fbx_runtime"</code></pre>
           <p>FBX runtime source folders can contain either <code>fbx-*.whl</code> plus <code>FbxCommon.py</code>, or <code>fbx*.pyd</code> plus <code>FbxCommon.py</code> and optional <code>libfbxsdk.dll</code>.</p>
 
           <h3>Launch app</h3>
-          <pre><code>run_QubitMCP.bat</code></pre>
+          <pre><code>Run_QubitMCP.bat</code></pre>
           <p>or</p>
           <pre><code>.\.venv\Scripts\python.exe .\echograph_app.py</code></pre>
 
@@ -188,12 +283,12 @@
             <div class="card">
               <h3>Top Bar</h3>
               <ul class="bullet">
-                <li><strong>File</strong>: New, Open, Open Recent, Save, Save As.</li>
-                <li><strong>Create</strong>: Add nodes from the node kind list.</li>
-                <li><strong>Settings</strong>: viewport and UI tuning.</li>
-                <li><strong>Hotkeys</strong>: edit keyboard and mouse bindings.</li>
-                <li><strong>2D / 3D / Split</strong> view mode buttons.</li>
-                <li><strong>Frame</strong> and <strong>Logs</strong> utilities.</li>
+                <li><strong>File</strong>: New, Open, Open Recent, New Project, Save, Save As.</li>
+                <li><strong>Edit</strong>: Preferences for ModernGL gizmo tip overlays and tip scale.</li>
+                <li><strong>Create</strong>: open the node creation dialog.</li>
+                <li><strong>Panels</strong>: Timeline, Audio, Profiler, Shelf, and Save Layout.</li>
+                <li><strong>Settings</strong>: viewport, lighting, shadow, audio, layout, and debug tuning.</li>
+                <li><strong>Hotkeys</strong>, <strong>Help</strong>, <strong>Frame</strong>, <strong>Debug</strong>, and the active <strong>2D / Split / 3D</strong> view mode button.</li>
               </ul>
             </div>
             <div class="card">
@@ -205,6 +300,63 @@
               </ul>
             </div>
           </div>
+        </section>
+
+        <section id="top-bar-menus" class="section">
+          <h2>Top Bar Menus</h2>
+          <div class="grid two">
+            <div class="card">
+              <h3>File</h3>
+              <ul class="bullet">
+                <li><strong>New</strong>: launch a fresh QubitMCP window.</li>
+                <li><strong>Open</strong>: load a workflow JSON file.</li>
+                <li><strong>Open Recent</strong>: choose from recent workflow files.</li>
+                <li><strong>New Project</strong>: create a project folder for the next workflow save.</li>
+                <li><strong>Save</strong> and <strong>Save As</strong>: write the current graph to the current or a new JSON file.</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Edit and Create</h3>
+              <ul class="bullet">
+                <li><strong>Edit -> Preferences -> MGL Guizmo Tips</strong>: show or hide the stable ModernGL gizmo tips overlay.</li>
+                <li><strong>Tips Size</strong>: scales the ModernGL gizmo tips and scale cubes.</li>
+                <li><strong>Create -> Node</strong>: open Create Node with kind and parameter entry.</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Panels</h3>
+              <ul class="bullet">
+                <li><strong>Timeline</strong>: show or hide the animation timeline in the viewport area.</li>
+                <li><strong>Audio</strong>: show or hide the audio waveform panel above the timeline.</li>
+                <li><strong>Profiler</strong>: show or hide the profiler panel above the 2D graph.</li>
+                <li><strong>Shelf</strong>: show or hide the tool shelf row below the top bar.</li>
+                <li><strong>Save Layout</strong>: store current view mode and panel visibility as the app default layout.</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Utilities</h3>
+              <ul class="bullet">
+                <li><strong>Settings</strong>: opens the full settings panel documented below.</li>
+                <li><strong>Hotkeys</strong>: edit keyboard and mouse bindings stored in <code>hotkeys.json</code>.</li>
+                <li><strong>Help</strong>: opens this documentation page from <code>Doc\index.html</code>.</li>
+                <li><strong>Frame</strong>: fits the graph view to all nodes.</li>
+                <li><strong>Debug</strong>: opens debug path location, toggles EchoGraph logging, and toggles viewport debug.</li>
+                <li><strong>View Mode</strong>: cycles <strong>2D View</strong> -> <strong>2D / 3D</strong> -> <strong>3D View</strong>.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section id="top-shelf" class="section">
+          <h2>Top Shelf</h2>
+          <ul class="bullet">
+            <li>The shelf is the row directly below the top bar and can be shown or hidden from <strong>Panels -> Shelf</strong>.</li>
+            <li>Use the <strong>Add shelf tool</strong> button to add <strong>Python Script</strong>, <strong>Python Code</strong>, <strong>Current Workflow</strong>, <strong>Selected Nodes</strong>, or <strong>Copied Nodes</strong>.</li>
+            <li>Shelf tools can run code, open saved workflows, or paste graph snippets depending on tool type.</li>
+            <li>Right-click a shelf item for <strong>Run/Open/Paste</strong>, <strong>Edit</strong>, <strong>Duplicate</strong>, <strong>Move Left</strong>, <strong>Move Right</strong>, and <strong>Remove</strong>.</li>
+            <li>Drag shelf items to reorder them; shelf configuration is stored in <code>shelf_tools.json</code>.</li>
+            <li>Missing tool paths are shown with warning styling so broken script/workflow shortcuts can be repaired from Edit.</li>
+          </ul>
         </section>
 
         <section id="workflows" class="section">
@@ -262,13 +414,14 @@
         <section id="rendering" class="section">
           <h2>Viewport Controls</h2>
           <ul class="bullet">
-            <li><strong>Left viewport toolbar</strong> includes quick icons for <strong>Frame</strong>, <strong>Snapshot</strong>, <strong>Gizmo Space</strong> (World/Local), <strong>Camera Orbit</strong> (locked/free), <strong>Fly Mode</strong>, <strong>Grid</strong>, <strong>Zoom Mode</strong>, and <strong>Stats</strong> with <strong>Copy Stats</strong>.</li>
+            <li><strong>Left viewport toolbar</strong> includes quick icons for <strong>Frame</strong>, <strong>Snapshot</strong>, <strong>Gizmo Space</strong> (World/Local), mesh selection tools, <strong>Grid</strong>, <strong>Zoom Mode</strong>, transform tools, <strong>Camera Orbit</strong>, <strong>Fly Mode</strong>, and <strong>Stats</strong> with <strong>Copy Stats</strong>.</li>
             <li><strong>Transform tools</strong> (Translate/Rotate/Scale) are available in viewport workflows and map to <strong>T</strong>, <strong>R</strong>, and <strong>E</strong>.</li>
             <li><strong>Grid</strong> toggle provides orientation and scale reference.</li>
             <li><strong>Wireframe</strong> toggle, default hotkey <strong>H</strong>.</li>
             <li><strong>Gizmo visibility</strong> toggle for clean previews.</li>
             <li><strong>Snapshot</strong> capture tools for scene reviews.</li>
             <li><strong>Stats overlay</strong> toggle in the 3D viewport side controls shows FPS and render/debug details, with a copy-stats action for quick reporting.</li>
+            <li><strong>Viewport lighting</strong> is controlled from the top bar Settings panel: Shadow Quality, Cast Shadows, Self Shadows, Ambient Light, Work Light, Unlit View, and 2-Sided Shadows.</li>
           </ul>
         </section>
 
@@ -276,16 +429,28 @@
           <h2><img class="inline-icon" src="../icons/WorldGizmoOn_Icon.png" alt="Viewport panel icon" /> Viewport Left Panel</h2>
           <ul class="bullet">
             <li>The left panel is a fast-access icon strip for camera/view actions and viewport toggles.</li>
+            <li><strong>Object</strong>, <strong>Point</strong>, <strong>Edge</strong>, and <strong>Face</strong> selection modes are mutually toggled selection tools for mesh inspection and modeler workflows.</li>
+            <li><strong>Box Select</strong> enables rectangular element selection; right-click it for front/back face selection policy.</li>
+            <li><strong>Point Numbers</strong> overlays point IDs for debugging selections, groom bindings, and point-based workflows.</li>
             <li><strong>Zoom toggle</strong> uses <code>GizmoZoom_On_Icon.png</code> / <code>GizmoZoom_Off_Icon.png</code> for Infinite vs Legacy zoom mode.</li>
           </ul>
           <div class="tool-wrap">
             <div class="tool-grid">
               <div class="tool-item"><img src="../icons/Frame_Icon.png" alt="Frame icon" /><span>Frame Selection</span></div>
+              <div class="tool-item"><img src="../icons/screengrab _Icon_s_001.png" alt="Snapshot icon" /><span>Snapshot</span></div>
               <div class="tool-item"><img src="../icons/WorldGizmoOn_Icon.png" alt="Gizmo space icon" /><span>Gizmo Space World/Local</span></div>
-              <div class="tool-item"><img src="../icons/CameraCtrl_On_Icon.png" alt="Camera orbit icon" /><span>Camera Orbit Lock/Free</span></div>
-              <div class="tool-item"><img src="../icons/FlyModeJoystick_On_Icon.png" alt="Fly mode icon" /><span>Fly Mode Toggle</span></div>
+              <div class="tool-item"><img src="../icons/ObjectSelect_Icon.png" alt="Object select icon" /><span>Object Select</span></div>
+              <div class="tool-item"><img src="../icons/PointSelect_Icon.png" alt="Point select icon" /><span>Point Select</span></div>
+              <div class="tool-item"><img src="../icons/EdgeSelect_Icon.png" alt="Edge select icon" /><span>Edge Select</span></div>
+              <div class="tool-item"><img src="../icons/FaceSelect_Icon.png" alt="Face select icon" /><span>Face Select</span></div>
+              <div class="tool-item"><img src="../icons/MouseCursor_icon.png" alt="Box select icon" /><span>Box Select + Face Policy Menu</span></div>
+              <div class="tool-item"><img src="../icons/PointID_Icon.png" alt="Point ID icon" /><span>Point Numbers</span></div>
               <div class="tool-item"><img src="../icons/grid_on_icon.png" alt="Grid icon" /><span>Grid Toggle</span></div>
               <div class="tool-item"><img src="../icons/GizmoZoom_On_Icon.png" alt="Zoom mode icon" /><span>Zoom Mode Toggle</span></div>
+              <div class="tool-item"><img src="../icons/TranformNode_Icon.png" alt="Transform tool icon" /><span>Translate / Rotate / Scale Tools</span></div>
+              <div class="tool-item"><img src="../icons/CameraCtrl_On_Icon.png" alt="Camera orbit icon" /><span>Camera Orbit Lock/Free</span></div>
+              <div class="tool-item"><img src="../icons/FlyModeJoystick_On_Icon.png" alt="Fly mode icon" /><span>Fly Mode Toggle</span></div>
+              <div class="tool-item"><img src="../icons/TabIcon.png" alt="Stats icon" /><span>Stats Overlay</span></div>
               <div class="tool-item"><img src="../icons/Copy_Icon.png" alt="Copy stats icon" /><span>Copy Stats</span></div>
             </div>
           </div>
@@ -336,10 +501,23 @@
           </div>
         </section>
 
+        <section id="profiler-panel" class="section">
+          <h2><img class="inline-icon" src="../icons/debug_002_Icon_s.png" alt="Profiler icon" /> Profiler Panel</h2>
+          <ul class="bullet">
+            <li>Open from top bar <strong>Panels -> Profiler</strong>; the panel appears above the 2D graph.</li>
+            <li><strong>Start</strong> begins a profiler capture and turns into the stop control while recording.</li>
+            <li><strong>Clear</strong> removes the last profiler capture from the panel.</li>
+            <li><strong>Export</strong> writes the latest capture under <code>logs\Profiler</code>.</li>
+            <li><strong>Processes</strong> tab shows process/span timing with calls, total milliseconds, average milliseconds, and max milliseconds.</li>
+            <li><strong>Python</strong> tab shows Python function calls, cumulative time, and self time.</li>
+            <li>The bottom resize handle lets you adjust the profiler height while keeping the graph usable.</li>
+          </ul>
+        </section>
+
         <section id="panel-layouts" class="section">
           <h2><img class="inline-icon" src="../icons/TabIcon.png" alt="Panels icon" /> Panel Layout Presets</h2>
           <ul class="bullet">
-            <li>Use top bar <strong>Panels</strong> menu for quick panel visibility controls: <strong>Timeline</strong>, <strong>Audio</strong>, and <strong>Save Layout</strong>.</li>
+            <li>Use top bar <strong>Panels</strong> menu for quick panel visibility controls: <strong>Timeline</strong>, <strong>Audio</strong>, <strong>Profiler</strong>, <strong>Shelf</strong>, and <strong>Save Layout</strong>.</li>
             <li><strong>Save Layout</strong> stores current panel visibility as the app-global default layout preset.</li>
             <li>Settings menu includes <strong>Auto Save Layout</strong> to automatically persist panel visibility changes.</li>
             <li>Global layout state is persisted in <code>app_settings.json</code>.</li>
@@ -388,13 +566,47 @@
 
         <section id="settings" class="section">
           <h2>Settings</h2>
-          <ul class="bullet">
-            <li><strong>Local Server Scale</strong>: scales Local Server node presentation.</li>
-            <li><strong>Pan Base / Pan Exp / Pan Boost</strong>: viewport panning response.</li>
-            <li><strong>Gizmo Zoom</strong>: transform tool sensitivity.</li>
-            <li><strong>Debug Log</strong>: diagnostic logging toggle.</li>
-            <li><strong>Auto Save Layout</strong>: automatically captures timeline/audio panel visibility as global layout default.</li>
-          </ul>
+          <div class="grid two">
+            <div class="card">
+              <h3>Viewport Navigation</h3>
+              <ul class="bullet">
+                <li><strong>Local Server Scale</strong>: scales Local Server node presentation.</li>
+                <li><strong>Pan Base</strong>, <strong>Pan Exp</strong>, and <strong>Pan Boost</strong>: tune graph/viewport panning response.</li>
+                <li><strong>Gizmo Zoom</strong>: adjusts transform gizmo zoom sensitivity.</li>
+                <li><strong>Fly Speed</strong>: scales fly-mode navigation speed.</li>
+                <li><strong>Wire Color</strong>: opens a color swatch for wireframe rendering.</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Lighting and Shadows</h3>
+              <ul class="bullet">
+                <li><strong>Shadow Quality</strong>: choose <strong>Low</strong>, <strong>Medium</strong>, <strong>High</strong>, or <strong>Ultra</strong> shadow map quality.</li>
+                <li><strong>Cast Shadows</strong>: enables meshes and splats casting shadows into the scene.</li>
+                <li><strong>Self Shadows</strong>: lets a mesh receive its own shadow; turn it off to keep shadows from other objects while removing self-shadow artifacts.</li>
+                <li><strong>Ambient Light</strong>: toggles the renderer base fill light.</li>
+                <li><strong>Work Light</strong>: keeps normal-based lighting while bypassing viewport shadow darkening and adding fill light for modeling.</li>
+                <li><strong>Unlit View</strong>: draws viewport meshes without light shading or shadow darkening.</li>
+                <li><strong>2-Sided Shadows</strong>: casts shadows from front and back faces, useful for thin or closed geometry.</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Debug and Skeleton Display</h3>
+              <ul class="bullet">
+                <li><strong>Debug Log</strong>: toggles splat/viewport diagnostic logging.</li>
+                <li><strong>Joint Names</strong>: shows visible skeleton joint names in the 3D view.</li>
+                <li>The top bar <strong>Debug</strong> menu separately controls EchoGraph log and viewport debug state.</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Layout and Voice Audio</h3>
+              <ul class="bullet">
+                <li><strong>Auto Save Layout</strong>: automatically captures panel visibility and view mode as the global default.</li>
+                <li><strong>Turn-Taking Audio</strong>: pauses microphone capture while another actor speaks; disabling it allows bilateral mic and speaker behavior.</li>
+                <li><strong>Microphone</strong>: selects the speech recognition microphone device when available.</li>
+                <li>The refresh icon at the top of Settings resets settings back to defaults.</li>
+              </ul>
+            </div>
+          </div>
         </section>
 
         <section id="nodes" class="section">
@@ -406,7 +618,7 @@
               <h3>Core and Utility</h3>
               <ul class="node-list">
                 <li><img class="node-inline-icon" src="../icons/Electric_Pen_Icon.png" alt="Note icon" /><span><strong>note</strong>: note tasks and text content with per-parameter controls.</span></li>
-                <li><img class="node-inline-icon" src="../icons/TabIcon.png" alt="Node icon" /><span><strong>node</strong>: general purpose parameter node.</span></li>
+                <li><img class="node-inline-icon" src="../icons/TabIcon.png" alt="Node icon" /><span><strong>node</strong>: standard general purpose parameter node.</span></li>
                 <li><img class="node-inline-icon" src="../icons/append_icon.png" alt="Append icon" /><span><strong>append</strong>: ordered input aggregation; can now drive Gantt group order.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Switch_Icon.png" alt="Switch icon" /><span><strong>switch</strong>: single-branch selection from multiple upstream nodes.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Calendar_Icon.png" alt="Gantt icon" /><span><strong>gantt_chart</strong>: scheduling board with multi-note grouping, collapse state persistence, and CSV copy/paste transfer.</span></li>
@@ -430,35 +642,58 @@
               <h3>Automation, Voice, and Control</h3>
               <ul class="node-list">
                 <li><img class="node-inline-icon" src="../icons/TanyaAI_Icon.png" alt="Voice Actor icon" /><span><strong>voice_actor</strong>: speech-to-text and text-to-speech node with Auto Respond, Ask First, and Manual send modes.</span></li>
+                <li><img class="node-inline-icon" src="../icons/AudioCapture_Icon.png" alt="Audio capture icon" /><span><strong>audio_capture</strong>: captures output device, input device, or application audio with backend, sample-rate, threshold, silence, and phrase controls.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Mediator_Icon_1_s.png" alt="Mediator icon" /><span><strong>mediator_agent</strong>: Codex-backed mediator that processes voice input, prompt profiles, and Qubit Deck controller commands.</span></li>
                 <li><img class="node-inline-icon" src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="Qubit Deck icon" /><span><strong>qubit_deck_controller</strong>: list or execute Qubit Deck actions from manual fields or Mediator JSON on <code>mediator_input</code>.</span></li>
                 <li><img class="node-inline-icon" src="../icons/TabIcon.png" alt="Keyboard sequence icon" /><span><strong>keyboard_sequence</strong>: Keyboard Auto Runner for timed key/action sequences with lead-in, hold time, delays, and injection mode.</span></li>
+                <li><img class="node-inline-icon" src="../icons/SerialCom_Icon_s.png" alt="Serial COM icon" /><span><strong>serial_com</strong>: stores COM port, baud, and timeout settings for serial/Pico HID automation paths.</span></li>
               </ul>
             </div>
 
             <div class="card">
-              <h3>3D and Scene Processing</h3>
+              <h3>3D, Rigging, and Scene Processing</h3>
               <ul class="node-list">
                 <li><img class="node-inline-icon" src="../icons/Import_File_Icon.png" alt="Import icon" /><span><strong>import</strong>: load mesh or splat assets.</span></li>
                 <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX import icon" /><span><strong>fbx_import</strong>: ingest and validate FBX rest geometry, capture pose, and animated pose roles for rigging workflows.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="Gen-X icon" /><span><strong>genx_video_mocap</strong>: run GEN-X/GEM-X video mocap and create downstream BVH import nodes.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="Mocap icon" /><span><strong>mocap_import</strong>: import and validate BVH mocap clips with skeleton, frame, and clip summaries.</span></li>
                 <li><img class="node-inline-icon" src="../icons/anim_retarget_Icon_s.png" alt="Retarget icon" /><span><strong>anim_retarget</strong>: connect a mocap/FBX source to a target FBX rig with joint mapping, root controls, pose offsets, and preview options.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Camera_icon.png" alt="Camera icon" /><span><strong>camera</strong>: scene camera placement/control node.</span></li>
+                <li><img class="node-inline-icon" src="../icons/LightSource_Icon_s.png" alt="Light icon" /><span><strong>light</strong>: directional, point, spot, and area light setup with intensity, range, and shadow parameters.</span></li>
                 <li><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Instance icon" /><span><strong>instance</strong>: create repeated scene instances.</span></li>
+                <li><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Copy to points icon" /><span><strong>copy_to_points</strong>: copy source geometry onto point inputs with instancing and material/texture support.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Primitive_Icon.png" alt="Primitive icon" /><span><strong>primitive</strong>: generate procedural primitive geometry.</span></li>
+                <li><img class="node-inline-icon" src="../icons/StreightCurve_Icon.png" alt="Curve icon" /><span><strong>curve</strong>: create line, circle, or spiral curve scene assets.</span></li>
+                <li><img class="node-inline-icon" src="../icons/ObjectSelect_Icon.png" alt="Modeler icon" /><span><strong>modeler</strong>: inspect model object names, hide/isolate submeshes, and save object/point/edge/face selection groups.</span></li>
+                <li><img class="node-inline-icon" src="../icons/TranformNode_Icon.png" alt="Transform icon" /><span><strong>transforms</strong>: apply translate/rotate/scale offsets in-chain.</span></li>
+                <li><img class="node-inline-icon" src="../icons/PLT_Icon.png" alt="PLY sequence icon" /><span><strong>ply_sequence</strong>: sequence playback/control for PLY streams and splat frame workflows.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Scene_Icon.png" alt="Scene icon" /><span><strong>scene</strong>: assemble and manage multi-asset scenes.</span></li>
+                <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX icon" /><span><strong>export_fbx</strong>: export scene geometry to FBX.</span></li>
+                <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX animation icon" /><span><strong>export_fbx_animation</strong>: export validated FBX rigs with skeletons, skinned meshes, animation ranges, FPS, and optional joint-scale curves.</span></li>
+                <li><img class="node-inline-icon" src="../icons/OBJ_Icon.png" alt="OBJ icon" /><span><strong>export_obj</strong>: export to OBJ/MTL.</span></li>
+              </ul>
+            </div>
+
+            <div class="card">
+              <h3>Mesh, Materials, and Grooming</h3>
+              <ul class="node-list">
                 <li><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="UV icon" /><span><strong>uv_unwrap</strong>: UV workflow stage.</span></li>
+                <li><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="Normals icon" /><span><strong>normals</strong>: smooth mesh normals and cache an updated OBJ for downstream texture, mask, and scene workflows.</span></li>
                 <li><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="Texture icon" /><span><strong>texture</strong>: base texturing stage.</span></li>
                 <li><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="Texture pro icon" /><span><strong>texture_pro</strong>: expanded texture processing controls.</span></li>
                 <li><img class="node-inline-icon" src="../icons/layer_Texture_Icon.png" alt="Texture layer icon" /><span><strong>texture_layer</strong>: layered texture compositing.</span></li>
                 <li><img class="node-inline-icon" src="../icons/MaterialGenerator_Icon_S.png" alt="Material icon" /><span><strong>material</strong>: material setup and conversion utilities.</span></li>
+                <li><img class="node-inline-icon" src="../icons/PaintBrush_Off_Icon.png" alt="Mask icon" /><span><strong>mask</strong>: paint foreground/background mesh masks with brush, falloff, invert, clear, and preview controls.</span></li>
                 <li><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="Volume split icon" /><span><strong>split_volume</strong> / <strong>volume_selector</strong>: filter/split geometry by volume.</span></li>
-                <li><img class="node-inline-icon" src="../icons/TranformNode_Icon.png" alt="Transform icon" /><span><strong>transforms</strong>: apply translate/rotate/scale offsets in-chain.</span></li>
                 <li><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="FX icon" /><span><strong>fx</strong>: post-process and trail-style pipeline stage.</span></li>
                 <li><img class="node-inline-icon" src="../icons/StreightArrow_Icon.png" alt="Wire icon" /><span><strong>wire</strong>: wire and curve-based geometry path workflows.</span></li>
-                <li><img class="node-inline-icon" src="../icons/PLT_Icon.png" alt="PLY sequence icon" /><span><strong>ply_sequence</strong>: sequence playback/control for PLY streams.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Scene_Icon.png" alt="Scene icon" /><span><strong>scene</strong>: assemble and manage multi-asset scenes.</span></li>
-                <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX icon" /><span><strong>export_fbx</strong>: export to FBX.</span></li>
-                <li><img class="node-inline-icon" src="../icons/OBJ_Icon.png" alt="OBJ icon" /><span><strong>export_obj</strong>: export to OBJ/MTL.</span></li>
+                <li><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom guides icon" /><span><strong>groom_guides</strong>: generate guide curves from a painted mask and source mesh, with guide count, length, segments, seed, and threshold controls.</span></li>
+                <li><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom deform icon" /><span><strong>groom_deform</strong>: bind guide curves to FBX/retarget rigs and optionally hide the deformer geometry.</span></li>
+                <li><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom pose icon" /><span><strong>groom_guide_pose</strong>: pose guide curves from animation frames with XPBD-style strand settings and optional GPU support.</span></li>
+                <li><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom simulation icon" /><span><strong>groom_guide_sim</strong>: simulate guides with start frame, FPS, substeps, iterations, stretch, bend, damping, gravity, wind, and optional collider input.</span></li>
+                <li><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Guide tube icon" /><span><strong>groom_guide_tube</strong>: convert guide curves into tube geometry with root/tip radius, profile ramp, sides, subdivisions, caps, smoothing, and source-guide display.</span></li>
+                <li><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="Skinned volume mesh icon" /><span><strong>skinned_volume_mesh</strong>: generate skinned voxel collision meshes from rig contexts for grooming simulation and viewport collision.</span></li>
+                <li><img class="node-inline-icon" src="../icons/PointID_Icon.png" alt="Skinned splat proxy icon" /><span><strong>skinned_splat_proxy</strong>: generate skinned splat proxies from retargeted rigs, FBX imports, or guide tubes with sample count, influence, radius, auto-generate, and color-mode controls.</span></li>
               </ul>
             </div>
 
@@ -474,7 +709,7 @@
               </ul>
             </div>
           </div>
-          <p class="muted">Aliases also exist for some node kinds (for example <code>scene_assembly</code>, <code>scene_outliner</code>, <code>exportfbx</code>, <code>video player</code>, <code>bvh_import</code>, <code>retarget</code>, and legacy <code>medigator_agent</code>).</p>
+          <p class="muted">Aliases also exist for many node kinds, including <code>scene_assembly</code>, <code>scene_outliner</code>, <code>exportfbx</code>, <code>export fbx animation</code>, <code>video player</code>, <code>bvh_import</code>, <code>retarget</code>, <code>gpt_prompt</code>, <code>copy to points</code>, <code>hair guides</code>, <code>guide_tube</code>, <code>serial_port</code>, and legacy <code>medigator_agent</code>.</p>
         </section>
 
         <section id="pipelines" class="section">
@@ -483,11 +718,12 @@
             <div class="card">
               <h3>Scene Assembly and Export</h3>
               <ol class="steps">
-                <li>Create <code>import</code>, <code>fbx_import</code>, or <code>primitive</code> nodes.</li>
-                <li>Optional processing: <code>uv_unwrap</code>, <code>texture</code>/<code>texture_pro</code>/<code>texture_layer</code>, <code>split_volume</code>, <code>transforms</code>, or <code>anim_retarget</code>.</li>
-                <li>Use <code>instance</code> when you need repeated assets.</li>
+                <li>Create <code>import</code>, <code>fbx_import</code>, <code>primitive</code>, <code>curve</code>, or <code>modeler</code> nodes.</li>
+                <li>Optional processing: <code>normals</code>, <code>uv_unwrap</code>, <code>texture</code>/<code>texture_pro</code>/<code>texture_layer</code>, <code>material</code>, <code>split_volume</code>, <code>transforms</code>, or <code>anim_retarget</code>.</li>
+                <li>Use <code>instance</code> or <code>copy_to_points</code> when you need repeated assets.</li>
+                <li>Add <code>camera</code> and <code>light</code> nodes when the scene needs explicit shot and lighting control.</li>
                 <li>Connect into <code>scene</code> and review in 3D viewport.</li>
-                <li>Finish with <code>export_fbx</code> or <code>export_obj</code> for DCC handoff.</li>
+                <li>Finish with <code>export_fbx</code>, <code>export_fbx_animation</code>, or <code>export_obj</code> for DCC handoff.</li>
               </ol>
             </div>
             <div class="card">
@@ -527,6 +763,17 @@
                 <li>Connect mocap or animated FBX into <code>anim_retarget</code> <code>source</code>.</li>
                 <li>Connect the target rig <code>fbx_import</code> into <code>anim_retarget</code> <code>target</code>.</li>
                 <li>Validate mapping, adjust root/scale/rotation settings, preview, then continue to scene/render/export stages.</li>
+                <li>Use <code>export_fbx_animation</code> when you need a rigged FBX animation file instead of a static scene export.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>Video to Mocap</h3>
+              <ol class="steps">
+                <li>Run <code>Mocap\setup.bat</code> once for the GEM-X/GEN-X environment.</li>
+                <li>Create <code>genx_video_mocap</code> and browse to an MP4, MOV, AVI, MKV, or WebM source.</li>
+                <li>Choose the rig export target, such as SOMA BVH or Unitree G1.</li>
+                <li>Run the node and let it create a <code>mocap_import</code> node from the latest generated BVH.</li>
+                <li>Retarget that mocap through <code>anim_retarget</code> for viewport, render, or FBX animation export.</li>
               </ol>
             </div>
             <div class="card">
@@ -545,7 +792,36 @@
                 <li>Create <code>keyboard_sequence</code> and add key/action rows.</li>
                 <li>Set lead-in delay so you have time to focus the target application.</li>
                 <li>Choose injection mode and per-key hold timing for the target app.</li>
+                <li>Optional: connect <code>serial_com</code> for Pico-backed HID commands when the target workflow needs hardware input.</li>
                 <li>Run the sequence, or stop it if the target app state changes.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>Audio and Voice Capture</h3>
+              <ol class="steps">
+                <li>Create <code>audio_capture</code> and choose output-device, input-device, or application source mode.</li>
+                <li>Select the device/backend and tune threshold, silence window, phrase duration, and sample rate.</li>
+                <li>Use <code>Test</code> to confirm signal detection.</li>
+                <li>Route captured audio or transcribed text into <code>voice_actor</code>, <code>chatbot</code>, or <code>mediator_agent</code> workflows as needed.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>Mask to Groom Guides</h3>
+              <ol class="steps">
+                <li>Load a mesh through <code>import</code>, <code>fbx_import</code>, or a compatible processed mesh node.</li>
+                <li>Connect into <code>mask</code> and paint the scalp or emission region.</li>
+                <li>Connect <code>mask</code> to <code>groom_guides</code> and set count, length, segments, threshold, and seed.</li>
+                <li>Use <code>groom_deform</code> to bind guides to a retargeted rig when animated deformation is needed.</li>
+                <li>Use <code>groom_guide_pose</code>, <code>groom_guide_sim</code>, or <code>groom_guide_tube</code> for posed, simulated, or tube-geometry output.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>Skinned Collision and Splat Proxies</h3>
+              <ol class="steps">
+                <li>Start from <code>fbx_import</code> or <code>anim_retarget</code> so a rig context is available.</li>
+                <li>Use <code>skinned_volume_mesh</code> to generate a voxel-derived collision mesh for guide simulation.</li>
+                <li>Use <code>skinned_splat_proxy</code> to generate render proxies from a rig source or from <code>groom_guide_tube</code>.</li>
+                <li>Connect the generated asset into <code>scene</code> for viewport review or into render/export nodes for delivery.</li>
               </ol>
             </div>
           </div>
@@ -563,9 +839,14 @@
             <li>FBX import or retarget validation issues: run <code>check_fbx_sdk.ps1</code>, or rerun <code>setup.bat full "C:\path\to\fbx_runtime"</code> with the Autodesk FBX runtime folder.</li>
             <li>Sequence to MP4 issues: confirm setup reported bundled ffmpeg as ready, or install ffmpeg on <code>PATH</code>.</li>
             <li>Voice Actor speech issues: rerun <code>setup.bat</code> so voice dependencies are installed; Local Whisper requires <code>faster-whisper</code>, Tanya/Google voice uses <code>gTTS</code> plus <code>pygame</code>, and Japanese Kokoro-82M requires the bundled <code>unidic-lite</code> MeCab dictionary.</li>
+            <li>Audio Capture issues: rerun <code>setup.bat</code>; output-device capture needs <code>soundcard</code> plus <code>numpy</code>, and input-device capture needs a working audio backend such as PyAudio.</li>
             <li>Mediator issues: confirm Node.js, <code>npx</code>, and <code>tools\codex.ps1</code> are available; Mediator logs are under <code>logs\mediator_agents</code>.</li>
             <li>Qubit Deck control issues: use <code>qubit_deck_controller</code> Context mode first to confirm button names before sending Executor JSON from Mediator.</li>
-            <li>Keyboard Auto Runner issues: make sure the intended target app has focus before the lead-in delay ends, and increase key hold time for apps that miss fast input.</li>
+            <li>Keyboard Auto Runner issues: make sure the intended target app has focus before the lead-in delay ends, increase key hold time for apps that miss fast input, and check connected <code>serial_com</code> nodes when Pico HID output is enabled.</li>
+            <li>Serial COM issues: install <code>pyserial</code> through the node prompt or rerun <code>setup.bat</code>, then confirm the COM port, baud rate, and timeout match the target device firmware.</li>
+            <li>Gen-X video mocap issues: run <code>Mocap\setup.bat</code>, confirm the selected video exists, and check the configured output root for generated BVH files.</li>
+            <li>Normals, masks, and grooming issues: confirm the upstream mesh path exists and uses a supported mesh extension (<code>.obj</code>, <code>.fbx</code>, <code>.gltf</code>, or <code>.glb</code>); Groom Guides also needs a painted Mask input.</li>
+            <li>Skinned volume or splat proxy issues: confirm the upstream <code>fbx_import</code> or <code>anim_retarget</code> source exposes a valid rig context, then regenerate when settings or source files change.</li>
           </ul>
         </section>
 
@@ -581,6 +862,9 @@
             <li>Mediator prompt profiles live under <code>nodes\mediator_agent\prompts</code>; the Qubit Deck profile emits command JSON plus optional <code>&lt;user_feedback&gt;</code> text.</li>
             <li>Python helper scripts in <code>scripts\</code> can be pasted into Python nodes for output cleanup, including user feedback extraction for voice playback.</li>
             <li>Rigging and retargeting helpers live under <code>echograph\rigging</code> and are surfaced through <code>fbx_import</code>, <code>mocap_import</code>, and <code>anim_retarget</code>.</li>
+            <li>Grooming and skinned proxy helpers also live under <code>echograph\rigging</code> and are surfaced through <code>mask</code>, <code>groom_guides</code>, <code>groom_deform</code>, <code>groom_guide_pose</code>, <code>groom_guide_sim</code>, <code>groom_guide_tube</code>, <code>skinned_volume_mesh</code>, and <code>skinned_splat_proxy</code>.</li>
+            <li>Gen-X video mocap integration uses the <code>Mocap\GEM-X</code> runtime and can create <code>mocap_import</code> nodes after successful BVH generation.</li>
+            <li>Serial/Pico automation helpers are exposed through <code>serial_com</code> and consumed by downstream automation paths such as <code>keyboard_sequence</code>.</li>
           </ul>
         </section>
       </main>
