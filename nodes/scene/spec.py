@@ -34,6 +34,14 @@ _SKINNED_SPLAT_PROXY_KIND_ALIASES = {
     "fbx_to_skinned_splat_proxy",
     "fbx skinned splat proxy",
 }
+_IMAGE_GS_SPLAT_KIND_ALIASES = {
+    "image_gs_splat",
+    "image gs splat",
+    "imagegssplat",
+    "image_to_splat",
+    "image to splat",
+    "image_splat",
+}
 _SKINNED_VOLUME_MESH_KIND_ALIASES = {
     "skinned_volume_mesh",
     "skinned volume mesh",
@@ -2021,6 +2029,42 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"path={str(asset.get('path') or '')} "
                         + f"proxy={str(proxy.get('manifest') or proxy.get('status') or '')} "
                         + f"hide_source={bool(proxy.get('hide_source_mesh', False))}",
+                    )
+            continue
+        if kind in _IMAGE_GS_SPLAT_KIND_ALIASES:
+            try:
+                from nodes.image_gs import spec as _image_gs_spec  # type: ignore
+
+                build_asset = getattr(_image_gs_spec, "build_image_gs_splat_scene_asset", None)
+                outcome = build_asset(src_item, generate=False) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"image_gs_splat asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    info = asset.get("image_gs_splat") if isinstance(asset.get("image_gs_splat"), dict) else {}
+                    _scene_log(
+                        node_item,
+                        "image_gs_splat asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"path={str(asset.get('path') or '')} "
+                        + f"checkpoint={str(info.get('checkpoint') or '')}",
                     )
             continue
         if kind in _SKINNED_VOLUME_MESH_KIND_ALIASES:

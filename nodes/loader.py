@@ -538,6 +538,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Skinned Splat Proxy plugin import failed:", e)
 
+    # 13.955) Image-GS Splat
+    try:
+        from nodes import image_gs
+        if hasattr(image_gs, "register"):
+            image_gs.register()
+            _safe_probe("image_gs_splat")
+        else:
+            print("[EchoGraph] Image-GS Splat module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Image-GS Splat plugin import failed:", e)
+
     # 13.96) Skinned Volume Mesh
     try:
         from nodes import skinned_volume_mesh

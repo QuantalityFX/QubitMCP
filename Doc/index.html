@@ -37,6 +37,7 @@
           <a href="#hotkeys">Hotkeys</a>
           <a href="#settings">Settings</a>
           <a href="#nodes">Node Catalog</a>
+          <a href="#image-gs-splat">Image-GS Splat Node</a>
           <a href="#pipelines">Common Pipelines</a>
           <a href="#troubleshooting">Troubleshooting</a>
           <a href="#developer">Developer Guide</a>
@@ -47,7 +48,7 @@
         <header id="home" class="landing-hero">
           <canvas class="hero-canvas" aria-hidden="true"></canvas>
           <div class="hero-kicker">Windows desktop node workspace</div>
-          <h1>QubitMCP</h1>
+          <h1>Qubit MCP</h1>
           <p class="lead hero-lead">
             Build AI-assisted creative, production, mocap, asset, and Unreal workflows
             with a visual graph, a 3D viewport, librarian tools, voice automation,
@@ -152,7 +153,7 @@
               </ul>
             </div>
             <div class="card feature-card">
-              <h3><img class="inline-icon" src="../icons/TabIcon.png" alt="Keyboard sequence icon" /> Keyboard Auto Runner</h3>
+              <h3><img class="inline-icon" src="../icons/KeyboardActionRunner_Icon_s.png.png" alt="Keyboard sequence icon" /> Keyboard Auto Runner</h3>
               <ul class="bullet">
                 <li><code>keyboard_sequence</code> builds timed keyboard action sequences from the graph.</li>
                 <li>Actions include configurable lead-in, per-key hold time, action delay, and injection mode.</li>
@@ -210,6 +211,14 @@
               </ul>
             </div>
             <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/PixelsToSplat_Icon.png" alt="Image-GS splat icon" /> Image-GS Splat Node</h3>
+              <ul class="bullet">
+                <li><code>image_gs_splat</code> converts a local image path or HTTP image URL into a viewport-ready Gaussian splat PLY.</li>
+                <li>The node stages images as 8-bit RGB PNGs, runs the optional Image-GS runtime, and writes outputs under <code>logs\image_gs_splat</code>.</li>
+                <li>Generation includes node preview, debug report capture, InfoCard setup controls, and a bottom Stop button while processing.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
               <h3><img class="inline-icon" src="../icons/SerialCom_Icon_s.png" alt="Serial COM icon" /> Serial and Pico HID Control</h3>
               <ul class="bullet">
                 <li><code>serial_com</code> stores COM port, baud rate, and timeout settings for downstream automation.</li>
@@ -257,11 +266,16 @@
             <li>Checks Serial COM dependencies used by Pico/COM automation paths.</li>
             <li>Checks Mediator runtime support for <code>tools\codex.ps1</code>, Node.js, and <code>npx</code>.</li>
             <li>Checks or prompts for Autodesk FBX SDK runtime files used by full FBX import and retargeting workflows.</li>
+            <li>Downloads and prepares the optional Image-GS runtime under <code>%QUBITMCP_HOME%\third_party\image-gs</code> for image-to-splat workflows, including the Image-GS Python dependencies, fused-ssim, and bundled gsplat package.</li>
           </ul>
 
           <h3>Optional Gen-X video mocap setup</h3>
           <pre><code>Mocap\setup.bat</code></pre>
           <p>Use the Mocap setup when <code>genx_video_mocap</code> needs the GEM-X runtime and its dedicated environment.</p>
+
+          <h3>Optional Image-GS setup</h3>
+          <pre><code>nodes\image_gs\setup_image_gs.bat</code></pre>
+          <p>The main setup calls this automatically. It clones <code>https://github.com/NYU-ICL/image-gs.git</code> into the writable app home, creates a separate Image-GS environment, and installs the runtime used by <code>image_gs_splat</code>; set <code>QUBITMCP_SKIP_IMAGE_GS=1</code> before setup to skip it.</p>
 
           <h3>Optional FBX SDK setup</h3>
           <pre><code>setup.bat full "C:\path\to\fbx_runtime"</code></pre>
@@ -613,7 +627,7 @@
           <h2>Node Catalog</h2>
           <p class="muted">Current kinds available from Create Node and plugin registration.</p>
 
-          <div class="grid two">
+          <div class="grid node-catalog-grid">
             <div class="card">
               <h3>Core and Utility</h3>
               <ul class="node-list">
@@ -645,7 +659,7 @@
                 <li><img class="node-inline-icon" src="../icons/AudioCapture_Icon.png" alt="Audio capture icon" /><span><strong>audio_capture</strong>: captures output device, input device, or application audio with backend, sample-rate, threshold, silence, and phrase controls.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Mediator_Icon_1_s.png" alt="Mediator icon" /><span><strong>mediator_agent</strong>: Codex-backed mediator that processes voice input, prompt profiles, and Qubit Deck controller commands.</span></li>
                 <li><img class="node-inline-icon" src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="Qubit Deck icon" /><span><strong>qubit_deck_controller</strong>: list or execute Qubit Deck actions from manual fields or Mediator JSON on <code>mediator_input</code>.</span></li>
-                <li><img class="node-inline-icon" src="../icons/TabIcon.png" alt="Keyboard sequence icon" /><span><strong>keyboard_sequence</strong>: Keyboard Auto Runner for timed key/action sequences with lead-in, hold time, delays, and injection mode.</span></li>
+                <li><img class="node-inline-icon" src="../icons/KeyboardActionRunner_Icon_s.png.png" alt="Keyboard sequence icon" /><span><strong>keyboard_sequence</strong>: Keyboard Auto Runner for timed key/action sequences with lead-in, hold time, delays, and injection mode.</span></li>
                 <li><img class="node-inline-icon" src="../icons/SerialCom_Icon_s.png" alt="Serial COM icon" /><span><strong>serial_com</strong>: stores COM port, baud, and timeout settings for serial/Pico HID automation paths.</span></li>
               </ul>
             </div>
@@ -667,6 +681,7 @@
                 <li><img class="node-inline-icon" src="../icons/ObjectSelect_Icon.png" alt="Modeler icon" /><span><strong>modeler</strong>: inspect model object names, hide/isolate submeshes, and save object/point/edge/face selection groups.</span></li>
                 <li><img class="node-inline-icon" src="../icons/TranformNode_Icon.png" alt="Transform icon" /><span><strong>transforms</strong>: apply translate/rotate/scale offsets in-chain.</span></li>
                 <li><img class="node-inline-icon" src="../icons/PLT_Icon.png" alt="PLY sequence icon" /><span><strong>ply_sequence</strong>: sequence playback/control for PLY streams and splat frame workflows.</span></li>
+                <li><img class="node-inline-icon" src="../icons/PixelsToSplat_Icon.png" alt="Image-GS splat icon" /><span><strong>image_gs_splat</strong>: download a URL or local image, run Image-GS, preview the generated Gaussian result in the node, and output a viewport-ready PLY splat.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Scene_Icon.png" alt="Scene icon" /><span><strong>scene</strong>: assemble and manage multi-asset scenes.</span></li>
                 <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX icon" /><span><strong>export_fbx</strong>: export scene geometry to FBX.</span></li>
                 <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX animation icon" /><span><strong>export_fbx_animation</strong>: export validated FBX rigs with skeletons, skinned meshes, animation ranges, FPS, and optional joint-scale curves.</span></li>
@@ -712,9 +727,177 @@
           <p class="muted">Aliases also exist for many node kinds, including <code>scene_assembly</code>, <code>scene_outliner</code>, <code>exportfbx</code>, <code>export fbx animation</code>, <code>video player</code>, <code>bvh_import</code>, <code>retarget</code>, <code>gpt_prompt</code>, <code>copy to points</code>, <code>hair guides</code>, <code>guide_tube</code>, <code>serial_port</code>, and legacy <code>medigator_agent</code>.</p>
         </section>
 
+        <section id="image-gs-splat" class="section">
+          <h2>Image-GS Splat Node</h2>
+          <p>
+            <code>image_gs_splat</code> uses the optional Image-GS runtime to fit a set of Gaussian primitives to a single source image, then converts the Image-GS checkpoint into a viewport-ready PLY splat. The result is different from showing a flat image texture: the image is represented by many colored, semi-transparent Gaussian splats that can be loaded through the same scene and viewport path used by other splat assets.
+          </p>
+          <p>
+            This is not multi-view photogrammetry or a full hidden-surface 3D scan. With one image, Image-GS reconstructs an image-driven splat surface/field rather than a complete object with a reliable backside. In QubitMCP, the value is that the generated splats can be viewed, transformed, layered, connected into <code>scene</code>, and processed alongside other 3D and splat workflows.
+          </p>
+          <div class="grid two">
+            <div class="card">
+              <h3>What Generate Does</h3>
+              <ol class="steps">
+                <li>Reads a local image path or HTTP image URL from the node.</li>
+                <li>Stages the source as an 8-bit RGB PNG so Image-GS receives a predictable image format.</li>
+                <li>Runs Image-GS in <code>%QUBITMCP_HOME%\third_party\image-gs</code> using its separate Python environment.</li>
+                <li>Saves Image-GS checkpoints and preview images under the Image-GS results folder.</li>
+                <li>Converts the latest checkpoint into a PLY Gaussian splat stored under <code>logs\image_gs_splat</code>.</li>
+                <li>Updates the node output so <strong>View</strong> or a connected <code>scene</code> node can display the generated splat in the 3D viewport.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>Setup and Debug</h3>
+              <ul class="bullet">
+                <li>Use <code>setup.bat</code>, accept the first-use setup prompt, or click <strong>Setup Image-GS</strong> in the InfoCard to install the optional Image-GS checkout and dependencies.</li>
+                <li>The node writes generated files under <code>logs\image_gs_splat</code> and keeps the Image-GS checkout under <code>%QUBITMCP_HOME%\third_party\image-gs</code>.</li>
+                <li>While generation is running, a bottom-row <strong>Stop</strong> button appears to interrupt the active Image-GS process.</li>
+                <li>The top-right debug icon opens an Image-GS report with dependency status, command line, generated paths, exit code, and captured stdout/stderr from the last setup or generate run.</li>
+                <li>Image inputs are normalized before training, while Image-GS plot previews use JPG to avoid 16-bit PNG visualization errors in the upstream plotting code.</li>
+              </ul>
+            </div>
+          </div>
+
+          <h3>Main Parameters</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Parameter</th>
+                  <th>Default</th>
+                  <th>What It Controls</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>image_url</code> / Image</td>
+                  <td>empty</td>
+                  <td>Local image path or HTTP/HTTPS image URL. The browse button selects a local image. This value is also mirrored to <code>source</code> for compatibility.</td>
+                </tr>
+                <tr>
+                  <td><code>num_gaussians</code> / Splats</td>
+                  <td><code>2000</code></td>
+                  <td>Number of Gaussian primitives Image-GS optimizes. Higher values can capture more detail but increase runtime, memory use, and output size.</td>
+                </tr>
+                <tr>
+                  <td><code>max_steps</code> / Steps</td>
+                  <td><code>800</code></td>
+                  <td>Optimization iterations. Higher values usually improve reconstruction quality but take longer. The node saves checkpoint and render output at the final step.</td>
+                </tr>
+                <tr>
+                  <td><code>render_height</code> / Height</td>
+                  <td><code>768</code></td>
+                  <td>Training/render height passed to Image-GS. Larger values preserve more image detail but increase VRAM and runtime cost.</td>
+                </tr>
+                <tr>
+                  <td><code>init_mode</code> / Init</td>
+                  <td><code>gradient</code></td>
+                  <td>Initial placement strategy for splats. <code>gradient</code> follows image detail/edges, <code>saliency</code> favors visually important regions, and <code>random</code> distributes splats randomly.</td>
+                </tr>
+                <tr>
+                  <td><code>sheet_scale</code> / Sheet</td>
+                  <td><code>2.0</code></td>
+                  <td>Scale used when converting the 2D Image-GS checkpoint into a viewport splat sheet. Increase for a larger generated surface in scene units.</td>
+                </tr>
+                <tr>
+                  <td><code>radius_scale</code> / Radius</td>
+                  <td><code>1.0</code></td>
+                  <td>Multiplier applied to splat radii during checkpoint-to-PLY conversion. Increase for softer/larger splats; decrease for tighter points.</td>
+                </tr>
+                <tr>
+                  <td><code>alpha</code> / Alpha</td>
+                  <td><code>0.92</code></td>
+                  <td>Opacity value assigned during PLY conversion. Lower values make the generated splat sheet more transparent.</td>
+                </tr>
+                <tr>
+                  <td><code>quantize</code> / Quantize</td>
+                  <td><code>0</code></td>
+                  <td>Enables Image-GS quantization mode. Use it when testing compressed/bit-limited representations; leave off for normal quality-focused generation.</td>
+                </tr>
+                <tr>
+                  <td><code>vis_gaussians</code> / Points</td>
+                  <td><code>1</code></td>
+                  <td>Asks Image-GS to write Gaussian position and diagnostic preview images. These previews help inspect the fitted splat distribution but add a little runtime.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Advanced and Generated Parameters</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Parameter</th>
+                  <th>Purpose</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>source</code></td>
+                  <td>Compatibility mirror of the input image path/URL used by graph and scene helpers.</td>
+                </tr>
+                <tr>
+                  <td><code>path</code></td>
+                  <td>Final generated PLY path after a successful run. This is the path consumed by scene/import-style viewport loading.</td>
+                </tr>
+                <tr>
+                  <td><code>source_image</code></td>
+                  <td>Local staged 8-bit RGB PNG used as the actual Image-GS input. This may differ from the original source file.</td>
+                </tr>
+                <tr>
+                  <td><code>image_gs_input</code></td>
+                  <td>Relative media path passed to Image-GS, such as <code>qubitmcp/name_hash.png</code>.</td>
+                </tr>
+                <tr>
+                  <td><code>image_gs_exp_name</code></td>
+                  <td>Experiment name used under the Image-GS <code>results</code> folder.</td>
+                </tr>
+                <tr>
+                  <td><code>output_dir</code></td>
+                  <td>Optional output folder override. If empty, the node writes generated PLY, manifest, and staged input files under <code>logs\image_gs_splat\&lt;node name&gt;</code>.</td>
+                </tr>
+                <tr>
+                  <td><code>splat_ply</code></td>
+                  <td>Generated PLY splat path written after checkpoint conversion.</td>
+                </tr>
+                <tr>
+                  <td><code>checkpoint</code></td>
+                  <td>Latest Image-GS checkpoint selected for conversion.</td>
+                </tr>
+                <tr>
+                  <td><code>preview_image</code></td>
+                  <td>Preview image shown on the node when available. Before generation it may point to the source; after generation it points to the latest Image-GS preview.</td>
+                </tr>
+                <tr>
+                  <td><code>manifest</code></td>
+                  <td>JSON manifest recording the source image, checkpoint, generated PLY, dimensions, and conversion settings.</td>
+                </tr>
+                <tr>
+                  <td><code>device</code></td>
+                  <td>Compute device passed to Image-GS, usually <code>cuda:0</code>. Change only when using another CUDA device or CPU-compatible testing path.</td>
+                </tr>
+                <tr>
+                  <td><code>disable_inverse_scale</code></td>
+                  <td>Advanced conversion flag that changes how 2D scale values are mapped into exported splat radii.</td>
+                </tr>
+                <tr>
+                  <td><code>max_splats</code></td>
+                  <td>Safety cap for how many optimized splats are exported to PLY during conversion.</td>
+                </tr>
+                <tr>
+                  <td><code>debug_log</code></td>
+                  <td>Enables extra JSONL diagnostics. The node always captures the latest setup/generate output for the debug report, even when this is off.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
         <section id="pipelines" class="section">
           <h2>Common Pipelines</h2>
-          <div class="grid two">
+          <div class="grid pipeline-grid">
             <div class="card">
               <h3>Scene Assembly and Export</h3>
               <ol class="steps">
@@ -774,6 +957,16 @@
                 <li>Choose the rig export target, such as SOMA BVH or Unitree G1.</li>
                 <li>Run the node and let it create a <code>mocap_import</code> node from the latest generated BVH.</li>
                 <li>Retarget that mocap through <code>anim_retarget</code> for viewport, render, or FBX animation export.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>Image to Gaussian Splat</h3>
+              <ol class="steps">
+                <li>Run <code>setup.bat</code> after installing updates, approve the setup prompt when creating <code>image_gs_splat</code>, or use <strong>Setup Image-GS</strong> in the node InfoCard so the Image-GS checkout and dependencies are ready.</li>
+                <li>Create <code>image_gs_splat</code> and enter an HTTP image URL or local image path.</li>
+                <li>Set splat count, optimization steps, render height, initialization mode, and radius/sheet scale.</li>
+                <li>Click <strong>Generate</strong>; the node downloads the image, runs Image-GS, converts the checkpoint to PLY, and stores the result under <code>logs\image_gs_splat</code>.</li>
+                <li>Click <strong>View</strong> or connect the node into <code>scene</code> to inspect the generated splat in the viewport.</li>
               </ol>
             </div>
             <div class="card">

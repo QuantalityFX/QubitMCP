@@ -37,6 +37,7 @@ AGENTS.md
 # External/vendor trees
 /echograph/QOpenGLWidget_example-main/
 /echograph/repos/
+/third_party/image-gs/
 /vcpkg/
 /Unreal/UnrealEnviroment/
 /Unreal/UnrealEnvironment/

@@ -54,6 +54,7 @@ _MEDIGATOR_ICON = None
 _GENX_ICON = None
 _MOCAP_IMPORT_ICON = None
 _ANIM_RETARGET_ICON = None
+_PIXELS_TO_SPLAT_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -154,6 +155,14 @@ def _anim_retarget_icon():
         return _ANIM_RETARGET_ICON
     _ANIM_RETARGET_ICON = _load_pm("anim_retarget_Icon_s.png")
     return _ANIM_RETARGET_ICON
+
+
+def _pixels_to_splat_icon():
+    global _PIXELS_TO_SPLAT_ICON
+    if _PIXELS_TO_SPLAT_ICON is not None:
+        return _PIXELS_TO_SPLAT_ICON
+    _PIXELS_TO_SPLAT_ICON = _load_pm("PixelsToSplat_Icon.png") or _load_pm("PLT_Icon.png")
+    return _PIXELS_TO_SPLAT_ICON
 
 
 def _glb_icon():

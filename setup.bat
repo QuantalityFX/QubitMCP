@@ -56,6 +56,7 @@ set "INSTALL_FBX_SCRIPT=%REPO_DIR%\install_fbx_sdk.ps1"
 set "LIB_VENV=%APP_HOME%\librarian\.venv"
 set "LIB_PY=%LIB_VENV%\Scripts\python.exe"
 set "QDECK_SETUP_SCRIPT=%REPO_DIR%\nodes\qubit_deck_controller\setup_qubit_deck_controller.bat"
+set "IMAGE_GS_SETUP_SCRIPT=%REPO_DIR%\nodes\image_gs\setup_image_gs.bat"
 set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio soundcard gTTS pygame faster-whisper pymongo"
 set "KOKORO_DEPS=kokoro misaki[ja,zh] unidic-lite"
 set "BASE_PY_EXE="
@@ -128,6 +129,7 @@ call :install_optional_deps "%ROOT_PY%" "%KOKORO_DEPS%" "Kokoro-82M voice depend
 call :check_mediator_runtime
 call :check_keyboard_sequence_runtime "%ROOT_PY%"
 call :setup_fbx_sdk "%ROOT_PY%"
+call :setup_image_gs_runtime "%ROOT_PY%"
 
 if /I "%SETUP_MODE%"=="full" (
   call :ensure_venv "%LIB_VENV%" "librarian" || goto :fail
@@ -348,6 +350,40 @@ if errorlevel 1 (
 )
 echo [setup] keyboard_sequence runtime is ready.
 echo [setup] keyboard_sequence runtime is ready. >> "%LOG%"
+exit /b 0
+
+:setup_image_gs_runtime
+set "PY=%~1"
+
+if /I "%QUBITMCP_SKIP_IMAGE_GS%"=="1" (
+  echo [setup] Skipping Image-GS runtime ^(QUBITMCP_SKIP_IMAGE_GS=1^).
+  echo [setup] Skipping Image-GS runtime ^(QUBITMCP_SKIP_IMAGE_GS=1^). >> "%LOG%"
+  exit /b 0
+)
+
+if not exist "%IMAGE_GS_SETUP_SCRIPT%" (
+  echo [setup] WARNING: Image-GS setup script not found: %IMAGE_GS_SETUP_SCRIPT%
+  echo [setup] WARNING: Image-GS setup script not found: %IMAGE_GS_SETUP_SCRIPT% >> "%LOG%"
+  exit /b 0
+)
+
+if not exist "%PY%" (
+  echo [setup] WARNING: Image-GS setup skipped ^(missing Python: %PY%^).
+  echo [setup] WARNING: Image-GS setup skipped ^(missing Python: %PY%^). >> "%LOG%"
+  exit /b 0
+)
+
+echo [setup] Preparing Image-GS runtime...
+echo [setup] Preparing Image-GS runtime with %IMAGE_GS_SETUP_SCRIPT% >> "%LOG%"
+call "%IMAGE_GS_SETUP_SCRIPT%" "%APP_HOME%" "%PY%"
+if errorlevel 1 (
+  echo [setup] WARNING: Image-GS runtime setup failed. Image-to-splat tools will remain unavailable until setup is rerun.
+  echo [setup] WARNING: Image-GS runtime setup failed. >> "%LOG%"
+  exit /b 0
+)
+
+echo [setup] Image-GS runtime is ready.
+echo [setup] Image-GS runtime is ready. >> "%LOG%"
 exit /b 0
 
 :setup_fbx_sdk
@@ -625,4 +661,5 @@ echo   optional fbx_sdk_source_dir = folder containing either:
 echo      1^) fbx-*.whl + FbxCommon.py
 echo      2^) fbx*.pyd + FbxCommon.py ^(+ optional libfbxsdk.dll^)
 echo   optional env var: FBX_SDK_SOURCE=C:\path\to\fbx_runtime
+echo   optional env var: QUBITMCP_SKIP_IMAGE_GS=1 skips Image-GS download/setup
 exit /b 0

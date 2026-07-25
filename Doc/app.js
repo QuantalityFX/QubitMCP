@@ -61,7 +61,7 @@ if (location.hash && document.querySelector(location.hash)) {
   updateActiveFromScroll();
 }
 
-/* Living bio-qubit field behind the landing hero. */
+/* Living neural-splat field behind the landing hero. */
 (function initHeroLivingField() {
   const hero = document.querySelector(".landing-hero");
   const canvas = hero ? hero.querySelector(".hero-canvas") : null;
@@ -81,11 +81,21 @@ if (location.hash && document.querySelector(location.hash)) {
     amber: "245, 213, 118",
     white: "214, 226, 236",
   };
+  const neighborOffsets = [
+    [-1, 0],
+    [1, 0],
+    [0, -1],
+    [0, 1],
+    [-1, -1],
+    [-1, 1],
+    [1, -1],
+    [1, 1],
+  ];
 
   let width = 0;
   let height = 0;
   let dpr = 1;
-  let cellSize = 50;
+  let cellSize = 56;
   let rows = 0;
   let cols = 0;
   let cells = [];
@@ -144,6 +154,7 @@ if (location.hash && document.querySelector(location.hash)) {
     const totalHeight = rows * cellSize;
     const drift = scrollOffset % totalHeight;
     const rowShift = Math.sin(cell.row * 1.21 + cell.cluster) * cellSize * 0.16;
+    const colShift = Math.cos(cell.col * 1.07 + cell.cluster) * cellSize * 0.11;
     const breathing = Math.sin(now * 0.00034 * cell.speed + cell.phase);
     const x =
       cell.col * cellSize -
@@ -155,6 +166,7 @@ if (location.hash && document.querySelector(location.hash)) {
     const y =
       ((cell.row * cellSize + drift) % totalHeight) -
       cellSize +
+      colShift +
       cell.jitterY +
       Math.cos(now * 0.00029 * cell.speed + cell.phase) * cell.wander * 0.55;
 
@@ -202,7 +214,7 @@ if (location.hash && document.querySelector(location.hash)) {
   }
 
   function buildField() {
-    cellSize = width < 560 ? 42 : width < 900 ? 46 : 52;
+    cellSize = width < 560 ? 46 : width < 900 ? 52 : 60;
     rows = Math.ceil(height / cellSize) + 4;
     cols = Math.ceil(width / cellSize) + 4;
     scrollOffset = random(0, rows * cellSize);
@@ -211,8 +223,8 @@ if (location.hash && document.querySelector(location.hash)) {
     state = Array.from({ length: total }, (_, i) => {
       const row = Math.floor(i / cols);
       const col = i % cols;
-      const current = Math.sin(row * 0.87 + col * 1.36) > 0.82;
-      return Math.random() > 0.82 || (current && Math.random() > 0.4);
+      const current = Math.sin(row * 0.87 + col * 1.36) > 0.86;
+      return Math.random() > 0.86 || (current && Math.random() > 0.55);
     });
     nextState = new Array(total).fill(false);
     seedLifePatterns();
@@ -236,7 +248,9 @@ if (location.hash && document.querySelector(location.hash)) {
         jitterX: random(-cellSize * 0.31, cellSize * 0.31),
         jitterY: random(-cellSize * 0.27, cellSize * 0.27),
         wander: random(cellSize * 0.08, cellSize * 0.24),
-        energy: state[i] ? random(0.55, 1) : random(0, 0.08),
+        energy: state[i] ? random(0.18, 0.72) : random(0, 0.04),
+        birth: state[i] ? random(0.45, 1) : 0,
+        charge: random(-1, 1),
         cursor: 0,
       };
       const point = basePosition(cell, performance.now());
@@ -273,18 +287,8 @@ if (location.hash && document.querySelector(location.hash)) {
     let x = 0;
     let y = 0;
     let count = 0;
-    const dirs = [
-      [-1, 0],
-      [1, 0],
-      [0, -1],
-      [0, 1],
-      [-1, -1],
-      [-1, 1],
-      [1, -1],
-      [1, 1],
-    ];
 
-    for (const [dr, dc] of dirs) {
+    for (const [dr, dc] of neighborOffsets) {
       if (!lifeAt(row + dr, col + dc)) continue;
       x += dc;
       y += dr;
@@ -329,7 +333,9 @@ if (location.hash && document.querySelector(location.hash)) {
       state[i] = nextState[i];
       if (born) {
         cells[i].form = (cells[i].form + 1 + Math.floor(random(0, 2))) % 3;
-        cells[i].energy = Math.max(cells[i].energy, 1);
+        cells[i].energy = Math.max(cells[i].energy, 0.08);
+        cells[i].birth = Math.max(cells[i].birth, 0.04);
+        cells[i].angle = random(-0.55, 0.55);
       }
     }
 
@@ -339,6 +345,39 @@ if (location.hash && document.querySelector(location.hash)) {
       for (let i = 0; i < state.length; i += 1) {
         if (state[i] && Math.random() < 0.18) state[i] = false;
       }
+    }
+  }
+
+  function applyNeighborForces(cell, i, dt) {
+    const row = cell.row;
+    const col = cell.col;
+    const alive = state[i];
+
+    for (const [dr, dc] of neighborOffsets) {
+      const nextRow = row + dr;
+      const nextCol = col + dc;
+      if (nextRow < 0 || nextRow >= rows || nextCol < 0 || nextCol >= cols) {
+        continue;
+      }
+
+      const j = index(nextRow, nextCol);
+      const other = cells[j];
+      const otherLevel = Math.max(other.energy, other.cursor * 0.72);
+      if (otherLevel < 0.035) continue;
+
+      const dx = cell.x - other.x;
+      const dy = cell.y - other.y;
+      const dist = Math.max(1, Math.hypot(dx, dy));
+      const linked = alive && state[j];
+      const desired = cellSize * (linked ? 0.84 : 1.12);
+      const pressure = clamp((desired - dist) / desired, -0.95, 1.35);
+      const force = pressure * (linked ? 92 : 42) * otherLevel;
+      const tangent = linked ? Math.sin(lastTime * 0.004 + i * 0.17 + j * 0.09) * 18 : 0;
+      const nx = dx / dist;
+      const ny = dy / dist;
+
+      cell.vx += (nx * force - ny * tangent) * dt;
+      cell.vy += (ny * force + nx * tangent) * dt;
     }
   }
 
@@ -373,6 +412,7 @@ if (location.hash && document.querySelector(location.hash)) {
       const spring = (alive ? 11 : 7.2) + bias.count * 0.38;
       cell.vx += (targetX - cell.x) * spring * dt;
       cell.vy += (targetY - cell.y) * spring * dt;
+      applyNeighborForces(cell, i, dt);
       cell.vx += (influence.dx / influence.dist) * push * 2450 * dt;
       cell.vy += (influence.dy / influence.dist) * push * 2450 * dt;
       cell.vx += (-influence.dy / influence.dist) * push * 180 * dt;
@@ -384,93 +424,86 @@ if (location.hash && document.querySelector(location.hash)) {
       cell.x += cell.vx * dt;
       cell.y += cell.vy * dt;
 
-      const energyTarget = alive ? 1 : 0;
-      const energyRate = (alive ? 7.5 : 2.5) * Math.max(0.001, dt);
+      const birthTarget = alive ? 1 : 0;
+      const birthRate = (alive ? 2.9 : 1.55) * Math.max(0.001, dt);
+      cell.birth += (birthTarget - cell.birth) * clamp(birthRate, 0, 1);
+
+      const energyTarget = alive ? clamp(0.5 + bias.count * 0.075, 0, 1) : 0;
+      const energyRate = (alive ? 4.2 : 1.65) * Math.max(0.001, dt);
       cell.energy += (energyTarget - cell.energy) * clamp(energyRate, 0, 1);
 
       const level = Math.max(cell.energy, cell.cursor * 0.92);
-      if (level > 0.055 && isVisible(cell, 42)) {
+      if (level > 0.025 && isVisible(cell, 42)) {
         activeIndices.push(i);
       }
     }
   }
 
-  function drawBioGlyph(cell, i, now) {
+  function drawSplatGlyph(cell, i, now) {
     const alive = state[i];
-    const level = Math.max(cell.energy, cell.cursor * 0.92);
-    if (level < 0.055) return;
+    const liveLevel = cell.energy * clamp(cell.birth, 0, 1);
+    const level = Math.max(liveLevel, cell.cursor * 0.92);
+    if (level < 0.025) return;
 
-    const size = clamp(cellSize * (0.15 + level * 0.12), 7, 14);
-    const t = now * 0.0018 * cell.speed + cell.phase;
+    const t = now * 0.0019 * cell.speed + cell.phase;
+    const speed = Math.hypot(cell.vx, cell.vy);
+    const velocityAngle = speed > 4 ? Math.atan2(cell.vy, cell.vx) : cell.angle;
+    const cursorAngle = Math.atan2(cell.y - mouse.y, cell.x - mouse.x);
+    const angle = mouse.active && cell.cursor > 0.03
+      ? velocityAngle * (1 - cell.cursor) + cursorAngle * cell.cursor
+      : velocityAngle;
+    const size = clamp(cellSize * (0.095 + level * 0.13), 5, 15);
+    const stretch = 1 + clamp(speed / 72, 0, 0.48) + cell.cursor * 1.05;
+    const squash = clamp(0.52 + liveLevel * 0.24 - cell.cursor * 0.1, 0.38, 0.86);
     const main = alive ? colors.green : colors.cyan;
-    const faint = clamp(0.11 + level * 0.52, 0, 0.82);
+    const outerAlpha = clamp(0.035 + level * 0.12, 0, 0.22);
+    const coreAlpha = clamp(0.12 + level * 0.38, 0, 0.62);
 
     ctx.save();
     ctx.translate(cell.x, cell.y);
-    ctx.rotate(cell.angle + Math.sin(t) * 0.12 + cell.spin * level);
+    ctx.rotate(angle + Math.sin(t) * 0.08 + cell.spin * level);
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.lineWidth = 0.75 + level * 0.9;
+    ctx.lineWidth = 0.7 + level * 0.55;
 
-    ctx.strokeStyle = rgba(main, faint);
-    ctx.fillStyle = rgba(main, 0.025 + level * 0.055);
+    ctx.fillStyle = rgba(main, outerAlpha);
     ctx.beginPath();
-    ctx.ellipse(0, 0, size * 1.08, size * 0.62, Math.sin(t) * 0.16, 0, TAU);
+    ctx.ellipse(0, 0, size * 1.85 * stretch, size * 1.05 * squash, 0, 0, TAU);
     ctx.fill();
-    ctx.stroke();
 
-    ctx.strokeStyle = rgba(colors.white, 0.07 + level * 0.18);
+    ctx.fillStyle = rgba(main, outerAlpha * 1.45);
     ctx.beginPath();
-    ctx.ellipse(
-      0,
-      0,
-      size * 0.68,
-      size * 0.31,
-      Math.cos(t * 0.8) * 0.42,
-      0,
-      TAU
-    );
-    ctx.stroke();
+    ctx.ellipse(0, 0, size * 1.16 * stretch, size * 0.62 * squash, 0, 0, TAU);
+    ctx.fill();
 
-    ctx.strokeStyle = rgba(main, 0.12 + level * 0.34);
+    ctx.fillStyle = rgba(alive ? colors.white : colors.cyan, coreAlpha);
     ctx.beginPath();
-    ctx.arc(0, 0, size * 0.84, t, t + 1.25);
-    ctx.arc(0, 0, size * 0.84, t + Math.PI, t + Math.PI + 1.25);
-    ctx.stroke();
+    ctx.ellipse(0, 0, size * 0.43 * stretch, size * 0.27 * squash, 0, 0, TAU);
+    ctx.fill();
 
-    const podCount = 2 + cell.form;
-    ctx.strokeStyle = rgba(main, 0.14 + level * 0.3);
-    ctx.fillStyle = rgba(colors.white, 0.08 + level * 0.22);
-    for (let pod = 0; pod < podCount; pod += 1) {
-      const angle = t * 0.34 + (pod / podCount) * TAU + cell.form * 0.42;
-      const x1 = Math.cos(angle) * size * 0.68;
-      const y1 = Math.sin(angle) * size * 0.42;
-      const x2 = Math.cos(angle) * size * (0.9 + cell.form * 0.04);
-      const y2 = Math.sin(angle) * size * 0.58;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(x2, y2, size * 0.08, 0, TAU);
-      ctx.fill();
+    const pixelCount = 4 + cell.form;
+    for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+      const a = t * (0.21 + pixel * 0.03) + (pixel / pixelCount) * TAU;
+      const scatter = size * (0.66 + pixel * 0.1 + cell.cursor * 0.78);
+      const px = Math.cos(a) * scatter * stretch;
+      const py = Math.sin(a + cell.charge) * scatter * squash;
+      const side = clamp(size * (0.12 + level * 0.08), 1.6, 3.2);
+      const alpha = clamp(0.08 + level * 0.22 + cell.cursor * 0.18, 0, 0.48);
+
+      ctx.fillStyle = rgba(pixel % 3 === 0 ? colors.amber : main, alpha);
+      ctx.fillRect(px - side * 0.5, py - side * 0.5, side, side);
     }
 
-    ctx.fillStyle = rgba(colors.amber, 0.18 + level * 0.36);
+    ctx.strokeStyle = rgba(main, clamp(0.06 + level * 0.18, 0, 0.32));
     ctx.beginPath();
-    ctx.arc(
-      Math.cos(t * 0.92) * size * 0.2,
-      Math.sin(t * 0.7) * size * 0.15,
-      size * (0.11 + level * 0.03),
-      0,
-      TAU
-    );
-    ctx.fill();
+    ctx.moveTo(-size * 1.25 * stretch, 0);
+    ctx.lineTo(size * 1.25 * stretch, 0);
+    ctx.stroke();
 
     ctx.restore();
   }
 
-  function drawConnections() {
+  function drawConnections(now) {
     const offsets = [
       [0, 1],
       [1, 0],
@@ -519,6 +552,16 @@ if (location.hash && document.querySelector(location.hash)) {
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.stroke();
+
+        if (state[i] || state[j] || a.cursor + b.cursor > 0.2) {
+          const pulse = (Math.sin(now * 0.004 + i * 0.31 + j * 0.17) + 1) * 0.5;
+          const px = a.x + (b.x - a.x) * pulse;
+          const py = a.y + (b.y - a.y) * pulse;
+          ctx.fillStyle = rgba(colors.amber, alpha * 0.75);
+          ctx.beginPath();
+          ctx.arc(px, py, 1.1 + (aLevel + bLevel) * 0.55, 0, TAU);
+          ctx.fill();
+        }
       }
     }
 
@@ -556,9 +599,9 @@ if (location.hash && document.querySelector(location.hash)) {
     ctx.clearRect(0, 0, width, height);
     ctx.save();
     ctx.globalCompositeOperation = "lighter";
-    drawConnections();
+    drawConnections(now);
     for (const i of activeIndices) {
-      drawBioGlyph(cells[i], i, now);
+      drawSplatGlyph(cells[i], i, now);
     }
     drawMouseField();
     ctx.restore();

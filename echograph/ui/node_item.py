@@ -8092,6 +8092,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._genx_icon() or node_icons._mocap_import_icon() or node_icons._import_icon()
             elif kind_lower in ("anim_retarget", "anim retarget", "animretarget", "retarget"):
                 icon_pm = node_icons._anim_retarget_icon() or node_icons._transforms_icon() or node_icons._import_icon()
+            elif kind_lower in ("image_gs_splat", "image gs splat", "imagegssplat", "image_to_splat", "image to splat", "image_splat"):
+                icon_pm = node_icons._pixels_to_splat_icon() or node_icons._ply_icon() or node_icons._import_icon()
             elif kind_lower in ("skinned_splat_proxy", "skinned splat proxy", "skinnedsplatproxy", "fbx_to_skinned_splat_proxy", "fbx skinned splat proxy"):
                 icon_pm = node_icons._ply_icon() or node_icons._fbx_icon() or node_icons._import_icon()
             elif kind_lower in ("skinned_volume_mesh", "skinned volume mesh", "skinned_collision_mesh", "skinned collision mesh", "fbx_to_skinned_volume_mesh"):
