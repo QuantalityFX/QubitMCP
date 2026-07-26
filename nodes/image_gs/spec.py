@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -47,13 +48,32 @@ _DEFAULT_SHEET_SCALE = 2.0
 _DEFAULT_RADIUS_SCALE = 1.0
 _DEFAULT_ALPHA = 0.92
 _DEFAULT_DEVICE = "cuda:0"
+_DEFAULT_AUTO_QUALITY = "1"
+_DEFAULT_PROGRESSIVE_OPTIM = "1"
 _NODE_BODY_MIN_W = 378
-_NODE_BODY_MIN_H = 520
+_NODE_BODY_MIN_H = 536
 _NODE_PREVIEW_H = 216
 _CONTROL_W = 92
-_STATUS_MIN_H = 64
-_STATUS_MAX_H = 112
-_STATUS_TEXT_PAD_H = 16
+_STATUS_MIN_H = 78
+_STATUS_MAX_H = 132
+_STATUS_TEXT_PAD_H = 24
+_AUTO_MAX_GAUSSIANS = 2_000_000
+_AUTO_MIN_GAUSSIANS = 50_000
+_AUTO_INITIAL_RATIO = 0.25
+_AUTO_INIT_RANDOM_RATIO = 0.20
+_AUTO_ADD_STEPS = 650
+_AUTO_ADD_TIMES = 6
+_AUTO_POST_MIN_STEPS = 5_000
+_AUTO_L1_LOSS = 1.0
+_AUTO_L2_LOSS = 0.05
+_AUTO_SSIM_LOSS = 0.20
+_DEFAULT_MIN_AXIS_PX = 1.00
+_DEFAULT_MAX_AXIS_PX = 0.0
+_DEFAULT_MAX_ANISOTROPY = 7.0
+_DEFAULT_DROP_SCALE_OUTLIERS = "1"
+_DEFAULT_COVERAGE_BOOST = 1.20
+_DEFAULT_Z_AXIS_RATIO = 0.25
+_QC_SAMPLE_MAX_SIDE = 384
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr", ".bmp", ".webp"}
 _NODE_SCHEMA = "qubit.image_gs_splat.v1"
 _SETUP_PROMPT_SHOWN = False
@@ -130,6 +150,15 @@ def _param_float(model, name: str, default: float, *, min_value: float, max_valu
     except Exception:
         value = float(default)
     return max(float(min_value), min(float(max_value), float(value)))
+
+
+def _clamp_float(value: float, min_value: float, max_value: float) -> float:
+    return max(float(min_value), min(float(max_value), float(value)))
+
+
+def _round_int(value: float, *, step: int, min_value: int, max_value: int) -> int:
+    rounded = int(round(float(value) / float(step)) * int(step))
+    return max(int(min_value), min(int(max_value), rounded))
 
 
 def _ensure_param(node_item, name: str, default: str = "") -> None:
@@ -237,6 +266,23 @@ def _hash_settings(model) -> str:
         "alpha": _param_float(model, "alpha", _DEFAULT_ALPHA, min_value=0.001, max_value=0.999),
         "init": _param_value(model, "init_mode").strip() or "gradient",
         "quantize": _param_bool(model, "quantize", False),
+        "auto_quality": _param_bool(model, "auto_quality", True),
+        "max_splats": _param_int(model, "max_splats", _AUTO_MAX_GAUSSIANS, min_value=1, max_value=5_000_000),
+        "progressive_optim": _param_bool(model, "progressive_optim", True),
+        "initial_ratio": _param_float(model, "initial_ratio", _AUTO_INITIAL_RATIO, min_value=0.01, max_value=1.0),
+        "init_random_ratio": _param_float(model, "init_random_ratio", _AUTO_INIT_RANDOM_RATIO, min_value=0.0, max_value=1.0),
+        "add_steps": _param_int(model, "add_steps", _AUTO_ADD_STEPS, min_value=1, max_value=2_000_000),
+        "add_times": _param_int(model, "add_times", _AUTO_ADD_TIMES, min_value=1, max_value=1000),
+        "post_min_steps": _param_int(model, "post_min_steps", _AUTO_POST_MIN_STEPS, min_value=0, max_value=2_000_000),
+        "l1": _param_float(model, "l1_loss_ratio", _AUTO_L1_LOSS, min_value=0.0, max_value=100.0),
+        "l2": _param_float(model, "l2_loss_ratio", _AUTO_L2_LOSS, min_value=0.0, max_value=100.0),
+        "ssim": _param_float(model, "ssim_loss_ratio", _AUTO_SSIM_LOSS, min_value=0.0, max_value=100.0),
+        "min_axis_px": _param_float(model, "min_axis_px", _DEFAULT_MIN_AXIS_PX, min_value=0.01, max_value=1000.0),
+        "max_axis_px": _param_float(model, "max_axis_px", _DEFAULT_MAX_AXIS_PX, min_value=0.0, max_value=10000.0),
+        "max_anisotropy": _param_float(model, "max_anisotropy", _DEFAULT_MAX_ANISOTROPY, min_value=1.0, max_value=1000.0),
+        "drop_scale_outliers": _param_bool(model, "drop_scale_outliers", True),
+        "coverage_boost": _param_float(model, "coverage_boost", _DEFAULT_COVERAGE_BOOST, min_value=1.0, max_value=10.0),
+        "z_axis_ratio": _param_float(model, "z_axis_ratio", _DEFAULT_Z_AXIS_RATIO, min_value=0.04, max_value=10.0),
     }
     blob = json.dumps(payload, ensure_ascii=True, sort_keys=True)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
@@ -446,10 +492,30 @@ def image_gs_debug_report_text(node_item) -> str:
         "",
         "Inputs And Settings",
         f"source: {source or 'Not set'}",
+        f"auto_quality: {'on' if _param_bool(model, 'auto_quality', True) else 'off'}",
         f"num_gaussians: {_param_int(model, 'num_gaussians', _DEFAULT_NUM_GAUSSIANS, min_value=100, max_value=2_000_000)}",
         f"max_steps: {_param_int(model, 'max_steps', _DEFAULT_MAX_STEPS, min_value=1, max_value=2_000_000)}",
         f"render_height: {_param_int(model, 'render_height', _DEFAULT_RENDER_HEIGHT, min_value=64, max_value=12000)}",
+        f"sheet_scale: {_param_float(model, 'sheet_scale', _DEFAULT_SHEET_SCALE, min_value=0.01, max_value=100.0):.3f}",
+        f"radius_scale: {_param_float(model, 'radius_scale', _DEFAULT_RADIUS_SCALE, min_value=0.01, max_value=100.0):.3f}",
+        f"alpha: {_param_float(model, 'alpha', _DEFAULT_ALPHA, min_value=0.001, max_value=0.999):.3f}",
         f"init_mode: {_param_value(model, 'init_mode').strip() or 'gradient'}",
+        f"max_splats: {_param_int(model, 'max_splats', _AUTO_MAX_GAUSSIANS, min_value=1, max_value=5_000_000)}",
+        f"progressive_optim: {'on' if _param_bool(model, 'progressive_optim', True) else 'off'}",
+        f"initial_ratio: {_param_float(model, 'initial_ratio', _AUTO_INITIAL_RATIO, min_value=0.01, max_value=1.0):.3f}",
+        f"init_random_ratio: {_param_float(model, 'init_random_ratio', _AUTO_INIT_RANDOM_RATIO, min_value=0.0, max_value=1.0):.3f}",
+        f"add_steps: {_param_int(model, 'add_steps', _AUTO_ADD_STEPS, min_value=1, max_value=2_000_000)}",
+        f"add_times: {_param_int(model, 'add_times', _AUTO_ADD_TIMES, min_value=1, max_value=1000)}",
+        f"post_min_steps: {_param_int(model, 'post_min_steps', _AUTO_POST_MIN_STEPS, min_value=0, max_value=2_000_000)}",
+        f"loss: l1={_param_float(model, 'l1_loss_ratio', _AUTO_L1_LOSS, min_value=0.0, max_value=100.0):.3f} "
+        + f"l2={_param_float(model, 'l2_loss_ratio', _AUTO_L2_LOSS, min_value=0.0, max_value=100.0):.3f} "
+        + f"ssim={_param_float(model, 'ssim_loss_ratio', _AUTO_SSIM_LOSS, min_value=0.0, max_value=100.0):.3f}",
+        f"export_axis_px: min={_param_float(model, 'min_axis_px', _DEFAULT_MIN_AXIS_PX, min_value=0.01, max_value=1000.0):.3f} "
+        + f"max={_param_float(model, 'max_axis_px', _DEFAULT_MAX_AXIS_PX, min_value=0.0, max_value=10000.0):.3f} "
+        + f"anisotropy={_param_float(model, 'max_anisotropy', _DEFAULT_MAX_ANISOTROPY, min_value=1.0, max_value=1000.0):.3f} "
+        + f"drop_outliers={'on' if _param_bool(model, 'drop_scale_outliers', True) else 'off'} "
+        + f"coverage={_param_float(model, 'coverage_boost', _DEFAULT_COVERAGE_BOOST, min_value=1.0, max_value=10.0):.3f} "
+        + f"z_ratio={_param_float(model, 'z_axis_ratio', _DEFAULT_Z_AXIS_RATIO, min_value=0.04, max_value=10.0):.3f}",
         f"device: {_param_value(model, 'device').strip() or _DEFAULT_DEVICE}",
         "",
         "Generated Files",
@@ -458,7 +524,11 @@ def image_gs_debug_report_text(node_item) -> str:
         f"path: {_path_state(_param_value(model, 'path'))}",
         f"checkpoint: {_path_state(_param_value(model, 'checkpoint'))}",
         f"preview_image: {_path_state(_param_value(model, 'preview_image'))}",
+        f"render_image: {_path_state(_param_value(model, 'render_image'))}",
         f"manifest: {_path_state(_param_value(model, 'manifest'))}",
+        "",
+        "Quality Control",
+        _param_value(model, "qc_report").strip() or "No QC report has been captured yet.",
         "",
         "Last Run",
         f"action: {getattr(model, '_image_gs_last_action', '') or 'None captured'}",
@@ -590,6 +660,176 @@ def _qt_image_size(path: Path) -> tuple[int, int]:
     return 1024, 1024
 
 
+def _qimage_format(name: str):
+    direct = getattr(QtGui.QImage, name, None)
+    if direct is not None:
+        return direct
+    enum = getattr(QtGui.QImage, "Format", None)
+    return getattr(enum, name, None) if enum is not None else None
+
+
+def _scaled_rgb_image(path: Path, width: int, height: int) -> Optional[QtGui.QImage]:
+    image = QtGui.QImage(str(path))
+    if image.isNull() or image.width() <= 0 or image.height() <= 0:
+        return None
+    scaled = image.scaled(int(width), int(height), QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.SmoothTransformation)
+    fmt = _qimage_format("Format_RGB32")
+    if fmt is not None:
+        try:
+            scaled = scaled.convertToFormat(fmt)
+        except Exception:
+            pass
+    return scaled if not scaled.isNull() else None
+
+
+def _image_detail_analysis(path: Path, *, max_side: int = 256) -> Dict[str, Any]:
+    width, height = _qt_image_size(path)
+    scale = min(1.0, float(max_side) / float(max(1, width, height)))
+    sample_w = max(8, int(round(width * scale)))
+    sample_h = max(8, int(round(height * scale)))
+    image = _scaled_rgb_image(path, sample_w, sample_h)
+    if image is None:
+        return {
+            "sample_width": sample_w,
+            "sample_height": sample_h,
+            "edge_norm": 0.0,
+            "contrast_norm": 0.0,
+            "detail_score": 0.5,
+        }
+
+    prev_row: list[float] = []
+    edge_total = 0.0
+    edge_count = 0
+    lum_sum = 0.0
+    lum_sq_sum = 0.0
+    pixel_count = max(1, sample_w * sample_h)
+    for y in range(sample_h):
+        row: list[float] = []
+        prev_lum: Optional[float] = None
+        for x in range(sample_w):
+            color = image.pixelColor(x, y)
+            lum = (0.2126 * color.red()) + (0.7152 * color.green()) + (0.0722 * color.blue())
+            lum_sum += lum
+            lum_sq_sum += lum * lum
+            if prev_lum is not None:
+                edge_total += abs(lum - prev_lum)
+                edge_count += 1
+            if prev_row:
+                edge_total += abs(lum - prev_row[x])
+                edge_count += 1
+            row.append(lum)
+            prev_lum = lum
+        prev_row = row
+
+    mean = lum_sum / float(pixel_count)
+    variance = max(0.0, (lum_sq_sum / float(pixel_count)) - (mean * mean))
+    edge_norm = (edge_total / float(max(1, edge_count))) / 255.0
+    contrast_norm = math.sqrt(variance) / 128.0
+    edge_score = _clamp_float((edge_norm - 0.012) / 0.11, 0.0, 1.0)
+    contrast_score = _clamp_float(contrast_norm, 0.0, 1.0)
+    detail_score = _clamp_float((edge_score * 0.76) + (contrast_score * 0.24), 0.0, 1.0)
+    return {
+        "sample_width": sample_w,
+        "sample_height": sample_h,
+        "edge_norm": round(edge_norm, 6),
+        "contrast_norm": round(contrast_norm, 6),
+        "detail_score": round(detail_score, 4),
+    }
+
+
+def _auto_quality_settings(width: int, height: int, analysis: Dict[str, Any]) -> Dict[str, Any]:
+    pixels = max(1, int(width) * int(height))
+    detail_score = _clamp_float(float(analysis.get("detail_score", 0.5) or 0.5), 0.0, 1.0)
+    density = _clamp_float(0.44 + (0.08 * detail_score), 0.44, 0.54)
+    num_gaussians = _round_int(
+        pixels * density,
+        step=5_000,
+        min_value=_AUTO_MIN_GAUSSIANS,
+        max_value=_AUTO_MAX_GAUSSIANS,
+    )
+    megapixels = pixels / 1_000_000.0
+    min_prog_steps = (_AUTO_ADD_STEPS * _AUTO_ADD_TIMES) + _AUTO_POST_MIN_STEPS
+    if megapixels < 0.6:
+        max_steps = 9_000
+    elif megapixels < 1.5:
+        max_steps = 11_000
+    elif megapixels < 3.0:
+        max_steps = 13_000
+    else:
+        max_steps = 15_000
+    max_steps = max(max_steps, min_prog_steps)
+    render_height = _round_int(
+        min(max(int(height), 512), 2048),
+        step=32,
+        min_value=256,
+        max_value=2048,
+    )
+    radius_scale = _clamp_float(1.00 + (0.12 * detail_score), 1.00, 1.12)
+    return {
+        "num_gaussians": int(num_gaussians),
+        "max_steps": int(max_steps),
+        "render_height": int(render_height),
+        "sheet_scale": 2.0,
+        "radius_scale": round(radius_scale, 3),
+        "alpha": 0.92,
+        "init_mode": "gradient",
+        "quantize": "0",
+        "vis_gaussians": "1",
+        "max_splats": int(num_gaussians),
+        "progressive_optim": "1",
+        "initial_ratio": _AUTO_INITIAL_RATIO,
+        "init_random_ratio": _AUTO_INIT_RANDOM_RATIO,
+        "add_steps": _AUTO_ADD_STEPS,
+        "add_times": _AUTO_ADD_TIMES,
+        "post_min_steps": _AUTO_POST_MIN_STEPS,
+        "l1_loss_ratio": _AUTO_L1_LOSS,
+        "l2_loss_ratio": _AUTO_L2_LOSS,
+        "ssim_loss_ratio": _AUTO_SSIM_LOSS,
+        "min_axis_px": _DEFAULT_MIN_AXIS_PX,
+        "max_axis_px": _DEFAULT_MAX_AXIS_PX,
+        "max_anisotropy": _DEFAULT_MAX_ANISOTROPY,
+        "drop_scale_outliers": _DEFAULT_DROP_SCALE_OUTLIERS,
+        "coverage_boost": _DEFAULT_COVERAGE_BOOST,
+        "z_axis_ratio": _DEFAULT_Z_AXIS_RATIO,
+        "density_target": round(float(num_gaussians) / float(pixels), 6),
+        "strategy": "progressive_error_guided_quality",
+        "source_detail": analysis,
+    }
+
+
+def _apply_auto_quality_settings(node_item, image_path: Path, width: int, height: int) -> Dict[str, Any]:
+    model = getattr(node_item, "model", None)
+    if not _param_bool(model, "auto_quality", True):
+        return {}
+    analysis = _image_detail_analysis(image_path)
+    settings = _auto_quality_settings(width, height, analysis)
+    for name in ("num_gaussians", "max_steps", "render_height", "max_splats", "add_steps", "add_times", "post_min_steps"):
+        _set_param(node_item, name, str(int(settings[name])), notify_scene=False)
+    for name in (
+        "sheet_scale",
+        "radius_scale",
+        "alpha",
+        "initial_ratio",
+        "init_random_ratio",
+        "l1_loss_ratio",
+        "l2_loss_ratio",
+        "ssim_loss_ratio",
+        "min_axis_px",
+        "max_axis_px",
+        "max_anisotropy",
+        "coverage_boost",
+        "z_axis_ratio",
+    ):
+        _set_param(node_item, name, f"{float(settings[name]):.3f}", notify_scene=False)
+    _set_param(node_item, "init_mode", str(settings["init_mode"]), notify_scene=False)
+    _set_param(node_item, "quantize", str(settings["quantize"]), notify_scene=False)
+    _set_param(node_item, "vis_gaussians", str(settings["vis_gaussians"]), notify_scene=False)
+    _set_param(node_item, "progressive_optim", str(settings["progressive_optim"]), notify_scene=False)
+    _set_param(node_item, "drop_scale_outliers", str(settings["drop_scale_outliers"]), notify_scene=False)
+    _set_param(node_item, "auto_quality_report", json.dumps(settings, ensure_ascii=True, sort_keys=True), notify_scene=False)
+    return settings
+
+
 def _url_filename(raw: str, fallback: str) -> str:
     parsed = url_parse.urlparse(raw)
     name = Path(url_parse.unquote(parsed.path or "")).name
@@ -665,11 +905,19 @@ def prepare_image_gs_run(node_item) -> ImageGsRunPlan:
     if not status.ready:
         raise RuntimeError(status.detail)
     source = _source_key(model)
+    out_dir = _output_dir(node_item)
     digest = _hash_settings(model)
     asset_stem = f"{_safe_stem(_node_name(node_item))}_{digest}"
-    out_dir = _output_dir(node_item)
     local_image = _copy_or_download_image(source, out_dir, asset_stem)
     width, height = _qt_image_size(local_image)
+    auto_settings = _apply_auto_quality_settings(node_item, local_image, width, height)
+    if auto_settings:
+        final_digest = _hash_settings(model)
+        final_stem = f"{_safe_stem(_node_name(node_item))}_{final_digest}"
+        if final_stem != asset_stem:
+            local_image = _normalize_image_for_image_gs(local_image, out_dir / "input", final_stem)
+            asset_stem = final_stem
+            width, height = _qt_image_size(local_image)
 
     media_dir = status.root / "media" / "qubitmcp"
     media_dir.mkdir(parents=True, exist_ok=True)
@@ -706,6 +954,7 @@ def image_gs_command_args(node_item, plan: ImageGsRunPlan) -> list[str]:
     init_mode = (_param_value(model, "init_mode").strip() or "gradient").lower()
     if init_mode not in {"gradient", "saliency", "random"}:
         init_mode = "gradient"
+    progressive = _param_bool(model, "progressive_optim", True)
     args = [
         "main.py",
         "--data_root",
@@ -736,8 +985,30 @@ def image_gs_command_args(node_item, plan: ImageGsRunPlan) -> list[str]:
         "jpg",
         "--init_mode",
         init_mode,
-        "--disable_prog_optim",
+        "--init_random_ratio",
+        f"{_param_float(model, 'init_random_ratio', _AUTO_INIT_RANDOM_RATIO, min_value=0.0, max_value=1.0):.6g}",
+        "--l1_loss_ratio",
+        f"{_param_float(model, 'l1_loss_ratio', _AUTO_L1_LOSS, min_value=0.0, max_value=100.0):.6g}",
+        "--l2_loss_ratio",
+        f"{_param_float(model, 'l2_loss_ratio', _AUTO_L2_LOSS, min_value=0.0, max_value=100.0):.6g}",
+        "--ssim_loss_ratio",
+        f"{_param_float(model, 'ssim_loss_ratio', _AUTO_SSIM_LOSS, min_value=0.0, max_value=100.0):.6g}",
     ]
+    if progressive:
+        args.extend(
+            [
+                "--initial_ratio",
+                f"{_param_float(model, 'initial_ratio', _AUTO_INITIAL_RATIO, min_value=0.01, max_value=1.0):.6g}",
+                "--add_steps",
+                str(_param_int(model, "add_steps", _AUTO_ADD_STEPS, min_value=1, max_value=2_000_000)),
+                "--add_times",
+                str(_param_int(model, "add_times", _AUTO_ADD_TIMES, min_value=1, max_value=1000)),
+                "--post_min_steps",
+                str(_param_int(model, "post_min_steps", _AUTO_POST_MIN_STEPS, min_value=0, max_value=2_000_000)),
+            ]
+        )
+    else:
+        args.append("--disable_prog_optim")
     if _param_bool(model, "quantize", False):
         args.append("--quantize")
     if _param_bool(model, "vis_gaussians", True):
@@ -781,6 +1052,181 @@ def find_latest_preview(runtime_root: Path, exp_name: str) -> Optional[Path]:
     return _latest_file(base, ["*.png", "*.jpg", "*.jpeg"])
 
 
+def find_latest_render_image(runtime_root: Path, exp_name: str) -> Optional[Path]:
+    return _latest_file(
+        _results_dir(runtime_root, exp_name),
+        [
+            "render_step-*.png",
+            "render_res-*.png",
+            "render_step-*.jpg",
+            "render_res-*.jpg",
+            "render_step-*.jpeg",
+            "render_res-*.jpeg",
+        ],
+    )
+
+
+def _sample_dimensions(width: int, height: int, *, max_side: int = _QC_SAMPLE_MAX_SIDE) -> tuple[int, int]:
+    scale = min(1.0, float(max_side) / float(max(1, width, height)))
+    return max(8, int(round(width * scale))), max(8, int(round(height * scale)))
+
+
+def _compare_source_to_render(source_path: Path, render_path: Path) -> Dict[str, Any]:
+    src_w, src_h = _qt_image_size(source_path)
+    sample_w, sample_h = _sample_dimensions(src_w, src_h)
+    src = _scaled_rgb_image(source_path, sample_w, sample_h)
+    render = _scaled_rgb_image(render_path, sample_w, sample_h)
+    if src is None or render is None:
+        return {"available": False, "detail": "Could not read source or render image for QC."}
+
+    abs_total = 0.0
+    sq_total = 0.0
+    edge_src = 0.0
+    edge_render = 0.0
+    edge_count = 0
+    prev_src_row: list[float] = []
+    prev_render_row: list[float] = []
+    count = max(1, sample_w * sample_h)
+    for y in range(sample_h):
+        src_row: list[float] = []
+        render_row: list[float] = []
+        prev_src_lum: Optional[float] = None
+        prev_render_lum: Optional[float] = None
+        for x in range(sample_w):
+            src_color = src.pixelColor(x, y)
+            render_color = render.pixelColor(x, y)
+            dr = float(src_color.red() - render_color.red())
+            dg = float(src_color.green() - render_color.green())
+            db = float(src_color.blue() - render_color.blue())
+            abs_total += abs(dr) + abs(dg) + abs(db)
+            sq_total += (dr * dr) + (dg * dg) + (db * db)
+
+            src_lum = (0.2126 * src_color.red()) + (0.7152 * src_color.green()) + (0.0722 * src_color.blue())
+            render_lum = (0.2126 * render_color.red()) + (0.7152 * render_color.green()) + (0.0722 * render_color.blue())
+            if prev_src_lum is not None and prev_render_lum is not None:
+                edge_src += abs(src_lum - prev_src_lum)
+                edge_render += abs(render_lum - prev_render_lum)
+                edge_count += 1
+            if prev_src_row and prev_render_row:
+                edge_src += abs(src_lum - prev_src_row[x])
+                edge_render += abs(render_lum - prev_render_row[x])
+                edge_count += 1
+            src_row.append(src_lum)
+            render_row.append(render_lum)
+            prev_src_lum = src_lum
+            prev_render_lum = render_lum
+        prev_src_row = src_row
+        prev_render_row = render_row
+
+    mae_norm = abs_total / float(count * 3 * 255)
+    mse = sq_total / float(count * 3)
+    rmse = math.sqrt(max(0.0, mse))
+    psnr = 99.0 if rmse <= 1.0e-9 else 20.0 * math.log10(255.0 / rmse)
+    edge_src_avg = edge_src / float(max(1, edge_count))
+    edge_render_avg = edge_render / float(max(1, edge_count))
+    edge_ratio = edge_render_avg / max(1.0e-6, edge_src_avg)
+    similarity_score = _clamp_float(((psnr - 18.0) / 18.0) * 100.0, 0.0, 100.0)
+    detail_score = _clamp_float(100.0 - (abs(math.log(max(0.05, min(20.0, edge_ratio)))) * 62.0), 0.0, 100.0)
+    qc_score = _clamp_float((similarity_score * 0.72) + (detail_score * 0.28), 0.0, 100.0)
+    return {
+        "available": True,
+        "render_image": str(render_path),
+        "sample_width": sample_w,
+        "sample_height": sample_h,
+        "mae_norm": round(mae_norm, 6),
+        "rmse": round(rmse, 4),
+        "psnr": round(psnr, 3),
+        "similarity_score": round(similarity_score, 2),
+        "edge_source": round(edge_src_avg / 255.0, 6),
+        "edge_render": round(edge_render_avg / 255.0, 6),
+        "edge_ratio": round(edge_ratio, 4),
+        "detail_score": round(detail_score, 2),
+        "qc_score": round(qc_score, 2),
+    }
+
+
+def build_image_gs_qc_report(node_item, plan: ImageGsRunPlan, render_path: Optional[Path]) -> Dict[str, Any]:
+    model = getattr(node_item, "model", None)
+    pixels = max(1, int(plan.width) * int(plan.height))
+    num = _param_int(model, "num_gaussians", _DEFAULT_NUM_GAUSSIANS, min_value=100, max_value=2_000_000)
+    max_splats = _param_int(model, "max_splats", _AUTO_MAX_GAUSSIANS, min_value=1, max_value=5_000_000)
+    exported_limit = min(num, max_splats)
+    density = float(num) / float(pixels)
+    export_density = float(exported_limit) / float(pixels)
+    notes: list[str] = []
+    if max_splats < num:
+        notes.append(f"Export is capped at {max_splats:,} splats, below the optimized {num:,} gaussians.")
+    if density < 0.18:
+        density_status = "low"
+        notes.append("Gaussian density is low for high-detail reconstruction.")
+    elif density < 0.38:
+        density_status = "medium"
+    elif density <= 0.58:
+        density_status = "high_quality"
+    else:
+        density_status = "heavy"
+        notes.append("Gaussian density is very high; expect long optimization and large PLY files.")
+
+    comparison = _compare_source_to_render(plan.image_path, render_path) if render_path is not None else {
+        "available": False,
+        "detail": "No rendered reconstruction image was found for QC comparison.",
+    }
+    score = comparison.get("qc_score") if isinstance(comparison, dict) else None
+    if isinstance(score, (int, float)):
+        if float(score) >= 82.0 and density_status in {"high_quality", "heavy"}:
+            qc_status = "pass"
+        elif float(score) >= 65.0:
+            qc_status = "review"
+        else:
+            qc_status = "fail"
+            notes.append("Rendered reconstruction differs substantially from the source image.")
+    else:
+        qc_status = "density_only"
+
+    report = {
+        "status": qc_status,
+        "density_status": density_status,
+        "auto_quality": _param_bool(model, "auto_quality", True),
+        "image_width": int(plan.width),
+        "image_height": int(plan.height),
+        "num_gaussians": int(num),
+        "max_steps": _param_int(model, "max_steps", _DEFAULT_MAX_STEPS, min_value=1, max_value=2_000_000),
+        "render_height": _param_int(model, "render_height", _DEFAULT_RENDER_HEIGHT, min_value=64, max_value=12000),
+        "max_splats": int(max_splats),
+        "progressive_optim": _param_bool(model, "progressive_optim", True),
+        "initial_ratio": _param_float(model, "initial_ratio", _AUTO_INITIAL_RATIO, min_value=0.01, max_value=1.0),
+        "init_random_ratio": _param_float(model, "init_random_ratio", _AUTO_INIT_RANDOM_RATIO, min_value=0.0, max_value=1.0),
+        "add_steps": _param_int(model, "add_steps", _AUTO_ADD_STEPS, min_value=1, max_value=2_000_000),
+        "add_times": _param_int(model, "add_times", _AUTO_ADD_TIMES, min_value=1, max_value=1000),
+        "post_min_steps": _param_int(model, "post_min_steps", _AUTO_POST_MIN_STEPS, min_value=0, max_value=2_000_000),
+        "loss": {
+            "l1": _param_float(model, "l1_loss_ratio", _AUTO_L1_LOSS, min_value=0.0, max_value=100.0),
+            "l2": _param_float(model, "l2_loss_ratio", _AUTO_L2_LOSS, min_value=0.0, max_value=100.0),
+            "ssim": _param_float(model, "ssim_loss_ratio", _AUTO_SSIM_LOSS, min_value=0.0, max_value=100.0),
+        },
+        "export_scale_guard": {
+            "min_axis_px": _param_float(model, "min_axis_px", _DEFAULT_MIN_AXIS_PX, min_value=0.01, max_value=1000.0),
+            "max_axis_px": _param_float(model, "max_axis_px", _DEFAULT_MAX_AXIS_PX, min_value=0.0, max_value=10000.0),
+            "max_anisotropy": _param_float(model, "max_anisotropy", _DEFAULT_MAX_ANISOTROPY, min_value=1.0, max_value=1000.0),
+            "drop_scale_outliers": _param_bool(model, "drop_scale_outliers", True),
+            "coverage_boost": _param_float(model, "coverage_boost", _DEFAULT_COVERAGE_BOOST, min_value=1.0, max_value=10.0),
+            "z_axis_ratio": _param_float(model, "z_axis_ratio", _DEFAULT_Z_AXIS_RATIO, min_value=0.04, max_value=10.0),
+        },
+        "gaussians_per_pixel": round(density, 6),
+        "exported_splats_per_pixel": round(export_density, 6),
+        "export_limited": bool(max_splats < num),
+        "comparison": comparison,
+        "notes": notes,
+    }
+    auto_report = _param_value(model, "auto_quality_report").strip()
+    if auto_report:
+        try:
+            report["auto_quality_report"] = json.loads(auto_report)
+        except Exception:
+            report["auto_quality_report"] = auto_report
+    return report
+
+
 def convert_checkpoint_to_ply(node_item, plan: ImageGsRunPlan, ckpt_path: Path) -> str:
     status = image_gs_status()
     model = getattr(node_item, "model", None)
@@ -805,6 +1251,18 @@ def convert_checkpoint_to_ply(node_item, plan: ImageGsRunPlan, ckpt_path: Path) 
         "0" if _param_bool(model, "disable_inverse_scale", False) else "1",
         "--max-splats",
         str(_param_int(model, "max_splats", 200000, min_value=1, max_value=5_000_000)),
+        "--min-axis-px",
+        f"{_param_float(model, 'min_axis_px', _DEFAULT_MIN_AXIS_PX, min_value=0.01, max_value=1000.0):.6g}",
+        "--max-axis-px",
+        f"{_param_float(model, 'max_axis_px', _DEFAULT_MAX_AXIS_PX, min_value=0.0, max_value=10000.0):.6g}",
+        "--max-anisotropy",
+        f"{_param_float(model, 'max_anisotropy', _DEFAULT_MAX_ANISOTROPY, min_value=1.0, max_value=1000.0):.6g}",
+        "--drop-scale-outliers",
+        "1" if _param_bool(model, "drop_scale_outliers", True) else "0",
+        "--coverage-boost",
+        f"{_param_float(model, 'coverage_boost', _DEFAULT_COVERAGE_BOOST, min_value=1.0, max_value=10.0):.6g}",
+        "--z-axis-ratio",
+        f"{_param_float(model, 'z_axis_ratio', _DEFAULT_Z_AXIS_RATIO, min_value=0.04, max_value=10.0):.6g}",
     ]
     env = os.environ.copy()
     repo = str(_repo_root())
@@ -823,7 +1281,13 @@ def convert_checkpoint_to_ply(node_item, plan: ImageGsRunPlan, ckpt_path: Path) 
     return (completed.stdout or "").strip()
 
 
-def write_manifest(node_item, plan: ImageGsRunPlan, ckpt_path: Path, preview_path: Optional[Path]) -> None:
+def write_manifest(
+    node_item,
+    plan: ImageGsRunPlan,
+    ckpt_path: Path,
+    preview_path: Optional[Path],
+    qc_report: Optional[Dict[str, Any]] = None,
+) -> None:
     model = getattr(node_item, "model", None)
     payload = {
         "schema": _NODE_SCHEMA,
@@ -837,9 +1301,28 @@ def write_manifest(node_item, plan: ImageGsRunPlan, ckpt_path: Path, preview_pat
         "image_height": int(plan.height),
         "num_gaussians": _param_int(model, "num_gaussians", _DEFAULT_NUM_GAUSSIANS, min_value=100, max_value=2_000_000),
         "max_steps": _param_int(model, "max_steps", _DEFAULT_MAX_STEPS, min_value=1, max_value=2_000_000),
+        "render_height": _param_int(model, "render_height", _DEFAULT_RENDER_HEIGHT, min_value=64, max_value=12000),
         "sheet_scale": _param_float(model, "sheet_scale", _DEFAULT_SHEET_SCALE, min_value=0.01, max_value=100.0),
         "radius_scale": _param_float(model, "radius_scale", _DEFAULT_RADIUS_SCALE, min_value=0.01, max_value=100.0),
         "alpha": _param_float(model, "alpha", _DEFAULT_ALPHA, min_value=0.001, max_value=0.999),
+        "auto_quality": _param_bool(model, "auto_quality", True),
+        "max_splats": _param_int(model, "max_splats", _AUTO_MAX_GAUSSIANS, min_value=1, max_value=5_000_000),
+        "progressive_optim": _param_bool(model, "progressive_optim", True),
+        "initial_ratio": _param_float(model, "initial_ratio", _AUTO_INITIAL_RATIO, min_value=0.01, max_value=1.0),
+        "init_random_ratio": _param_float(model, "init_random_ratio", _AUTO_INIT_RANDOM_RATIO, min_value=0.0, max_value=1.0),
+        "add_steps": _param_int(model, "add_steps", _AUTO_ADD_STEPS, min_value=1, max_value=2_000_000),
+        "add_times": _param_int(model, "add_times", _AUTO_ADD_TIMES, min_value=1, max_value=1000),
+        "post_min_steps": _param_int(model, "post_min_steps", _AUTO_POST_MIN_STEPS, min_value=0, max_value=2_000_000),
+        "l1_loss_ratio": _param_float(model, "l1_loss_ratio", _AUTO_L1_LOSS, min_value=0.0, max_value=100.0),
+        "l2_loss_ratio": _param_float(model, "l2_loss_ratio", _AUTO_L2_LOSS, min_value=0.0, max_value=100.0),
+        "ssim_loss_ratio": _param_float(model, "ssim_loss_ratio", _AUTO_SSIM_LOSS, min_value=0.0, max_value=100.0),
+        "min_axis_px": _param_float(model, "min_axis_px", _DEFAULT_MIN_AXIS_PX, min_value=0.01, max_value=1000.0),
+        "max_axis_px": _param_float(model, "max_axis_px", _DEFAULT_MAX_AXIS_PX, min_value=0.0, max_value=10000.0),
+        "max_anisotropy": _param_float(model, "max_anisotropy", _DEFAULT_MAX_ANISOTROPY, min_value=1.0, max_value=1000.0),
+        "drop_scale_outliers": _param_bool(model, "drop_scale_outliers", True),
+        "coverage_boost": _param_float(model, "coverage_boost", _DEFAULT_COVERAGE_BOOST, min_value=1.0, max_value=10.0),
+        "z_axis_ratio": _param_float(model, "z_axis_ratio", _DEFAULT_Z_AXIS_RATIO, min_value=0.04, max_value=10.0),
+        "qc": qc_report or {},
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     plan.manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -863,6 +1346,7 @@ def build_image_gs_splat_scene_asset(node_item, *, generate: bool = False) -> Im
     node_name = _node_name(node_item)
     source_image = _param_value(model, "source_image").strip()
     preview = _param_value(model, "preview_image").strip()
+    render_image = _param_value(model, "render_image").strip()
     asset = {
         "path": ply,
         "texture": "",
@@ -876,8 +1360,20 @@ def build_image_gs_splat_scene_asset(node_item, *, generate: bool = False) -> Im
             "source": _source_key(model),
             "source_image": source_image,
             "preview_image": preview,
+            "render_image": render_image,
             "checkpoint": _param_value(model, "checkpoint").strip(),
             "manifest": _param_value(model, "manifest").strip(),
+            "qc_report": _param_value(model, "qc_report").strip(),
+            "auto_quality": _param_bool(model, "auto_quality", True),
+            "num_gaussians": _param_int(model, "num_gaussians", _DEFAULT_NUM_GAUSSIANS, min_value=100, max_value=2_000_000),
+            "max_steps": _param_int(model, "max_steps", _DEFAULT_MAX_STEPS, min_value=1, max_value=2_000_000),
+            "render_height": _param_int(model, "render_height", _DEFAULT_RENDER_HEIGHT, min_value=64, max_value=12000),
+            "progressive_optim": _param_bool(model, "progressive_optim", True),
+            "min_axis_px": _param_float(model, "min_axis_px", _DEFAULT_MIN_AXIS_PX, min_value=0.01, max_value=1000.0),
+            "max_axis_px": _param_float(model, "max_axis_px", _DEFAULT_MAX_AXIS_PX, min_value=0.0, max_value=10000.0),
+            "max_anisotropy": _param_float(model, "max_anisotropy", _DEFAULT_MAX_ANISOTROPY, min_value=1.0, max_value=1000.0),
+            "coverage_boost": _param_float(model, "coverage_boost", _DEFAULT_COVERAGE_BOOST, min_value=1.0, max_value=10.0),
+            "z_axis_ratio": _param_float(model, "z_axis_ratio", _DEFAULT_Z_AXIS_RATIO, min_value=0.04, max_value=10.0),
         },
     }
     return ImageGsSplatOutcome(asset, "ok", "Image-GS splat ready.", generated=False)
@@ -894,6 +1390,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "splat_ply", "")
     _ensure_param(node_item, "checkpoint", "")
     _ensure_param(node_item, "preview_image", "")
+    _ensure_param(node_item, "render_image", "")
     _ensure_param(node_item, "manifest", "")
     _ensure_param(node_item, "num_gaussians", str(_DEFAULT_NUM_GAUSSIANS))
     _ensure_param(node_item, "max_steps", str(_DEFAULT_MAX_STEPS))
@@ -905,8 +1402,26 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "init_mode", "gradient")
     _ensure_param(node_item, "quantize", "0")
     _ensure_param(node_item, "vis_gaussians", "1")
+    _ensure_param(node_item, "auto_quality", _DEFAULT_AUTO_QUALITY)
+    _ensure_param(node_item, "auto_quality_report", "")
+    _ensure_param(node_item, "progressive_optim", _DEFAULT_PROGRESSIVE_OPTIM)
+    _ensure_param(node_item, "initial_ratio", f"{_AUTO_INITIAL_RATIO:.3f}")
+    _ensure_param(node_item, "init_random_ratio", f"{_AUTO_INIT_RANDOM_RATIO:.3f}")
+    _ensure_param(node_item, "add_steps", str(_AUTO_ADD_STEPS))
+    _ensure_param(node_item, "add_times", str(_AUTO_ADD_TIMES))
+    _ensure_param(node_item, "post_min_steps", str(_AUTO_POST_MIN_STEPS))
+    _ensure_param(node_item, "l1_loss_ratio", f"{_AUTO_L1_LOSS:.3f}")
+    _ensure_param(node_item, "l2_loss_ratio", f"{_AUTO_L2_LOSS:.3f}")
+    _ensure_param(node_item, "ssim_loss_ratio", f"{_AUTO_SSIM_LOSS:.3f}")
+    _ensure_param(node_item, "min_axis_px", f"{_DEFAULT_MIN_AXIS_PX:.3f}")
+    _ensure_param(node_item, "max_axis_px", f"{_DEFAULT_MAX_AXIS_PX:.3f}")
+    _ensure_param(node_item, "max_anisotropy", f"{_DEFAULT_MAX_ANISOTROPY:.3f}")
+    _ensure_param(node_item, "drop_scale_outliers", _DEFAULT_DROP_SCALE_OUTLIERS)
+    _ensure_param(node_item, "coverage_boost", f"{_DEFAULT_COVERAGE_BOOST:.3f}")
+    _ensure_param(node_item, "z_axis_ratio", f"{_DEFAULT_Z_AXIS_RATIO:.3f}")
     _ensure_param(node_item, "disable_inverse_scale", "0")
-    _ensure_param(node_item, "max_splats", "200000")
+    _ensure_param(node_item, "max_splats", str(_AUTO_MAX_GAUSSIANS))
+    _ensure_param(node_item, "qc_report", "")
     _ensure_param(node_item, "debug_log", "0")
     _ensure_hidden_params(
         getattr(node_item, "model", None),
@@ -921,6 +1436,7 @@ def build_ports(node_item) -> None:
             "splat_ply",
             "checkpoint",
             "preview_image",
+            "render_image",
             "manifest",
             "num_gaussians",
             "max_steps",
@@ -932,8 +1448,26 @@ def build_ports(node_item) -> None:
             "init_mode",
             "quantize",
             "vis_gaussians",
+            "auto_quality",
+            "auto_quality_report",
+            "progressive_optim",
+            "initial_ratio",
+            "init_random_ratio",
+            "add_steps",
+            "add_times",
+            "post_min_steps",
+            "l1_loss_ratio",
+            "l2_loss_ratio",
+            "ssim_loss_ratio",
+            "min_axis_px",
+            "max_axis_px",
+            "max_anisotropy",
+            "drop_scale_outliers",
+            "coverage_boost",
+            "z_axis_ratio",
             "disable_inverse_scale",
             "max_splats",
+            "qc_report",
             "debug_log",
         ],
     )
@@ -1349,6 +1883,8 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         self._init_combo = QtWidgets.QComboBox()
         self._init_combo.addItems(["gradient", "saliency", "random"])
 
+        self._auto_check = QtWidgets.QCheckBox("Auto HQ")
+        self._auto_check.setToolTip("Use progressive error-guided Image-GS training and high-quality settings from the source image detail.")
         self._quantize_check = QtWidgets.QCheckBox("Quantize")
         self._vis_check = QtWidgets.QCheckBox("Points")
 
@@ -1424,6 +1960,7 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         form.addWidget(self._radius_spin, 3, 3, QtCore.Qt.AlignLeft)
         form.addWidget(_label("Alpha"), 4, 0)
         form.addWidget(self._alpha_spin, 4, 1, QtCore.Qt.AlignLeft)
+        form.addWidget(self._auto_check, 4, 2, 1, 2)
         form.addWidget(self._quantize_check, 5, 0, 1, 2)
         form.addWidget(self._vis_check, 5, 2, 1, 2)
         form.setColumnMinimumWidth(0, 42)
@@ -1460,6 +1997,7 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         self._radius_spin.valueChanged.connect(self._on_radius_changed)
         self._alpha_spin.valueChanged.connect(self._on_alpha_changed)
         self._init_combo.currentTextChanged.connect(self._on_init_changed)
+        self._auto_check.stateChanged.connect(self._on_auto_changed)
         self._quantize_check.stateChanged.connect(self._on_quantize_changed)
         self._vis_check.stateChanged.connect(self._on_vis_changed)
         self._generate_btn.clicked.connect(self._on_generate_clicked)
@@ -1489,6 +2027,7 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
             self._radius_spin,
             self._alpha_spin,
             self._init_combo,
+            self._auto_check,
             self._quantize_check,
             self._vis_check,
         ]
@@ -1505,11 +2044,28 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
             init = _param_value(model, "init_mode").strip() or "gradient"
             idx = self._init_combo.findText(init)
             self._init_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            self._auto_check.setChecked(_param_bool(model, "auto_quality", True))
             self._quantize_check.setChecked(_param_bool(model, "quantize", False))
             self._vis_check.setChecked(_param_bool(model, "vis_gaussians", True))
         finally:
             for widget in controls:
                 widget.blockSignals(False)
+        self._sync_auto_controls()
+
+    def _sync_auto_controls(self) -> None:
+        manual_enabled = not self._auto_check.isChecked()
+        for widget in (
+            self._gauss_spin,
+            self._steps_spin,
+            self._height_spin,
+            self._sheet_spin,
+            self._radius_spin,
+            self._alpha_spin,
+            self._init_combo,
+            self._quantize_check,
+            self._vis_check,
+        ):
+            widget.setEnabled(manual_enabled)
 
     def _set_status(self, text: str, tone: str = "muted") -> None:
         colors = {
@@ -1770,6 +2326,16 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         _set_param(self._node_item, "init_mode", str(text or "gradient"), notify_scene=False)
         self._mark_dirty()
 
+    def _on_auto_changed(self, _state: int):
+        enabled = self._auto_check.isChecked()
+        _set_param(self._node_item, "auto_quality", "1" if enabled else "0", notify_scene=False)
+        self._sync_auto_controls()
+        self._mark_dirty()
+        if enabled:
+            self._set_status("Auto HQ enabled. Generate will use progressive error-guided quality settings.", "busy")
+        else:
+            self._set_status("Manual quality controls enabled.", "muted")
+
     def _on_quantize_changed(self, _state: int):
         _set_param(self._node_item, "quantize", "1" if self._quantize_check.isChecked() else "0", notify_scene=False)
         self._mark_dirty()
@@ -1940,6 +2506,8 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         try:
             plan = prepare_image_gs_run(self._node_item)
             args = image_gs_command_args(self._node_item, plan)
+            if _param_bool(model, "auto_quality", True):
+                self._sync_from_params()
         except Exception as exc:
             self._set_status(str(exc), "error")
             return
@@ -1954,7 +2522,13 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         self._stop_btn.setVisible(True)
         self._stop_btn.setEnabled(True)
         self._set_busy_border(True)
-        self._set_status("Starting Image-GS...", "busy")
+        if _param_bool(model, "auto_quality", True):
+            auto_num = _param_int(model, "num_gaussians", _DEFAULT_NUM_GAUSSIANS, min_value=100, max_value=2_000_000)
+            auto_steps = _param_int(model, "max_steps", _DEFAULT_MAX_STEPS, min_value=1, max_value=2_000_000)
+            auto_height = _param_int(model, "render_height", _DEFAULT_RENDER_HEIGHT, min_value=64, max_value=12000)
+            self._set_status(f"Starting Auto HQ progressive: {auto_num:,} splats, {auto_steps:,} steps, height {auto_height}.", "busy")
+        else:
+            self._set_status("Starting Image-GS...", "busy")
         _debug_log(getattr(self._node_item, "model", None), "start", args=args, plan=plan)
 
         proc = QtCore.QProcess(self)
@@ -2060,17 +2634,33 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
             if ckpt is None:
                 raise RuntimeError("Image-GS finished but no checkpoint was found.")
             preview = find_latest_preview(status.root, plan.exp_name) or plan.image_path
+            render = find_latest_render_image(status.root, plan.exp_name)
             conversion = convert_checkpoint_to_ply(self._node_item, plan, ckpt)
-            write_manifest(self._node_item, plan, ckpt, preview)
+            try:
+                qc_report = build_image_gs_qc_report(self._node_item, plan, render)
+            except Exception as qc_exc:
+                qc_report = {"status": "error", "detail": str(qc_exc)}
+            write_manifest(self._node_item, plan, ckpt, preview, qc_report)
             _set_param(self._node_item, "checkpoint", str(ckpt), notify_scene=False)
             _set_param(self._node_item, "preview_image", str(preview), notify_scene=False)
+            _set_param(self._node_item, "render_image", str(render or ""), notify_scene=False)
             _set_param(self._node_item, "splat_ply", str(plan.ply_path), notify_scene=False)
             _set_param(self._node_item, "manifest", str(plan.manifest_path), notify_scene=False)
+            _set_param(self._node_item, "qc_report", json.dumps(qc_report, ensure_ascii=True, sort_keys=True), notify_scene=False)
             _set_param(self._node_item, "path", str(plan.ply_path), notify_scene=True)
             self._notify_scene_params_changed()
             self._refresh_preview()
-            self._set_status(conversion or "Image-GS splat generated.", "ok")
-            _finish_debug_capture(self._node_item, exit_code=exit_code, status_text=conversion or "Image-GS splat generated.")
+            qc_text = ""
+            if isinstance(qc_report, dict):
+                comparison = qc_report.get("comparison") if isinstance(qc_report.get("comparison"), dict) else {}
+                score = comparison.get("qc_score") if isinstance(comparison, dict) else None
+                if isinstance(score, (int, float)):
+                    qc_text = f" QC {qc_report.get('status', 'review')} {float(score):.1f}/100."
+                elif qc_report.get("status"):
+                    qc_text = f" QC {qc_report.get('status')}."
+            final_status = (conversion or "Image-GS splat generated.") + qc_text
+            self._set_status(final_status, "ok")
+            _finish_debug_capture(self._node_item, exit_code=exit_code, status_text=final_status)
         except Exception as exc:
             self._set_status(str(exc), "error")
             _debug_log(getattr(self._node_item, "model", None), "convert_failed", error=repr(exc), tail=self._tail)

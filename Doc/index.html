@@ -215,7 +215,7 @@
               <ul class="bullet">
                 <li><code>image_gs_splat</code> converts a local image path or HTTP image URL into a viewport-ready Gaussian splat PLY.</li>
                 <li>The node stages images as 8-bit RGB PNGs, runs the optional Image-GS runtime, and writes outputs under <code>logs\image_gs_splat</code>.</li>
-                <li>Generation includes node preview, debug report capture, InfoCard setup controls, and a bottom Stop button while processing.</li>
+                <li>Generation includes Auto HQ progressive optimization, QC reporting, node preview, debug report capture, InfoCard setup controls, and a bottom Stop button while processing.</li>
               </ul>
             </div>
             <div class="card feature-card">
@@ -741,9 +741,11 @@
               <ol class="steps">
                 <li>Reads a local image path or HTTP image URL from the node.</li>
                 <li>Stages the source as an 8-bit RGB PNG so Image-GS receives a predictable image format.</li>
+                <li>When <strong>Auto HQ</strong> is enabled, analyzes source resolution/detail, chooses quality-focused settings, and keeps Image-GS progressive error-guided optimization enabled.</li>
                 <li>Runs Image-GS in <code>%QUBITMCP_HOME%\third_party\image-gs</code> using its separate Python environment.</li>
                 <li>Saves Image-GS checkpoints and preview images under the Image-GS results folder.</li>
-                <li>Converts the latest checkpoint into a PLY Gaussian splat stored under <code>logs\image_gs_splat</code>.</li>
+                <li>Converts the latest checkpoint into a PLY Gaussian splat stored under <code>logs\image_gs_splat</code>, with export guards that clamp oversized splat axes, reject broken scale outliers, boost coverage, and add stable viewport thickness.</li>
+                <li>Writes QC data comparing the rendered reconstruction back to the staged source image when a render image is available.</li>
                 <li>Updates the node output so <strong>View</strong> or a connected <code>scene</code> node can display the generated splat in the 3D viewport.</li>
               </ol>
             </div>
@@ -753,8 +755,9 @@
                 <li>Use <code>setup.bat</code>, accept the first-use setup prompt, or click <strong>Setup Image-GS</strong> in the InfoCard to install the optional Image-GS checkout and dependencies.</li>
                 <li>The node writes generated files under <code>logs\image_gs_splat</code> and keeps the Image-GS checkout under <code>%QUBITMCP_HOME%\third_party\image-gs</code>.</li>
                 <li>While generation is running, a bottom-row <strong>Stop</strong> button appears to interrupt the active Image-GS process.</li>
-                <li>The top-right debug icon opens an Image-GS report with dependency status, command line, generated paths, exit code, and captured stdout/stderr from the last setup or generate run.</li>
+                <li>The top-right debug icon opens an Image-GS report with dependency status, command line, generated paths, QC status, exit code, and captured stdout/stderr from the last setup or generate run.</li>
                 <li>Image inputs are normalized before training, while Image-GS plot previews use JPG to avoid 16-bit PNG visualization errors in the upstream plotting code.</li>
+                <li>QC is a validation estimate: it checks the available rendered output, splat density, export limits, and edge/detail retention, but it does not replace visual review in the viewport.</li>
               </ul>
             </div>
           </div>
@@ -776,19 +779,24 @@
                   <td>Local image path or HTTP/HTTPS image URL. The browse button selects a local image. This value is also mirrored to <code>source</code> for compatibility.</td>
                 </tr>
                 <tr>
+                  <td><code>auto_quality</code> / Auto HQ</td>
+                  <td><code>1</code></td>
+                  <td>Automatically chooses high-quality generation settings from source image size/detail and uses Image-GS progressive error-guided optimization so new Gaussians are added into high-error regions during training. Disable it to edit splats, steps, height, init, radius, alpha, quantize, and point-preview controls manually.</td>
+                </tr>
+                <tr>
                   <td><code>num_gaussians</code> / Splats</td>
                   <td><code>2000</code></td>
-                  <td>Number of Gaussian primitives Image-GS optimizes. Higher values can capture more detail but increase runtime, memory use, and output size.</td>
+                  <td>Number of Gaussian primitives Image-GS optimizes. Higher values can capture more detail but increase runtime, memory use, and output size. Auto HQ now raises this aggressively based on image resolution and detail.</td>
                 </tr>
                 <tr>
                   <td><code>max_steps</code> / Steps</td>
                   <td><code>800</code></td>
-                  <td>Optimization iterations. Higher values usually improve reconstruction quality but take longer. The node saves checkpoint and render output at the final step.</td>
+                  <td>Optimization iterations. Higher values usually improve reconstruction quality but take longer. The node saves checkpoint and render output at the final step; Auto HQ uses longer high-quality progressive runs.</td>
                 </tr>
                 <tr>
                   <td><code>render_height</code> / Height</td>
                   <td><code>768</code></td>
-                  <td>Training/render height passed to Image-GS. Larger values preserve more image detail but increase VRAM and runtime cost.</td>
+                  <td>Training/render height passed to Image-GS. Larger values preserve more image detail but increase VRAM and runtime cost. Auto HQ caps this at a practical high-quality height.</td>
                 </tr>
                 <tr>
                   <td><code>init_mode</code> / Init</td>
@@ -871,8 +879,20 @@
                   <td>Preview image shown on the node when available. Before generation it may point to the source; after generation it points to the latest Image-GS preview.</td>
                 </tr>
                 <tr>
+                  <td><code>render_image</code></td>
+                  <td>Latest rendered Image-GS reconstruction used for QC comparison when available.</td>
+                </tr>
+                <tr>
                   <td><code>manifest</code></td>
-                  <td>JSON manifest recording the source image, checkpoint, generated PLY, dimensions, and conversion settings.</td>
+                  <td>JSON manifest recording the source image, checkpoint, generated PLY, dimensions, conversion settings, automatic settings, and QC report.</td>
+                </tr>
+                <tr>
+                  <td><code>auto_quality_report</code></td>
+                  <td>JSON details for the Auto HQ decision, including detected source detail, selected density, progressive optimization strategy, and loss settings.</td>
+                </tr>
+                <tr>
+                  <td><code>qc_report</code></td>
+                  <td>JSON report with QC status, splat density, export cap status, source-vs-render similarity, PSNR-style score, and edge/detail retention when a render image is available.</td>
                 </tr>
                 <tr>
                   <td><code>device</code></td>
@@ -884,7 +904,27 @@
                 </tr>
                 <tr>
                   <td><code>max_splats</code></td>
-                  <td>Safety cap for how many optimized splats are exported to PLY during conversion.</td>
+                  <td>Safety cap for how many optimized splats are exported to PLY during conversion. Auto HQ raises this to match the selected splat count so high-detail runs are not silently capped.</td>
+                </tr>
+                <tr>
+                  <td><code>min_axis_px</code>, <code>max_axis_px</code>, <code>max_anisotropy</code>, <code>drop_scale_outliers</code></td>
+                  <td>PLY export scale guard. Auto HQ uses these to prevent very large circular patches or long stretched splats from a few extreme checkpoint scale values.</td>
+                </tr>
+                <tr>
+                  <td><code>coverage_boost</code>, <code>z_axis_ratio</code></td>
+                  <td>PLY viewport coverage settings. Auto HQ uses these to reduce holes caused by converting Image-GS's 2D splats into QubitMCP's 3D Gaussian PLY format.</td>
+                </tr>
+                <tr>
+                  <td><code>progressive_optim</code></td>
+                  <td>Controls Image-GS error-guided progressive optimization. Auto HQ leaves this on so training adds Gaussians into high-error regions instead of optimizing one fixed distribution from the start.</td>
+                </tr>
+                <tr>
+                  <td><code>initial_ratio</code>, <code>add_steps</code>, <code>add_times</code>, <code>post_min_steps</code></td>
+                  <td>Progressive optimization schedule. Auto HQ starts from a smaller seed set, adds splats repeatedly from reconstruction error maps, then leaves extra post-addition steps for refinement.</td>
+                </tr>
+                <tr>
+                  <td><code>l1_loss_ratio</code>, <code>l2_loss_ratio</code>, <code>ssim_loss_ratio</code></td>
+                  <td>Image-GS training loss weights. Auto HQ balances pixel accuracy with structural similarity for fewer holes and better detail retention.</td>
                 </tr>
                 <tr>
                   <td><code>debug_log</code></td>
@@ -964,8 +1004,8 @@
               <ol class="steps">
                 <li>Run <code>setup.bat</code> after installing updates, approve the setup prompt when creating <code>image_gs_splat</code>, or use <strong>Setup Image-GS</strong> in the node InfoCard so the Image-GS checkout and dependencies are ready.</li>
                 <li>Create <code>image_gs_splat</code> and enter an HTTP image URL or local image path.</li>
-                <li>Set splat count, optimization steps, render height, initialization mode, and radius/sheet scale.</li>
-                <li>Click <strong>Generate</strong>; the node downloads the image, runs Image-GS, converts the checkpoint to PLY, and stores the result under <code>logs\image_gs_splat</code>.</li>
+                <li>Leave <strong>Auto HQ</strong> enabled for automatic high-quality splat count, progressive optimization, loss weights, render height, radius, alpha, and export-cap selection, or disable it for manual tuning.</li>
+                <li>Click <strong>Generate</strong>; the node downloads the image, runs Image-GS, converts the checkpoint to PLY, stores the result under <code>logs\image_gs_splat</code>, and writes QC data into the manifest/debug report.</li>
                 <li>Click <strong>View</strong> or connect the node into <code>scene</code> to inspect the generated splat in the viewport.</li>
               </ol>
             </div>

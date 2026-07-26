@@ -8,6 +8,7 @@ import torch
 
 
 C0 = 0.28209479177387814
+_EPS = np.float32(1.0e-8)
 
 
 def _tensor(state: dict, name: str) -> torch.Tensor:
@@ -91,6 +92,14 @@ def _rgb_from_feat(feat: np.ndarray) -> np.ndarray:
     return np.clip(rgb, 0.0, 1.0)
 
 
+def _bool_arg(value: str) -> bool:
+    return str(value or "").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _auto_max_axis_px(width: int, height: int) -> float:
+    return float(np.clip(min(max(1, int(width)), max(1, int(height))) * 0.0125, 6.0, 24.0))
+
+
 def convert_checkpoint(
     ckpt_path: Path,
     out_path: Path,
@@ -102,7 +111,14 @@ def convert_checkpoint(
     alpha: float,
     inverse_scale: bool,
     max_splats: int,
-) -> int:
+    min_axis_px: float,
+    max_axis_px: float,
+    max_anisotropy: float,
+    drop_scale_outliers: bool,
+    outlier_axis_factor: float,
+    coverage_boost: float,
+    z_axis_ratio: float,
+) -> tuple[int, str]:
     checkpoint = torch.load(str(ckpt_path), map_location="cpu")
     state = checkpoint.get("state_dict") if isinstance(checkpoint, dict) else None
     if not isinstance(state, dict):
@@ -116,39 +132,99 @@ def convert_checkpoint(
     count = int(min(xy.shape[0], scale.shape[0], rot.shape[0], feat.shape[0]))
     if count <= 0:
         raise ValueError("Image-GS checkpoint does not contain any Gaussians.")
-    if max_splats > 0 and count > int(max_splats):
-        indices = np.linspace(0, count - 1, int(max_splats), dtype=np.int64)
-        xy = xy[indices]
-        scale = scale[indices]
-        rot = rot[indices]
-        feat = feat[indices]
-        count = int(max_splats)
-    else:
-        xy = xy[:count]
-        scale = scale[:count]
-        rot = rot[:count]
-        feat = feat[:count]
+    xy = xy[:count]
+    scale = scale[:count]
+    rot = rot[:count]
+    feat = feat[:count]
 
     img_w = max(1, int(width))
     img_h = max(1, int(height))
     aspect = float(img_w) / float(img_h)
     sheet = max(0.001, float(sheet_scale))
 
+    scale_raw = scale[:, :2].astype(np.float32, copy=False)
+    valid = (
+        np.isfinite(xy).all(axis=1)
+        & np.isfinite(scale_raw).all(axis=1)
+        & np.isfinite(rot.reshape(-1))
+        & np.isfinite(feat).all(axis=1)
+    )
+    margin = np.float32(0.02)
+    valid &= (
+        (xy[:, 0] >= -margin)
+        & (xy[:, 0] <= 1.0 + margin)
+        & (xy[:, 1] >= -margin)
+        & (xy[:, 1] <= 1.0 + margin)
+    )
+    dropped_invalid = int(count - int(valid.sum()))
+    if not np.any(valid):
+        raise ValueError("Image-GS checkpoint does not contain any finite in-bounds Gaussians.")
+    xy = xy[valid]
+    scale_raw = scale_raw[valid]
+    rot = rot[valid]
+    feat = feat[valid]
+
+    scale_abs = np.maximum(np.abs(scale_raw), _EPS)
+    if inverse_scale:
+        axis_px = 1.0 / scale_abs
+    else:
+        axis_px = scale_abs
+    axis_px = axis_px.astype(np.float32, copy=False) * np.float32(max(0.001, float(radius_scale)))
+    axis_px = np.where(np.isfinite(axis_px), axis_px, np.float32(0.0))
+
+    min_axis = np.float32(max(0.05, float(min_axis_px)))
+    axis_cap = np.float32(float(max_axis_px) if float(max_axis_px) > 0.0 else _auto_max_axis_px(img_w, img_h))
+    axis_cap = np.float32(max(float(min_axis) * 2.0, float(axis_cap)))
+    anisotropy_cap = np.float32(max(1.0, float(max_anisotropy)))
+    outlier_factor = np.float32(max(1.0, float(outlier_axis_factor)))
+    axis_min_pre = np.maximum(np.min(axis_px, axis=1), min_axis * np.float32(0.05))
+    axis_max_pre = np.max(axis_px, axis=1)
+    ratio_pre = axis_max_pre / axis_min_pre
+    outlier = (axis_max_pre > axis_cap * outlier_factor) | (ratio_pre > anisotropy_cap * outlier_factor)
+    dropped_outliers = 0
+    if drop_scale_outliers and np.any(outlier):
+        keep = ~outlier
+        dropped_outliers = int(outlier.sum())
+        xy = xy[keep]
+        axis_px = axis_px[keep]
+        rot = rot[keep]
+        feat = feat[keep]
+        if xy.shape[0] <= 0:
+            raise ValueError("All Image-GS Gaussians were rejected as scale outliers.")
+
+    clamped_axis = (axis_px < min_axis) | (axis_px > axis_cap)
+    axis_px = np.clip(axis_px, min_axis, axis_cap)
+    minor = np.minimum(axis_px[:, 0], axis_px[:, 1])
+    major_limit = minor * anisotropy_cap
+    too_aniso_x = axis_px[:, 0] > major_limit
+    too_aniso_y = axis_px[:, 1] > major_limit
+    anisotropy_clamped = int(np.count_nonzero(too_aniso_x | too_aniso_y))
+    axis_px[:, 0] = np.where(too_aniso_x, major_limit, axis_px[:, 0])
+    axis_px[:, 1] = np.where(too_aniso_y, major_limit, axis_px[:, 1])
+    clamped_axes = int(np.count_nonzero(clamped_axis)) + anisotropy_clamped
+
+    boost = np.float32(max(1.0, float(coverage_boost)))
+    if boost > 1.0:
+        axis_px = np.minimum(axis_px * boost, axis_cap)
+
+    count = int(xy.shape[0])
+    if max_splats > 0 and count > int(max_splats):
+        indices = np.linspace(0, count - 1, int(max_splats), dtype=np.int64)
+        xy = xy[indices]
+        axis_px = axis_px[indices]
+        rot = rot[indices]
+        feat = feat[indices]
+        count = int(max_splats)
+
     pos = np.zeros((count, 3), dtype=np.float32)
     pos[:, 0] = (xy[:, 0] - 0.5) * aspect * sheet
     pos[:, 1] = (0.5 - xy[:, 1]) * sheet
 
-    scale = np.maximum(scale[:, :2], np.float32(1.0e-6))
-    if inverse_scale:
-        scale_px = 1.0 / scale
-    else:
-        scale_px = scale
-    scale_px = np.clip(scale_px, 0.05, max(img_w, img_h) * 0.25)
     pixel_unit = sheet / float(img_h)
-    axis_x = np.maximum(scale_px[:, 0] * pixel_unit * float(radius_scale), 1.0e-6)
-    axis_y = np.maximum(scale_px[:, 1] * pixel_unit * float(radius_scale), 1.0e-6)
+    axis_x = np.maximum(axis_px[:, 0] * pixel_unit, 1.0e-6)
+    axis_y = np.maximum(axis_px[:, 1] * pixel_unit, 1.0e-6)
     radius = np.sqrt(axis_x * axis_y).astype(np.float32)
-    axis_z = np.maximum(radius * 0.04, 1.0e-6).astype(np.float32)
+    axis_z = np.maximum(radius * np.float32(max(0.04, float(z_axis_ratio))), 1.0e-6).astype(np.float32)
     scale3 = np.column_stack([axis_x / radius, axis_y / radius, axis_z / radius]).astype(np.float32)
 
     theta = rot.reshape(-1).astype(np.float32)
@@ -170,7 +246,13 @@ def convert_checkpoint(
     ).astype(np.float32, copy=False)
 
     _write_gaussian_splat_ply(out_path, splats)
-    return count
+    stats = (
+        f"axis_cap_px={float(axis_cap):.2f}, min_axis_px={float(min_axis):.2f}, "
+        f"max_anisotropy={float(anisotropy_cap):.2f}, clamped_axes={clamped_axes}, "
+        f"dropped_invalid={dropped_invalid}, dropped_outliers={dropped_outliers}, "
+        f"coverage_boost={float(boost):.2f}, z_axis_ratio={float(max(0.04, float(z_axis_ratio))):.2f}"
+    )
+    return count, stats
 
 
 def main() -> int:
@@ -184,10 +266,17 @@ def main() -> int:
     parser.add_argument("--alpha", default=0.92, type=float)
     parser.add_argument("--inverse-scale", default="1")
     parser.add_argument("--max-splats", default=200000, type=int)
+    parser.add_argument("--min-axis-px", default=0.35, type=float)
+    parser.add_argument("--max-axis-px", default=0.0, type=float)
+    parser.add_argument("--max-anisotropy", default=8.0, type=float)
+    parser.add_argument("--drop-scale-outliers", default="1")
+    parser.add_argument("--outlier-axis-factor", default=8.0, type=float)
+    parser.add_argument("--coverage-boost", default=1.0, type=float)
+    parser.add_argument("--z-axis-ratio", default=0.04, type=float)
     args = parser.parse_args()
 
-    inverse_scale = str(args.inverse_scale).strip().lower() not in {"0", "false", "no", "off"}
-    count = convert_checkpoint(
+    inverse_scale = _bool_arg(args.inverse_scale)
+    count, stats = convert_checkpoint(
         args.ckpt,
         args.out,
         width=args.width,
@@ -197,8 +286,15 @@ def main() -> int:
         alpha=args.alpha,
         inverse_scale=inverse_scale,
         max_splats=args.max_splats,
+        min_axis_px=args.min_axis_px,
+        max_axis_px=args.max_axis_px,
+        max_anisotropy=args.max_anisotropy,
+        drop_scale_outliers=_bool_arg(args.drop_scale_outliers),
+        outlier_axis_factor=args.outlier_axis_factor,
+        coverage_boost=args.coverage_boost,
+        z_axis_ratio=args.z_axis_ratio,
     )
-    print(f"Wrote {count:d} splats to {args.out}")
+    print(f"Wrote {count:d} splats to {args.out}; {stats}")
     return 0
 
 
