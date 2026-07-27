@@ -82,10 +82,30 @@ SECURITY_GUARD_PROMPT_PROFILE = "security_guard"
 SECURITY_GUARD_POPUP_NAME = "Security Guard popup"
 TANYA_PROMPT_PROFILE = "assistant_tanya"
 TRANSLATOR_PROMPT_PROFILE = "translator"
+JAPANESE_READER_PROMPT_PROFILE = "japanese_reader"
+KOREAN_READER_PROMPT_PROFILE = "korean_reader"
 MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "romantic_dark_assistant": TANYA_PROMPT_PROFILE,
     "translator_agent": TRANSLATOR_PROMPT_PROFILE,
     "translation_agent": TRANSLATOR_PROMPT_PROFILE,
+    "japanese_agent": JAPANESE_READER_PROMPT_PROFILE,
+    "japanese_speaker": JAPANESE_READER_PROMPT_PROFILE,
+    "japanese_interpreter": JAPANESE_READER_PROMPT_PROFILE,
+    "japanese_translator": JAPANESE_READER_PROMPT_PROFILE,
+    "japanese_translation": JAPANESE_READER_PROMPT_PROFILE,
+    "english_to_japanese": JAPANESE_READER_PROMPT_PROFILE,
+    "japanese_to_english": JAPANESE_READER_PROMPT_PROFILE,
+    "jp_reader": JAPANESE_READER_PROMPT_PROFILE,
+    "jp_translator": JAPANESE_READER_PROMPT_PROFILE,
+    "korean_agent": KOREAN_READER_PROMPT_PROFILE,
+    "korean_speaker": KOREAN_READER_PROMPT_PROFILE,
+    "korean_interpreter": KOREAN_READER_PROMPT_PROFILE,
+    "korean_translator": KOREAN_READER_PROMPT_PROFILE,
+    "korean_translation": KOREAN_READER_PROMPT_PROFILE,
+    "english_to_korean": KOREAN_READER_PROMPT_PROFILE,
+    "kr_reader": KOREAN_READER_PROMPT_PROFILE,
+    "ko_reader": KOREAN_READER_PROMPT_PROFILE,
+    "ko_translator": KOREAN_READER_PROMPT_PROFILE,
 }
 SECURITY_AGENT_ICON_FILENAMES = ("ScurityAgent_Icon.png", "SecurityAgent_Icon.png")
 OPERATOR_AGENT_ICON_FILENAMES = ("ITOperatorAgent_Icon.png", "OperatorAgent_Icon.png")
