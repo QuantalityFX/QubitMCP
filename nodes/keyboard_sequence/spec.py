@@ -56,6 +56,8 @@ _CLICK_COORD_SCREEN = "screen"
 _CLICK_COORD_WINDOW = "window"
 _TEXT_SOURCE_SINGLE = "single"
 _TEXT_SOURCE_LOOP_TABLE = "loop_table"
+_KEY_SOURCE_SINGLE = "single"
+_KEY_SOURCE_LOOP_TABLE = "loop_table"
 _LOOP_CONDITION_EQ = "=="
 _LOOP_CONDITION_GT = ">"
 _LOOP_CONDITION_LT = "<"
@@ -884,6 +886,57 @@ def _text_action_source(step: dict[str, object]) -> str:
     return _TEXT_SOURCE_SINGLE
 
 
+def _normalize_key_source(raw) -> str:
+    token = _normalize_token(str(raw or ""))
+    if token in {"looptable", "table", "list", "looplist", "loopkey", "keytable", "keylist", "rows"}:
+        return _KEY_SOURCE_LOOP_TABLE
+    return _KEY_SOURCE_SINGLE
+
+
+def _normalize_loop_key_rows(raw) -> list[dict[str, object]]:
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        if _raw_has_value(raw, "key", "hotkey", "keys", "value", "text"):
+            raw_rows = [raw]
+        else:
+            raw_rows = [{"loop_number": key, "key": value} for key, value in raw.items()]
+    elif isinstance(raw, (list, tuple)):
+        raw_rows = raw
+    else:
+        return []
+    rows: list[dict[str, object]] = []
+    for idx, item in enumerate(raw_rows):
+        if isinstance(item, dict):
+            loop_number = _coerce_loop_count(
+                item.get("loop_number", item.get("loop", item.get("iteration", item.get("index", idx + 1)))),
+                idx + 1,
+            )
+            key_value = str(
+                _raw_first_value(item, "key", "hotkey", "keys", "value", "text", default="") or ""
+            ).strip()
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            loop_number = _coerce_loop_count(item[0], idx + 1)
+            key_value = str(item[1] if item[1] is not None else "").strip()
+        else:
+            loop_number = _coerce_loop_count(idx + 1, idx + 1)
+            key_value = str(item or "").strip()
+        if key_value == "":
+            continue
+        rows.append({"loop_number": loop_number, "key": key_value})
+    rows.sort(key=lambda row: int(row.get("loop_number", 1)))
+    return rows
+
+
+def _key_action_source(step: dict[str, object]) -> str:
+    source = _normalize_key_source(step.get("key_source", step.get("key_mode", "")))
+    if source == _KEY_SOURCE_LOOP_TABLE:
+        return source
+    if _normalize_loop_key_rows(step.get("loop_key_rows", step.get("key_rows", step.get("loop_keys", None)))):
+        return _KEY_SOURCE_LOOP_TABLE
+    return _KEY_SOURCE_SINGLE
+
+
 def _active_loop_context(
     action_index: int,
     steps: list[dict[str, object]],
@@ -913,15 +966,37 @@ def _resolve_text_action_value(
         return True, _raw_text_value(step, "text", "write_text", "type_text", "content"), ""
     rows = _normalize_loop_text_rows(step.get("loop_text_rows", step.get("text_rows", None)))
     if not rows:
-        return False, "", "Loop text list has no rows."
+        return True, "", "Loop text list has no rows."
     context = _active_loop_context(action_index, steps, start_to_end, loop_iteration)
     if context is None:
-        return False, "", "Loop text list requires this text action to run inside a loop."
+        return True, "", "Loop text list has no active loop."
     _start_idx, loop_number, iteration = context
     for row in rows:
         if int(row.get("loop_number", 1)) == int(iteration):
             return True, str(row.get("text", "") or ""), f"loop {loop_number}, row {iteration}"
-    return False, "", f"No text row for loop {loop_number} iteration {iteration}."
+    return True, "", f"No text row for loop {loop_number} iteration {iteration}."
+
+
+def _resolve_key_action_value(
+    step: dict[str, object],
+    action_index: int,
+    steps: list[dict[str, object]],
+    start_to_end: dict[int, int],
+    loop_iteration: dict[int, int],
+) -> tuple[bool, str, str]:
+    if _key_action_source(step) != _KEY_SOURCE_LOOP_TABLE:
+        return True, str(step.get("key") or "").strip(), ""
+    rows = _normalize_loop_key_rows(step.get("loop_key_rows", step.get("key_rows", step.get("loop_keys", None))))
+    if not rows:
+        return True, "", "Loop key list has no rows."
+    context = _active_loop_context(action_index, steps, start_to_end, loop_iteration)
+    if context is None:
+        return True, "", "Loop key list has no active loop."
+    _start_idx, loop_number, iteration = context
+    for row in rows:
+        if int(row.get("loop_number", 1)) == int(iteration):
+            return True, str(row.get("key", "") or "").strip(), f"loop {loop_number}, row {iteration}"
+    return True, "", f"No key row for loop {loop_number} iteration {iteration}."
 
 
 def _key_loop_condition_iteration(step: dict[str, object]) -> int | None:
@@ -1686,7 +1761,14 @@ def _normalize_step(raw, index: int) -> dict[str, object] | None:
             return _with_delay_tag_reference(step, raw)
 
         key = str(raw.get("key", raw.get("hotkey", "")) or "").strip()
+        key_source = _normalize_key_source(raw.get("key_source", raw.get("key_mode", "")))
+        key_rows = _normalize_loop_key_rows(raw.get("loop_key_rows", raw.get("key_rows", raw.get("loop_keys", None))))
+        if key_rows:
+            key_source = _KEY_SOURCE_LOOP_TABLE
         step = {"action": action, "type": _ACTION_TYPE_KEY, "key": key, "delay_ms": delay_ms}
+        if key_source == _KEY_SOURCE_LOOP_TABLE:
+            step["key_source"] = _KEY_SOURCE_LOOP_TABLE
+            step["loop_key_rows"] = key_rows
         hold_tag_name = _step_hold_delay_tag_name(raw)
         hold_flag = bool(raw.get("hold", False) or raw.get("press_and_hold", False) or hold_tag_name)
         if hold_flag:
@@ -2874,6 +2956,8 @@ class _ActionEditDialog(QtWidgets.QDialog):
         key_loop_condition_enabled: bool = False,
         key_loop_condition_operator: str = _LOOP_CONDITION_EQ,
         key_loop_condition_iteration: int = 1,
+        key_source: str = _KEY_SOURCE_SINGLE,
+        loop_key_rows: list[dict[str, object]] | None = None,
         action_type: str = _ACTION_TYPE_KEY,
         click_x: int | None = None,
         click_y: int | None = None,
@@ -2942,6 +3026,8 @@ class _ActionEditDialog(QtWidgets.QDialog):
                 key_loop_condition_enabled,
                 key_loop_condition_operator,
                 key_loop_condition_iteration,
+                key_source,
+                loop_key_rows,
             )
         )
         self._stack.addWidget(self._build_click_page(click_x, click_y, click_button, click_ms))
@@ -3109,15 +3195,59 @@ class _ActionEditDialog(QtWidgets.QDialog):
         loop_condition_enabled: bool,
         loop_condition_operator: str,
         loop_condition_iteration: int,
+        key_source: str = _KEY_SOURCE_SINGLE,
+        loop_key_rows: list[dict[str, object]] | None = None,
     ) -> QtWidgets.QWidget:
         page = QtWidgets.QWidget(self)
         form = QtWidgets.QFormLayout(page)
         form.setContentsMargins(0, 0, 0, 0)
         form.setSpacing(6)
 
+        self._key_list_check = QtWidgets.QCheckBox("Use loop key list")
+        self._key_list_check.setChecked(_normalize_key_source(key_source) == _KEY_SOURCE_LOOP_TABLE)
+        form.addRow("Key Source", self._key_list_check)
+
+        self._key_source_stack = QtWidgets.QStackedWidget(page)
+        self._key_source_stack.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+
         self._key_edit = QtWidgets.QLineEdit(str(key_text or ""))
         self._key_edit.setPlaceholderText("Example: ctrl+shift+s, F5, enter, a")
-        form.addRow("Key", self._key_edit)
+        self._key_source_stack.addWidget(self._key_edit)
+
+        key_table_page = QtWidgets.QWidget(page)
+        key_table_layout = QtWidgets.QVBoxLayout(key_table_page)
+        key_table_layout.setContentsMargins(0, 0, 0, 0)
+        key_table_layout.setSpacing(6)
+
+        self._loop_key_table = QtWidgets.QTableWidget(0, 2, key_table_page)
+        self._loop_key_table.setHorizontalHeaderLabels(["Loop #", "Key"])
+        self._loop_key_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._loop_key_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._loop_key_table.setAlternatingRowColors(True)
+        self._loop_key_table.verticalHeader().setVisible(False)
+        self._loop_key_table.setMinimumHeight(116)
+        key_header = self._loop_key_table.horizontalHeader()
+        key_header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        key_header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        key_table_layout.addWidget(self._loop_key_table, 1)
+
+        key_table_buttons = QtWidgets.QHBoxLayout()
+        key_table_buttons.setContentsMargins(0, 0, 0, 0)
+        key_table_buttons.setSpacing(6)
+        self._add_loop_key_row_btn = QtWidgets.QPushButton("Add Row")
+        self._remove_loop_key_row_btn = QtWidgets.QPushButton("Remove Row")
+        self._add_loop_key_row_btn.clicked.connect(self._add_loop_key_row)
+        self._remove_loop_key_row_btn.clicked.connect(self._remove_loop_key_row)
+        key_table_buttons.addWidget(self._add_loop_key_row_btn, 0)
+        key_table_buttons.addWidget(self._remove_loop_key_row_btn, 0)
+        key_table_buttons.addStretch(1)
+        key_table_layout.addLayout(key_table_buttons, 0)
+
+        self._key_source_stack.addWidget(key_table_page)
+        form.addRow("Key", self._key_source_stack)
+        self._populate_loop_key_table(loop_key_rows)
+        self._key_list_check.toggled.connect(self._on_key_list_toggled)
+        self._on_key_list_toggled(self._key_list_check.isChecked())
 
         self._hold_check = QtWidgets.QCheckBox("Hold key")
         self._hold_check.setChecked(bool(hold))
@@ -3183,6 +3313,83 @@ class _ActionEditDialog(QtWidgets.QDialog):
         condition_layout.addStretch(1)
         form.addRow("Condition", condition_row)
         return page
+
+    def _on_key_list_toggled(self, checked: bool):
+        try:
+            self._key_source_stack.setCurrentIndex(1 if checked else 0)
+            self._sync_key_source_stack_height(checked)
+        except Exception:
+            pass
+
+    def _sync_key_source_stack_height(self, checked: bool):
+        if checked:
+            current = self._key_source_stack.currentWidget()
+            target_h = max(
+                156,
+                int(current.sizeHint().height()) if current is not None else 0,
+                int(current.minimumSizeHint().height()) if current is not None else 0,
+            )
+        else:
+            target_h = max(
+                28,
+                int(self._key_edit.sizeHint().height()),
+                int(self._key_edit.minimumSizeHint().height()),
+            )
+        self._key_source_stack.setFixedHeight(int(target_h))
+        self._key_source_stack.updateGeometry()
+
+    def _populate_loop_key_table(self, rows: list[dict[str, object]] | None):
+        clean_rows = _normalize_loop_key_rows(rows)
+        if not clean_rows:
+            clean_rows = [{"loop_number": 1, "key": ""}]
+        self._loop_key_table.setRowCount(0)
+        for row in clean_rows:
+            self._insert_loop_key_row(int(row.get("loop_number", 1)), str(row.get("key", "") or ""))
+
+    def _insert_loop_key_row(self, loop_number: int, key: str = ""):
+        row = self._loop_key_table.rowCount()
+        self._loop_key_table.insertRow(row)
+        loop_spin = QtWidgets.QSpinBox(self._loop_key_table)
+        loop_spin.setRange(_MIN_LOOP_COUNT, _MAX_LOOP_COUNT)
+        loop_spin.setValue(_coerce_loop_count(loop_number, row + 1))
+        self._loop_key_table.setCellWidget(row, 0, loop_spin)
+        key_item = QtWidgets.QTableWidgetItem(str(key or ""))
+        key_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEditable)
+        self._loop_key_table.setItem(row, 1, key_item)
+        self._loop_key_table.selectRow(row)
+
+    def _add_loop_key_row(self):
+        rows = self._loop_key_rows_from_table(include_empty=True)
+        next_loop = 1
+        if rows:
+            next_loop = max(int(row.get("loop_number", 1)) for row in rows) + 1
+        self._insert_loop_key_row(_coerce_loop_count(next_loop, 1), "")
+
+    def _remove_loop_key_row(self):
+        row = self._loop_key_table.currentRow()
+        if row < 0:
+            row = self._loop_key_table.rowCount() - 1
+        if row >= 0:
+            self._loop_key_table.removeRow(row)
+        if self._loop_key_table.rowCount() <= 0:
+            self._insert_loop_key_row(1, "")
+
+    def _loop_key_rows_from_table(self, *, include_empty: bool = False) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for row in range(self._loop_key_table.rowCount()):
+            widget = self._loop_key_table.cellWidget(row, 0)
+            if isinstance(widget, QtWidgets.QSpinBox):
+                loop_number = _coerce_loop_count(widget.value(), row + 1)
+            else:
+                item = self._loop_key_table.item(row, 0)
+                loop_number = _coerce_loop_count(item.text() if item is not None else row + 1, row + 1)
+            key_item = self._loop_key_table.item(row, 1)
+            key_value = str(key_item.text() if key_item is not None else "").strip()
+            if not include_empty and key_value == "":
+                continue
+            rows.append({"loop_number": loop_number, "key": key_value})
+        rows.sort(key=lambda item: int(item.get("loop_number", 1)))
+        return rows
 
     def _build_click_page(
         self,
@@ -3433,7 +3640,10 @@ class _ActionEditDialog(QtWidgets.QDialog):
         elif _action_uses_loop_settings(self._current_action_type()):
             self._loop_count_spin.setFocus()
         else:
-            self._key_edit.setFocus()
+            if self._key_list_check.isChecked():
+                self._loop_key_table.setFocus()
+            else:
+                self._key_edit.setFocus()
 
     def _update_pointer_page_for_type(self):
         is_hover = self._current_action_type() == _ACTION_TYPE_HOVER
@@ -3540,6 +3750,10 @@ class _ActionEditDialog(QtWidgets.QDialog):
             elif self._text_edit.toPlainText() == "":
                 QtWidgets.QMessageBox.warning(self, "Keyboard Sequence", "Enter text before saving this action.")
                 return
+        if self._current_action_type() == _ACTION_TYPE_KEY and self._key_list_check.isChecked():
+            if not self._loop_key_rows_from_table():
+                QtWidgets.QMessageBox.warning(self, "Keyboard Sequence", "Add at least one loop key row before saving this action.")
+                return
         if self._delay_tag_check.isChecked() and not self._selected_delay_tag_name():
             QtWidgets.QMessageBox.warning(self, "Keyboard Sequence", "Choose a delay tag or turn off Use delay tag.")
             return
@@ -3614,6 +3828,9 @@ class _ActionEditDialog(QtWidgets.QDialog):
             "delay_ms": delay_ms,
         }
         step.update(delay_payload)
+        if self._key_list_check.isChecked():
+            step["key_source"] = _KEY_SOURCE_LOOP_TABLE
+            step["loop_key_rows"] = self._loop_key_rows_from_table()
         if hold:
             step["hold"] = True
             hold_ms = _coerce_action_hold_ms(self._hold_spin.value())
@@ -4704,8 +4921,14 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                         body = f"Loop {loop_number} {marker} | {loop_count}x"
                     else:
                         key_text = str(step.get("key") or "").strip()
-                        body = key_text if key_text else "Click to assign key"
-                        if key_text and (bool(step.get("hold")) or "hold_ms" in step):
+                        key_rows = _normalize_loop_key_rows(step.get("loop_key_rows", step.get("key_rows", step.get("loop_keys", None))))
+                        key_loop_list = _key_action_source(step) == _KEY_SOURCE_LOOP_TABLE
+                        if key_loop_list:
+                            row_count = len(key_rows)
+                            body = f"Key loop list | {row_count} row(s)" if row_count else "Loop key list not set"
+                        else:
+                            body = key_text if key_text else "Click to assign key"
+                        if (key_text or key_loop_list) and (bool(step.get("hold")) or "hold_ms" in step):
                             hold_tag_name = _step_hold_delay_tag_name(step)
                             hold_label = _step_hold_ms(
                                 step,
@@ -4856,6 +5079,10 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         initial_key_loop_condition_enabled = initial_key_loop_condition is not None
         initial_key_loop_condition_operator = _key_loop_condition_operator(step)
         initial_key_loop_condition_iteration = initial_key_loop_condition if initial_key_loop_condition is not None else 1
+        initial_key_source = _key_action_source(step) if initial_type == _ACTION_TYPE_KEY else _KEY_SOURCE_SINGLE
+        initial_loop_key_rows = _normalize_loop_key_rows(
+            step.get("loop_key_rows", step.get("key_rows", step.get("loop_keys", None)))
+        ) if initial_type == _ACTION_TYPE_KEY else []
         initial_click_x = _coerce_screen_coord(_raw_first_value(step, "x", "screen_x", default=0)) if _step_has_click_point(step) else None
         initial_click_y = _coerce_screen_coord(_raw_first_value(step, "y", "screen_y", default=0)) if _step_has_click_point(step) else None
         initial_click_button = _normalize_mouse_button(step.get("button", _MOUSE_BUTTON_LEFT))
@@ -4878,6 +5105,8 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             initial_key_loop_condition_enabled,
             initial_key_loop_condition_operator,
             initial_key_loop_condition_iteration,
+            initial_key_source,
+            initial_loop_key_rows,
             initial_type,
             initial_click_x,
             initial_click_y,
@@ -5056,26 +5285,41 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                 continue
 
             key_text = str(step.get("key") or "").strip()
-            if key_text:
-                runnable.append(
-                    {
+            key_source = _key_action_source(step)
+            key_rows = _normalize_loop_key_rows(step.get("loop_key_rows", step.get("key_rows", step.get("loop_keys", None))))
+            key_step: dict[str, object] | None = None
+            if key_source == _KEY_SOURCE_LOOP_TABLE:
+                if key_rows:
+                    key_step = {
                         "index": index,
                         "action": action,
                         "type": _ACTION_TYPE_KEY,
                         "key": key_text,
+                        "key_source": _KEY_SOURCE_LOOP_TABLE,
+                        "loop_key_rows": key_rows,
                         "delay_ms": _step_delay_ms(step, delay_tags),
                     }
-                )
-                hold_tag_name = _step_hold_delay_tag_name(step)
-                if bool(step.get("hold")) or hold_tag_name:
-                    runnable[-1]["hold"] = True
-                if "hold_ms" in step or hold_tag_name:
-                    runnable[-1]["hold_ms"] = _step_hold_ms(step, delay_tags)
-                loop_condition = _key_loop_condition_iteration(step)
-                if loop_condition is not None:
-                    runnable[-1]["loop_condition_enabled"] = True
-                    runnable[-1]["loop_condition_operator"] = _key_loop_condition_operator(step)
-                    runnable[-1]["loop_condition_iteration"] = loop_condition
+            elif key_text:
+                key_step = {
+                    "index": index,
+                    "action": action,
+                    "type": _ACTION_TYPE_KEY,
+                    "key": key_text,
+                    "delay_ms": _step_delay_ms(step, delay_tags),
+                }
+            if key_step is None:
+                continue
+            hold_tag_name = _step_hold_delay_tag_name(step)
+            if bool(step.get("hold")) or hold_tag_name:
+                key_step["hold"] = True
+            if "hold_ms" in step or hold_tag_name:
+                key_step["hold_ms"] = _step_hold_ms(step, delay_tags)
+            loop_condition = _key_loop_condition_iteration(step)
+            if loop_condition is not None:
+                key_step["loop_condition_enabled"] = True
+                key_step["loop_condition_operator"] = _key_loop_condition_operator(step)
+                key_step["loop_condition_iteration"] = loop_condition
+            runnable.append(key_step)
         return runnable
 
     def _on_run_clicked(self):
@@ -5316,6 +5560,12 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                             f"Action {idx + 1} '{action_name}' failed: {source_label}",
                         )
                         return
+                    if _text_action_source(step) == _TEXT_SOURCE_LOOP_TABLE and text_value == "":
+                        self._signals.status.emit(
+                            f"Skipped {idx + 1}/{action_count}: {action_name} ({source_label or 'loop text list empty'})"
+                        )
+                        pc += 1
+                        continue
                     preview = _text_preview(text_value)
                     delay_ms = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
                     hold_ms = _text_key_hold_ms(default_hold_ms)
@@ -5352,7 +5602,9 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                     pc += 1
                     continue
 
-                key_text = str(step.get("key") or "").strip()
+                display_key_text = str(step.get("key") or "").strip()
+                if _key_action_source(step) == _KEY_SOURCE_LOOP_TABLE:
+                    display_key_text = display_key_text or "loop key list"
                 has_explicit_hold = bool(step.get("hold")) or "hold_ms" in step
                 delay_ms = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
                 uses_separate_hold_duration = "hold_ms" in step
@@ -5367,13 +5619,27 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                 condition_allows, condition_label = _key_loop_condition_allows(step, idx, steps, start_to_end, loop_iteration)
                 if not condition_allows:
                     self._signals.status.emit(
-                        f"Skipped {idx + 1}/{action_count}: {action_name} [{key_text}] ({condition_label})"
+                        f"Skipped {idx + 1}/{action_count}: {action_name} [{display_key_text}] ({condition_label})"
                     )
                     pc += 1
                     continue
+                ok_key, key_text, source_label = _resolve_key_action_value(step, idx, steps, start_to_end, loop_iteration)
+                if not ok_key:
+                    self._signals.finished.emit(
+                        False,
+                        f"Action {idx + 1} '{action_name}' failed: {source_label}",
+                    )
+                    return
+                if _key_action_source(step) == _KEY_SOURCE_LOOP_TABLE and key_text == "":
+                    self._signals.status.emit(
+                        f"Skipped {idx + 1}/{action_count}: {action_name} [{display_key_text}] ({source_label or 'loop key list empty'})"
+                    )
+                    pc += 1
+                    continue
+                source_suffix = f" ({source_label})" if source_label else ""
                 if has_explicit_hold and hold_ms > 0:
                     self._signals.status.emit(
-                        f"Holding {idx + 1}/{action_count}: {action_name} [{key_text}] for {hold_ms}ms"
+                        f"Holding {idx + 1}/{action_count}: {action_name} [{key_text}] for {hold_ms}ms{source_suffix}"
                     )
                 if serial_sessions:
                     ok = True
@@ -5418,7 +5684,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                 else:
                     mode_label = "Standard"
                 self._signals.status.emit(
-                    f"Sent {idx + 1}/{action_count}: {action_name} [{key_text}] ({mode_label}, hold={hold_ms}ms)"
+                    f"Sent {idx + 1}/{action_count}: {action_name} [{key_text}] ({mode_label}, hold={hold_ms}ms){source_suffix}"
                 )
                 if idx < action_count - 1:
                     if post_action_delay_ms > 0 and not self._sleep_with_cancel(post_action_delay_ms):
