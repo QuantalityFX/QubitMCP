@@ -494,6 +494,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] FBX Import plugin import failed:", e)
 
+    # 13.75) FBX Animation Import
+    try:
+        from nodes import fbx_animation_import
+        if hasattr(fbx_animation_import, "register"):
+            fbx_animation_import.register()
+            _safe_probe("fbx_animation")
+        else:
+            print("[EchoGraph] FBX Animation Import module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] FBX Animation Import plugin import failed:", e)
+
     # 13.8) Mocap Import
     try:
         from nodes import mocap_import

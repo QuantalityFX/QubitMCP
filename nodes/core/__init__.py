@@ -79,6 +79,7 @@ def register_defaults() -> None:
     register("python",    stripe_color="#10b981")
     register("import",    stripe_color="#3b82f6")
     register("fbx_import", stripe_color="#2563eb")
+    register("fbx_animation", stripe_color="#38bdf8")
     register("mocap_import", stripe_color="#7c3aed")
     register("genx_video_mocap", stripe_color="#14b8a6")
     register("GEN-X-VideoMocap", stripe_color="#14b8a6")

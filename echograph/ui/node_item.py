@@ -447,6 +447,21 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _fbx_import.register()
             except Exception:
                 pass
+        # Ensure FBX Animation Import spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "fbx_animation",
+            "fbx animation",
+            "fbxanimation",
+            "fbx_animation_import",
+            "fbx animation import",
+            "fbxanimationimport",
+        ):
+            try:
+                from nodes import fbx_animation_import as _fbx_animation_import  # type: ignore
+                if hasattr(_fbx_animation_import, "register"):
+                    _fbx_animation_import.register()
+            except Exception:
+                pass
         # Ensure Mocap Import spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
             try:
@@ -1135,7 +1150,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return "groom_guide_sim"
         if kind in ("groom_guide_tube", "groom guide tube", "groom_guides_tube", "groom guides tube", "hair_guide_tube", "hair guide tube", "hair_guides_tube", "hair guides tube", "guide_tube", "guide tube"):
             return "groom_guide_tube"
-        if kind in ("fbx_import", "fbx import", "fbximport"):
+        if kind in (
+            "fbx_import",
+            "fbx import",
+            "fbximport",
+            "fbx_animation",
+            "fbx animation",
+            "fbxanimation",
+            "fbx_animation_import",
+            "fbx animation import",
+            "fbxanimationimport",
+        ):
             return "fbx"
         return None
 
@@ -3461,6 +3486,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         and pname_key in ("rest_geometry", "capture_pose", "animated_pose")
                         and hasattr(self, "_browse_param_file")
                     )
+                    attach_fbx_animation_browse = (
+                        kind in (
+                            "fbx_animation",
+                            "fbx animation",
+                            "fbxanimation",
+                            "fbx_animation_import",
+                            "fbx animation import",
+                            "fbxanimationimport",
+                        )
+                        and pname_key == "path"
+                        and hasattr(self, "_browse_param_file")
+                    )
                     attach_mocap_import_browse = (
                         kind in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport")
                         and pname_key == "path"
@@ -3469,6 +3506,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     attach_file_browse = (
                         attach_import_browse
                         or attach_fbx_import_browse
+                        or attach_fbx_animation_browse
                         or attach_mocap_import_browse
                     )
                     lab_holder.addStretch(1)
@@ -3697,6 +3735,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         if attach_import_browse:
                             browse_btn.clicked.connect(
                                 lambda _=False: self._browse_import_file(self._param_value("path"))
+                            )
+                        elif attach_fbx_animation_browse:
+                            browse_btn.clicked.connect(
+                                lambda _=False: self._browse_param_file(
+                                    "path",
+                                    self._param_value("path"),
+                                    file_filter="FBX Animation (*.fbx);;FBX Files (*.fbx);;All Files (*.*)",
+                                    dialog_title="Select FBX Animation File",
+                                )
                             )
                         elif attach_mocap_import_browse:
                             browse_btn.clicked.connect(
@@ -7711,6 +7758,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "fbx_import",
                 "fbx import",
                 "fbximport",
+                "fbx_animation",
+                "fbx animation",
+                "fbxanimation",
+                "fbx_animation_import",
+                "fbx animation import",
+                "fbxanimationimport",
                 "mocap_import",
                 "mocap import",
                 "mocapimport",
@@ -8076,6 +8129,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower == "import":
                 icon_pm = getattr(self, "_import_icon_pm", None) or node_icons._import_icon()
             elif kind_lower in ("fbx_import", "fbx import", "fbximport"):
+                icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
+            elif kind_lower in (
+                "fbx_animation",
+                "fbx animation",
+                "fbxanimation",
+                "fbx_animation_import",
+                "fbx animation import",
+                "fbxanimationimport",
+            ):
                 icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
             elif kind_lower in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
                 icon_pm = node_icons._mocap_import_icon() or node_icons._import_icon()

@@ -44,6 +44,14 @@ from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 ROLE_PORTS: Tuple[str, str, str] = ("rest_geometry", "capture_pose", "animated_pose")
 FBX_KIND_ALIASES: Tuple[str, str, str] = ("fbx_import", "fbx import", "fbximport")
+FBX_ANIMATION_KIND_ALIASES: Tuple[str, ...] = (
+    "fbx_animation",
+    "fbx animation",
+    "fbxanimation",
+    "fbx_animation_import",
+    "fbx animation import",
+    "fbxanimationimport",
+)
 MOCAP_KIND_ALIASES: Tuple[str, ...] = (
     "mocap_import",
     "mocap import",
@@ -1235,6 +1243,21 @@ def _source_path_from_item(src_item, role: str, src_role: str = "") -> Tuple[str
             return "", f"{role}: upstream MocapImport node '{name}' has no resolved source."
         return path, ""
 
+    if kind in FBX_ANIMATION_KIND_ALIASES:
+        if role not in ("capture_pose", "animated_pose"):
+            return "", (
+                f"{role}: upstream FBX Animation node '{name}' can only feed "
+                "capture_pose or animated_pose."
+            )
+        path = (
+            str(getattr(model, "_fbx_animation_resolved_path", "") or "").strip()
+            or _param_value(model, "resolved_path")
+            or _param_value(model, "path")
+        )
+        if not path:
+            return "", f"{role}: upstream FBX Animation node '{name}' has no resolved source."
+        return path, ""
+
     if kind in FBX_KIND_ALIASES:
         source_role = (src_role or "").strip().lower()
         if source_role not in ROLE_PORTS:
@@ -1596,6 +1619,11 @@ def resolve_fbx_import_sources(
                 edge_source_role = _edge_src_name(role_edges[0]).strip().lower()
                 if edge_source_role in ROLE_PORTS:
                     source_roles[role] = edge_source_role
+                else:
+                    src_model = getattr(src_item, "model", None)
+                    src_kind = (getattr(src_model, "kind", "") or "").strip().lower() if src_model is not None else ""
+                    if src_kind in FBX_ANIMATION_KIND_ALIASES and role in ("capture_pose", "animated_pose"):
+                        source_roles[role] = "animated_pose"
                 wired_path, source_issue = _source_path_from_item(
                     src_item,
                     role,
@@ -2470,6 +2498,7 @@ FBX_IMPORT_SPEC = Spec(
 
 __all__ = [
     "ROLE_PORTS",
+    "FBX_ANIMATION_KIND_ALIASES",
     "SourceResolutionResult",
     "build_ports",
     "resolve_fbx_import_sources",

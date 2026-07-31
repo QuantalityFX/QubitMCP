@@ -25,6 +25,14 @@ _TEXTURE_KINDS = {"texture", "texture_pro", "texture_layer"}
 _NORMALS_PROCESS_KINDS = {"normals", "normal", "smooth_normals", "smooth normals"}
 _GEOMETRY_PROCESS_KINDS = {"uv_unwrap"} | _NORMALS_PROCESS_KINDS
 _FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
+_FBX_ANIMATION_KIND_ALIASES = {
+    "fbx_animation",
+    "fbx animation",
+    "fbxanimation",
+    "fbx_animation_import",
+    "fbx animation import",
+    "fbxanimationimport",
+}
 _MODELER_KIND_ALIASES = {"modeler"}
 _ANIM_RETARGET_KIND_ALIASES = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
 _SKINNED_SPLAT_PROXY_KIND_ALIASES = {
@@ -150,7 +158,7 @@ def _asset_has_scene_skeleton(asset: dict, source_kind: str = "") -> bool:
     ).strip().lower()
     if _is_anim_retarget_kind(source_key):
         return True
-    if source_key in _FBX_KIND_ALIASES or source_key in _MOCAP_KIND_ALIASES:
+    if source_key in _FBX_KIND_ALIASES or source_key in _FBX_ANIMATION_KIND_ALIASES or source_key in _MOCAP_KIND_ALIASES:
         return True
     context = asset.get("fbx_rig_context")
     if isinstance(context, dict):
@@ -1991,6 +1999,43 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"node={str(asset.get('node') or '')} "
                         + f"path={str(asset.get('path') or '')} "
                         + f"saved_xform={bool(isinstance(saved_xform, dict))} "
+                        + f"tracks={len(getattr((asset.get('fbx_rig_context') or {}).get('clip'), 'tracks', []) or [])}",
+                    )
+            continue
+        if kind in _FBX_ANIMATION_KIND_ALIASES:
+            try:
+                from nodes.fbx_animation_import import spec as _fbx_animation_spec  # type: ignore
+
+                build_asset = getattr(_fbx_animation_spec, "build_fbx_animation_scene_asset", None)
+                asset = build_asset(src_item) if callable(build_asset) else None
+            except Exception as exc:
+                asset = None
+                if _fbx_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"fbx_animation asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                asset["kind"] = "fbx_animation"
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                asset["wire_only"] = True
+                asset["has_skeleton"] = True
+                assets.append(asset)
+                path_key = str(asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    _scene_log(
+                        node_item,
+                        "fbx_animation asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"path={str(asset.get('path') or '')} "
                         + f"tracks={len(getattr((asset.get('fbx_rig_context') or {}).get('clip'), 'tracks', []) or [])}",
                     )
             continue
@@ -4969,7 +5014,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         or kind in _SPLAT_COLORIZE_KIND_ALIASES
                     ) and not ext:
                         ext = ".ply"
-                    asset_kind = "anim_retarget" if _is_anim_retarget_kind(kind) else "mesh"
+                    asset_kind = (
+                        "anim_retarget"
+                        if _is_anim_retarget_kind(kind)
+                        else ("fbx_animation" if kind in _FBX_ANIMATION_KIND_ALIASES else "mesh")
+                    )
                     rows.append(
                         {
                             "node": name,
@@ -4981,6 +5030,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                             "has_skeleton": bool(
                                 _is_anim_retarget_kind(kind)
                                 or kind in _FBX_KIND_ALIASES
+                                or kind in _FBX_ANIMATION_KIND_ALIASES
                                 or kind in _MOCAP_KIND_ALIASES
                                 or ext in {".fbx", ".bvh"}
                             ),

@@ -32195,6 +32195,105 @@ void main() {
                     )
                     continue
 
+                fbx_animation_wire = bool(
+                    wire_only
+                    and ext == ".fbx"
+                    and isinstance(fbx_rig_context, dict)
+                    and fbx_rig_context.get("skeleton") is not None
+                    and (
+                        kind
+                        in {
+                            "fbx_animation",
+                            "fbx animation",
+                            "fbxanimation",
+                            "fbx_animation_import",
+                            "fbx animation import",
+                            "fbxanimationimport",
+                        }
+                        or str(fbx_rig_context.get("source_format") or "").strip().lower()
+                        == "fbx_animation"
+                    )
+                )
+                if fbx_animation_wire:
+                    context = fbx_rig_context if isinstance(fbx_rig_context, dict) else None
+                    if not isinstance(context, dict) or path is None:
+                        continue
+                    capture_debug_enabled, animated_debug_enabled = self._mgl_fbx_joint_debug_modes(context)
+                    if not capture_debug_enabled and not animated_debug_enabled:
+                        animated_debug_enabled = True
+                    joint_overlays: List[MGLSceneItem] = []
+                    if capture_debug_enabled:
+                        capture_item = self._mgl_add_fbx_joint_overlay_item(
+                            path,
+                            bool(visible),
+                            pose_mode="capture",
+                            owner=owner,
+                            path_key=path_key,
+                            rig_context=context,
+                        )
+                        if capture_item is not None:
+                            capture_item.order = 16
+                            joint_overlays.append(capture_item)
+                    if animated_debug_enabled:
+                        animated_item = self._mgl_add_fbx_joint_overlay_item(
+                            path,
+                            bool(visible),
+                            pose_mode="animated",
+                            owner=owner,
+                            path_key=path_key,
+                            rig_context=context,
+                        )
+                        if animated_item is not None:
+                            animated_item.order = 16
+                            joint_overlays.append(animated_item)
+
+                    joint_bounds_min = None
+                    joint_bounds_max = None
+                    for overlay_item in joint_overlays:
+                        scene.add(overlay_item)
+                        try:
+                            payload = dict(getattr(overlay_item, "payload", None) or {})
+                            bmin = np.asarray(payload.get("bounds_min"), dtype="f4").reshape(-1)
+                            bmax = np.asarray(payload.get("bounds_max"), dtype="f4").reshape(-1)
+                            if bmin.size >= 3 and bmax.size >= 3:
+                                b0 = bmin[:3].astype("f4", copy=False)
+                                b1 = bmax[:3].astype("f4", copy=False)
+                                if joint_bounds_min is None or joint_bounds_max is None:
+                                    joint_bounds_min, joint_bounds_max = b0.copy(), b1.copy()
+                                else:
+                                    joint_bounds_min = np.minimum(joint_bounds_min, b0)
+                                    joint_bounds_max = np.maximum(joint_bounds_max, b1)
+                        except Exception:
+                            pass
+                    if joint_bounds_min is not None and joint_bounds_max is not None:
+                        try:
+                            self._mgl_scene_bounds_by_owner[owner] = (
+                                joint_bounds_min.astype("f4"),
+                                joint_bounds_max.astype("f4"),
+                            )
+                            self._mgl_scene_mesh_bounds_by_owner[owner] = (
+                                joint_bounds_min.astype("f4"),
+                                joint_bounds_max.astype("f4"),
+                            )
+                        except Exception:
+                            pass
+                        bounds_min, bounds_max = _merge_bounds(
+                            bounds_min,
+                            bounds_max,
+                            joint_bounds_min,
+                            joint_bounds_max,
+                        )
+                        has_mesh_bounds = True
+                        if not first_mesh_path:
+                            first_mesh_path = str(path)
+                    self._mgl_fbx_joints_log(
+                        "scene_asset fbx_animation_overlays "
+                        + f"owner={owner} path={path} count={int(len(joint_overlays))} "
+                        + f"capture={bool(capture_debug_enabled)} "
+                        + f"animated={bool(animated_debug_enabled)}"
+                    )
+                    continue
+
                 if wire_only:
                     bmin = bmax = None
                     if is_volume:
