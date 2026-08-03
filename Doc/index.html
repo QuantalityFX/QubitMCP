@@ -47,6 +47,7 @@
       <main class="content">
         <header id="home" class="landing-hero">
           <canvas class="hero-canvas" aria-hidden="true"></canvas>
+          <button class="hero-debug-toggle" type="button" aria-pressed="false">Debug Off</button>
           <div class="hero-kicker">Windows desktop node workspace</div>
           <h1>Qubit MCP</h1>
           <p class="lead hero-lead">
@@ -214,8 +215,8 @@
               <h3><img class="inline-icon" src="../icons/PixelsToSplat_Icon.png" alt="Image-GS splat icon" /> Image-GS Splat Node</h3>
               <ul class="bullet">
                 <li><code>image_gs_splat</code> converts a local image path or HTTP image URL into a viewport-ready Gaussian splat PLY.</li>
-                <li>The node stages images as 8-bit RGB PNGs, runs the optional Image-GS runtime, and writes outputs under <code>logs\image_gs_splat</code>.</li>
-                <li>Generation includes Auto HQ progressive optimization, QC reporting, node preview, debug report capture, InfoCard setup controls, and a bottom Stop button while processing.</li>
+                <li>Exact Pixel mode writes a deterministic front-facing splat sheet with one splat per visible pixel for filled single-image coverage.</li>
+                <li>Image-GS mode keeps the optional optimizer runtime, Auto HQ progressive optimization, QC reporting, node preview, debug report capture, setup controls, and a bottom Stop button while processing.</li>
               </ul>
             </div>
             <div class="card feature-card">
@@ -730,31 +731,31 @@
         <section id="image-gs-splat" class="section">
           <h2>Image-GS Splat Node</h2>
           <p>
-            <code>image_gs_splat</code> uses the optional Image-GS runtime to fit a set of Gaussian primitives to a single source image, then converts the Image-GS checkpoint into a viewport-ready PLY splat. The result is different from showing a flat image texture: the image is represented by many colored, semi-transparent Gaussian splats that can be loaded through the same scene and viewport path used by other splat assets.
+            <code>image_gs_splat</code> converts a single source image into a viewport-ready PLY splat. Exact Pixel mode writes a deterministic front-facing splat sheet with one Gaussian per visible source pixel. Image-GS mode uses the optional Image-GS runtime to fit a smaller optimized set of Gaussian primitives, then converts the checkpoint into the same PLY path. The result is different from showing a flat image texture: the image is represented by many colored, semi-transparent Gaussian splats that can be loaded through the same scene and viewport path used by other splat assets.
           </p>
           <p>
-            This is not multi-view photogrammetry or a full hidden-surface 3D scan. With one image, Image-GS reconstructs an image-driven splat surface/field rather than a complete object with a reliable backside. In QubitMCP, the value is that the generated splats can be viewed, transformed, layered, connected into <code>scene</code>, and processed alongside other 3D and splat workflows.
+            This is not multi-view photogrammetry or a full hidden-surface 3D scan. With one image, the node creates an image-driven splat surface/field rather than a complete object with a reliable backside. In QubitMCP, the value is that the generated splats can be viewed, transformed, layered, connected into <code>scene</code>, and processed alongside other 3D and splat workflows.
           </p>
           <div class="grid two">
             <div class="card">
               <h3>What Generate Does</h3>
               <ol class="steps">
                 <li>Reads a local image path or HTTP image URL from the node.</li>
-                <li>Stages the source as an 8-bit RGB PNG so Image-GS receives a predictable image format.</li>
-                <li>When <strong>Auto HQ</strong> is enabled, analyzes source resolution/detail, chooses quality-focused settings, and keeps Image-GS progressive error-guided optimization enabled.</li>
-                <li>Runs Image-GS in <code>%QUBITMCP_HOME%\third_party\image-gs</code> using its separate Python environment.</li>
-                <li>Saves Image-GS checkpoints and preview images under the Image-GS results folder.</li>
-                <li>Converts the latest checkpoint into a PLY Gaussian splat stored under <code>logs\image_gs_splat</code>, with export guards that clamp oversized splat axes, reject broken scale outliers, boost coverage, and add stable viewport thickness.</li>
-                <li>Writes QC data comparing the rendered reconstruction back to the staged source image when a render image is available.</li>
+                <li>In <strong>Exact Pixel</strong> mode, stages the source as RGBA PNG and writes one front-facing splat per visible pixel, capped at 5 million splats by default.</li>
+                <li>In <strong>Image-GS</strong> mode, stages the source as an 8-bit RGB PNG so Image-GS receives a predictable image format.</li>
+                <li>When <strong>Auto HQ</strong> is enabled in Image-GS mode, analyzes source resolution/detail, chooses quality-focused settings, and keeps Image-GS progressive error-guided optimization enabled.</li>
+                <li>Runs Image-GS in <code>%QUBITMCP_HOME%\third_party\image-gs</code> only when Image-GS mode is selected.</li>
+                <li>Converts the exact image or latest checkpoint into a PLY Gaussian splat stored under <code>logs\image_gs_splat</code>.</li>
+                <li>Writes QC data for the generated path; Image-GS mode also compares the rendered reconstruction back to the staged source image when a render image is available.</li>
                 <li>Updates the node output so <strong>View</strong> or a connected <code>scene</code> node can display the generated splat in the 3D viewport.</li>
               </ol>
             </div>
             <div class="card">
               <h3>Setup and Debug</h3>
               <ul class="bullet">
-                <li>Use <code>setup.bat</code>, accept the first-use setup prompt, or click <strong>Setup Image-GS</strong> in the InfoCard to install the optional Image-GS checkout and dependencies.</li>
+                <li>Exact Pixel mode does not require the optional Image-GS checkout. Use <code>setup.bat</code>, accept the first-use setup prompt, or click <strong>Setup Image-GS</strong> in the InfoCard only when Image-GS mode is needed.</li>
                 <li>The node writes generated files under <code>logs\image_gs_splat</code> and keeps the Image-GS checkout under <code>%QUBITMCP_HOME%\third_party\image-gs</code>.</li>
-                <li>While generation is running, a bottom-row <strong>Stop</strong> button appears to interrupt the active Image-GS process.</li>
+                <li>While generation is running, a bottom-row <strong>Stop</strong> button appears to interrupt the active exact converter or Image-GS process.</li>
                 <li>The top-right debug icon opens an Image-GS report with dependency status, command line, generated paths, QC status, exit code, and captured stdout/stderr from the last setup or generate run.</li>
                 <li>Image inputs are normalized before training, while Image-GS plot previews use JPG to avoid 16-bit PNG visualization errors in the upstream plotting code.</li>
                 <li>QC is a validation estimate: it checks the available rendered output, splat density, export limits, and edge/detail retention, but it does not replace visual review in the viewport.</li>
@@ -779,9 +780,14 @@
                   <td>Local image path or HTTP/HTTPS image URL. The browse button selects a local image. This value is also mirrored to <code>source</code> for compatibility.</td>
                 </tr>
                 <tr>
+                  <td><code>generation_mode</code> / Mode</td>
+                  <td><code>exact_pixel</code></td>
+                  <td>Selects deterministic Exact Pixel export or the optional Image-GS optimizer path. Exact Pixel is the preferred mode for filled single-image coverage.</td>
+                </tr>
+                <tr>
                   <td><code>auto_quality</code> / Auto HQ</td>
                   <td><code>1</code></td>
-                  <td>Automatically chooses high-quality generation settings from source image size/detail and uses Image-GS progressive error-guided optimization so new Gaussians are added into high-error regions during training. Disable it to edit splats, steps, height, init, radius, alpha, quantize, and point-preview controls manually.</td>
+                  <td>Image-GS mode only. Automatically chooses high-quality generation settings from source image size/detail and uses progressive error-guided optimization so new Gaussians are added into high-error regions during training.</td>
                 </tr>
                 <tr>
                   <td><code>num_gaussians</code> / Splats</td>
@@ -806,12 +812,12 @@
                 <tr>
                   <td><code>sheet_scale</code> / Sheet</td>
                   <td><code>2.0</code></td>
-                  <td>Scale used when converting the 2D Image-GS checkpoint into a viewport splat sheet. Increase for a larger generated surface in scene units.</td>
+                  <td>Scale used when converting the source image or 2D Image-GS checkpoint into a viewport splat sheet. Increase for a larger generated surface in scene units.</td>
                 </tr>
                 <tr>
                   <td><code>radius_scale</code> / Radius</td>
                   <td><code>1.0</code></td>
-                  <td>Multiplier applied to splat radii during checkpoint-to-PLY conversion. Increase for softer/larger splats; decrease for tighter points.</td>
+                  <td>Multiplier applied to exact pixel footprints or checkpoint splat radii. Increase for softer/larger splats; decrease for tighter points.</td>
                 </tr>
                 <tr>
                   <td><code>alpha</code> / Alpha</td>
@@ -852,7 +858,11 @@
                 </tr>
                 <tr>
                   <td><code>source_image</code></td>
-                  <td>Local staged 8-bit RGB PNG used as the actual Image-GS input. This may differ from the original source file.</td>
+                  <td>Local staged PNG used as generation input. Exact Pixel preserves RGBA; Image-GS uses 8-bit RGB.</td>
+                </tr>
+                <tr>
+                  <td><code>exact_max_splats</code>, <code>exact_alpha_threshold</code></td>
+                  <td>Exact Pixel controls for the maximum exported visible pixels and the alpha cutoff for skipping transparent pixels. Exact Pixel PLY records are interleaved so partial viewport samples cover the full source image; large exact exports display through a sampled viewport preview with compensated radius while the PLY on disk remains full resolution.</td>
                 </tr>
                 <tr>
                   <td><code>image_gs_input</code></td>
@@ -1103,6 +1113,7 @@
       </main>
     </div>
 
+    <script src="hero-splat-data.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

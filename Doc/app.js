@@ -61,203 +61,50 @@ if (location.hash && document.querySelector(location.hash)) {
   updateActiveFromScroll();
 }
 
-/* Living neural-splat field behind the landing hero. */
-(function initHeroLivingField() {
+/* Image-derived Gaussian splat layer behind the landing hero. */
+(function initHeroImageSplatLayer() {
   const hero = document.querySelector(".landing-hero");
   const canvas = hero ? hero.querySelector(".hero-canvas") : null;
+  const debugToggle = hero ? hero.querySelector(".hero-debug-toggle") : null;
   if (!hero || !canvas) return;
 
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
+  const splatData = window.QUBIT_HERO_SPLAT_DATA || {};
+  const BACKGROUND_IMAGE_URL =
+    splatData.sourceImage || "assets/MatrixRainInception_Thumbnail_006_Contrast_L.png";
+  const SOURCE_ASPECT = 2560 / 1440;
+  const TAU = Math.PI * 2;
+  const mouse = { x: 0, y: 0, active: false };
+  const heroImage = new Image();
+  const lightCanvas = document.createElement("canvas");
+  const lightCtx = lightCanvas.getContext("2d");
   const motionQuery = window.matchMedia
     ? window.matchMedia("(prefers-reduced-motion: reduce)")
     : { matches: false };
-  const mouse = { x: 0, y: 0, active: false };
-  const TAU = Math.PI * 2;
-  const colors = {
-    green: "126, 255, 189",
-    cyan: "56, 189, 248",
-    amber: "245, 213, 118",
-    white: "214, 226, 236",
-  };
-  const neighborOffsets = [
-    [-1, 0],
-    [1, 0],
-    [0, -1],
-    [0, 1],
-    [-1, -1],
-    [-1, 1],
-    [1, -1],
-    [1, 1],
-  ];
 
   let width = 0;
   let height = 0;
   let dpr = 1;
-  let cellSize = 56;
-  let rows = 0;
-  let cols = 0;
-  let cells = [];
-  let state = [];
-  let nextState = [];
-  let activeIndices = [];
+  let cover = null;
+  let splats = [];
   let animationId = 0;
-  let lastTime = 0;
-  let lastLifeStep = 0;
-  let scrollOffset = 0;
   let reducedMotion = motionQuery.matches;
-
-  function rgba(rgb, alpha) {
-    return `rgba(${rgb}, ${alpha})`;
-  }
-
-  function random(min, max) {
-    return min + Math.random() * (max - min);
-  }
+  let debugSplats = false;
+  let heroImageReady = false;
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
 
-  function index(row, col) {
-    return row * cols + col;
+  function sampleLimit() {
+    const area = Math.max(1, width * height);
+    return Math.round(clamp(area / 31, 7000, 42000));
   }
 
-  function wrap(value, max) {
-    return (value + max) % max;
-  }
-
-  function setLife(row, col, value) {
-    if (row < 0 || row >= rows || col < 0 || col >= cols) return;
-    state[index(row, col)] = value;
-  }
-
-  function lifeAt(row, col) {
-    return state[index(wrap(row, rows), wrap(col, cols))];
-  }
-
-  function isVisible(cell, margin) {
-    return (
-      cell.x >= -margin &&
-      cell.x <= width + margin &&
-      cell.y >= -margin &&
-      cell.y <= height + margin
-    );
-  }
-
-  function motionScale() {
-    return reducedMotion ? 0.7 : 1;
-  }
-
-  function basePosition(cell, now) {
-    const totalHeight = rows * cellSize;
-    const drift = scrollOffset % totalHeight;
-    const rowShift = Math.sin(cell.row * 1.21 + cell.cluster) * cellSize * 0.16;
-    const colShift = Math.cos(cell.col * 1.07 + cell.cluster) * cellSize * 0.11;
-    const breathing = Math.sin(now * 0.00034 * cell.speed + cell.phase);
-    const x =
-      cell.col * cellSize -
-      cellSize +
-      (cell.row % 2) * cellSize * 0.42 +
-      rowShift +
-      cell.jitterX +
-      breathing * cell.wander;
-    const y =
-      ((cell.row * cellSize + drift) % totalHeight) -
-      cellSize +
-      colShift +
-      cell.jitterY +
-      Math.cos(now * 0.00029 * cell.speed + cell.phase) * cell.wander * 0.55;
-
-    return { x, y };
-  }
-
-  function seedLifePatterns() {
-    const patterns = [
-      [
-        [0, 1],
-        [1, 2],
-        [2, 0],
-        [2, 1],
-        [2, 2],
-      ],
-      [
-        [0, 1],
-        [1, 1],
-        [2, 1],
-      ],
-      [
-        [0, 0],
-        [0, 1],
-        [1, 0],
-        [1, 1],
-      ],
-      [
-        [0, 1],
-        [1, 0],
-        [1, 1],
-        [1, 2],
-        [2, 1],
-      ],
-    ];
-    const count = Math.max(4, Math.floor((rows * cols) / 110));
-
-    for (let i = 0; i < count; i += 1) {
-      const pattern = patterns[i % patterns.length];
-      const row = Math.floor(random(1, Math.max(2, rows - 3)));
-      const col = Math.floor(random(1, Math.max(2, cols - 3)));
-      for (const [dr, dc] of pattern) {
-        setLife(row + dr, col + dc, true);
-      }
-    }
-  }
-
-  function buildField() {
-    cellSize = width < 560 ? 46 : width < 900 ? 52 : 60;
-    rows = Math.ceil(height / cellSize) + 4;
-    cols = Math.ceil(width / cellSize) + 4;
-    scrollOffset = random(0, rows * cellSize);
-
-    const total = rows * cols;
-    state = Array.from({ length: total }, (_, i) => {
-      const row = Math.floor(i / cols);
-      const col = i % cols;
-      const current = Math.sin(row * 0.87 + col * 1.36) > 0.86;
-      return Math.random() > 0.86 || (current && Math.random() > 0.55);
-    });
-    nextState = new Array(total).fill(false);
-    seedLifePatterns();
-
-    cells = Array.from({ length: total }, (_, i) => {
-      const row = Math.floor(i / cols);
-      const col = i % cols;
-      const cell = {
-        row,
-        col,
-        x: 0,
-        y: 0,
-        vx: random(-1.2, 1.2),
-        vy: random(-1.2, 1.2),
-        form: Math.floor(random(0, 3)),
-        phase: random(0, TAU),
-        angle: random(-0.55, 0.55),
-        spin: random(-0.16, 0.16),
-        speed: random(0.75, 1.28),
-        cluster: random(0, TAU),
-        jitterX: random(-cellSize * 0.31, cellSize * 0.31),
-        jitterY: random(-cellSize * 0.27, cellSize * 0.27),
-        wander: random(cellSize * 0.08, cellSize * 0.24),
-        energy: state[i] ? random(0.18, 0.72) : random(0, 0.04),
-        birth: state[i] ? random(0.45, 1) : 0,
-        charge: random(-1, 1),
-        cursor: 0,
-      };
-      const point = basePosition(cell, performance.now());
-      cell.x = point.x;
-      cell.y = point.y;
-      return cell;
-    });
+  function activeSampleLimit() {
+    return debugSplats ? 42000 : sampleLimit();
   }
 
   function resizeCanvas() {
@@ -269,354 +116,211 @@ if (location.hash && document.querySelector(location.hash)) {
     canvas.height = Math.round(height * dpr);
     canvas.style.width = "100%";
     canvas.style.height = "100%";
+    lightCanvas.width = width;
+    lightCanvas.height = height;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    buildField();
+    updateCover();
     restartAnimation();
   }
 
-  function cursorInfluence(x, y, radius) {
-    if (!mouse.active) return { amount: 0, dx: 0, dy: 0, dist: radius };
-    const dx = x - mouse.x;
-    const dy = y - mouse.y;
-    const dist = Math.max(1, Math.hypot(dx, dy));
-    const amount = clamp(1 - dist / radius, 0, 1);
-    return { amount, dx, dy, dist };
-  }
-
-  function neighborBias(row, col) {
+  function updateCover() {
+    const containerAspect = width / height;
+    let drawWidth = width;
+    let drawHeight = height;
     let x = 0;
     let y = 0;
-    let count = 0;
 
-    for (const [dr, dc] of neighborOffsets) {
-      if (!lifeAt(row + dr, col + dc)) continue;
-      x += dc;
-      y += dr;
-      count += 1;
+    if (containerAspect > SOURCE_ASPECT) {
+      drawHeight = width / SOURCE_ASPECT;
+      y = (height - drawHeight) * 0.5;
+    } else {
+      drawWidth = height * SOURCE_ASPECT;
+      x = (width - drawWidth) * 0.5;
     }
 
-    return { x, y, count };
+    cover = {
+      x,
+      y,
+      width: drawWidth,
+      height: drawHeight,
+      scale: drawHeight / 2,
+    };
   }
 
-  function stepLife(now) {
-    const interval = reducedMotion ? 280 : 180;
-    if (now - lastLifeStep < interval) return;
-    lastLifeStep = now;
+  function splatsFromEmbeddedData(data, desiredCount) {
+    if (!data || !data.values || !data.stride) return [];
 
-    let aliveCount = 0;
-    for (let row = 0; row < rows; row += 1) {
-      for (let col = 0; col < cols; col += 1) {
-        let neighbors = 0;
-        for (let dr = -1; dr <= 1; dr += 1) {
-          for (let dc = -1; dc <= 1; dc += 1) {
-            if (dr === 0 && dc === 0) continue;
-            if (lifeAt(row + dr, col + dc)) neighbors += 1;
-          }
-        }
+    const values = data.values;
+    const stride = Number(data.stride);
+    const sourceCount = Math.floor(values.length / stride);
+    const sampleCount = Math.min(sourceCount, desiredCount);
+    const result = [];
 
-        const i = index(row, col);
-        const alive = state[i];
-        let nextAlive = alive
-          ? neighbors === 2 || neighbors === 3
-          : neighbors === 3;
-
-        if (!nextAlive && Math.random() < 0.0045) nextAlive = true;
-        if (nextAlive && Math.random() < 0.0015) nextAlive = false;
-
-        nextState[i] = nextAlive;
-        if (nextAlive) aliveCount += 1;
-      }
+    if (!Number.isFinite(stride) || stride < 12 || sampleCount <= 0) {
+      return result;
     }
 
-    for (let i = 0; i < state.length; i += 1) {
-      const born = nextState[i] && !state[i];
-      state[i] = nextState[i];
-      if (born) {
-        cells[i].form = (cells[i].form + 1 + Math.floor(random(0, 2))) % 3;
-        cells[i].energy = Math.max(cells[i].energy, 0.08);
-        cells[i].birth = Math.max(cells[i].birth, 0.04);
-        cells[i].angle = random(-0.55, 0.55);
-      }
+    for (let i = 0; i < sampleCount; i += 1) {
+      const sourceIndex = Math.min(
+        sourceCount - 1,
+        Math.floor(((i + 0.5) * sourceCount) / sampleCount)
+      );
+      const o = sourceIndex * stride;
+      result.push({
+        u: values[o],
+        v: values[o + 1],
+        red: values[o + 2],
+        green: values[o + 3],
+        blue: values[o + 4],
+        alpha: values[o + 5],
+        axisX: values[o + 6],
+        axisY: values[o + 7],
+        angle: values[o + 8],
+        phase: values[o + 9],
+        speed: values[o + 10],
+        stream: values[o + 11],
+      });
     }
 
-    if (aliveCount < state.length * 0.07) {
-      seedLifePatterns();
-    } else if (aliveCount > state.length * 0.38) {
-      for (let i = 0; i < state.length; i += 1) {
-        if (state[i] && Math.random() < 0.18) state[i] = false;
-      }
-    }
+    return result;
   }
 
-  function applyNeighborForces(cell, i, dt) {
-    const row = cell.row;
-    const col = cell.col;
-    const alive = state[i];
-
-    for (const [dr, dc] of neighborOffsets) {
-      const nextRow = row + dr;
-      const nextCol = col + dc;
-      if (nextRow < 0 || nextRow >= rows || nextCol < 0 || nextCol >= cols) {
-        continue;
-      }
-
-      const j = index(nextRow, nextCol);
-      const other = cells[j];
-      const otherLevel = Math.max(other.energy, other.cursor * 0.72);
-      if (otherLevel < 0.035) continue;
-
-      const dx = cell.x - other.x;
-      const dy = cell.y - other.y;
-      const dist = Math.max(1, Math.hypot(dx, dy));
-      const linked = alive && state[j];
-      const desired = cellSize * (linked ? 0.84 : 1.12);
-      const pressure = clamp((desired - dist) / desired, -0.95, 1.35);
-      const force = pressure * (linked ? 92 : 42) * otherLevel;
-      const tangent = linked ? Math.sin(lastTime * 0.004 + i * 0.17 + j * 0.09) * 18 : 0;
-      const nx = dx / dist;
-      const ny = dy / dist;
-
-      cell.vx += (nx * force - ny * tangent) * dt;
-      cell.vy += (ny * force + nx * tangent) * dt;
+  function drawFlashlight(now) {
+    if (
+      !mouse.active ||
+      debugSplats ||
+      !heroImageReady ||
+      !cover ||
+      !lightCtx ||
+      lightCanvas.width <= 0 ||
+      lightCanvas.height <= 0
+    ) {
+      return;
     }
-  }
 
-  function updateCells(now, dt) {
-    const scale = motionScale();
-    scrollOffset = (scrollOffset + 34 * dt * scale) % (rows * cellSize);
-    activeIndices = [];
+    const pulse = Math.sin(now * 0.0024) * 0.035;
+    const radius = Math.max(130, Math.min(width, height) * (0.32 + pulse));
+    lightCtx.clearRect(0, 0, width, height);
 
-    for (let i = 0; i < cells.length; i += 1) {
-      const cell = cells[i];
-      const alive = state[i];
-      const bias = neighborBias(cell.row, cell.col);
-      const base = basePosition(cell, now);
-      const pulse = Math.sin(now * 0.0022 * cell.speed + cell.phase);
-      const targetX = base.x + bias.x * (2.4 + pulse * 1.5) * scale;
-      const targetY = base.y + bias.y * (2.1 - pulse * 1.1) * scale;
+    lightCtx.save();
+    lightCtx.beginPath();
+    lightCtx.arc(mouse.x, mouse.y, radius, 0, TAU);
+    lightCtx.clip();
+    lightCtx.filter = "brightness(1.86) contrast(1.12) saturate(1.08)";
+    lightCtx.globalAlpha = 0.92;
+    lightCtx.drawImage(heroImage, cover.x, cover.y, cover.width, cover.height);
+    lightCtx.restore();
 
-      if (
-        Math.abs(cell.y - targetY) > height * 0.58 ||
-        Math.abs(cell.x - targetX) > width * 0.65
-      ) {
-        cell.x = targetX;
-        cell.y = targetY;
-        cell.vx = 0;
-        cell.vy = 0;
-      }
+    const mask = lightCtx.createRadialGradient(
+      mouse.x,
+      mouse.y,
+      radius * 0.12,
+      mouse.x,
+      mouse.y,
+      radius
+    );
+    mask.addColorStop(0, "rgba(0, 0, 0, 0.92)");
+    mask.addColorStop(0.56, "rgba(0, 0, 0, 0.46)");
+    mask.addColorStop(1, "rgba(0, 0, 0, 0)");
 
-      const influence = cursorInfluence(cell.x, cell.y, 218);
-      const push = influence.amount * influence.amount;
-      cell.cursor += (influence.amount - cell.cursor) * clamp(dt * 18, 0, 1);
-
-      const spring = (alive ? 11 : 7.2) + bias.count * 0.38;
-      cell.vx += (targetX - cell.x) * spring * dt;
-      cell.vy += (targetY - cell.y) * spring * dt;
-      applyNeighborForces(cell, i, dt);
-      cell.vx += (influence.dx / influence.dist) * push * 2450 * dt;
-      cell.vy += (influence.dy / influence.dist) * push * 2450 * dt;
-      cell.vx += (-influence.dy / influence.dist) * push * 180 * dt;
-      cell.vy += (influence.dx / influence.dist) * push * 180 * dt;
-
-      const damping = Math.pow(0.018, dt);
-      cell.vx *= damping;
-      cell.vy *= damping;
-      cell.x += cell.vx * dt;
-      cell.y += cell.vy * dt;
-
-      const birthTarget = alive ? 1 : 0;
-      const birthRate = (alive ? 2.9 : 1.55) * Math.max(0.001, dt);
-      cell.birth += (birthTarget - cell.birth) * clamp(birthRate, 0, 1);
-
-      const energyTarget = alive ? clamp(0.5 + bias.count * 0.075, 0, 1) : 0;
-      const energyRate = (alive ? 4.2 : 1.65) * Math.max(0.001, dt);
-      cell.energy += (energyTarget - cell.energy) * clamp(energyRate, 0, 1);
-
-      const level = Math.max(cell.energy, cell.cursor * 0.92);
-      if (level > 0.025 && isVisible(cell, 42)) {
-        activeIndices.push(i);
-      }
-    }
-  }
-
-  function drawSplatGlyph(cell, i, now) {
-    const alive = state[i];
-    const liveLevel = cell.energy * clamp(cell.birth, 0, 1);
-    const level = Math.max(liveLevel, cell.cursor * 0.92);
-    if (level < 0.025) return;
-
-    const t = now * 0.0019 * cell.speed + cell.phase;
-    const speed = Math.hypot(cell.vx, cell.vy);
-    const velocityAngle = speed > 4 ? Math.atan2(cell.vy, cell.vx) : cell.angle;
-    const cursorAngle = Math.atan2(cell.y - mouse.y, cell.x - mouse.x);
-    const angle = mouse.active && cell.cursor > 0.03
-      ? velocityAngle * (1 - cell.cursor) + cursorAngle * cell.cursor
-      : velocityAngle;
-    const size = clamp(cellSize * (0.095 + level * 0.13), 5, 15);
-    const stretch = 1 + clamp(speed / 72, 0, 0.48) + cell.cursor * 1.05;
-    const squash = clamp(0.52 + liveLevel * 0.24 - cell.cursor * 0.1, 0.38, 0.86);
-    const main = alive ? colors.green : colors.cyan;
-    const outerAlpha = clamp(0.035 + level * 0.12, 0, 0.22);
-    const coreAlpha = clamp(0.12 + level * 0.38, 0, 0.62);
+    lightCtx.save();
+    lightCtx.globalCompositeOperation = "destination-in";
+    lightCtx.fillStyle = mask;
+    lightCtx.fillRect(0, 0, width, height);
+    lightCtx.restore();
 
     ctx.save();
-    ctx.translate(cell.x, cell.y);
-    ctx.rotate(angle + Math.sin(t) * 0.08 + cell.spin * level);
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = 0.7 + level * 0.55;
-
-    ctx.fillStyle = rgba(main, outerAlpha);
-    ctx.beginPath();
-    ctx.ellipse(0, 0, size * 1.85 * stretch, size * 1.05 * squash, 0, 0, TAU);
-    ctx.fill();
-
-    ctx.fillStyle = rgba(main, outerAlpha * 1.45);
-    ctx.beginPath();
-    ctx.ellipse(0, 0, size * 1.16 * stretch, size * 0.62 * squash, 0, 0, TAU);
-    ctx.fill();
-
-    ctx.fillStyle = rgba(alive ? colors.white : colors.cyan, coreAlpha);
-    ctx.beginPath();
-    ctx.ellipse(0, 0, size * 0.43 * stretch, size * 0.27 * squash, 0, 0, TAU);
-    ctx.fill();
-
-    const pixelCount = 4 + cell.form;
-    for (let pixel = 0; pixel < pixelCount; pixel += 1) {
-      const a = t * (0.21 + pixel * 0.03) + (pixel / pixelCount) * TAU;
-      const scatter = size * (0.66 + pixel * 0.1 + cell.cursor * 0.78);
-      const px = Math.cos(a) * scatter * stretch;
-      const py = Math.sin(a + cell.charge) * scatter * squash;
-      const side = clamp(size * (0.12 + level * 0.08), 1.6, 3.2);
-      const alpha = clamp(0.08 + level * 0.22 + cell.cursor * 0.18, 0, 0.48);
-
-      ctx.fillStyle = rgba(pixel % 3 === 0 ? colors.amber : main, alpha);
-      ctx.fillRect(px - side * 0.5, py - side * 0.5, side, side);
-    }
-
-    ctx.strokeStyle = rgba(main, clamp(0.06 + level * 0.18, 0, 0.32));
-    ctx.beginPath();
-    ctx.moveTo(-size * 1.25 * stretch, 0);
-    ctx.lineTo(size * 1.25 * stretch, 0);
-    ctx.stroke();
-
+    ctx.globalCompositeOperation = "source-over";
+    ctx.drawImage(lightCanvas, 0, 0, width, height);
     ctx.restore();
   }
 
-  function drawConnections(now) {
-    const offsets = [
-      [0, 1],
-      [1, 0],
-      [1, 1],
-      [1, -1],
-    ];
-    const maxDist = cellSize * 1.9;
+  function drawSplats(now) {
+    if (!cover || !splats.length) return;
+
+    const debug = debugSplats;
+    const t = now * 0.001;
+    const motion = debug ? 0 : reducedMotion ? 0.16 : 1;
+    const cursorRadius = Math.max(150, Math.min(width, height) * 0.44);
+    const streamRange = Math.max(8, Math.min(22, cover.height * 0.045));
 
     ctx.save();
-    ctx.lineWidth = 0.85;
-    ctx.lineCap = "round";
+    ctx.globalCompositeOperation = "source-over";
 
-    for (const i of activeIndices) {
-      const row = Math.floor(i / cols);
-      const col = i % cols;
-      const a = cells[i];
-      const aLevel = Math.max(a.energy, a.cursor * 0.82);
+    for (const splat of splats) {
+      const baseX = cover.x + splat.u * cover.width;
+      const baseY = cover.y + splat.v * cover.height;
+      const flow =
+        debug
+          ? 0
+          : ((t * (2.8 + splat.speed * 3.8) + splat.stream * streamRange) % streamRange) -
+            streamRange * 0.5;
+      const waveX =
+        debug
+          ? 0
+          : Math.sin(t * (0.62 + splat.speed * 0.18) + splat.phase) *
+            (0.45 + splat.stream * 1.1);
+      const waveY = debug
+        ? 0
+        : Math.cos(t * (0.42 + splat.speed * 0.12) + splat.phase * 1.7) * 0.35;
+      let x = baseX + waveX * motion;
+      let y = baseY + (flow + waveY) * motion;
+      let cursorReveal = 0;
 
-      for (const [dr, dc] of offsets) {
-        const nextRow = row + dr;
-        const nextCol = col + dc;
-        if (nextRow < 0 || nextRow >= rows || nextCol < 0 || nextCol >= cols) {
-          continue;
-        }
-
-        const j = index(nextRow, nextCol);
-        const b = cells[j];
-        const bLevel = Math.max(b.energy, b.cursor * 0.82);
-        if (bLevel < 0.055 || !isVisible(b, 42)) continue;
-
-        const dist = Math.hypot(a.x - b.x, a.y - b.y);
-        if (dist < 5 || dist > maxDist) continue;
-
-        const livePair = state[i] && state[j] ? 1 : 0.55;
-        const alpha = clamp(
-          (1 - dist / maxDist) *
-            (0.08 + (aLevel + bLevel) * 0.16 + (a.cursor + b.cursor) * 0.1) *
-            livePair,
-          0,
-          0.34
-        );
-        if (alpha <= 0.01) continue;
-
-        ctx.strokeStyle = rgba(state[i] && state[j] ? colors.green : colors.cyan, alpha);
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-
-        if (state[i] || state[j] || a.cursor + b.cursor > 0.2) {
-          const pulse = (Math.sin(now * 0.004 + i * 0.31 + j * 0.17) + 1) * 0.5;
-          const px = a.x + (b.x - a.x) * pulse;
-          const py = a.y + (b.y - a.y) * pulse;
-          ctx.fillStyle = rgba(colors.amber, alpha * 0.75);
-          ctx.beginPath();
-          ctx.arc(px, py, 1.1 + (aLevel + bLevel) * 0.55, 0, TAU);
-          ctx.fill();
-        }
+      if (!debug && mouse.active) {
+        const dx = x - mouse.x;
+        const dy = y - mouse.y;
+        const dist = Math.max(1, Math.hypot(dx, dy));
+        const influence = clamp(1 - dist / cursorRadius, 0, 1);
+        cursorReveal = influence * influence;
+        const push = cursorReveal * (76 + splat.stream * 72);
+        x += (dx / dist) * push;
+        y += (dy / dist) * push;
       }
-    }
 
-    for (const i of activeIndices) {
-      const cell = cells[i];
-      const level = Math.max(cell.energy, cell.cursor * 0.7);
-      ctx.fillStyle = rgba(
-        colors.white,
-        clamp(0.05 + level * 0.2 + cell.cursor * 0.16, 0, 0.42)
-      );
+      const pulse = debug
+        ? 1
+        : 0.92 + Math.sin(t * (1.2 + splat.speed) + splat.phase) * 0.12 * motion;
+      let rx = clamp(splat.axisX * cover.scale * 3.1, 1.05, 11);
+      let ry = clamp(splat.axisY * cover.scale * 3.1, 1.05, 11);
+      rx *= pulse * (1 + cursorReveal * 0.18);
+      ry *= (1.04 - (pulse - 0.92) * 0.45) * (1 + cursorReveal * 0.1);
+
+      const boost = debug ? 1 : 1.04 + splat.stream * 0.22;
+      const red = Math.round(clamp(splat.red * boost, 0, 1) * 255);
+      const green = Math.round(clamp(splat.green * (debug ? boost : boost + 0.08), 0, 1) * 255);
+      const blue = Math.round(clamp(splat.blue * boost, 0, 1) * 255);
+      const baseAlpha = clamp(0.085 + splat.alpha * (0.24 + splat.stream * 0.14), 0, 0.68);
+      const revealAlpha = clamp(1 - cursorReveal * 0.9, 0.06, 1);
+      const alpha = debug ? clamp(splat.alpha, 0, 1) : baseAlpha * revealAlpha;
+
+      if (!debug && motion > 0.2 && cursorReveal < 0.86) {
+        const trailAlpha = alpha * (0.08 + splat.stream * 0.08);
+        ctx.globalCompositeOperation = "lighter";
+        ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, ${trailAlpha})`;
+        ctx.beginPath();
+        ctx.ellipse(x - waveX * 0.25, y - 5 - splat.speed * 3, rx * 0.42, ry * (1.55 + splat.speed * 0.28), splat.angle, 0, TAU);
+        ctx.fill();
+      }
+
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha})`;
       ctx.beginPath();
-      ctx.arc(cell.x, cell.y, 1 + level * 1.4 + cell.cursor * 1.2, 0, TAU);
+      ctx.ellipse(x, y, rx, ry, splat.angle, 0, TAU);
       ctx.fill();
     }
 
     ctx.restore();
   }
 
-  function drawMouseField() {
-    if (!mouse.active) return;
-    ctx.save();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = rgba(colors.green, 0.24);
-    ctx.beginPath();
-    ctx.arc(mouse.x, mouse.y, 36, 0, TAU);
-    ctx.stroke();
-    ctx.strokeStyle = rgba(colors.cyan, 0.14);
-    ctx.beginPath();
-    ctx.arc(mouse.x, mouse.y, 90, 0, TAU);
-    ctx.stroke();
-    ctx.restore();
-  }
-
   function paint(now) {
     ctx.clearRect(0, 0, width, height);
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    drawConnections(now);
-    for (const i of activeIndices) {
-      drawSplatGlyph(cells[i], i, now);
-    }
-    drawMouseField();
-    ctx.restore();
-  }
-
-  function render(now, dt) {
-    stepLife(now);
-    updateCells(now, dt);
-    paint(now);
+    drawFlashlight(now);
+    drawSplats(now);
   }
 
   function animate(now) {
-    const dt = Math.min(0.04, Math.max(0.001, (now - lastTime) / 1000 || 0.016));
-    lastTime = now;
-    render(now, dt);
+    paint(now);
     animationId = requestAnimationFrame(animate);
   }
 
@@ -625,11 +329,34 @@ if (location.hash && document.querySelector(location.hash)) {
       cancelAnimationFrame(animationId);
       animationId = 0;
     }
-    lastTime = performance.now();
-    render(lastTime, 0.016);
-    if (!document.hidden) {
+    paint(performance.now());
+    if (!document.hidden && splats.length && !debugSplats) {
       animationId = requestAnimationFrame(animate);
     }
+  }
+
+  function loadSplats() {
+    splats = splatsFromEmbeddedData(splatData, activeSampleLimit());
+    restartAnimation();
+  }
+
+  function setDebugSplats(enabled) {
+    debugSplats = Boolean(enabled);
+    hero.classList.toggle("splat-debug", debugSplats);
+    if (debugToggle) {
+      debugToggle.setAttribute("aria-pressed", debugSplats ? "true" : "false");
+      debugToggle.textContent = debugSplats ? "Debug On" : "Debug Off";
+      debugToggle.title = debugSplats
+        ? "Disable static splat alignment view"
+        : "Enable static splat alignment view";
+    }
+    loadSplats();
+  }
+
+  function debugRequestedFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const value = (params.get("debugSplats") || params.get("splatDebug") || "").toLowerCase();
+    return value === "1" || value === "true" || window.location.hash === "#splat-debug";
   }
 
   function updateMouse(event) {
@@ -637,12 +364,27 @@ if (location.hash && document.querySelector(location.hash)) {
     mouse.x = event.clientX - rect.left;
     mouse.y = event.clientY - rect.top;
     mouse.active = true;
+    hero.style.setProperty("--hero-light-x", `${mouse.x}px`);
+    hero.style.setProperty("--hero-light-y", `${mouse.y}px`);
+    hero.style.setProperty("--hero-light-radius", `${Math.max(130, Math.min(width, height) * 0.32)}px`);
+    hero.classList.add("flashlight-active");
   }
 
   hero.addEventListener("pointermove", updateMouse, { passive: true });
   hero.addEventListener("pointerenter", updateMouse, { passive: true });
   hero.addEventListener("pointerleave", () => {
     mouse.active = false;
+    hero.classList.remove("flashlight-active");
+  });
+  if (debugToggle) {
+    debugToggle.addEventListener("click", () => {
+      setDebugSplats(!debugSplats);
+    });
+  }
+  window.addEventListener("keydown", (event) => {
+    if (!event.ctrlKey || !event.shiftKey || event.key.toLowerCase() !== "d") return;
+    event.preventDefault();
+    setDebugSplats(!debugSplats);
   });
 
   if (typeof ResizeObserver !== "undefined") {
@@ -654,6 +396,7 @@ if (location.hash && document.querySelector(location.hash)) {
 
   function handleMotionPreference(event) {
     reducedMotion = event.matches;
+    restartAnimation();
   }
 
   if (typeof motionQuery.addEventListener === "function") {
@@ -673,5 +416,12 @@ if (location.hash && document.querySelector(location.hash)) {
     }
   });
 
+  heroImage.onload = () => {
+    heroImageReady = true;
+    restartAnimation();
+  };
+  heroImage.src = BACKGROUND_IMAGE_URL;
+
   resizeCanvas();
+  setDebugSplats(debugRequestedFromUrl());
 })();

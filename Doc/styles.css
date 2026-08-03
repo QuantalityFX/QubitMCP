@@ -90,7 +90,11 @@ body {
 
 .landing-hero {
   position: relative;
+  isolation: isolate;
   overflow: hidden;
+  --hero-light-x: 50%;
+  --hero-light-y: 50%;
+  --hero-light-radius: 190px;
   min-height: 520px;
   display: flex;
   flex-direction: column;
@@ -99,19 +103,108 @@ body {
   padding: 60px 34px;
   border: 1px solid var(--border);
   border-radius: 8px;
+  background: #020703;
+}
+
+.landing-hero::before,
+.landing-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.landing-hero::before {
+  z-index: 0;
+  background: url("assets/MatrixRainInception_Thumbnail_006_Contrast_L.png") center center / cover no-repeat;
+}
+
+.landing-hero::after {
+  z-index: 2;
   background:
-    linear-gradient(90deg, rgba(15, 18, 22, 0.98) 0%, rgba(15, 18, 22, 0.88) 48%, rgba(15, 18, 22, 0.4) 100%),
-    url("../icons/QubitMCP_Icon_s.png") right 9% center / min(36vw, 360px) auto no-repeat,
-    #10151b;
+    linear-gradient(
+      90deg,
+      rgba(2, 7, 3, 0.82) 0%,
+      rgba(2, 7, 3, 0.58) 34%,
+      rgba(2, 7, 3, 0.18) 66%,
+      rgba(2, 7, 3, 0.04) 100%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(2, 7, 3, 0.16) 0%,
+      rgba(2, 7, 3, 0.02) 44%,
+      rgba(2, 7, 3, 0.24) 100%
+    );
+}
+
+.landing-hero.flashlight-active:not(.splat-debug)::after {
+  -webkit-mask-image: radial-gradient(
+    circle var(--hero-light-radius) at var(--hero-light-x) var(--hero-light-y),
+    transparent 0%,
+    transparent 38%,
+    rgba(0, 0, 0, 0.55) 68%,
+    #000 100%
+  );
+  mask-image: radial-gradient(
+    circle var(--hero-light-radius) at var(--hero-light-x) var(--hero-light-y),
+    transparent 0%,
+    transparent 38%,
+    rgba(0, 0, 0, 0.55) 68%,
+    #000 100%
+  );
 }
 
 .hero-canvas {
   position: absolute;
   inset: 0;
-  z-index: 0;
+  z-index: 1;
   width: 100%;
   height: 100%;
+  opacity: 0.94;
   pointer-events: none;
+}
+
+.landing-hero.splat-debug::after {
+  opacity: 0;
+}
+
+.landing-hero.splat-debug .hero-canvas {
+  opacity: 1;
+}
+
+.hero-debug-toggle {
+  display: none;
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 4;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid rgba(99, 255, 151, 0.5);
+  border-radius: 6px;
+  background: rgba(2, 7, 3, 0.68);
+  color: #d9ffe4;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hero-debug-toggle[aria-pressed="true"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hero-debug-toggle:hover,
+.hero-debug-toggle[aria-pressed="true"] {
+  border-color: rgba(99, 255, 151, 0.95);
+}
+
+.hero-debug-toggle[aria-pressed="true"] {
+  background: rgba(23, 83, 43, 0.86);
+  color: #f1fff5;
+  box-shadow: 0 0 0 1px rgba(99, 255, 151, 0.22), 0 0 18px rgba(34, 197, 94, 0.28);
 }
 
 .hero-kicker,
@@ -120,7 +213,7 @@ body {
 .hero-actions,
 .hero-strip {
   position: relative;
-  z-index: 1;
+  z-index: 3;
 }
 
 .hero-kicker {
@@ -180,14 +273,16 @@ body {
 }
 
 .button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #07120b;
+  background: linear-gradient(180deg, #16a34a 0%, #0f7a3d 100%);
+  border-color: #35d071;
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(10, 120, 55, 0.24);
 }
 
 .button.primary:hover {
-  background: #4ade80;
-  color: #07120b;
+  background: linear-gradient(180deg, #22c55e 0%, #128144 100%);
+  border-color: #66f29a;
+  color: #ffffff;
 }
 
 .button.ghost {
@@ -332,8 +427,8 @@ code {
   position: relative;
   margin: -14px -16px 14px;
   padding: 12px 16px 13px;
-  background: rgba(56, 189, 248, 0.14);
-  border-bottom: 1px solid rgba(56, 189, 248, 0.28);
+  background: rgb(0 111 90 / 15%);
+  border-bottom: 1px solid rgb(0 111 90 / 32%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   color: #f8fafc;
   font-size: 16px;
@@ -501,10 +596,26 @@ th {
   .landing-hero {
     min-height: 420px;
     padding: 38px 20px;
+    background: #020703;
+  }
+  .hero-debug-toggle {
+    top: 10px;
+    right: 10px;
+  }
+  .landing-hero::after {
     background:
-      linear-gradient(180deg, rgba(15, 18, 22, 0.96) 0%, rgba(15, 18, 22, 0.88) 58%, rgba(15, 18, 22, 0.68) 100%),
-      url("../icons/QubitMCP_Icon_s.png") right 18px bottom 24px / 150px auto no-repeat,
-      #10151b;
+      linear-gradient(
+        90deg,
+        rgba(2, 7, 3, 0.82) 0%,
+        rgba(2, 7, 3, 0.48) 64%,
+        rgba(2, 7, 3, 0.18) 100%
+      ),
+      linear-gradient(
+        180deg,
+        rgba(2, 7, 3, 0.2) 0%,
+        rgba(2, 7, 3, 0.08) 56%,
+        rgba(2, 7, 3, 0.34) 100%
+      );
   }
   .hero-lead {
     font-size: 16px;
