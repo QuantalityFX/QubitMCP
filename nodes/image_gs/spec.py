@@ -48,10 +48,11 @@ _DEFAULT_SHEET_SCALE = 2.0
 _DEFAULT_RADIUS_SCALE = 1.0
 _DEFAULT_ALPHA = 0.92
 _DEFAULT_DEVICE = "cuda:0"
+_DEFAULT_GENERATION_MODE = "exact_pixel"
 _DEFAULT_AUTO_QUALITY = "1"
 _DEFAULT_PROGRESSIVE_OPTIM = "1"
 _NODE_BODY_MIN_W = 378
-_NODE_BODY_MIN_H = 536
+_NODE_BODY_MIN_H = 568
 _NODE_PREVIEW_H = 216
 _CONTROL_W = 92
 _STATUS_MIN_H = 78
@@ -73,6 +74,10 @@ _DEFAULT_MAX_ANISOTROPY = 7.0
 _DEFAULT_DROP_SCALE_OUTLIERS = "1"
 _DEFAULT_COVERAGE_BOOST = 1.20
 _DEFAULT_Z_AXIS_RATIO = 0.25
+_DEFAULT_EXACT_MAX_SPLATS = 5_000_000
+_DEFAULT_EXACT_ALPHA_THRESHOLD = 0.003
+_DEFAULT_EXACT_VIEW_SPLATS = 900_000
+_DEFAULT_EXACT_VIEW_RADIUS_PAD = 1.35
 _QC_SAMPLE_MAX_SIDE = 384
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr", ".bmp", ".webp"}
 _NODE_SCHEMA = "qubit.image_gs_splat.v1"
@@ -150,6 +155,16 @@ def _param_float(model, name: str, default: float, *, min_value: float, max_valu
     except Exception:
         value = float(default)
     return max(float(min_value), min(float(max_value), float(value)))
+
+
+def _generation_mode(model) -> str:
+    raw = _param_value(model, "generation_mode").strip().lower()
+    clean = raw.replace("-", "_").replace(" ", "_")
+    if clean in {"image_gs", "imagegs", "optimized", "optimised", "training", "learned"}:
+        return "image_gs"
+    if clean in {"exact", "exact_pixel", "exact_pixels", "pixel", "pixels", "direct", "deterministic"}:
+        return "exact_pixel"
+    return _DEFAULT_GENERATION_MODE
 
 
 def _clamp_float(value: float, min_value: float, max_value: float) -> float:
@@ -259,6 +274,7 @@ def _source_key(model) -> str:
 def _hash_settings(model) -> str:
     payload = {
         "source": _source_key(model),
+        "generation_mode": _generation_mode(model),
         "num": _param_int(model, "num_gaussians", _DEFAULT_NUM_GAUSSIANS, min_value=100, max_value=2_000_000),
         "steps": _param_int(model, "max_steps", _DEFAULT_MAX_STEPS, min_value=1, max_value=2_000_000),
         "sheet": _param_float(model, "sheet_scale", _DEFAULT_SHEET_SCALE, min_value=0.01, max_value=100.0),
@@ -283,6 +299,15 @@ def _hash_settings(model) -> str:
         "drop_scale_outliers": _param_bool(model, "drop_scale_outliers", True),
         "coverage_boost": _param_float(model, "coverage_boost", _DEFAULT_COVERAGE_BOOST, min_value=1.0, max_value=10.0),
         "z_axis_ratio": _param_float(model, "z_axis_ratio", _DEFAULT_Z_AXIS_RATIO, min_value=0.04, max_value=10.0),
+        "exact_run_token": _param_value(model, "exact_run_token").strip() if _generation_mode(model) == "exact_pixel" else "",
+        "exact_max_splats": _param_int(model, "exact_max_splats", _DEFAULT_EXACT_MAX_SPLATS, min_value=0, max_value=50_000_000),
+        "exact_alpha_threshold": _param_float(
+            model,
+            "exact_alpha_threshold",
+            _DEFAULT_EXACT_ALPHA_THRESHOLD,
+            min_value=0.0,
+            max_value=1.0,
+        ),
     }
     blob = json.dumps(payload, ensure_ascii=True, sort_keys=True)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
@@ -444,20 +469,31 @@ def _path_state(path_text: str) -> str:
 
 def image_gs_debug_report_text(node_item) -> str:
     model = _model_from_node(node_item)
-    try:
-        runtime = image_gs_status()
-    except Exception as exc:
+    mode = _generation_mode(model)
+    if mode == "image_gs":
+        try:
+            runtime = image_gs_status()
+        except Exception as exc:
+            runtime = None
+            runtime_detail = f"Runtime check failed: {exc}"
+        else:
+            runtime_detail = str(getattr(runtime, "detail", "") or "")
+        try:
+            deps = image_gs_dependency_status(timeout=20)
+        except Exception as exc:
+            deps = None
+            deps_detail = f"Dependency check failed: {exc}"
+        else:
+            deps_detail = str(getattr(deps, "detail", "") or "")
+        runtime_ready_text = str(bool(getattr(runtime, "ready", False)) if runtime is not None else False)
+        deps_ready_text = str(bool(getattr(deps, "ready", False)) if deps is not None else False)
+    else:
         runtime = None
-        runtime_detail = f"Runtime check failed: {exc}"
-    else:
-        runtime_detail = str(getattr(runtime, "detail", "") or "")
-    try:
-        deps = image_gs_dependency_status(timeout=20)
-    except Exception as exc:
         deps = None
-        deps_detail = f"Dependency check failed: {exc}"
-    else:
-        deps_detail = str(getattr(deps, "detail", "") or "")
+        runtime_detail = "Not required in Exact Pixel mode."
+        deps_detail = "Not checked in Exact Pixel mode."
+        runtime_ready_text = "not checked"
+        deps_ready_text = "not checked"
 
     log_path = str(getattr(model, "_image_gs_last_log_path", "") or _debug_capture_path(node_item))
     output_text = str(getattr(model, "_image_gs_last_output", "") or "")
@@ -473,6 +509,23 @@ def image_gs_debug_report_text(node_item) -> str:
     output_dir = _param_value(model, "output_dir").strip()
     if not output_dir:
         output_dir = str(_logs_dir() / _safe_stem(str(getattr(model, "name", "") or "image_gs_splat")))
+    auto_text = "on" if _param_bool(model, "auto_quality", True) else "off"
+    if mode == "exact_pixel":
+        auto_text = f"ignored in Exact Pixel mode (stored {auto_text})"
+    viewport_lines = ["Viewport Preview", "status: Not available"]
+    try:
+        view_outcome = build_image_gs_splat_scene_asset(node_item, generate=False)
+        asset = view_outcome.asset if isinstance(view_outcome.asset, dict) else {}
+        if asset:
+            viewport_lines = [
+                "Viewport Preview",
+                f"status: {view_outcome.detail}",
+                f"sample_splats: {int(asset.get('splat_sample_count') or 0)}",
+                f"full_splats: {int(asset.get('splat_full_count') or 0)}",
+                f"display_radius_scale: {float(asset.get('splat_display_radius_scale') or 1.0):.3f}",
+            ]
+    except Exception as exc:
+        viewport_lines = ["Viewport Preview", f"status: unavailable ({exc})"]
 
     lines = [
         "Image-GS Debug Report",
@@ -482,17 +535,19 @@ def image_gs_debug_report_text(node_item) -> str:
         f"debug_log: {'on' if _debug_enabled(model) else 'off'}",
         "",
         "Runtime",
+        f"runtime_required: {'yes' if mode == 'image_gs' else 'no'}",
         f"app_home: {app_home_dir()}",
         f"repo: {getattr(runtime, 'root', image_gs_root()) if runtime is not None else image_gs_root()}",
         f"python: {getattr(runtime, 'python', image_gs_python()) if runtime is not None else image_gs_python()}",
-        f"runtime_ready: {bool(getattr(runtime, 'ready', False)) if runtime is not None else False}",
+        f"runtime_ready: {runtime_ready_text}",
         f"runtime_detail: {runtime_detail}",
-        f"deps_ready: {bool(getattr(deps, 'ready', False)) if deps is not None else False}",
+        f"deps_ready: {deps_ready_text}",
         f"deps_detail: {deps_detail}",
         "",
         "Inputs And Settings",
         f"source: {source or 'Not set'}",
-        f"auto_quality: {'on' if _param_bool(model, 'auto_quality', True) else 'off'}",
+        f"generation_mode: {mode}",
+        f"auto_quality: {auto_text}",
         f"num_gaussians: {_param_int(model, 'num_gaussians', _DEFAULT_NUM_GAUSSIANS, min_value=100, max_value=2_000_000)}",
         f"max_steps: {_param_int(model, 'max_steps', _DEFAULT_MAX_STEPS, min_value=1, max_value=2_000_000)}",
         f"render_height: {_param_int(model, 'render_height', _DEFAULT_RENDER_HEIGHT, min_value=64, max_value=12000)}",
@@ -501,6 +556,8 @@ def image_gs_debug_report_text(node_item) -> str:
         f"alpha: {_param_float(model, 'alpha', _DEFAULT_ALPHA, min_value=0.001, max_value=0.999):.3f}",
         f"init_mode: {_param_value(model, 'init_mode').strip() or 'gradient'}",
         f"max_splats: {_param_int(model, 'max_splats', _AUTO_MAX_GAUSSIANS, min_value=1, max_value=5_000_000)}",
+        f"exact_max_splats: {_param_int(model, 'exact_max_splats', _DEFAULT_EXACT_MAX_SPLATS, min_value=0, max_value=50_000_000)}",
+        f"exact_alpha_threshold: {_param_float(model, 'exact_alpha_threshold', _DEFAULT_EXACT_ALPHA_THRESHOLD, min_value=0.0, max_value=1.0):.3f}",
         f"progressive_optim: {'on' if _param_bool(model, 'progressive_optim', True) else 'off'}",
         f"initial_ratio: {_param_float(model, 'initial_ratio', _AUTO_INITIAL_RATIO, min_value=0.01, max_value=1.0):.3f}",
         f"init_random_ratio: {_param_float(model, 'init_random_ratio', _AUTO_INIT_RANDOM_RATIO, min_value=0.0, max_value=1.0):.3f}",
@@ -526,6 +583,8 @@ def image_gs_debug_report_text(node_item) -> str:
         f"preview_image: {_path_state(_param_value(model, 'preview_image'))}",
         f"render_image: {_path_state(_param_value(model, 'render_image'))}",
         f"manifest: {_path_state(_param_value(model, 'manifest'))}",
+        "",
+        *viewport_lines,
         "",
         "Quality Control",
         _param_value(model, "qc_report").strip() or "No QC report has been captured yet.",
@@ -867,7 +926,34 @@ def _normalize_image_for_image_gs(source_path: Path, input_dir: Path, asset_stem
     return target
 
 
-def _copy_or_download_image(source: str, output_dir: Path, asset_stem: str) -> Path:
+def _normalize_image_for_exact_splat(source_path: Path, input_dir: Path, asset_stem: str) -> Path:
+    target = input_dir / f"{asset_stem}.png"
+    image = QtGui.QImage(str(source_path))
+    if image.isNull():
+        raise RuntimeError(f"Could not read image for exact splat staging: {source_path}")
+    try:
+        srgb = QtGui.QColorSpace(QtGui.QColorSpace.SRgb)
+        converted = image.convertedToColorSpace(srgb) if hasattr(image, "convertedToColorSpace") else None
+        if converted is not None and not converted.isNull():
+            image = converted
+        else:
+            image.convertToColorSpace(srgb)
+    except Exception:
+        pass
+    fmt = _qimage_format("Format_RGBA8888")
+    if fmt is not None:
+        try:
+            image = image.convertToFormat(fmt)
+        except Exception:
+            pass
+    if image.isNull():
+        raise RuntimeError(f"Could not convert image to RGBA PNG: {source_path}")
+    if not image.save(str(target), "PNG"):
+        raise RuntimeError(f"Could not write staged exact splat PNG: {target}")
+    return target
+
+
+def _copy_or_download_image(source: str, output_dir: Path, asset_stem: str, *, preserve_alpha: bool = False) -> Path:
     source = str(source or "").strip()
     if not source:
         raise ValueError("Enter an image URL or local image path.")
@@ -888,6 +974,8 @@ def _copy_or_download_image(source: str, output_dir: Path, asset_stem: str) -> P
             raw_target.write_bytes(data)
         except (url_error.URLError, OSError, ValueError) as exc:
             raise RuntimeError(f"Image download failed: {exc}") from exc
+        if preserve_alpha:
+            return _normalize_image_for_exact_splat(raw_target, input_dir, asset_stem)
         return _normalize_image_for_image_gs(raw_target, input_dir, asset_stem)
 
     local = Path(source).expanduser()
@@ -896,39 +984,50 @@ def _copy_or_download_image(source: str, output_dir: Path, asset_stem: str) -> P
     ext = local.suffix.lower()
     if ext not in _IMAGE_EXTS:
         raise ValueError(f"Unsupported image extension '{ext}'.")
+    if preserve_alpha:
+        return _normalize_image_for_exact_splat(local, input_dir, asset_stem)
     return _normalize_image_for_image_gs(local, input_dir, asset_stem)
 
 
 def prepare_image_gs_run(node_item) -> ImageGsRunPlan:
     model = getattr(node_item, "model", None)
-    status = image_gs_status()
-    if not status.ready:
-        raise RuntimeError(status.detail)
+    mode = _generation_mode(model)
+    status = None
+    if mode == "image_gs":
+        status = image_gs_status()
+        if not status.ready:
+            raise RuntimeError(status.detail)
     source = _source_key(model)
     out_dir = _output_dir(node_item)
     digest = _hash_settings(model)
     asset_stem = f"{_safe_stem(_node_name(node_item))}_{digest}"
-    local_image = _copy_or_download_image(source, out_dir, asset_stem)
+    local_image = _copy_or_download_image(source, out_dir, asset_stem, preserve_alpha=(mode == "exact_pixel"))
     width, height = _qt_image_size(local_image)
-    auto_settings = _apply_auto_quality_settings(node_item, local_image, width, height)
-    if auto_settings:
-        final_digest = _hash_settings(model)
-        final_stem = f"{_safe_stem(_node_name(node_item))}_{final_digest}"
-        if final_stem != asset_stem:
-            local_image = _normalize_image_for_image_gs(local_image, out_dir / "input", final_stem)
-            asset_stem = final_stem
-            width, height = _qt_image_size(local_image)
 
-    media_dir = status.root / "media" / "qubitmcp"
-    media_dir.mkdir(parents=True, exist_ok=True)
-    media_image = media_dir / f"{asset_stem}{local_image.suffix.lower() or '.png'}"
-    if local_image.resolve() != media_image.resolve():
-        shutil.copy2(local_image, media_image)
+    rel = ""
+    exp_name = f"exact_pixel/{asset_stem}"
+    if mode == "image_gs":
+        auto_settings = _apply_auto_quality_settings(node_item, local_image, width, height)
+        if auto_settings:
+            final_digest = _hash_settings(model)
+            final_stem = f"{_safe_stem(_node_name(node_item))}_{final_digest}"
+            if final_stem != asset_stem:
+                local_image = _normalize_image_for_image_gs(local_image, out_dir / "input", final_stem)
+                asset_stem = final_stem
+                width, height = _qt_image_size(local_image)
 
-    exp_name = f"qubitmcp/{asset_stem}"
+        if status is None:
+            raise RuntimeError("Image-GS runtime was not resolved.")
+        media_dir = status.root / "media" / "qubitmcp"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        media_image = media_dir / f"{asset_stem}{local_image.suffix.lower() or '.png'}"
+        if local_image.resolve() != media_image.resolve():
+            shutil.copy2(local_image, media_image)
+        rel = f"qubitmcp/{media_image.name}"
+        exp_name = f"qubitmcp/{asset_stem}"
+
     ply_path = out_dir / f"{asset_stem}.ply"
     manifest_path = out_dir / f"{asset_stem}.image_gs_splat.json"
-    rel = f"qubitmcp/{media_image.name}"
     _set_param(node_item, "source_image", str(local_image), notify_scene=False)
     _set_param(node_item, "image_gs_input", rel, notify_scene=False)
     _set_param(node_item, "image_gs_exp_name", exp_name, notify_scene=False)
@@ -1281,10 +1380,105 @@ def convert_checkpoint_to_ply(node_item, plan: ImageGsRunPlan, ckpt_path: Path) 
     return (completed.stdout or "").strip()
 
 
+def _parse_exact_conversion_stats(text: str) -> Dict[str, Any]:
+    raw = str(text or "")
+    out: Dict[str, Any] = {}
+    match = re.search(r"Wrote\s+([0-9,]+)\s+splats", raw, re.IGNORECASE)
+    if match:
+        try:
+            out["splat_count"] = int(match.group(1).replace(",", ""))
+        except Exception:
+            pass
+    for key, value in re.findall(r"([A-Za-z_]+)=([^,;\s]+)", raw):
+        key = str(key or "").strip()
+        value = str(value or "").strip()
+        if not key:
+            continue
+        if re.fullmatch(r"-?\d+", value):
+            try:
+                out[key] = int(value)
+                continue
+            except Exception:
+                pass
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", value):
+            try:
+                out[key] = float(value)
+                continue
+            except Exception:
+                pass
+        out[key] = value
+    return out
+
+
+def exact_image_to_ply_args(node_item, plan: ImageGsRunPlan) -> list[str]:
+    model = getattr(node_item, "model", None)
+    script = Path(__file__).resolve().with_name("convert_image_to_splat_ply.py")
+    return [
+        str(script),
+        "--image",
+        str(plan.image_path),
+        "--out",
+        str(plan.ply_path),
+        "--sheet-scale",
+        f"{_param_float(model, 'sheet_scale', _DEFAULT_SHEET_SCALE, min_value=0.01, max_value=100.0):.6g}",
+        "--radius-scale",
+        f"{_param_float(model, 'radius_scale', _DEFAULT_RADIUS_SCALE, min_value=0.01, max_value=100.0):.6g}",
+        "--alpha",
+        f"{_param_float(model, 'alpha', _DEFAULT_ALPHA, min_value=0.001, max_value=0.999):.6g}",
+        "--max-splats",
+        str(_param_int(model, "exact_max_splats", _DEFAULT_EXACT_MAX_SPLATS, min_value=0, max_value=50_000_000)),
+        "--alpha-threshold",
+        f"{_param_float(model, 'exact_alpha_threshold', _DEFAULT_EXACT_ALPHA_THRESHOLD, min_value=0.0, max_value=1.0):.6g}",
+        "--coverage-boost",
+        f"{_param_float(model, 'coverage_boost', _DEFAULT_COVERAGE_BOOST, min_value=1.0, max_value=10.0):.6g}",
+        "--z-axis-ratio",
+        f"{_param_float(model, 'z_axis_ratio', _DEFAULT_Z_AXIS_RATIO, min_value=0.04, max_value=10.0):.6g}",
+    ]
+
+
+def build_exact_pixel_qc_report(node_item, plan: ImageGsRunPlan, conversion_text: str) -> Dict[str, Any]:
+    model = getattr(node_item, "model", None)
+    stats = _parse_exact_conversion_stats(conversion_text)
+    splat_count = int(stats.get("splat_count") or 0)
+    if splat_count <= 0 and plan.ply_path.exists():
+        try:
+            header = plan.ply_path.read_bytes()[:512].decode("ascii", errors="ignore")
+            match = re.search(r"element\s+vertex\s+(\d+)", header)
+            if match:
+                splat_count = int(match.group(1))
+        except Exception:
+            pass
+    pixels = max(1, int(plan.width) * int(plan.height))
+    density = float(splat_count) / float(pixels) if splat_count > 0 else 0.0
+    downsampled = str(stats.get("downsampled", "no")).strip().lower() in {"yes", "true", "1", "on"}
+    notes: list[str] = []
+    if downsampled:
+        notes.append("Exact Pixel mode downsampled the source to honor the configured exact_max_splats limit.")
+    skipped = stats.get("skipped_transparent")
+    if isinstance(skipped, (int, float)) and int(skipped) > 0:
+        notes.append(f"Skipped {int(skipped):,} transparent pixels.")
+    return {
+        "status": "pass" if splat_count > 0 else "fail",
+        "generation_mode": "exact_pixel",
+        "image_width": int(plan.width),
+        "image_height": int(plan.height),
+        "splat_count": int(splat_count),
+        "splats_per_source_pixel": round(density, 6),
+        "exact_max_splats": _param_int(model, "exact_max_splats", _DEFAULT_EXACT_MAX_SPLATS, min_value=0, max_value=50_000_000),
+        "alpha_threshold": _param_float(model, "exact_alpha_threshold", _DEFAULT_EXACT_ALPHA_THRESHOLD, min_value=0.0, max_value=1.0),
+        "sheet_scale": _param_float(model, "sheet_scale", _DEFAULT_SHEET_SCALE, min_value=0.01, max_value=100.0),
+        "radius_scale": _param_float(model, "radius_scale", _DEFAULT_RADIUS_SCALE, min_value=0.01, max_value=100.0),
+        "coverage_boost": _param_float(model, "coverage_boost", _DEFAULT_COVERAGE_BOOST, min_value=1.0, max_value=10.0),
+        "z_axis_ratio": _param_float(model, "z_axis_ratio", _DEFAULT_Z_AXIS_RATIO, min_value=0.04, max_value=10.0),
+        "conversion": stats,
+        "notes": notes,
+    }
+
+
 def write_manifest(
     node_item,
     plan: ImageGsRunPlan,
-    ckpt_path: Path,
+    ckpt_path: Optional[Path],
     preview_path: Optional[Path],
     qc_report: Optional[Dict[str, Any]] = None,
 ) -> None:
@@ -1293,8 +1487,9 @@ def write_manifest(
         "schema": _NODE_SCHEMA,
         "node": _node_name(node_item),
         "source": _source_key(model),
+        "generation_mode": _generation_mode(model),
         "source_image": str(plan.image_path),
-        "image_gs_checkpoint": str(ckpt_path),
+        "image_gs_checkpoint": str(ckpt_path or ""),
         "splat_ply": str(plan.ply_path),
         "preview_image": str(preview_path or ""),
         "image_width": int(plan.width),
@@ -1307,6 +1502,8 @@ def write_manifest(
         "alpha": _param_float(model, "alpha", _DEFAULT_ALPHA, min_value=0.001, max_value=0.999),
         "auto_quality": _param_bool(model, "auto_quality", True),
         "max_splats": _param_int(model, "max_splats", _AUTO_MAX_GAUSSIANS, min_value=1, max_value=5_000_000),
+        "exact_max_splats": _param_int(model, "exact_max_splats", _DEFAULT_EXACT_MAX_SPLATS, min_value=0, max_value=50_000_000),
+        "exact_alpha_threshold": _param_float(model, "exact_alpha_threshold", _DEFAULT_EXACT_ALPHA_THRESHOLD, min_value=0.0, max_value=1.0),
         "progressive_optim": _param_bool(model, "progressive_optim", True),
         "initial_ratio": _param_float(model, "initial_ratio", _AUTO_INITIAL_RATIO, min_value=0.01, max_value=1.0),
         "init_random_ratio": _param_float(model, "init_random_ratio", _AUTO_INIT_RANDOM_RATIO, min_value=0.0, max_value=1.0),
@@ -1337,13 +1534,93 @@ def _existing_ply(model) -> str:
     return ""
 
 
+def _json_dict(value: str) -> Dict[str, Any]:
+    try:
+        data = json.loads(str(value or ""))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _ply_vertex_count(path_text: str) -> int:
+    try:
+        path = Path(str(path_text or ""))
+        if not path.exists() or not path.is_file():
+            return 0
+        with path.open("rb") as handle:
+            for _ in range(80):
+                line = handle.readline()
+                if not line:
+                    break
+                text = line.decode("ascii", errors="ignore").strip()
+                match = re.match(r"element\s+vertex\s+([0-9]+)", text, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+                if text == "end_header":
+                    break
+    except Exception:
+        return 0
+    return 0
+
+
+def _exact_splat_count_for_view(model, ply: str) -> int:
+    qc = _json_dict(_param_value(model, "qc_report").strip())
+    try:
+        count = int(qc.get("splat_count") or 0)
+        if count > 0:
+            return count
+    except Exception:
+        pass
+    conversion = qc.get("conversion") if isinstance(qc.get("conversion"), dict) else {}
+    try:
+        count = int(conversion.get("splat_count") or 0)
+        if count > 0:
+            return count
+    except Exception:
+        pass
+    return _ply_vertex_count(ply)
+
+
+def _exact_view_sampling(model, ply: str) -> tuple[int, float, int]:
+    full_count = _exact_splat_count_for_view(model, ply)
+    fallback_cap = _param_int(
+        model,
+        "exact_max_splats",
+        _DEFAULT_EXACT_MAX_SPLATS,
+        min_value=0,
+        max_value=50_000_000,
+    )
+    requested = full_count if full_count > 0 else fallback_cap
+    if requested <= 0:
+        requested = _DEFAULT_EXACT_VIEW_SPLATS
+    sample_count = min(int(requested), _DEFAULT_EXACT_VIEW_SPLATS)
+    sample_count = max(200_000, int(sample_count))
+    if full_count > 0:
+        sample_count = min(sample_count, int(full_count))
+
+    ratio = float(full_count or sample_count) / float(max(1, sample_count))
+    if ratio > 1.0001:
+        radius_scale = math.sqrt(ratio) * _DEFAULT_EXACT_VIEW_RADIUS_PAD
+    else:
+        radius_scale = _DEFAULT_EXACT_VIEW_RADIUS_PAD
+    radius_scale = max(1.0, min(6.0, float(radius_scale)))
+    return int(sample_count), float(radius_scale), int(full_count)
+
+
 def build_image_gs_splat_scene_asset(node_item, *, generate: bool = False) -> ImageGsSplatOutcome:
     model = getattr(node_item, "model", None)
     ply = _existing_ply(model)
     if not ply:
-        return ImageGsSplatOutcome(None, "warning", "Image-GS splat has not been generated yet.")
+        return ImageGsSplatOutcome(None, "warning", "Image splat has not been generated yet.")
 
     node_name = _node_name(node_item)
+    mode = _generation_mode(model)
+    if mode == "exact_pixel":
+        sample_count, display_radius_scale, full_count = _exact_view_sampling(model, ply)
+    else:
+        sample_count = _param_int(model, "max_splats", _AUTO_MAX_GAUSSIANS, min_value=1, max_value=5_000_000)
+        display_radius_scale = 1.0
+        full_count = 0
     source_image = _param_value(model, "source_image").strip()
     preview = _param_value(model, "preview_image").strip()
     render_image = _param_value(model, "render_image").strip()
@@ -1355,8 +1632,13 @@ def build_image_gs_splat_scene_asset(node_item, *, generate: bool = False) -> Im
         "source_kind": "image_gs_splat",
         "ext": ".ply",
         "visible": True,
+        "generation_mode": mode,
+        "splat_sample_count": int(sample_count),
+        "splat_full_count": int(full_count),
+        "splat_display_radius_scale": float(display_radius_scale),
         "image_gs_splat": {
             "schema": _NODE_SCHEMA,
+            "generation_mode": mode,
             "source": _source_key(model),
             "source_image": source_image,
             "preview_image": preview,
@@ -1365,6 +1647,11 @@ def build_image_gs_splat_scene_asset(node_item, *, generate: bool = False) -> Im
             "manifest": _param_value(model, "manifest").strip(),
             "qc_report": _param_value(model, "qc_report").strip(),
             "auto_quality": _param_bool(model, "auto_quality", True),
+            "splat_sample_count": int(sample_count),
+            "splat_full_count": int(full_count),
+            "splat_display_radius_scale": float(display_radius_scale),
+            "exact_max_splats": _param_int(model, "exact_max_splats", _DEFAULT_EXACT_MAX_SPLATS, min_value=0, max_value=50_000_000),
+            "exact_alpha_threshold": _param_float(model, "exact_alpha_threshold", _DEFAULT_EXACT_ALPHA_THRESHOLD, min_value=0.0, max_value=1.0),
             "num_gaussians": _param_int(model, "num_gaussians", _DEFAULT_NUM_GAUSSIANS, min_value=100, max_value=2_000_000),
             "max_steps": _param_int(model, "max_steps", _DEFAULT_MAX_STEPS, min_value=1, max_value=2_000_000),
             "render_height": _param_int(model, "render_height", _DEFAULT_RENDER_HEIGHT, min_value=64, max_value=12000),
@@ -1376,7 +1663,7 @@ def build_image_gs_splat_scene_asset(node_item, *, generate: bool = False) -> Im
             "z_axis_ratio": _param_float(model, "z_axis_ratio", _DEFAULT_Z_AXIS_RATIO, min_value=0.04, max_value=10.0),
         },
     }
-    return ImageGsSplatOutcome(asset, "ok", "Image-GS splat ready.", generated=False)
+    return ImageGsSplatOutcome(asset, "ok", "Image splat ready.", generated=False)
 
 
 def build_ports(node_item) -> None:
@@ -1392,6 +1679,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "preview_image", "")
     _ensure_param(node_item, "render_image", "")
     _ensure_param(node_item, "manifest", "")
+    _ensure_param(node_item, "generation_mode", _DEFAULT_GENERATION_MODE)
     _ensure_param(node_item, "num_gaussians", str(_DEFAULT_NUM_GAUSSIANS))
     _ensure_param(node_item, "max_steps", str(_DEFAULT_MAX_STEPS))
     _ensure_param(node_item, "render_height", str(_DEFAULT_RENDER_HEIGHT))
@@ -1419,6 +1707,9 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "drop_scale_outliers", _DEFAULT_DROP_SCALE_OUTLIERS)
     _ensure_param(node_item, "coverage_boost", f"{_DEFAULT_COVERAGE_BOOST:.3f}")
     _ensure_param(node_item, "z_axis_ratio", f"{_DEFAULT_Z_AXIS_RATIO:.3f}")
+    _ensure_param(node_item, "exact_run_token", "")
+    _ensure_param(node_item, "exact_max_splats", str(_DEFAULT_EXACT_MAX_SPLATS))
+    _ensure_param(node_item, "exact_alpha_threshold", f"{_DEFAULT_EXACT_ALPHA_THRESHOLD:.3f}")
     _ensure_param(node_item, "disable_inverse_scale", "0")
     _ensure_param(node_item, "max_splats", str(_AUTO_MAX_GAUSSIANS))
     _ensure_param(node_item, "qc_report", "")
@@ -1438,6 +1729,7 @@ def build_ports(node_item) -> None:
             "preview_image",
             "render_image",
             "manifest",
+            "generation_mode",
             "num_gaussians",
             "max_steps",
             "render_height",
@@ -1465,6 +1757,9 @@ def build_ports(node_item) -> None:
             "drop_scale_outliers",
             "coverage_boost",
             "z_axis_ratio",
+            "exact_run_token",
+            "exact_max_splats",
+            "exact_alpha_threshold",
             "disable_inverse_scale",
             "max_splats",
             "qc_report",
@@ -1820,6 +2115,7 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         self._proc: Optional[QtCore.QProcess] = None
         self._setup_proc: Optional[QtCore.QProcess] = None
         self._run_plan: Optional[ImageGsRunPlan] = None
+        self._run_mode = ""
         self._browse_dialog: Optional[QtWidgets.QFileDialog] = None
         self._browse_pending = False
         self._stop_requested = False
@@ -1852,6 +2148,11 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         image_row.setSpacing(4)
         image_row.addWidget(self._url_edit, 1)
         image_row.addWidget(self._browse_btn, 0)
+
+        self._mode_combo = QtWidgets.QComboBox()
+        self._mode_combo.addItem("Exact Pixel", "exact_pixel")
+        self._mode_combo.addItem("Image-GS", "image_gs")
+        self._mode_combo.setToolTip("Choose direct per-pixel splat export or Image-GS optimization.")
 
         self._gauss_spin = _ArrowSpinBox()
         self._gauss_spin.setRange(100, 2_000_000)
@@ -1895,6 +2196,7 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
             self._sheet_spin,
             self._radius_spin,
             self._alpha_spin,
+            self._mode_combo,
             self._init_combo,
         ):
             field.setFixedWidth(_CONTROL_W)
@@ -1946,23 +2248,25 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         form.setVerticalSpacing(4)
         form.addWidget(_label("Image"), 0, 0)
         form.addLayout(image_row, 0, 1, 1, 3)
-        form.addWidget(_label("Splats"), 1, 0)
-        form.addWidget(self._gauss_spin, 1, 1, QtCore.Qt.AlignLeft)
-        form.addWidget(_label("Steps"), 1, 2)
-        form.addWidget(self._steps_spin, 1, 3, QtCore.Qt.AlignLeft)
-        form.addWidget(_label("Height"), 2, 0)
-        form.addWidget(self._height_spin, 2, 1, QtCore.Qt.AlignLeft)
-        form.addWidget(_label("Init"), 2, 2)
-        form.addWidget(self._init_combo, 2, 3, QtCore.Qt.AlignLeft)
-        form.addWidget(_label("Sheet"), 3, 0)
-        form.addWidget(self._sheet_spin, 3, 1, QtCore.Qt.AlignLeft)
-        form.addWidget(_label("Radius"), 3, 2)
-        form.addWidget(self._radius_spin, 3, 3, QtCore.Qt.AlignLeft)
-        form.addWidget(_label("Alpha"), 4, 0)
-        form.addWidget(self._alpha_spin, 4, 1, QtCore.Qt.AlignLeft)
-        form.addWidget(self._auto_check, 4, 2, 1, 2)
-        form.addWidget(self._quantize_check, 5, 0, 1, 2)
-        form.addWidget(self._vis_check, 5, 2, 1, 2)
+        form.addWidget(_label("Mode"), 1, 0)
+        form.addWidget(self._mode_combo, 1, 1, 1, 3, QtCore.Qt.AlignLeft)
+        form.addWidget(_label("Splats"), 2, 0)
+        form.addWidget(self._gauss_spin, 2, 1, QtCore.Qt.AlignLeft)
+        form.addWidget(_label("Steps"), 2, 2)
+        form.addWidget(self._steps_spin, 2, 3, QtCore.Qt.AlignLeft)
+        form.addWidget(_label("Height"), 3, 0)
+        form.addWidget(self._height_spin, 3, 1, QtCore.Qt.AlignLeft)
+        form.addWidget(_label("Init"), 3, 2)
+        form.addWidget(self._init_combo, 3, 3, QtCore.Qt.AlignLeft)
+        form.addWidget(_label("Sheet"), 4, 0)
+        form.addWidget(self._sheet_spin, 4, 1, QtCore.Qt.AlignLeft)
+        form.addWidget(_label("Radius"), 4, 2)
+        form.addWidget(self._radius_spin, 4, 3, QtCore.Qt.AlignLeft)
+        form.addWidget(_label("Alpha"), 5, 0)
+        form.addWidget(self._alpha_spin, 5, 1, QtCore.Qt.AlignLeft)
+        form.addWidget(self._auto_check, 5, 2, 1, 2)
+        form.addWidget(self._quantize_check, 6, 0, 1, 2)
+        form.addWidget(self._vis_check, 6, 2, 1, 2)
         form.setColumnMinimumWidth(0, 42)
         form.setColumnMinimumWidth(1, _CONTROL_W)
         form.setColumnMinimumWidth(2, 42)
@@ -1996,6 +2300,7 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         self._sheet_spin.valueChanged.connect(self._on_sheet_changed)
         self._radius_spin.valueChanged.connect(self._on_radius_changed)
         self._alpha_spin.valueChanged.connect(self._on_alpha_changed)
+        self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self._init_combo.currentTextChanged.connect(self._on_init_changed)
         self._auto_check.stateChanged.connect(self._on_auto_changed)
         self._quantize_check.stateChanged.connect(self._on_quantize_changed)
@@ -2020,6 +2325,7 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         model = getattr(self._node_item, "model", None)
         controls = [
             self._url_edit,
+            self._mode_combo,
             self._gauss_spin,
             self._steps_spin,
             self._height_spin,
@@ -2035,6 +2341,11 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
             widget.blockSignals(True)
         try:
             self._url_edit.setText(_source_key(model))
+            mode = _generation_mode(model)
+            for i in range(self._mode_combo.count()):
+                if str(self._mode_combo.itemData(i) or "").strip() == mode:
+                    self._mode_combo.setCurrentIndex(i)
+                    break
             self._gauss_spin.setValue(_param_int(model, "num_gaussians", _DEFAULT_NUM_GAUSSIANS, min_value=100, max_value=2_000_000))
             self._steps_spin.setValue(_param_int(model, "max_steps", _DEFAULT_MAX_STEPS, min_value=1, max_value=2_000_000))
             self._height_spin.setValue(_param_int(model, "render_height", _DEFAULT_RENDER_HEIGHT, min_value=64, max_value=12000))
@@ -2053,19 +2364,22 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         self._sync_auto_controls()
 
     def _sync_auto_controls(self) -> None:
-        manual_enabled = not self._auto_check.isChecked()
+        mode = str(self._mode_combo.currentData() or _generation_mode(getattr(self._node_item, "model", None)))
+        image_gs_mode = mode == "image_gs"
+        manual_enabled = image_gs_mode and not self._auto_check.isChecked()
+        self._auto_check.setEnabled(image_gs_mode)
         for widget in (
             self._gauss_spin,
             self._steps_spin,
             self._height_spin,
-            self._sheet_spin,
-            self._radius_spin,
-            self._alpha_spin,
             self._init_combo,
             self._quantize_check,
             self._vis_check,
         ):
             widget.setEnabled(manual_enabled)
+        self._sheet_spin.setEnabled(True)
+        self._radius_spin.setEnabled(True)
+        self._alpha_spin.setEnabled(True)
 
     def _set_status(self, text: str, tone: str = "muted") -> None:
         colors = {
@@ -2142,10 +2456,17 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
                 pass
 
     def _refresh_status(self) -> None:
-        status = image_gs_status()
+        mode = _generation_mode(getattr(self._node_item, "model", None))
         outcome = build_image_gs_splat_scene_asset(self._node_item, generate=False)
         self._view_btn.setEnabled(bool(outcome.asset))
         self._folder_btn.setEnabled(bool(_param_value(getattr(self._node_item, "model", None), "output_dir").strip() or _output_dir(self._node_item).exists()))
+        if mode == "exact_pixel":
+            if outcome.status == "ok":
+                self._set_status(outcome.detail, "ok")
+            else:
+                self._set_status("Exact Pixel mode writes one splat per visible source pixel.", "muted")
+            return
+        status = image_gs_status()
         if not status.ready:
             self._set_status(status.detail, "warn")
             return
@@ -2189,6 +2510,8 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         return True
 
     def _maybe_prompt_setup(self) -> None:
+        if _generation_mode(getattr(self._node_item, "model", None)) == "exact_pixel":
+            return
         if self._browse_dialog_open():
             QtCore.QTimer.singleShot(500, self._maybe_prompt_setup)
             return
@@ -2321,6 +2644,16 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
     def _on_alpha_changed(self, value: float):
         _set_param(self._node_item, "alpha", f"{float(value):.3f}", notify_scene=False)
         self._mark_dirty()
+
+    def _on_mode_changed(self, _index: int):
+        mode = str(self._mode_combo.currentData() or _DEFAULT_GENERATION_MODE)
+        _set_param(self._node_item, "generation_mode", mode, notify_scene=False)
+        self._sync_auto_controls()
+        self._mark_dirty()
+        if mode == "exact_pixel":
+            self._set_status("Exact Pixel mode writes a deterministic splat sheet from the source image.", "muted")
+        else:
+            self._set_status("Image-GS mode uses the optimizer and optional Auto HQ settings.", "busy")
 
     def _on_init_changed(self, text: str):
         _set_param(self._node_item, "init_mode", str(text or "gradient"), notify_scene=False)
@@ -2484,11 +2817,120 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
             self._set_status(deps.detail, "error")
             _finish_debug_capture(self._node_item, exit_code=exit_code, status_text=deps.detail)
 
+    def _start_exact_pixel_generation(self) -> None:
+        model = getattr(self._node_item, "model", None)
+        try:
+            _set_param(self._node_item, "exact_run_token", str(int(time.time() * 1000)), notify_scene=False)
+            plan = prepare_image_gs_run(self._node_item)
+            args = exact_image_to_ply_args(self._node_item, plan)
+        except Exception as exc:
+            self._set_status(str(exc), "error")
+            return
+
+        self._run_plan = plan
+        self._run_mode = "exact_pixel"
+        self._tail = ""
+        command = [str(sys.executable), *args]
+        _begin_debug_capture(self._node_item, "generate-exact-pixel", command=command, cwd=_repo_root())
+        self._stop_requested = False
+        self._generate_btn.setEnabled(False)
+        self._browse_btn.setEnabled(False)
+        self._view_btn.setEnabled(False)
+        self._stop_btn.setVisible(True)
+        self._stop_btn.setEnabled(True)
+        self._set_busy_border(True)
+        self._set_status("Writing Exact Pixel splat PLY...", "busy")
+        _debug_log(model, "start_exact_pixel", args=args, plan=plan)
+
+        proc = QtCore.QProcess(self)
+        proc.setWorkingDirectory(str(_repo_root()))
+        env = QtCore.QProcessEnvironment.systemEnvironment()
+        repo = str(_repo_root())
+        old_py_path = env.value("PYTHONPATH", "")
+        env.insert("PYTHONPATH", repo + (os.pathsep + old_py_path if old_py_path else ""))
+        proc.setProcessEnvironment(env)
+        proc.readyReadStandardOutput.connect(self._append_process_output)
+        proc.readyReadStandardError.connect(self._append_process_output)
+        proc.finished.connect(self._on_exact_process_finished)
+        self._proc = proc
+        proc.start(str(sys.executable), args)
+        if not proc.waitForStarted(5000):
+            self._proc = None
+            self._run_mode = ""
+            self._stop_requested = False
+            self._generate_btn.setEnabled(True)
+            self._browse_btn.setEnabled(True)
+            self._stop_btn.setEnabled(False)
+            self._stop_btn.setVisible(False)
+            self._set_busy_border(False)
+            self._set_status("Could not start exact splat conversion process.", "error")
+            _finish_debug_capture(self._node_item, exit_code=None, status_text="Could not start exact splat conversion process.")
+
+    def _on_exact_process_finished(self, exit_code: int, _exit_status):
+        self._append_process_output()
+        proc = self._proc
+        self._proc = None
+        self._run_mode = ""
+        was_stopped = self._stop_requested
+        self._stop_requested = False
+        self._generate_btn.setEnabled(True)
+        self._browse_btn.setEnabled(True)
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.setVisible(False)
+        self._set_busy_border(False)
+        plan = self._run_plan
+        if proc is not None:
+            proc.deleteLater()
+        if was_stopped:
+            detail = "Exact Pixel generation stopped."
+            self._set_status(detail, "warn")
+            self._view_btn.setEnabled(bool(build_image_gs_splat_scene_asset(self._node_item, generate=False).asset))
+            _debug_log(getattr(self._node_item, "model", None), "exact_stopped", exit_code=int(exit_code), tail=self._tail)
+            _finish_debug_capture(self._node_item, exit_code=exit_code, status_text=detail)
+            return
+        if plan is None:
+            self._set_status("Exact Pixel process finished without a run plan.", "error")
+            _finish_debug_capture(self._node_item, exit_code=exit_code, status_text="Exact Pixel process finished without a run plan.")
+            return
+        if int(exit_code) != 0:
+            detail = self._tail.strip().splitlines()[-1] if self._tail.strip() else f"exit code {exit_code}"
+            self._set_status(f"Exact Pixel failed: {detail}", "error")
+            _debug_log(getattr(self._node_item, "model", None), "exact_failed", exit_code=int(exit_code), tail=self._tail)
+            _finish_debug_capture(self._node_item, exit_code=exit_code, status_text=f"Exact Pixel failed: {detail}")
+            self._refresh_status()
+            return
+        try:
+            conversion = self._tail.strip().splitlines()[-1] if self._tail.strip() else "Exact Pixel splat generated."
+            qc_report = build_exact_pixel_qc_report(self._node_item, plan, conversion)
+            write_manifest(self._node_item, plan, None, plan.image_path, qc_report)
+            _set_param(self._node_item, "checkpoint", "", notify_scene=False)
+            _set_param(self._node_item, "preview_image", str(plan.image_path), notify_scene=False)
+            _set_param(self._node_item, "render_image", "", notify_scene=False)
+            _set_param(self._node_item, "splat_ply", str(plan.ply_path), notify_scene=False)
+            _set_param(self._node_item, "manifest", str(plan.manifest_path), notify_scene=False)
+            _set_param(self._node_item, "qc_report", json.dumps(qc_report, ensure_ascii=True, sort_keys=True), notify_scene=False)
+            _set_param(self._node_item, "path", str(plan.ply_path), notify_scene=True)
+            self._notify_scene_params_changed()
+            self._refresh_preview()
+            count = int(qc_report.get("splat_count") or 0)
+            final_status = conversion or f"Exact Pixel splat generated with {count:,} splats."
+            self._set_status(final_status, "ok")
+            _finish_debug_capture(self._node_item, exit_code=exit_code, status_text=final_status)
+        except Exception as exc:
+            self._set_status(str(exc), "error")
+            _debug_log(getattr(self._node_item, "model", None), "exact_finalize_failed", error=repr(exc), tail=self._tail)
+            _finish_debug_capture(self._node_item, exit_code=exit_code, status_text=f"Exact Pixel finalization failed: {exc}")
+        self._refresh_status()
+
     def _on_generate_clicked(self):
         model = getattr(self._node_item, "model", None)
         if self._proc is not None or self._setup_proc is not None or _process_running(_node_setup_process(model)):
             if _process_running(_node_setup_process(model)):
                 self._set_status("Image-GS setup is still running.", "busy")
+            return
+        mode = _generation_mode(model)
+        if mode == "exact_pixel":
+            self._start_exact_pixel_generation()
             return
         status = image_gs_status()
         if not status.ready:
@@ -2512,6 +2954,7 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
             self._set_status(str(exc), "error")
             return
         self._run_plan = plan
+        self._run_mode = "image_gs"
         self._tail = ""
         command = [str(status.python), *args]
         _begin_debug_capture(self._node_item, "generate", command=command, cwd=status.root)
@@ -2569,8 +3012,9 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
             return
         self._stop_requested = True
         self._stop_btn.setEnabled(False)
-        self._set_status("Stopping Image-GS...", "warn")
-        _capture_debug_output(self._node_item, "\nImage-GS stop requested by user.\n")
+        label = "Exact Pixel" if self._run_mode == "exact_pixel" else "Image-GS"
+        self._set_status(f"Stopping {label}...", "warn")
+        _capture_debug_output(self._node_item, f"\n{label} stop requested by user.\n")
         try:
             proc.terminate()
         except Exception:
@@ -2587,8 +3031,9 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         try:
             if proc.state() == QtCore.QProcess.NotRunning:
                 return
-            _capture_debug_output(self._node_item, "\nImage-GS process did not stop; killing it.\n")
-            self._set_status("Force stopping Image-GS...", "warn")
+            label = "Exact Pixel" if self._run_mode == "exact_pixel" else "Image-GS"
+            _capture_debug_output(self._node_item, f"\n{label} process did not stop; killing it.\n")
+            self._set_status(f"Force stopping {label}...", "warn")
             proc.kill()
         except RuntimeError:
             return
@@ -2599,6 +3044,7 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
         self._append_process_output()
         proc = self._proc
         self._proc = None
+        self._run_mode = ""
         was_stopped = self._stop_requested
         self._stop_requested = False
         self._generate_btn.setEnabled(True)
@@ -2681,6 +3127,18 @@ class ImageGsSplatWidget(QtWidgets.QWidget):
             handler([dict(outcome.asset)], frame=True)
         except TypeError:
             handler([dict(outcome.asset)])
+        try:
+            sample_count = int(outcome.asset.get("splat_sample_count") or 0)
+            full_count = int(outcome.asset.get("splat_full_count") or 0)
+            if full_count > sample_count > 0:
+                self._set_status(
+                    f"Opened preview with {sample_count:,} sampled splats from {full_count:,} generated splats.",
+                    "ok",
+                )
+            elif sample_count > 0:
+                self._set_status(f"Opened preview with {sample_count:,} splats.", "ok")
+        except Exception:
+            pass
 
     def _on_folder_clicked(self):
         out = _output_dir(self._node_item)

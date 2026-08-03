@@ -6451,7 +6451,43 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 try:
                     from echograph.util.splats_io import load_splats_ply
 
-                    splats = load_splats_ply(path)
+                    sample_limit = 200_000
+                    try:
+                        splat_meta = asset.get("image_gs_splat") if isinstance(asset.get("image_gs_splat"), dict) else {}
+                        is_image_gs_splat = (
+                            str(asset.get("kind") or "").strip().lower() == "image_gs_splat"
+                            or str(asset.get("source_kind") or "").strip().lower() == "image_gs_splat"
+                            or bool(splat_meta)
+                        )
+                        if is_image_gs_splat:
+                            requested = asset.get("splat_sample_count") or splat_meta.get("splat_sample_count")
+                            if not requested:
+                                requested = splat_meta.get("exact_max_splats") or asset.get("max_splats")
+                            sample_limit = int(requested or 5_000_000)
+                            if sample_limit <= 0:
+                                sample_limit = 5_000_000
+                            sample_limit = max(200_000, min(5_000_000, int(sample_limit)))
+                    except Exception:
+                        sample_limit = 200_000
+                    splats = load_splats_ply(path, n=sample_limit)
+                    try:
+                        display_radius_scale = float(
+                            asset.get("splat_display_radius_scale")
+                            or splat_meta.get("splat_display_radius_scale")
+                            or 1.0
+                        )
+                    except Exception:
+                        display_radius_scale = 1.0
+                    if (
+                        np is not None
+                        and math.isfinite(float(display_radius_scale))
+                        and abs(float(display_radius_scale) - 1.0) > 1.0e-4
+                    ):
+                        arr = np.asarray(splats, dtype=np.float32)
+                        if arr.ndim == 2 and int(arr.shape[1]) >= 8:
+                            arr = arr.astype(np.float32, copy=True)
+                            arr[:, 7] *= np.float32(max(0.01, min(20.0, float(display_radius_scale))))
+                            splats = arr
                     self.set_splats(splats)
                 except Exception:
                     import traceback

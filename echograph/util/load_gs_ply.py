@@ -20,6 +20,7 @@ def _read_header_full(p: Path):
     elements = []
     current = None
     fmt = None
+    comments = []
 
     with p.open("rb") as f:
         while True:
@@ -31,6 +32,9 @@ def _read_header_full(p: Path):
             if s.startswith("format "):
                 parts = s.split()
                 fmt = parts[1] if len(parts) > 1 else None
+
+            elif s.startswith("comment "):
+                comments.append(s[len("comment ") :])
 
             elif s.startswith("element "):
                 parts = s.split()
@@ -54,6 +58,7 @@ def _read_header_full(p: Path):
     return {
         "format": fmt,
         "elements": elements,
+        "comments": comments,
         "header_end": header_end,
     }
 
@@ -64,6 +69,14 @@ def _find_element(header, name: str):
         if (el.get("name") or "").strip().lower() == name:
             return el
     return None
+
+
+def _is_qubit_exact_pixel_ply(header) -> bool:
+    for comment in header.get("comments") or []:
+        text = str(comment or "").strip().lower()
+        if "qubitmcp" in text and "image_gs_splat" in text and "exact_pixel" in text:
+            return True
+    return False
 
 
 def _load_uncompressed_float_schema(p: Path, header, n: int) -> np.ndarray:
@@ -92,9 +105,21 @@ def _load_uncompressed_float_schema(p: Path, header, n: int) -> np.ndarray:
     floats_per_vertex = len(props)
     n = min(int(n), vcount)
 
-    with p.open("rb") as f:
-        f.seek(header["header_end"])
-        raw = np.fromfile(f, dtype="<f4", count=n * floats_per_vertex)
+    if 0 < n < vcount and _is_qubit_exact_pixel_ply(header):
+        indices = np.linspace(0, vcount - 1, num=n, dtype=np.int64)
+        mapped = np.memmap(
+            str(p),
+            dtype="<f4",
+            mode="r",
+            offset=int(header["header_end"]),
+            shape=(vcount, floats_per_vertex),
+        )
+        raw = np.asarray(mapped[indices], dtype=np.float32).copy()
+        del mapped
+    else:
+        with p.open("rb") as f:
+            f.seek(header["header_end"])
+            raw = np.fromfile(f, dtype="<f4", count=n * floats_per_vertex)
 
     raw = raw.reshape(n, floats_per_vertex)
     idx = {name: i for i, name in enumerate(props)}

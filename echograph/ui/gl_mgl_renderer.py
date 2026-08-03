@@ -14920,6 +14920,7 @@ void main() {
         self._mgl_splats15_cpu = None
         self._mgl_splat_lit_cpu = None
         self._mgl_splat_glow_cpu = None
+        self._mgl_splat_skip_sort = False
         self._mgl_splats_all_lit = False
         self._mgl_splats_has_lit = False
         try:
@@ -17596,6 +17597,14 @@ void main() {
         combined = arrays15[0] if len(arrays15) == 1 else np.concatenate(arrays15, axis=0)
         combined_lit = lit_arrays[0] if len(lit_arrays) == 1 else np.concatenate(lit_arrays, axis=0)
         combined_glow = glow_arrays[0] if len(glow_arrays) == 1 else np.concatenate(glow_arrays, axis=0)
+        try:
+            z_values = combined[:, 2].astype(np.float32, copy=False)
+            skip_sort = bool(int(combined.shape[0]) > 500_000 and float(np.max(z_values) - np.min(z_values)) <= 1.0e-5)
+            self._mgl_splat_skip_sort = skip_sort
+            if skip_sort:
+                self._mgl_splat_force_sort = False
+        except Exception:
+            self._mgl_splat_skip_sort = False
         try:
             if bool(getattr(self, "_mgl_splat_log_verbose", False)):
                 self._mgl_log_throttled(
@@ -24380,6 +24389,8 @@ void main() {
                 force_sort = bool(getattr(self, "_mgl_splat_force_sort", False))
                 sort_every_frame = bool(getattr(self, "_mgl_splat_sort_every_frame", False))
                 do_sort = bool(force_sort or sort_every_frame or ((self._mgl_splat_sort_tick % 10) == 0))
+                if bool(getattr(self, "_mgl_splat_skip_sort", False)):
+                    do_sort = False
 
                 # SORT. Static splats use a cadence; animated skinned splats force this
                 # on frames where their positions changed so transparency does not lag.
@@ -28960,6 +28971,17 @@ void main() {
             if splats15.shape[1] == 15:
                 self._mgl_splat_count = int(splats15.shape[0])
                 try:
+                    z_values = splats15[:, 2].astype(np.float32, copy=False)
+                    skip_sort = bool(
+                        int(splats15.shape[0]) > 500_000
+                        and float(np.max(z_values) - np.min(z_values)) <= 1.0e-5
+                    )
+                    self._mgl_splat_skip_sort = skip_sort
+                    if skip_sort:
+                        self._mgl_splat_force_sort = False
+                except Exception:
+                    self._mgl_splat_skip_sort = False
+                try:
                     lit_cpu = np.asarray(splat_lit_flags, dtype=np.float32).reshape(-1, 1)
                     if int(lit_cpu.shape[0]) != int(splats15.shape[0]):
                         lit_cpu = np.zeros((int(splats15.shape[0]), 1), dtype=np.float32)
@@ -29018,26 +29040,50 @@ void main() {
                 self._mgl_splatq_lit_vbo = None
                 self._mgl_splatq_glow_vbo = None
 
-                self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats15.tobytes())
-                self._mgl_splatq_lit_vbo = self._mgl_ctx.buffer(lit_cpu.tobytes())
-                self._mgl_splatq_glow_vbo = self._mgl_ctx.buffer(glow_cpu.tobytes())
-                self._mgl_splatq_vao = self._mgl_ctx.vertex_array(
-                    self._mgl_splatq_prog,
-                    [
-                        (self._mgl_splatq_quad_vbo, "2f", "in_corner"),
-                        (
-                            self._mgl_splatq_vbo,
-                            "3f 4f 1f 3f 4f /i",
-                            "in_pos",
-                            "in_col",
-                            "in_rad",
-                            "in_scale3",
-                            "in_rot",
-                        ),
-                        (self._mgl_splatq_lit_vbo, "1f /i", "in_lit"),
-                        (self._mgl_splatq_glow_vbo, "1f /i", "in_glow"),
-                    ],
-                )
+                try:
+                    self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats15.tobytes())
+                    self._mgl_splatq_lit_vbo = self._mgl_ctx.buffer(lit_cpu.tobytes())
+                    self._mgl_splatq_glow_vbo = self._mgl_ctx.buffer(glow_cpu.tobytes())
+                    self._mgl_splatq_vao = self._mgl_ctx.vertex_array(
+                        self._mgl_splatq_prog,
+                        [
+                            (self._mgl_splatq_quad_vbo, "2f", "in_corner"),
+                            (
+                                self._mgl_splatq_vbo,
+                                "3f 4f 1f 3f 4f /i",
+                                "in_pos",
+                                "in_col",
+                                "in_rad",
+                                "in_scale3",
+                                "in_rot",
+                            ),
+                            (self._mgl_splatq_lit_vbo, "1f /i", "in_lit"),
+                            (self._mgl_splatq_glow_vbo, "1f /i", "in_glow"),
+                        ],
+                    )
+                except Exception as exc:
+                    self._mgl_error = f"Splat upload failed: {exc}"
+                    try:
+                        self._mgl_log(
+                            "splats: upload failed count="
+                            + str(int(splats15.shape[0]))
+                            + " bytes="
+                            + str(int(splats15.nbytes))
+                            + " err="
+                            + repr(exc)
+                        )
+                    except Exception:
+                        pass
+                    for res_name in ("_mgl_splatq_vao", "_mgl_splatq_vbo", "_mgl_splatq_lit_vbo", "_mgl_splatq_glow_vbo"):
+                        res = getattr(self, res_name, None)
+                        if res is not None:
+                            try:
+                                res.release()
+                            except Exception:
+                                pass
+                        setattr(self, res_name, None)
+                    self._mgl_render_splats = False
+                    return
                 if getattr(self, "_mgl_splat_shadow_prog", None) is not None:
                     try:
                         self._mgl_splat_shadow_vao = self._mgl_ctx.vertex_array(
@@ -32358,8 +32404,42 @@ void main() {
                             )
                         except Exception:
                             pass
-                        splats = load_splats_ply(str(path), n=200_000)
+                        sample_limit = 200_000
+                        try:
+                            splat_meta = asset.get("image_gs_splat") if isinstance(asset.get("image_gs_splat"), dict) else {}
+                            is_image_gs_splat = (
+                                kind == "image_gs_splat"
+                                or str(asset.get("source_kind") or "").strip().lower() == "image_gs_splat"
+                                or bool(splat_meta)
+                            )
+                            if is_image_gs_splat:
+                                requested = asset.get("splat_sample_count") or splat_meta.get("splat_sample_count")
+                                if not requested:
+                                    requested = splat_meta.get("exact_max_splats") or asset.get("max_splats")
+                                sample_limit = int(requested or 5_000_000)
+                                if sample_limit <= 0:
+                                    sample_limit = 5_000_000
+                                sample_limit = max(200_000, min(5_000_000, int(sample_limit)))
+                        except Exception:
+                            sample_limit = 200_000
+                        splats = load_splats_ply(str(path), n=sample_limit)
                         arr = np.asarray(splats, dtype=np.float32)
+                        try:
+                            display_radius_scale = float(
+                                asset.get("splat_display_radius_scale")
+                                or splat_meta.get("splat_display_radius_scale")
+                                or 1.0
+                            )
+                        except Exception:
+                            display_radius_scale = 1.0
+                        if (
+                            arr.ndim == 2
+                            and int(arr.shape[1]) >= 8
+                            and math.isfinite(float(display_radius_scale))
+                            and abs(float(display_radius_scale) - 1.0) > 1.0e-4
+                        ):
+                            arr = arr.astype(np.float32, copy=True)
+                            arr[:, 7] *= np.float32(max(0.01, min(20.0, float(display_radius_scale))))
                         if arr.ndim == 2 and arr.shape[1] in (8, 10, 14, 15):
                             has_splats = True
                             try:
@@ -32367,7 +32447,16 @@ void main() {
                             except Exception:
                                 pass
                             try:
-                                self._mgl_log("splats: loaded owner=" + str(owner) + " shape=" + str(arr.shape))
+                                self._mgl_log(
+                                    "splats: loaded owner="
+                                    + str(owner)
+                                    + " shape="
+                                    + str(arr.shape)
+                                    + " sample_limit="
+                                    + str(sample_limit)
+                                    + " display_radius_scale="
+                                    + f"{float(display_radius_scale):.3f}"
+                                )
                             except Exception:
                                 pass
                             mins = arr[:, :3].min(axis=0)

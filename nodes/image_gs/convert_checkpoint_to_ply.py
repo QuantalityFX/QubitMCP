@@ -6,8 +6,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
+try:
+    from nodes.image_gs.splat_ply_writer import write_gaussian_splat_ply
+except Exception:
+    from splat_ply_writer import write_gaussian_splat_ply  # type: ignore
 
-C0 = 0.28209479177387814
+
 _EPS = np.float32(1.0e-8)
 
 
@@ -17,64 +21,6 @@ def _tensor(state: dict, name: str) -> torch.Tensor:
         if isinstance(value, torch.Tensor):
             return value.detach().cpu()
     raise KeyError(f"Checkpoint does not contain '{name}'.")
-
-
-def _normalise_quats(q: np.ndarray) -> np.ndarray:
-    q = np.asarray(q, dtype=np.float32)
-    norm = np.linalg.norm(q, axis=1, keepdims=True)
-    return q / np.maximum(norm, np.float32(1.0e-8))
-
-
-def _write_gaussian_splat_ply(path: Path, splats: np.ndarray) -> None:
-    arr = np.asarray(splats, dtype=np.float32)
-    if arr.ndim != 2 or int(arr.shape[1]) != 15:
-        raise ValueError("Gaussian splat PLY writer expects an Nx15 array.")
-
-    rgb = np.clip(arr[:, 3:6], 0.0, 1.0)
-    alpha = np.clip(arr[:, 6], 1.0e-6, 1.0 - 1.0e-6)
-    radius = np.maximum(arr[:, 7], 1.0e-8)
-    scale3 = np.maximum(arr[:, 8:11], 1.0e-8)
-    quat_xyzw = _normalise_quats(arr[:, 11:15])
-
-    fdc = (rgb - 0.5) / C0
-    opacity = np.log(alpha / (1.0 - alpha)).reshape(-1, 1)
-    axes = np.maximum(radius.reshape(-1, 1) * scale3, 1.0e-8)
-    log_scales = np.log(axes)
-    rot_wxyz = np.column_stack(
-        [quat_xyzw[:, 3], quat_xyzw[:, 0], quat_xyzw[:, 1], quat_xyzw[:, 2]]
-    )
-
-    payload = np.concatenate(
-        [arr[:, 0:3], fdc, opacity, log_scales, rot_wxyz],
-        axis=1,
-    ).astype("<f4", copy=False)
-
-    header = (
-        "ply\n"
-        "format binary_little_endian 1.0\n"
-        "comment generated_by QubitMCP image_gs_splat\n"
-        f"element vertex {int(payload.shape[0])}\n"
-        "property float x\n"
-        "property float y\n"
-        "property float z\n"
-        "property float f_dc_0\n"
-        "property float f_dc_1\n"
-        "property float f_dc_2\n"
-        "property float opacity\n"
-        "property float scale_0\n"
-        "property float scale_1\n"
-        "property float scale_2\n"
-        "property float rot_0\n"
-        "property float rot_1\n"
-        "property float rot_2\n"
-        "property float rot_3\n"
-        "end_header\n"
-    )
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as handle:
-        handle.write(header.encode("ascii"))
-        handle.write(payload.tobytes(order="C"))
 
 
 def _rgb_from_feat(feat: np.ndarray) -> np.ndarray:
@@ -245,7 +191,7 @@ def convert_checkpoint(
         axis=1,
     ).astype(np.float32, copy=False)
 
-    _write_gaussian_splat_ply(out_path, splats)
+    write_gaussian_splat_ply(out_path, splats)
     stats = (
         f"axis_cap_px={float(axis_cap):.2f}, min_axis_px={float(min_axis):.2f}, "
         f"max_anisotropy={float(anisotropy_cap):.2f}, clamped_axes={clamped_axes}, "
