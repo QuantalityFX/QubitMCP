@@ -84,6 +84,7 @@ TANYA_PROMPT_PROFILE = "assistant_tanya"
 TRANSLATOR_PROMPT_PROFILE = "translator"
 JAPANESE_READER_PROMPT_PROFILE = "japanese_reader"
 KOREAN_READER_PROMPT_PROFILE = "korean_reader"
+CHINESE_READER_PROMPT_PROFILE = "chinese_reader"
 MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "romantic_dark_assistant": TANYA_PROMPT_PROFILE,
     "translator_agent": TRANSLATOR_PROMPT_PROFILE,
@@ -106,6 +107,15 @@ MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "kr_reader": KOREAN_READER_PROMPT_PROFILE,
     "ko_reader": KOREAN_READER_PROMPT_PROFILE,
     "ko_translator": KOREAN_READER_PROMPT_PROFILE,
+    "chinese_agent": CHINESE_READER_PROMPT_PROFILE,
+    "chinese_speaker": CHINESE_READER_PROMPT_PROFILE,
+    "chinese_interpreter": CHINESE_READER_PROMPT_PROFILE,
+    "chinese_translator": CHINESE_READER_PROMPT_PROFILE,
+    "chinese_translation": CHINESE_READER_PROMPT_PROFILE,
+    "english_to_chinese": CHINESE_READER_PROMPT_PROFILE,
+    "cn_reader": CHINESE_READER_PROMPT_PROFILE,
+    "zh_reader": CHINESE_READER_PROMPT_PROFILE,
+    "zh_translator": CHINESE_READER_PROMPT_PROFILE,
 }
 SECURITY_AGENT_ICON_FILENAMES = ("ScurityAgent_Icon.png", "SecurityAgent_Icon.png")
 OPERATOR_AGENT_ICON_FILENAMES = ("ITOperatorAgent_Icon.png", "OperatorAgent_Icon.png")
