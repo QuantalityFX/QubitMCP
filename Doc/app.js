@@ -80,6 +80,7 @@ if (location.hash && document.querySelector(location.hash)) {
   const heroImage = new Image();
   const lightCanvas = document.createElement("canvas");
   const lightCtx = lightCanvas.getContext("2d");
+  const TARGET_FRAME_MS = 1000 / 30;
   const motionQuery = window.matchMedia
     ? window.matchMedia("(prefers-reduced-motion: reduce)")
     : { matches: false };
@@ -90,9 +91,11 @@ if (location.hash && document.querySelector(location.hash)) {
   let cover = null;
   let splats = [];
   let animationId = 0;
+  let lastFrameTime = 0;
   let reducedMotion = motionQuery.matches;
   let debugSplats = false;
   let heroImageReady = false;
+  let heroVisible = true;
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -100,7 +103,7 @@ if (location.hash && document.querySelector(location.hash)) {
 
   function sampleLimit() {
     const area = Math.max(1, width * height);
-    return Math.round(clamp(area / 31, 7000, 42000));
+    return Math.round(clamp(area / 52, 3500, 16000));
   }
 
   function activeSampleLimit() {
@@ -111,7 +114,7 @@ if (location.hash && document.querySelector(location.hash)) {
     const rect = hero.getBoundingClientRect();
     width = Math.max(1, Math.round(rect.width));
     height = Math.max(1, Math.round(rect.height));
-    dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    dpr = Math.max(1, Math.min(1.25, window.devicePixelRatio || 1));
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     canvas.style.width = "100%";
@@ -320,7 +323,16 @@ if (location.hash && document.querySelector(location.hash)) {
   }
 
   function animate(now) {
-    paint(now);
+    if (document.hidden || !heroVisible) {
+      animationId = 0;
+      return;
+    }
+
+    if (!lastFrameTime || now - lastFrameTime >= TARGET_FRAME_MS) {
+      paint(now);
+      lastFrameTime = now;
+    }
+
     animationId = requestAnimationFrame(animate);
   }
 
@@ -329,8 +341,9 @@ if (location.hash && document.querySelector(location.hash)) {
       cancelAnimationFrame(animationId);
       animationId = 0;
     }
+    lastFrameTime = 0;
     paint(performance.now());
-    if (!document.hidden && splats.length && !debugSplats) {
+    if (!document.hidden && heroVisible && splats.length && !debugSplats) {
       animationId = requestAnimationFrame(animate);
     }
   }
@@ -392,6 +405,22 @@ if (location.hash && document.querySelector(location.hash)) {
     observer.observe(hero);
   } else {
     window.addEventListener("resize", resizeCanvas);
+  }
+
+  if (typeof IntersectionObserver !== "undefined") {
+    const visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        heroVisible = entries.some((entry) => entry.isIntersecting);
+        if (heroVisible) {
+          restartAnimation();
+        } else if (animationId) {
+          cancelAnimationFrame(animationId);
+          animationId = 0;
+        }
+      },
+      { root: null, rootMargin: "120px 0px", threshold: 0 }
+    );
+    visibilityObserver.observe(hero);
   }
 
   function handleMotionPreference(event) {

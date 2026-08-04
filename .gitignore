@@ -32,7 +32,7 @@ AGENTS.md
 /nodes/qubit_deck_controller/qdeck_debugger_child.log
 
 # Script workspace (local/scratch)
-/scripts/
+/scripts/*
 
 # External/vendor trees
 /echograph/QOpenGLWidget_example-main/
@@ -52,10 +52,12 @@ AGENTS.md
 /echograph/data/
 
 # Debug logs
-/logs/
+/logs/*
+
 /tests/_tmp/
 
 # Local example workflow/video exports
+/_deploy/
 /ExampleWorkflow/
 
 # tanya voice
