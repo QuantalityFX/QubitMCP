@@ -163,7 +163,9 @@ class ImageCollectionWidget(QtWidgets.QWidget):
         self.canvas = _ImageCanvas(self)
         self._sync_canvas_size()
 
-        load_btn = QtWidgets.QPushButton("Load Images")
+        button_w = 80
+        load_btn = QtWidgets.QPushButton("Load")
+        load_btn.setFixedWidth(button_w)
         load_btn.clicked.connect(self._pick_images)
         load_btn.setStyleSheet(
             "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
@@ -178,6 +180,7 @@ class ImageCollectionWidget(QtWidgets.QWidget):
         header.addStretch(1)
 
         edit_btn = QtWidgets.QPushButton("Edit")
+        edit_btn.setFixedWidth(button_w)
         edit_btn.setEnabled(True)
         edit_btn.setStyleSheet(
             "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"

@@ -2349,7 +2349,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
             body_h = 44
             node_w = max(self._BASE_W, 260)
         elif kind in ("image_collection", "imagecollection"):
-            body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
+            try:
+                canvas_h = int(getattr(self.model, "_image_collection_canvas_h", self._IMG_CANVAS_H))
+            except Exception:
+                canvas_h = self._IMG_CANVAS_H
+            body_h = self._IMG_CTRL_H + max(self._IMG_CANVAS_H, canvas_h)
             node_w = max(self._BASE_W, self._IMG_CANVAS_W)
         elif kind in ("chatbot", "chat bot", "chat_bot"):
             body_h = self._CHATBOT_BODY_H
@@ -2725,6 +2729,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 super().__init__(parent)
                 self.setAttribute(_QtCore.Qt.WA_TranslucentBackground, True)
                 self.setAutoFillBackground(False)
+                self._sync_outer_size = None
                 self._apply_canvas_size()
                 self.pixmaps = []
                 self.offsets = []
@@ -2734,10 +2739,35 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._edit_mode = False
                 self._path_field = None
 
+            def _canvas_height(self):
+                try:
+                    h = int(getattr(node_item.model, "_image_collection_canvas_h", node_item._IMG_CANVAS_H))
+                except Exception:
+                    h = int(node_item._IMG_CANVAS_H)
+                return max(int(node_item._IMG_CANVAS_H), h)
+
             def _apply_canvas_size(self):
                 w = max(120, int(node_item.width) - 12)
-                h = int(node_item._IMG_CANVAS_H)
+                h = self._canvas_height()
                 self.setFixedSize(w, h)
+
+            def _set_canvas_height(self, height: int):
+                h = max(int(node_item._IMG_CANVAS_H), int(height))
+                try:
+                    setattr(node_item.model, "_image_collection_canvas_h", h)
+                except Exception:
+                    pass
+                w = max(120, int(node_item.width) - 12)
+                self.setFixedSize(w, h)
+                self.updateGeometry()
+
+            def _notify_outer_size_changed(self):
+                sync = getattr(self, "_sync_outer_size", None)
+                if callable(sync):
+                    try:
+                        sync()
+                    except Exception:
+                        pass
 
             def load_images(self, paths, *, append: bool = True):
                 base = list(self.paths) if append else []
@@ -2812,6 +2842,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     new_h = max(40, int(target_row_h * shrink))
                     rows, row_scales, row_heights, total_h = _build_layout(new_h)
 
+                required_canvas_h = edge_pad + int(total_h) + edge_pad
+                self._set_canvas_height(required_canvas_h)
+
                 pixmaps_out = []
                 offsets_out = []
                 y = edge_pad
@@ -2833,6 +2866,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self.rects.append(_QtCore.QRect(int(off.x()), int(off.y()), pm.width(), pm.height()))
                 if self.selected_index >= len(self.pixmaps):
                     self.selected_index = -1
+                self._notify_outer_size_changed()
                 self.update()
 
             def paintEvent(self, _ev):
@@ -2848,7 +2882,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 painter.end()
 
             def sizeHint(self):
-                return _QtCore.QSize(int(node_item._IMG_CANVAS_W), int(node_item._IMG_CANVAS_H))
+                return _QtCore.QSize(int(node_item._IMG_CANVAS_W), self._canvas_height())
 
             def set_edit_mode(self, enabled: bool):
                 self._edit_mode = bool(enabled)
@@ -2886,20 +2920,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     return ""
                 idx = self.selected_index
                 removed_path = self.paths.pop(idx)
-                try:
-                    self.pixmaps.pop(idx)
-                    self.offsets.pop(idx)
-                    self.rects.pop(idx)
-                except Exception:
-                    pass
-                # recompute rects positions stay same; selection clears
+                remaining_paths = list(self.paths)
                 self.selected_index = -1
                 try:
                     if self._path_field is not None:
                         self._path_field.clear()
                 except Exception:
                     pass
-                self.update()
+                if remaining_paths:
+                    self.load_images(remaining_paths, append=False)
+                else:
+                    self.pixmaps = []
+                    self.paths = []
+                    self.offsets = []
+                    self.rects = []
+                    self._set_canvas_height(int(node_item._IMG_CANVAS_H))
+                    self._notify_outer_size_changed()
+                    self.update()
                 return removed_path
 
         body = _QtWidgets.QWidget()
@@ -2912,9 +2949,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         header = _QtWidgets.QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
-        btn = _QtWidgets.QPushButton("Load Images")
+        button_w = 80
+        btn = _QtWidgets.QPushButton("Load")
         btn.setSizePolicy(_QtWidgets.QSizePolicy.Fixed, _QtWidgets.QSizePolicy.Fixed)
-        btn.setMinimumWidth(100)
+        btn.setFixedWidth(button_w)
         btn.setStyleSheet(
             "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
             "border-radius:4px;padding:6px 10px;}"
@@ -2922,7 +2960,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         )
         edit_btn = _QtWidgets.QPushButton("Edit")
         edit_btn.setSizePolicy(_QtWidgets.QSizePolicy.Fixed, _QtWidgets.QSizePolicy.Fixed)
-        edit_btn.setMinimumWidth(80)
+        edit_btn.setFixedWidth(button_w)
         edit_btn.setStyleSheet(
             "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
             "border-radius:4px;padding:6px 10px;}"
@@ -2940,11 +2978,49 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "border-radius:4px;padding:6px 10px;}"
             "QPushButton:hover{background:#7f1d1d;border-color:#b91c1c;}"
         )
+        remove_btn.setEnabled(False)
+        remove_btn.setVisible(False)
         header.addWidget(remove_btn, 0)
         v.addLayout(header)
 
         canvas = _InlineCanvas()
         v.addWidget(canvas, 1)
+
+        proxy_ref = {"proxy": None}
+
+        def _sync_body_and_node():
+            try:
+                body.updateGeometry()
+                layout = body.layout()
+                if layout is not None:
+                    layout.activate()
+            except Exception:
+                pass
+            try:
+                hint = body.sizeHint()
+                min_hint = body.minimumSizeHint()
+                body_h = max(int(hint.height()), int(min_hint.height()))
+            except Exception:
+                body_h = int(node_item._IMG_CTRL_H) + int(canvas.height())
+            proxy = proxy_ref.get("proxy")
+            if proxy is not None:
+                try:
+                    proxy.resize(node_item.width, body_h)
+                except Exception:
+                    pass
+            try:
+                required_h = max(float(node_item._BASE_H), float(y_cursor + body_h + node_item._PADDING))
+                if abs(required_h - float(getattr(node_item, "height", 0.0))) > 0.25:
+                    try:
+                        node_item.prepareGeometryChange()
+                    except Exception:
+                        pass
+                    node_item.height = required_h
+                    node_item.update()
+            except Exception:
+                pass
+
+        canvas._sync_outer_size = _sync_body_and_node
 
         path_row = _QtWidgets.QHBoxLayout()
         path_row.setContentsMargins(0, 0, 0, 0)
@@ -3008,6 +3084,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_item.setFlag(_QtWidgets.QGraphicsItem.ItemIsMovable, not enabled)
             except Exception:
                 pass
+            try:
+                remove_btn.setVisible(enabled)
+                remove_btn.setEnabled(enabled)
+            except Exception:
+                pass
             if not enabled:
                 try:
                     path_field.clear()
@@ -3017,6 +3098,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 path_container.setVisible(enabled)
             except Exception:
                 pass
+            _sync_body_and_node()
 
         edit_btn.setCheckable(True)
         edit_btn.toggled.connect(_toggle_edit)
@@ -3065,12 +3147,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
         proxy.setWidget(body)
         proxy.setZValue(node_item.zValue() + 0.1)
         proxy.setPos(0, y_cursor)
-        h = body.sizeHint().height()
+        proxy_ref["proxy"] = proxy
+        h = max(body.sizeHint().height(), body.minimumSizeHint().height())
         proxy.resize(node_item.width, h)
         try:
             node_item._plugin_proxies.append(proxy)
         except Exception:
             pass
+        _sync_body_and_node()
         return y_cursor + h
 
 
