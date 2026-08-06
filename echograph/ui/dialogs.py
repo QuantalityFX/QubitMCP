@@ -251,6 +251,239 @@ def _kind_label(kind: str) -> str:
     return " ".join(words) if words else "Node"
 
 
+_NODE_KIND_SEARCH_HINTS = {
+    "node": "generic custom empty base",
+    "camera": "scene view render capture",
+    "light": "scene lighting illumination",
+    "directional_light": "sun directional lighting scene",
+    "point_light": "point lamp lighting scene",
+    "spot_light": "spot cone lighting scene",
+    "area_light": "area panel lighting scene",
+    "import": "file load asset",
+    "fbx_import": "fbx animation mesh import",
+    "fbx_animation": "fbx animation import mocap",
+    "mocap_import": "mocap bvh motion capture animation",
+    "gen_x_videomocap": "video mocap gen-x motion capture animation",
+    "anim_retarget": "animation retarget rig skeleton",
+    "skinned_splat_proxy": "fbx skinned splat proxy ply gaussian",
+    "image_gs_splat": "image gaussian splat ply 3d pixels",
+    "skinned_volume_mesh": "fbx skinned volume collision mesh",
+    "instance": "copy duplicate instancing geometry",
+    "copy_to_points": "scatter instances points geometry",
+    "modeler": "mesh modeling edit object",
+    "primitive": "basic mesh geometry shape",
+    "curve": "curve spline path primitive",
+    "normals": "smooth normals mesh shading",
+    "uv_unwrap": "uv unwrap texture coordinates",
+    "texture": "image texture material",
+    "texture_pro": "texture paint generate image material",
+    "texture_layer": "texture layer image material",
+    "mask": "paint mask texture image",
+    "groom_guides": "hair fur groom guides",
+    "groom_deform": "hair fur groom deform",
+    "groom_guide_pose": "hair fur groom guide pose",
+    "groom_guide_sim": "hair fur groom simulation dynamics",
+    "groom_guide_tube": "hair fur groom tubes curves",
+    "material": "shader material unreal texture",
+    "split_volume": "volume selector split mesh",
+    "transforms": "move rotate scale transform",
+    "fx": "fx effect bullet time trail gaussian splat visual",
+    "fx_splat_physics": "fx effect splat physics simulation gaussian",
+    "fx_splat_fx": "fx effect splat glow trail visual gaussian",
+    "colorize": "fx effect colorize gaussian splat image color",
+    "fx_music_effects": "fx effect music audio visualizer",
+    "scene": "3d scene viewport world",
+    "render": "render output image video",
+    "video_player": "video playback movie preview",
+    "post_process": "post process effect render video",
+    "sequence_to_mp4": "image sequence video mp4 export",
+    "export_fbx": "fbx export mesh",
+    "export_fbx_animation": "fbx animation export",
+    "html_preview": "html web preview browser",
+    "python": "script code automation",
+    "switch": "choose branch toggle route",
+    "output": "final result display",
+    "local_server": "llm local server url",
+    "gantt_chart": "schedule timeline chart tasks",
+    "keyboard_sequence": "keyboard automation hotkeys sequence",
+    "serial_com": "serial port com arduino device",
+    "audio_capture": "microphone audio record input",
+    "qubit_deck_controller": "qdeck qubit deck controller",
+    "llm_prompt": "ai llm prompt text",
+    "chatbot": "chat conversation ai llm",
+    "voice_actor": "voice speech tts audio actor",
+    "mediator_agent": "agent ai mediator assistant",
+    "librarian": "library search documents assets",
+    "note": "comment text sticky note",
+    "append": "combine merge append",
+    "image_collection": "image gallery collection batch",
+    "database": "data table storage database",
+}
+
+
+_QUICK_NODE_BUTTON_STYLE = (
+    "QToolButton{"
+    "background:transparent;"
+    "border:1px solid transparent;"
+    "border-radius:4px;"
+    "padding:1px 4px;"
+    "}"
+    "QToolButton:hover{"
+    "border:1px solid #22c55e;"
+    "background:rgba(34,197,94,0.18);"
+    "}"
+    "QToolButton:pressed{"
+    "border:1px solid #16a34a;"
+    "background:rgba(34,197,94,0.28);"
+    "}"
+)
+
+_QUICK_NODE_BUTTON_MATCH_STYLE = (
+    "QToolButton{"
+    "background:rgba(96,165,250,0.22);"
+    "color:#f8fafc;"
+    "border:1px solid #60a5fa;"
+    "border-radius:4px;"
+    "padding:1px 4px;"
+    "font-weight:600;"
+    "}"
+    "QToolButton:hover{"
+    "border:1px solid #93c5fd;"
+    "background:rgba(96,165,250,0.32);"
+    "}"
+    "QToolButton:pressed{"
+    "border:1px solid #38bdf8;"
+    "background:rgba(56,189,248,0.34);"
+    "}"
+)
+
+_QUICK_NODE_BUTTON_DIM_STYLE = (
+    "QToolButton{"
+    "background:transparent;"
+    "color:#64748b;"
+    "border:1px solid transparent;"
+    "border-radius:4px;"
+    "padding:1px 4px;"
+    "}"
+    "QToolButton:disabled{"
+    "background:transparent;"
+    "color:#64748b;"
+    "border:1px solid transparent;"
+    "}"
+)
+
+_NODE_TYPE_COMBO_POPUP_STYLE = (
+    "QComboBox QAbstractItemView{"
+    "background:#0f1216;"
+    "color:#e6edf3;"
+    "border:1px solid #3c4450;"
+    "outline:0px;"
+    "selection-background-color:#1e3a8a;"
+    "selection-color:#f8fafc;"
+    "}"
+    "QComboBox QAbstractItemView::item{"
+    "padding:6px 10px;"
+    "min-height:20px;"
+    "}"
+    "QComboBox QAbstractItemView::item:hover{"
+    "background:#1f2937;"
+    "color:#f8fafc;"
+    "}"
+    "QComboBox QAbstractItemView::item:selected{"
+    "background:#1e3a8a;"
+    "color:#f8fafc;"
+    "}"
+)
+
+_NODE_TYPE_POPUP_VIEW_STYLE = (
+    "QListView{"
+    "background:#0f1216;"
+    "color:#e6edf3;"
+    "border:1px solid #3c4450;"
+    "outline:0px;"
+    "}"
+    "QListView::item{"
+    "padding:6px 10px;"
+    "min-height:20px;"
+    "}"
+    "QListView::item:hover{"
+    "background:#1f2937;"
+    "color:#f8fafc;"
+    "}"
+    "QListView::item:selected{"
+    "background:#1e3a8a;"
+    "color:#f8fafc;"
+    "}"
+)
+
+
+def _node_kind_search_key(kind: str) -> str:
+    return (kind or "").strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _node_kind_search_terms(text: str) -> list[str]:
+    normalized = (text or "").strip().lower().replace("_", " ").replace("-", " ")
+    return [part for part in normalized.split() if part]
+
+
+def _node_kind_search_blob(kind: str) -> str:
+    raw = (kind or "").strip()
+    label = _kind_label(raw)
+    key = _node_kind_search_key(raw)
+    compact = key.replace("_", "")
+    label_compact = label.lower().replace(" ", "")
+    hint = _NODE_KIND_SEARCH_HINTS.get(key, "")
+    return " ".join(
+        part
+        for part in (
+            raw,
+            key,
+            key.replace("_", " "),
+            compact,
+            label,
+            label_compact,
+            hint,
+            "node",
+        )
+        if part
+    ).lower()
+
+
+def _select_popup_hover_index(view, index) -> None:
+    if view is None or index is None or not index.isValid():
+        return
+    try:
+        view.setCurrentIndex(index)
+        selection = view.selectionModel()
+        if selection is not None:
+            selection.setCurrentIndex(
+                index,
+                QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows,
+            )
+    except Exception:
+        pass
+
+
+def _configure_node_type_popup_view(view) -> None:
+    if view is None:
+        return
+    try:
+        view.setMouseTracking(True)
+        view.viewport().setMouseTracking(True)
+        view.setUniformItemSizes(True)
+        view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        view.setStyleSheet(_NODE_TYPE_POPUP_VIEW_STYLE)
+    except Exception:
+        pass
+    if getattr(view, "_node_type_hover_select_connected", False):
+        return
+    try:
+        view.entered.connect(lambda index, v=view: _select_popup_hover_index(v, index))
+        view._node_type_hover_select_connected = True
+    except Exception:
+        pass
+
+
 def _kind_icon(kind: str) -> QtGui.QIcon:
     key = (kind or "").strip().lower()
     icon_pm = None
@@ -415,6 +648,11 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
+        self.kind_edit.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+        self.kind_edit.setStyleSheet(_NODE_TYPE_COMBO_POPUP_STYLE)
+        kind_popup_view = QtWidgets.QListView()
+        _configure_node_type_popup_view(kind_popup_view)
+        self.kind_edit.setView(kind_popup_view)
         self._kinds = [
             "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","fbx_animation","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","image_gs_splat","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
@@ -435,6 +673,15 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self._kinds.insert(1, "qubit_deck_controller")
         self.kind_edit.addItems(self._kinds)
         self.kind_edit.setEditText("note")
+        completer = self.kind_edit.completer()
+        if completer is not None:
+            completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+            completer.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
+            try:
+                completer.setFilterMode(QtCore.Qt.MatchContains)
+            except Exception:
+                pass
+            _configure_node_type_popup_view(completer.popup())
         kind_label = QtWidgets.QLabel("Node type:")
         kind_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         form.addWidget(kind_label, 1, 0)
@@ -470,6 +717,8 @@ class CreateNodeDialog(QtWidgets.QDialog):
         qv.setSpacing(4)
         qv.setAlignment(QtCore.Qt.AlignTop)
         quick_grid = QtWidgets.QGridLayout()
+        self._quick_node_buttons: Dict[str, QtWidgets.QToolButton] = {}
+        self._quick_node_search: Dict[str, str] = {}
         quick_grid.setContentsMargins(0, 0, 0, 0)
         quick_grid.setHorizontalSpacing(3)
         quick_grid.setVerticalSpacing(4)
@@ -501,30 +750,18 @@ class CreateNodeDialog(QtWidgets.QDialog):
             btn.setAutoRaise(True)
             btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
             btn.setText(_kind_label(kind))
-            btn.setToolTip(kind)
+            hint = _NODE_KIND_SEARCH_HINTS.get(_node_kind_search_key(kind), "")
+            btn.setToolTip(f"{kind}\n{hint}" if hint else kind)
             btn.setIcon(_kind_icon(kind))
             icon_size = 21 if kind in {"groom_guides", "groom_deform", "groom_guide_pose", "groom_guide_sim", "groom_guide_tube"} else 18
             btn.setIconSize(QtCore.QSize(icon_size, icon_size))
             btn.setMinimumHeight(28)
             btn.setMinimumWidth(117)
             btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-            btn.setStyleSheet(
-                "QToolButton{"
-                "background:transparent;"
-                "border:1px solid transparent;"
-                "border-radius:4px;"
-                "padding:1px 4px;"
-                "}"
-                "QToolButton:hover{"
-                "border:1px solid #22c55e;"
-                "background:rgba(34,197,94,0.18);"
-                "}"
-                "QToolButton:pressed{"
-                "border:1px solid #16a34a;"
-                "background:rgba(34,197,94,0.28);"
-                "}"
-            )
+            btn.setStyleSheet(_QUICK_NODE_BUTTON_STYLE)
             btn.clicked.connect(lambda _checked=False, k=kind: self._quick_create_from_kind(k))
+            self._quick_node_buttons[kind] = btn
+            self._quick_node_search[kind] = _node_kind_search_blob(kind)
             quick_grid.addWidget(btn, row, col)
         for col in range(quick_cols):
             quick_grid.setColumnStretch(col, 1)
@@ -570,6 +807,10 @@ class CreateNodeDialog(QtWidgets.QDialog):
             self._schedule_fit_to_content()
 
         self.kind_edit.currentTextChanged.connect(_toggle_code_box)
+        self.kind_edit.currentTextChanged.connect(self._filter_quick_nodes)
+        if self.kind_edit.lineEdit() is not None:
+            self.kind_edit.lineEdit().textEdited.connect(self._filter_quick_nodes)
+        self._filter_quick_nodes("")
         _toggle_code_box(self.kind_edit.currentText())
 
         bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -635,6 +876,20 @@ class CreateNodeDialog(QtWidgets.QDialog):
         for it in self.param_list.selectedItems():
             row = self.param_list.row(it)
             self.param_list.takeItem(row)
+
+    def _filter_quick_nodes(self, text: str = "") -> None:
+        terms = _node_kind_search_terms(text)
+        filtering = bool(terms)
+        for kind, btn in self._quick_node_buttons.items():
+            search_blob = self._quick_node_search.get(kind, "")
+            matched = all(term in search_blob for term in terms)
+            btn.setEnabled((not filtering) or matched)
+            if not filtering:
+                btn.setStyleSheet(_QUICK_NODE_BUTTON_STYLE)
+            elif matched:
+                btn.setStyleSheet(_QUICK_NODE_BUTTON_MATCH_STYLE)
+            else:
+                btn.setStyleSheet(_QUICK_NODE_BUTTON_DIM_STYLE)
 
     def _quick_create_from_kind(self, kind: str):
         kind = (kind or "").strip()
