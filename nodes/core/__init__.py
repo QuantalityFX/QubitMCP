@@ -108,6 +108,7 @@ def register_defaults() -> None:
     register("llm",       stripe_color="#14b8a6")
     register("local_server", stripe_color="#14b8a6")
     register("database",  stripe_color="#16a34a")
+    register("codex_sandbox", stripe_color="#475569")
     register("audio_capture", stripe_color="#14b8a6")
     # librarian plugins can override this later
     register("librarian", stripe_color="#74d603")
@@ -120,6 +121,14 @@ def register_defaults() -> None:
             _gpt_prompt.register(core=sys.modules[__name__])
     except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] GPT Prompt auto-register failed:", exc)
+
+    # Auto-register Codex Sandbox so Mediator sandbox links can resolve early
+    try:
+        from nodes import codex_sandbox as _codex_sandbox  # type: ignore
+        if hasattr(_codex_sandbox, "register"):
+            _codex_sandbox.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Codex Sandbox auto-register failed:", exc)
 
     # Auto-register Chatbot node so its body renderer is available early
     try:

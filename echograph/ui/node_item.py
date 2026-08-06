@@ -7746,6 +7746,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
                 # Mediator console icon also floats above the node body.
                 extra_top = 120.0
+            elif kind_lower in ("codex_sandbox", "codex sandbox", "sandbox"):
+                # Sandbox icon floats above the node body and grows while zoomed out.
+                extra_top = 120.0
             elif kind_lower in (
                 "database",
                 "llm",
@@ -8174,6 +8177,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._audio_capture_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
             elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
                 icon_pm = node_icons._mediator_icon() or node_icons._python_icon() or node_icons._output_icon()
+            elif kind_lower in ("codex_sandbox", "codex sandbox", "sandbox"):
+                icon_pm = node_icons._sandbox_icon() or node_icons._llm_server_icon() or node_icons._output_icon()
             elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
                 icon_pm = node_icons._scene_icon()
             elif kind_lower in ("camera", "scene_camera"):

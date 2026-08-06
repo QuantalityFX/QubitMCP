@@ -384,6 +384,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] GPT Prompt plugin import failed:", e)
 
+    # 9.5) Codex Sandbox
+    try:
+        from nodes import codex_sandbox
+        if hasattr(codex_sandbox, "register"):
+            codex_sandbox.register()
+            _safe_probe("codex_sandbox")
+        else:
+            print("[EchoGraph] Codex Sandbox module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Codex Sandbox plugin import failed:", e)
+
     # 10) Chatbot
     try:
         from nodes import chatbot

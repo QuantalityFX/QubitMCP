@@ -51,6 +51,7 @@ _VOLUME_SPLIT_ICON = None
 _VOICE_ACTOR_ICON = None
 _AUDIO_CAPTURE_ICON = None
 _MEDIGATOR_ICON = None
+_SANDBOX_ICON = None
 _GENX_ICON = None
 _MOCAP_IMPORT_ICON = None
 _ANIM_RETARGET_ICON = None
@@ -482,3 +483,11 @@ def _mediator_icon():
 
 def _medigator_icon():
     return _mediator_icon()
+
+
+def _sandbox_icon():
+    global _SANDBOX_ICON
+    if _SANDBOX_ICON is not None:
+        return _SANDBOX_ICON
+    _SANDBOX_ICON = _load_pm("Sandbox_Icon.png") or _load_pm("Server_Icon.png")
+    return _SANDBOX_ICON

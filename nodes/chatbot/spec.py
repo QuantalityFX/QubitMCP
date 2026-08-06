@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 from typing import List
 
@@ -21,6 +22,7 @@ CHATBOT_NODE_ALIASES = [
 CHATBOT_NODE_KINDS = {CHATBOT_NODE_KIND, *CHATBOT_NODE_ALIASES}
 VOICE_ACTOR_NODE_KINDS = {"voice_actor", "voice actor", "voiceactor"}
 VOICE_INPUT_PORT = "voice_input"
+MEDIATOR_INPUT_PORT = "mediator_input"
 
 DB_NAME = "my_database"
 COLLECTION = "EchoGragh"
@@ -60,10 +62,11 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "llm_prompt", "")
     _ensure_param(node_item, "database", "")
     _ensure_param(node_item, VOICE_INPUT_PORT, "")
+    _ensure_param(node_item, MEDIATOR_INPUT_PORT, "")
     model = getattr(node_item, "model", None)
     params = getattr(model, "params", None) if model is not None else None
     if isinstance(params, list):
-        desired = ["llm_prompt", "database", VOICE_INPUT_PORT]
+        desired = ["llm_prompt", "database", VOICE_INPUT_PORT, MEDIATOR_INPUT_PORT]
         ordered = []
         used = set()
         for name in desired:
@@ -79,7 +82,7 @@ def build_ports(node_item) -> None:
             if idx not in used:
                 ordered.append(entry)
         model.params = ordered
-    for port in ("llm_prompt", "database", VOICE_INPUT_PORT):
+    for port in ("llm_prompt", "database", VOICE_INPUT_PORT, MEDIATOR_INPUT_PORT):
         if hasattr(node_item, "ensure_input"):
             node_item.ensure_input(port)
 
@@ -182,6 +185,70 @@ def _connected_database(scene, node_item):
 
 def _connected_prompt_node(scene, node_item):
     return _find_input_node(scene, node_item, {"llm_prompt", "prompt_node", "llm"}, gpt_spec.PROMPT_NODE_KINDS)
+
+
+def _connected_mediator_node(scene, node_item):
+    try:
+        from nodes.mediator_agent import spec as mediator_spec
+        mediator_kinds = getattr(mediator_spec, "MEDIGATOR_NODE_KINDS", set())
+    except Exception:
+        mediator_kinds = {
+            "mediator_agent",
+            "medigator_agent",
+            "mediator",
+            "medigator",
+            "mediator agent",
+            "medigator agent",
+        }
+    return _find_input_node(scene, node_item, {MEDIATOR_INPUT_PORT, "mediator", "agent"}, mediator_kinds)
+
+
+def _mediator_agent_block(scene, mediator_node_item) -> str:
+    if mediator_node_item is None:
+        return ""
+    try:
+        from nodes.mediator_agent import spec as mediator_spec
+        helper = getattr(mediator_spec, "chatbot_agent_context_from_item", None)
+        if callable(helper):
+            return str(helper(scene, mediator_node_item) or "").strip()
+    except Exception as exc:
+        return f"Mediator agent layer unavailable: {exc}"
+    try:
+        return str(scene.resolve_text_value(mediator_node_item) or "").strip()
+    except Exception:
+        return ""
+
+
+_SECURITY_MARKER_RE = re.compile(
+    r"<security_(?:request|approval)\b[^>]*>.*?</security_(?:request|approval)>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _display_response_text(response_text: str) -> str:
+    text = str(response_text or "").strip()
+    if not text:
+        return ""
+    had_security_marker = bool(_SECURITY_MARKER_RE.search(text))
+    text = _SECURITY_MARKER_RE.sub("", text).strip()
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if not text and had_security_marker:
+        return "Tool request sent to Mediator."
+    return text
+
+
+def _dispatch_mediator_output(scene, node_item, raw_response_text: str, user_prompt: str) -> bool:
+    mediator_node = _connected_mediator_node(scene, node_item)
+    if mediator_node is None:
+        return False
+    try:
+        from nodes.mediator_agent import spec as mediator_spec
+        handler = getattr(mediator_spec, "handle_chatbot_model_output_from_item", None)
+        if callable(handler):
+            return bool(handler(scene, mediator_node, raw_response_text, user_prompt))
+    except Exception:
+        return False
+    return False
 
 
 def _edge_port_name(edge) -> str:
@@ -648,8 +715,8 @@ class ChatbotWidget(QtWidgets.QWidget):
         parts.append("Assistant:")
         return "\n\n".join([p for p in parts if p]).strip()
 
-    @QtCore.Slot(bool, str, str)
-    def _finish_send(self, ok: bool, message: str, response_text: str):
+    @QtCore.Slot(bool, str, str, str, str)
+    def _finish_send(self, ok: bool, message: str, response_text: str, raw_response_text: str, user_prompt: str):
         self._set_sending(False)
         pending = (self._pending_voice_prompt or "").strip()
         self._pending_voice_prompt = ""
@@ -670,6 +737,12 @@ class ChatbotWidget(QtWidgets.QWidget):
                         scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
                     except Exception:
                         pass
+        try:
+            scene = self._ensure_scene()
+            if scene is not None and (raw_response_text or response_text):
+                _dispatch_mediator_output(scene, self._node_item, raw_response_text or response_text, user_prompt)
+        except Exception:
+            pass
         self._input.setText("")
         self._refresh_history()
         if pending:
@@ -706,6 +779,7 @@ class ChatbotWidget(QtWidgets.QWidget):
         if not prompt_node:
             QtWidgets.QMessageBox.warning(self, "Chatbot", "Connect an LLM Prompt node to the 'llm_prompt' input.")
             return
+        mediator_node = _connected_mediator_node(scene, node_item)
 
         val = self._resolve_prompt_inputs(prompt_node)
         model_raw = (val("model") or "").strip()
@@ -741,10 +815,13 @@ class ChatbotWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Chatbot", f"Failed to load history: {exc}")
             return
 
+        mediator_block = _mediator_agent_block(scene, mediator_node)
         history_prompt = self._build_history_prompt(history, prompt_text)
         parts = []
         if system_prompt:
             parts.append(f"System:\n{system_prompt}")
+        if mediator_block:
+            parts.append(mediator_block)
         file_block = _format_file_contexts(contexts)
         if file_block:
             parts.append(file_block)
@@ -758,12 +835,14 @@ class ChatbotWidget(QtWidgets.QWidget):
             ok = False
             message = ""
             response_text = ""
+            raw_response_text = ""
             try:
                 if provider == "openai":
-                    response_text, raw_payload = gpt_spec._call_openai(api_key, model, temperature, combined_prompt)
+                    raw_response_text, raw_payload = gpt_spec._call_openai(api_key, model, temperature, combined_prompt)
                 else:
-                    response_text, raw_payload = gpt_spec._call_ollama(ollama_url, model, temperature, combined_prompt)
-                response_text = (response_text or "").strip()
+                    raw_response_text, raw_payload = gpt_spec._call_ollama(ollama_url, model, temperature, combined_prompt)
+                raw_response_text = (raw_response_text or "").strip()
+                response_text = _display_response_text(raw_response_text) or raw_response_text
                 gpt_spec._write_to_mongo(
                     db_cfg,
                     prompt_text,
@@ -784,6 +863,8 @@ class ChatbotWidget(QtWidgets.QWidget):
                 QtCore.Q_ARG(bool, bool(ok)),
                 QtCore.Q_ARG(str, message),
                 QtCore.Q_ARG(str, response_text),
+                QtCore.Q_ARG(str, raw_response_text),
+                QtCore.Q_ARG(str, prompt_text),
             )
 
         threading.Thread(target=_worker, daemon=True).start()

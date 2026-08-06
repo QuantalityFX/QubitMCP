@@ -123,9 +123,19 @@
               <ul class="bullet">
                 <li><code>mediator_agent</code> replaces the older legacy node kind while preserving aliases for existing workflows.</li>
                 <li>Mediator only processes on fresh Voice Actor send events, avoiding accidental reruns when a node is selected, moved, loaded, or reconnected.</li>
+                <li>Chatbot can now read a connected Mediator as an agent layer while still using <code>llm_prompt</code> for DeepSeek/Ollama conversation.</li>
+                <li>When the Chatbot model emits a controlled tool request, the raw control tag is handed to Mediator for Tanya/Security Guard popups and Codex-backed execution.</li>
                 <li>The Qubit Deck controller profile can append <code>&lt;user_feedback&gt;...&lt;/user_feedback&gt;</code> text for spoken status updates.</li>
                 <li>A Python-node helper can extract only the feedback tag when the full Mediator JSON should not be spoken aloud.</li>
                 <li>Mediator prompt logs are capped and console logs are kept to a managed tail so log files do not grow without limit.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/Sandbox_Icon.png" alt="Sandbox icon" /> Chatbot Tool Handoff</h3>
+              <ul class="bullet">
+                <li><code>chatbot</code> now has a <code>mediator_input</code> pin for agent profiles and controlled tool requests.</li>
+                <li><code>voice_actor</code> connected to Chatbot owns spoken chat output; Mediator stays silent on Chatbot-origin execution results.</li>
+                <li><code>codex_sandbox</code> is available as a future execution-policy node for Mediator sandbox settings.</li>
               </ul>
             </div>
             <div class="card feature-card">
@@ -646,8 +656,8 @@
               <h3>AI and Knowledge</h3>
               <ul class="node-list">
                 <li><img class="node-inline-icon" src="../icons/Server_Icon.png" alt="Local server icon" /><span><strong>local_server</strong>: local server endpoint configuration.</span></li>
-                <li><img class="node-inline-icon" src="../icons/LLM_Icon.png" alt="Prompt icon" /><span><strong>llm_prompt</strong>: prompt execution and response generation.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Chatbot_Icon.png" alt="Chatbot icon" /><span><strong>chatbot</strong>: conversation workflows with memory/history support.</span></li>
+                <li><img class="node-inline-icon" src="../icons/LLM_Icon.png" alt="Prompt icon" /><span><strong>llm_prompt</strong>: OpenAI or Ollama/DeepSeek model settings and response generation for Chatbot workflows.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Chatbot_Icon.png" alt="Chatbot icon" /><span><strong>chatbot</strong>: conversation workflows with Database history, Voice Actor input, LLM Prompt runtime, and optional <code>mediator_input</code>.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Database_Icon.png" alt="Database icon" /><span><strong>database</strong>: persistence layer for graph and chat data.</span></li>
                 <li><img class="node-inline-icon" src="../icons/librarian_search_Icon.png" alt="Librarian icon" /><span><strong>librarian</strong>: document indexing, search, summarize, and analysis.</span></li>
               </ul>
@@ -658,7 +668,8 @@
               <ul class="node-list">
                 <li><img class="node-inline-icon" src="../icons/TanyaAI_Icon.png" alt="Voice Actor icon" /><span><strong>voice_actor</strong>: speech-to-text and text-to-speech node with Auto Respond, Ask First, and Manual send modes.</span></li>
                 <li><img class="node-inline-icon" src="../icons/AudioCapture_Icon.png" alt="Audio capture icon" /><span><strong>audio_capture</strong>: captures output device, input device, or application audio with backend, sample-rate, threshold, silence, and phrase controls.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Mediator_Icon_1_s.png" alt="Mediator icon" /><span><strong>mediator_agent</strong>: Codex-backed mediator that processes voice input, prompt profiles, and Qubit Deck controller commands.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Mediator_Icon_1_s.png" alt="Mediator icon" /><span><strong>mediator_agent</strong>: agent profile layer and technical executor for direct voice workflows or Chatbot-origin tool handoff.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Sandbox_Icon.png" alt="Sandbox icon" /><span><strong>codex_sandbox</strong>: future Mediator execution-policy node for Codex sandbox, approval, working directory, network, and output capture settings.</span></li>
                 <li><img class="node-inline-icon" src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="Qubit Deck icon" /><span><strong>qubit_deck_controller</strong>: list or execute Qubit Deck actions from manual fields or Mediator JSON on <code>mediator_input</code>.</span></li>
                 <li><img class="node-inline-icon" src="../icons/KeyboardActionRunner_Icon_s.png.png" alt="Keyboard sequence icon" /><span><strong>keyboard_sequence</strong>: Keyboard Auto Runner for timed key/action sequences with lead-in, hold time, delays, and injection mode.</span></li>
                 <li><img class="node-inline-icon" src="../icons/SerialCom_Icon_s.png" alt="Serial COM icon" /><span><strong>serial_com</strong>: stores COM port, baud, and timeout settings for serial/Pico HID automation paths.</span></li>
@@ -969,6 +980,17 @@
               </ol>
             </div>
             <div class="card">
+              <h3>Chatbot + Mediator Agent Workflow</h3>
+              <ol class="steps">
+                <li>Configure <code>llm_prompt</code> for Ollama/DeepSeek or OpenAI, then connect it to <code>chatbot</code> <code>llm_prompt</code>.</li>
+                <li>Connect <code>database</code> to <code>chatbot</code> <code>database</code> so the Chatbot owns conversation history.</li>
+                <li>Connect a speech-to-text <code>voice_actor</code> to <code>chatbot</code> <code>voice_input</code>.</li>
+                <li>Set a <code>mediator_agent</code> profile such as <code>assistant_tanya</code>, then connect Mediator to <code>chatbot</code> <code>mediator_input</code>.</li>
+                <li>For Qubit Deck commands, connect <code>qubit_deck_controller</code> to the Mediator so Mediator can read deck context and execute approved handoffs.</li>
+                <li>Connect the output Voice Actor after Chatbot for this workflow; Mediator output stays silent for Chatbot-origin execution results.</li>
+              </ol>
+            </div>
+            <div class="card">
               <h3>Task Planning Workflow (Gantt)</h3>
               <ol class="steps">
                 <li>Create one or more <code>note</code> nodes with task parameters.</li>
@@ -1084,6 +1106,7 @@
             <li>Voice Actor speech issues: rerun <code>setup.bat</code> so voice dependencies are installed; Local Whisper requires <code>faster-whisper</code>, Tanya/Google voice uses <code>gTTS</code> plus <code>pygame</code>, and Japanese Kokoro-82M requires the bundled <code>unidic-lite</code> MeCab dictionary.</li>
             <li>Audio Capture issues: rerun <code>setup.bat</code>; output-device capture needs <code>soundcard</code> plus <code>numpy</code>, and input-device capture needs a working audio backend such as PyAudio.</li>
             <li>Mediator issues: confirm Node.js, <code>npx</code>, and <code>tools\codex.ps1</code> are available; Mediator logs are under <code>logs\mediator_agents</code>.</li>
+            <li>Chatbot/Mediator handoff issues: confirm <code>chatbot.mediator_input</code> is connected, <code>llm_prompt</code> is set to the intended DeepSeek/Ollama model, and only the active input route owns speech output. Chatbot-origin tool execution should speak through Chatbot output, while direct Mediator voice workflows speak through Mediator output.</li>
             <li>Qubit Deck control issues: use <code>qubit_deck_controller</code> Context mode first to confirm button names before sending Executor JSON from Mediator.</li>
             <li>Keyboard Auto Runner issues: make sure the intended target app has focus before the lead-in delay ends, increase key hold time for apps that miss fast input, and check connected <code>serial_com</code> nodes when Pico HID output is enabled.</li>
             <li>Serial COM issues: install <code>pyserial</code> through the node prompt or rerun <code>setup.bat</code>, then confirm the COM port, baud rate, and timeout match the target device firmware.</li>

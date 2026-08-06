@@ -64,6 +64,7 @@ QDECK_CONTROLLER_KINDS = {
     "qubitdeck controller",
 }
 SYSTEM_PROMPT_KINDS = {"llm_prompt", "gpt_prompt", "prompt", "system_prompt"}
+CODEX_SANDBOX_KINDS = {"codex_sandbox", "codex sandbox", "sandbox"}
 QDECK_PROMPT_PROFILE = "qubit_deck_controller"
 QDECK_DEFAULT_API_BASE = "http://127.0.0.1:8765"
 QDECK_CONTEXT_MAX_ROWS = 220
@@ -543,6 +544,58 @@ def _qdeck_context_text(scene, node_item) -> str:
         return ""
 
 
+def _connected_qdeck_controller_item(scene, node_item):
+    if scene is None or node_item is None:
+        return None
+    for edge in _ordered_in_edges(scene, node_item):
+        src = getattr(edge, "src", None)
+        if src is not None and _kind_of_item(src) in QDECK_CONTROLLER_KINDS:
+            return src
+    return None
+
+
+def _qdeck_context_issue(scene, node_item) -> str:
+    qdeck_item = _connected_qdeck_controller_item(scene, node_item)
+    if qdeck_item is None:
+        return "Connect a Qubit Deck Controller node to provide deck context."
+    api_base = _param_value_from_item(qdeck_item, "api_base", "").strip()
+    if not api_base:
+        return "Set the API URL on the connected Qubit Deck Controller node."
+    if not (api_base.lower().startswith("http://") or api_base.lower().startswith("https://")):
+        return "Set a valid http:// or https:// API URL on the connected Qubit Deck Controller node."
+    return ""
+
+
+def _connected_codex_sandbox_item(scene, node_item):
+    if scene is None or node_item is None:
+        return None
+    for edge in _ordered_in_edges(scene, node_item):
+        src = getattr(edge, "src", None)
+        if src is None or _kind_of_item(src) not in CODEX_SANDBOX_KINDS:
+            continue
+        port = _edge_port_name(edge).strip().lower()
+        if not port or port == "sandbox":
+            return src
+    return None
+
+
+def _codex_sandbox_context_text(scene, node_item) -> str:
+    sandbox_item = _connected_codex_sandbox_item(scene, node_item)
+    if sandbox_item is None:
+        return ""
+    try:
+        from nodes.codex_sandbox import spec as sandbox_spec
+        summary = getattr(sandbox_spec, "sandbox_summary_text", None)
+        if callable(summary):
+            return str(summary(sandbox_item) or "").strip()
+    except Exception:
+        pass
+    try:
+        return str(scene.resolve_text_value(sandbox_item) or "").strip()
+    except Exception:
+        return ""
+
+
 def _text_from_input(scene, node_item, port_name: str, *, allowed_kinds=None) -> str:
     named_edges = _input_edges(scene, node_item, port_name)
     if allowed_kinds is not None:
@@ -942,6 +995,48 @@ def _mediator_profile_from_item(node_item) -> str:
     )
 
 
+def chatbot_agent_context_from_item(scene, node_item) -> str:
+    """Return Mediator agent context for Chatbot without invoking the Mediator runtime."""
+    if node_item is None:
+        return ""
+    profile = _mediator_profile_from_item(node_item)
+    profile_prompt = _load_prompt_profile_text(profile).strip()
+    label = profile.replace("_", " ").strip().title() or "Mediator"
+    parts = [
+        "Mediator agent layer:",
+        f"Profile: {label} ({profile})",
+        "Apply this profile to the current Chatbot turn. Do not run a separate Mediator model call.",
+    ]
+    if profile_prompt:
+        parts.append(f"Profile instructions:\n{profile_prompt}")
+    sandbox_context = _codex_sandbox_context_text(scene, node_item)
+    if sandbox_context:
+        parts.append(f"Sandbox policy:\n{sandbox_context}")
+    if profile == QDECK_PROMPT_PROFILE:
+        issue = _qdeck_context_issue(scene, node_item)
+        if issue:
+            parts.append(f"Tool context status:\n{issue}")
+        else:
+            qdeck_item = _connected_qdeck_controller_item(scene, node_item)
+            if qdeck_item is not None:
+                parts.append(f"Qubit Deck context:\n{_qdeck_context_text(scene, qdeck_item)}")
+    return "\n\n".join(part for part in parts if str(part or "").strip()).strip()
+
+
+def handle_chatbot_model_output_from_item(scene, node_item, output: str, user_input: str) -> bool:
+    """Let a connected Mediator handle Chatbot LLM output tags/popups on the UI thread."""
+    widget = _mediator_widget_from_item(node_item)
+    if widget is None:
+        return False
+    handler = getattr(widget, "_handle_chatbot_model_output", None)
+    if not callable(handler):
+        return False
+    try:
+        return bool(handler(output, user_input))
+    except Exception:
+        return False
+
+
 def _mediator_widget_from_item(node_item):
     return getattr(node_item, "_mediator_console_widget", None)
 
@@ -1040,7 +1135,7 @@ def _compose_mediator_prompt(
 def build_ports(node_item) -> None:
     if not hasattr(node_item, "ensure_input"):
         return
-    for port_name in ("voice_input", "chatbot_history", "system_prompt"):
+    for port_name in ("voice_input", "chatbot_history", "system_prompt", "sandbox"):
         node_item.ensure_input(port_name)
 
 
@@ -1858,6 +1953,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._security_dialog = None
         self._qdeck_handoff_dialog = None
         self._qdeck_handoff_active = False
+        self._chatbot_handoff_active = False
         self._tanya_dialog = None
         self._tanya_popup_message = ""
 
@@ -2659,6 +2755,25 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._pending_signature = ""
         self._pending_source = ""
 
+    def _handle_chatbot_model_output(self, output: str, user_input: str) -> bool:
+        clean_output = str(output or "").strip()
+        if not clean_output:
+            return False
+        self._last_prompt_voice_input = str(user_input or "").strip()
+        try:
+            self._console_append.emit("[chatbot] Response received from Chatbot LLM runtime.")
+        except Exception:
+            pass
+        self._maybe_show_tanya_speech_popup(clean_output, source="chatbot")
+        handled = self._handle_security_output(clean_output)
+        if handled:
+            self._chatbot_handoff_active = True
+            self._set_status("Chatbot response handed to Mediator security flow.")
+        else:
+            self._chatbot_handoff_active = False
+            self._set_status("Chatbot response observed.")
+        return bool(handled)
+
     def _process_inputs_if_available(self) -> None:
         self._maybe_process_inputs(force=False, source="auto")
 
@@ -2673,6 +2788,17 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         scene = self._ensure_scene()
         if scene is None:
             return
+        profile = self._selected_prompt_profile()
+        if profile == QDECK_PROMPT_PROFILE:
+            issue = _qdeck_context_issue(scene, self._node_item)
+            if issue:
+                self._set_status(issue, error=True)
+                if force:
+                    try:
+                        QtWidgets.QMessageBox.warning(self, "Mediator", issue)
+                    except Exception:
+                        pass
+                return
         changed_key = str(changed_name or "").strip().lower()
         if changed_key:
             source_names = self._connected_source_names()
@@ -2707,7 +2833,6 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                     return
 
         system_prompt, chatbot_history, voice_input = self._collect_inputs()
-        profile = self._selected_prompt_profile()
         clean_voice_input = str(voice_input or "").strip()
         if not clean_voice_input:
             if not force:
@@ -2955,9 +3080,12 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
 
         clean_source = (source or "").strip().lower()
         is_codex_process = clean_source in MEDIGATOR_CODEX_RESPONSE_SOURCES
+        chatbot_handoff = bool(self._chatbot_handoff_active and clean_source == "security_approval")
         if self._stop_requested:
             self._clear_pending()
             self._stop_requested = False
+            if chatbot_handoff:
+                self._chatbot_handoff_active = False
             if is_codex_process:
                 self._set_status("Processing stopped.")
             else:
@@ -2972,16 +3100,23 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         elif is_codex_process:
             output = str(response_text or "").strip()
             if output:
-                _set_node_info(self._node_item, output)
-                self._console_append.emit("[mediator] Response published to node output.")
+                if chatbot_handoff:
+                    self._console_append.emit("[mediator] Chatbot-origin execution complete; output kept off Mediator node output.")
+                else:
+                    _set_node_info(self._node_item, output)
+                    self._console_append.emit("[mediator] Response published to node output.")
                 self._last_processed_signature = str(signature or self._last_processed_signature)
-                self._maybe_show_tanya_speech_popup(output, source=clean_source)
-                security_handled = self._handle_security_output(output)
+                security_handled = False
+                if not chatbot_handoff:
+                    self._maybe_show_tanya_speech_popup(output, source=clean_source)
+                    security_handled = self._handle_security_output(output)
                 if clean_source == "security_approval":
                     preview = output.splitlines()[0].strip() if output.splitlines() else output
                     self._finish_qdeck_handoff_dialog(message=preview or "Qubit Deck command published.", error=False)
                 if not security_handled:
-                    if clean_source == "auto":
+                    if chatbot_handoff:
+                        self._set_status("Chatbot-origin execution complete.")
+                    elif clean_source == "auto":
                         self._set_status("Auto-processing complete.")
                     elif clean_source == "security_request":
                         self._set_status("Security request processing complete.")
@@ -3000,6 +3135,8 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 self._set_status(f"Command exited with code {exit_code}.", error=True)
 
         pending_prompt, pending_signature, pending_source = self._dequeue_pending()
+        if chatbot_handoff:
+            self._chatbot_handoff_active = False
         if pending_prompt:
             if pending_signature and pending_signature == self._last_processed_signature:
                 return
