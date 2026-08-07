@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urljoin
+from urllib.parse import quote, unquote, urlencode, urljoin
 from urllib.request import Request, urlopen
 
 try:
@@ -49,6 +52,54 @@ _HIDDEN_PARAM = "__ui_hidden_params"
 _MODE_PARAM = "__qdeck_mode"
 _MODE_CONTEXT = "context"
 _MODE_EXECUTOR = "executor"
+_LAST_BUTTON_LABEL_PARAM = "__qdeck_last_button_label"
+_LAST_THUMBNAIL_SOURCE_PARAM = "__qdeck_last_thumbnail_source"
+_QDECK_HIDDEN_PARAMS = (
+    "button",
+    _MODE_PARAM,
+    _LAST_BUTTON_LABEL_PARAM,
+    _LAST_THUMBNAIL_SOURCE_PARAM,
+)
+_THUMBNAIL_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}
+_THUMBNAIL_ICON_EXTS = {".exe", ".lnk", ".ico", ".bat", ".cmd", ".com"}
+_THUMBNAIL_PATH_KEYS = (
+    "thumbnail",
+    "thumbnailPath",
+    "thumbnail_path",
+    "image",
+    "imagePath",
+    "image_path",
+    "icon",
+    "iconPath",
+    "icon_path",
+    "shortcut",
+    "shortcutPath",
+    "shortcut_path",
+    "exe",
+    "exePath",
+    "exe_path",
+    "executable",
+    "executablePath",
+    "executable_path",
+    "target",
+    "targetPath",
+    "target_path",
+    "path",
+    "commandPath",
+    "command_path",
+    "command",
+)
+_THUMBNAIL_NESTED_KEYS = ("action", "app", "button", "config", "payload", "settings")
+_THUMBNAIL_URL_KEYS = (
+    "thumbnailUrl",
+    "thumbnail_url",
+    "iconUrl",
+    "icon_url",
+    "imageUrl",
+    "image_url",
+    "url",
+    "href",
+)
 
 
 def _api_base_mask_variants(*api_bases: str) -> list[str]:
@@ -682,8 +733,9 @@ def _execute_command_on_node_item(node_item, command: dict[str, str]) -> tuple[b
     _set_param_in_list(params, "button_slot", button_slot)
     _set_param_in_list(params, "action", action)
     _set_param_in_list(params, _MODE_PARAM, _normalize_mode(_param_value_from_model(model, _MODE_PARAM), _MODE_EXECUTOR))
-    _ensure_hidden_params(model, ["button", _MODE_PARAM])
     model.params = params
+    _ensure_hidden_params(model, _QDECK_HIDDEN_PARAMS)
+    params = list(getattr(model, "params", None) or [])
     if scene is not None:
         try:
             scene.set_node_params(model.name, params)
@@ -697,11 +749,12 @@ def _execute_command_on_node_item(node_item, command: dict[str, str]) -> tuple[b
 
     success = False
     message = ""
+    resolved_button: dict | None = None
     try:
         if action == "open_debugger":
             message = "Auto-exec skipped open_debugger; use button to open debugger."
         else:
-            message = _run_deck_action(
+            message, resolved_button = _run_deck_action_details(
                 action=action,
                 api_base=api_base,
                 button_name=button_name,
@@ -717,11 +770,24 @@ def _execute_command_on_node_item(node_item, command: dict[str, str]) -> tuple[b
         except Exception:
             pass
 
+    if success and resolved_button is not None:
+        try:
+            params = list(getattr(model, "params", None) or [])
+            _remember_button_thumbnail_params(params, resolved_button, api_base)
+            model.params = params
+            _ensure_hidden_params(model, _QDECK_HIDDEN_PARAMS)
+        except Exception:
+            pass
+
     try:
         model.info = _mask_api_base_text(str(message or "").strip(), api_base)
     except Exception:
         pass
     if scene is not None:
+        try:
+            scene.set_node_params(model.name, list(getattr(model, "params", None) or []))
+        except Exception:
+            pass
         try:
             scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
         except Exception:
@@ -889,6 +955,240 @@ def _button_label(button: dict) -> str:
     return f"{slot_text}: {name}"
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _dict_value_case_insensitive(data: dict, key: str):
+    wanted = str(key or "").strip().lower()
+    if not wanted:
+        return None, False
+    for raw_key, value in data.items():
+        if str(raw_key or "").strip().lower() == wanted:
+            return value, True
+    return None, False
+
+
+def _button_path_values(button: dict):
+    if not isinstance(button, dict):
+        return
+    for key in _THUMBNAIL_PATH_KEYS:
+        value, found = _dict_value_case_insensitive(button, key)
+        if found:
+            yield key, value
+    for parent_key in _THUMBNAIL_NESTED_KEYS:
+        nested, found = _dict_value_case_insensitive(button, parent_key)
+        if not found or not isinstance(nested, dict):
+            continue
+        for key in _THUMBNAIL_PATH_KEYS:
+            value, nested_found = _dict_value_case_insensitive(nested, key)
+            if nested_found:
+                yield f"{parent_key}.{key}", value
+
+
+def _absolute_thumbnail_url(api_base: str, raw_url: str) -> str:
+    text = str(raw_url or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith(("http://", "https://")):
+        return text
+    if lowered.startswith("data:"):
+        return ""
+    base = str(api_base or "").strip()
+    if not base:
+        return text
+    return urljoin((base.rstrip("/") + "/"), text.lstrip("/"))
+
+
+def _button_thumbnail_url_text(button: dict, api_base: str = "") -> str:
+    if not isinstance(button, dict):
+        return ""
+
+    thumbnail, found = _dict_value_case_insensitive(button, "thumbnail")
+    if found:
+        if isinstance(thumbnail, dict):
+            for key in _THUMBNAIL_URL_KEYS:
+                value, url_found = _dict_value_case_insensitive(thumbnail, key)
+                if url_found:
+                    url = _absolute_thumbnail_url(api_base, str(value or ""))
+                    if url:
+                        return url
+        else:
+            url = _absolute_thumbnail_url(api_base, str(thumbnail or ""))
+            if url:
+                return url
+
+    for key in _THUMBNAIL_URL_KEYS:
+        value, found = _dict_value_case_insensitive(button, key)
+        if found:
+            url = _absolute_thumbnail_url(api_base, str(value or ""))
+            if url:
+                return url
+    return ""
+
+
+def _looks_like_thumbnail_url(source_text: str) -> bool:
+    lowered = str(source_text or "").strip().lower()
+    return lowered.startswith(("http://", "https://"))
+
+
+def _extract_local_path_text(raw_value) -> str:
+    text = str(raw_value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith(("http://", "https://", "data:")):
+        return ""
+    if lowered.startswith("file:///"):
+        text = unquote(text[8:])
+    elif lowered.startswith("file://"):
+        text = unquote(text[7:])
+
+    quoted = re.match(r"^[\"']([^\"']+)[\"']", text)
+    if quoted:
+        text = quoted.group(1).strip()
+    else:
+        ext_re = "|".join(re.escape(ext.lstrip(".")) for ext in sorted(_THUMBNAIL_IMAGE_EXTS | _THUMBNAIL_ICON_EXTS))
+        match = re.match(rf"^(.+?\.({ext_re}))(?=\s|$)", text, re.IGNORECASE)
+        if match:
+            text = match.group(1).strip()
+
+    return text.strip().strip("\"'")
+
+
+def _resolve_local_thumbnail_path(raw_value) -> Path | None:
+    text = _extract_local_path_text(raw_value)
+    if not text:
+        return None
+    expanded = os.path.expandvars(text)
+    candidate = Path(expanded).expanduser()
+    candidates = [candidate]
+    if not candidate.is_absolute():
+        candidates.append(_repo_root() / candidate)
+
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+
+    if not candidate.is_absolute():
+        try:
+            resolved = shutil.which(expanded)
+        except Exception:
+            resolved = None
+        if resolved:
+            path = Path(resolved)
+            try:
+                if path.is_file():
+                    return path
+            except OSError:
+                pass
+    return None
+
+
+def _button_thumbnail_source_path(button: dict) -> tuple[Path | None, str]:
+    for key, value in _button_path_values(button):
+        path = _resolve_local_thumbnail_path(value)
+        if path is not None:
+            return path, key
+
+    # Last resort: executable-looking names can resolve through PATH.
+    for key in ("displayName", "name"):
+        value, found = _dict_value_case_insensitive(button, key)
+        if not found:
+            continue
+        path = _resolve_local_thumbnail_path(value)
+        if path is not None:
+            return path, key
+    return None, ""
+
+
+def _button_thumbnail_source_text(button: dict | None) -> str:
+    if not isinstance(button, dict):
+        return ""
+    path, _key = _button_thumbnail_source_path(button)
+    return str(path) if path is not None else ""
+
+
+def _button_thumbnail_source_text_for_api(button: dict | None, api_base: str = "") -> str:
+    if not isinstance(button, dict):
+        return ""
+    url = _button_thumbnail_url_text(button, api_base)
+    if url:
+        return url
+    return _button_thumbnail_source_text(button)
+
+
+def _qt_enum_value(enum_name: str, member_name: str, fallback):
+    enum_group = getattr(QtCore.Qt, enum_name, None)
+    if enum_group is not None:
+        value = getattr(enum_group, member_name, None)
+        if value is not None:
+            return value
+    return getattr(QtCore.Qt, member_name, fallback)
+
+
+def _scaled_thumbnail_pixmap(pixmap, size: int = 56):
+    if pixmap is None or pixmap.isNull():
+        return None
+    aspect = _qt_enum_value("AspectRatioMode", "KeepAspectRatio", getattr(QtCore.Qt, "KeepAspectRatio", 1))
+    transform = _qt_enum_value("TransformationMode", "SmoothTransformation", getattr(QtCore.Qt, "SmoothTransformation", 0))
+    return pixmap.scaled(QtCore.QSize(int(size), int(size)), aspect, transform)
+
+
+def _thumbnail_pixmap_for_source(source_text: str, size: int = 56):
+    source = str(source_text or "").strip()
+    if _looks_like_thumbnail_url(source):
+        try:
+            request = Request(
+                url=source,
+                headers={"Accept": "image/png,image/*;q=0.9,*/*;q=0.1"},
+                method="GET",
+            )
+            with urlopen(request, timeout=3.5) as response:
+                raw = response.read()
+            pixmap = QtGui.QPixmap()
+            if raw and pixmap.loadFromData(raw):
+                return _scaled_thumbnail_pixmap(pixmap, size)
+        except Exception:
+            return None
+        return None
+
+    path = _resolve_local_thumbnail_path(source_text)
+    if path is None:
+        return None
+
+    suffix = path.suffix.lower()
+    pixmap = None
+    if suffix in _THUMBNAIL_IMAGE_EXTS:
+        pixmap = QtGui.QPixmap(str(path))
+    if pixmap is None or pixmap.isNull():
+        icon = QtGui.QIcon(str(path))
+        if not icon.isNull():
+            pixmap = icon.pixmap(int(size), int(size))
+    if pixmap is None or pixmap.isNull():
+        try:
+            provider = QtWidgets.QFileIconProvider()
+            icon = provider.icon(QtCore.QFileInfo(str(path)))
+            if not icon.isNull():
+                pixmap = icon.pixmap(int(size), int(size))
+        except Exception:
+            pixmap = None
+
+    return _scaled_thumbnail_pixmap(pixmap, size)
+
+
+def _remember_button_thumbnail_params(params: list[dict], button: dict | None, api_base: str = "") -> list[dict]:
+    if not isinstance(button, dict):
+        return params
+    _set_param_in_list(params, _LAST_BUTTON_LABEL_PARAM, _button_label(button))
+    _set_param_in_list(params, _LAST_THUMBNAIL_SOURCE_PARAM, _button_thumbnail_source_text_for_api(button, api_base))
+    return params
+
+
 def _summarize_buttons(buttons: list[dict], max_rows: int = 12) -> str:
     if not buttons:
         return "No deck buttons reported."
@@ -998,20 +1298,20 @@ def _resolve_button(buttons: list[dict], button_name: str, button_slot: str) -> 
     return None, "Set 'button_name' or 'button_slot' to target a button."
 
 
-def _run_deck_action(
+def _run_deck_action_details(
     *,
     action: str,
     api_base: str,
     button_name: str,
     button_slot: str,
-) -> str:
+) -> tuple[str, dict | None]:
     if action == "ping_health":
         payload = _request_json(api_base, "GET", "/api/health")
         status = payload.get("status") if isinstance(payload, dict) else None
-        return f"Health: {status or 'OK'}"
+        return f"Health: {status or 'OK'}", None
 
     if action == "list_buttons":
-        return _summarize_buttons(_fetch_buttons(api_base))
+        return _summarize_buttons(_fetch_buttons(api_base)), None
 
     if action in ("invoke", "highlight_on", "highlight_off"):
         buttons = _fetch_buttons(api_base)
@@ -1027,15 +1327,31 @@ def _run_deck_action(
 
         if action == "invoke":
             _request_json(api_base, "POST", f"/api/buttons/{target_name}/invoke")
-            return f"Invoked {_button_label(button)}"
+            return f"Invoked {_button_label(button)}", button
 
         enabled = action == "highlight_on"
         query = urlencode({"enabled": "true" if enabled else "false"})
         _request_json(api_base, "POST", f"/api/buttons/{target_name}/highlight?{query}")
         state = "ON" if enabled else "OFF"
-        return f"Highlight {state} {_button_label(button)}"
+        return f"Highlight {state} {_button_label(button)}", button
 
     raise RuntimeError(f"Unsupported action '{action}'.")
+
+
+def _run_deck_action(
+    *,
+    action: str,
+    api_base: str,
+    button_name: str,
+    button_slot: str,
+) -> str:
+    message, _button = _run_deck_action_details(
+        action=action,
+        api_base=api_base,
+        button_name=button_name,
+        button_slot=button_slot,
+    )
+    return message
 
 
 def build_ports(node_item) -> None:
@@ -1043,7 +1359,9 @@ def build_ports(node_item) -> None:
     for name, default in _PARAM_DEFAULTS.items():
         _ensure_param(node_item, name, default)
     _ensure_param(node_item, _MODE_PARAM, _MODE_EXECUTOR)
-    _ensure_hidden_params(getattr(node_item, "model", None), ["button", _MODE_PARAM])
+    _ensure_param(node_item, _LAST_BUTTON_LABEL_PARAM, "")
+    _ensure_param(node_item, _LAST_THUMBNAIL_SOURCE_PARAM, "")
+    _ensure_hidden_params(getattr(node_item, "model", None), _QDECK_HIDDEN_PARAMS)
     for port in ("api_base", "button", "button_name", "button_slot", "action", MEDIATOR_INPUT_PORT):
         _ensure_input(node_item, port)
     # Keep a visible primary/default socket in addition to named parameter sockets.
@@ -1073,12 +1391,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             _migrate_mediator_input_param(node_item)
             _ensure_param(node_item, MEDIATOR_INPUT_PORT, "")
             _ensure_param(node_item, _MODE_PARAM, _MODE_EXECUTOR)
+            _ensure_param(node_item, _LAST_BUTTON_LABEL_PARAM, "")
+            _ensure_param(node_item, _LAST_THUMBNAIL_SOURCE_PARAM, "")
+            _ensure_hidden_params(getattr(node_item, "model", None), _QDECK_HIDDEN_PARAMS)
             _ensure_input(node_item, MEDIATOR_INPUT_PORT)
             setattr(node_item, "_show_default_input_with_named", True)
             node_item.update()
         except Exception:
             pass
-    _ensure_hidden_params(node, [_MODE_PARAM])
+    _ensure_hidden_params(node, _QDECK_HIDDEN_PARAMS)
     _auto_scene_connected = False
     _last_master_signature = ""
 
@@ -1102,7 +1423,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         if not found:
             params.append({"name": name, "value": text})
         node.params = params
-        _ensure_hidden_params(node, [_MODE_PARAM])
+        _ensure_hidden_params(node, _QDECK_HIDDEN_PARAMS)
         if scene is None:
             return
         try:
@@ -1272,6 +1593,77 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     )
     root.addWidget(status_view)
 
+    preview_panel = QtWidgets.QWidget(container)
+    preview_panel.setObjectName("QDeckLastButtonPreview")
+    preview_panel.setStyleSheet(
+        "#QDeckLastButtonPreview{background:#111827;border:1px solid #334155;border-radius:4px;}"
+        "#QDeckLastButtonPreview QLabel{color:#cbd5e1;}"
+    )
+    preview_layout = QtWidgets.QHBoxLayout(preview_panel)
+    preview_layout.setContentsMargins(6, 6, 6, 6)
+    preview_layout.setSpacing(8)
+
+    preview_icon = QtWidgets.QLabel(preview_panel)
+    preview_icon.setFixedSize(64, 64)
+    preview_icon.setAlignment(QtCore.Qt.AlignCenter)
+    preview_icon.setStyleSheet(
+        "QLabel{background:#0f1216;border:1px solid #475569;border-radius:4px;color:#64748b;font-weight:700;}"
+    )
+
+    preview_text = QtWidgets.QLabel(preview_panel)
+    preview_text.setWordWrap(True)
+    preview_text.setMinimumHeight(42)
+    preview_text.setStyleSheet("QLabel{font-size:12px;}")
+
+    preview_layout.addWidget(preview_icon, 0, QtCore.Qt.AlignTop)
+    preview_layout.addWidget(preview_text, 1)
+    preview_panel.setVisible(False)
+    root.addWidget(preview_panel)
+
+    def _set_button_preview(label_text: str, source_text: str) -> None:
+        label = str(label_text or "").strip()
+        source = str(source_text or "").strip()
+        if not label and not source:
+            preview_panel.setVisible(False)
+            return
+
+        pixmap = _thumbnail_pixmap_for_source(source, 56) if source else None
+        if pixmap is not None:
+            preview_icon.setPixmap(pixmap)
+            preview_icon.setText("")
+            preview_icon.setStyleSheet(
+                "QLabel{background:#0f1216;border:1px solid #475569;border-radius:4px;color:#64748b;font-weight:700;}"
+            )
+        else:
+            preview_icon.clear()
+            preview_icon.setText("?")
+            preview_icon.setStyleSheet(
+                "QLabel{background:#0f1216;border:1px dashed #475569;border-radius:4px;color:#64748b;font-weight:700;}"
+            )
+
+        if _looks_like_thumbnail_url(source):
+            source_label = source.rstrip("/").split("/")[-1] or "thumbnail"
+        else:
+            source_label = Path(source).name if source else "No thumbnail source in API response"
+        preview_text.setText(f"Last button: {label or '<unnamed>'}\n{source_label}")
+        preview_panel.setToolTip(source or "No image/icon/executable path was returned for the resolved button.")
+        preview_panel.setVisible(True)
+
+    def _refresh_button_preview_from_params() -> None:
+        _set_button_preview(
+            _param_value(_LAST_BUTTON_LABEL_PARAM),
+            _param_value(_LAST_THUMBNAIL_SOURCE_PARAM),
+        )
+
+    def _remember_button_preview(button: dict | None) -> None:
+        if not isinstance(button, dict):
+            return
+        label = _button_label(button)
+        source = _button_thumbnail_source_text_for_api(button, api_edit.text().strip() or DEFAULT_API_BASE)
+        _set_param_value(_LAST_BUTTON_LABEL_PARAM, label)
+        _set_param_value(_LAST_THUMBNAIL_SOURCE_PARAM, source)
+        _set_button_preview(label, source)
+
     def _set_status(message: str, *, error: bool = False) -> None:
         text = str(message or "").strip()
         display_text = _mask_api_base_text(
@@ -1378,15 +1770,18 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         except Exception:
             pass
         try:
+            resolved_button: dict | None = None
             if action == "open_debugger":
                 message = _launch_debugger(api_base)
             else:
-                message = _run_deck_action(
+                message, resolved_button = _run_deck_action_details(
                     action=action,
                     api_base=api_base,
                     button_name=button_name,
                     button_slot=button_slot,
                 )
+                if resolved_button is not None:
+                    _remember_button_preview(resolved_button)
             _set_status(message, error=False)
             display_message = _mask_api_base_text(message, api_base)
             QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), display_message[:220], card)
@@ -1455,6 +1850,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _last_master_signature = _current_master_signature()
 
     def _on_scene_param_changed(name=None, _params=None) -> None:
+        changed_key = str(name or "").strip().lower()
+        self_name = str(getattr(node, "name", "") or "").strip().lower()
+        if self_name and changed_key == self_name:
+            _refresh_button_preview_from_params()
+            return
         _maybe_auto_execute(changed_name=name, force=False)
 
     def _ensure_scene_connections() -> None:
@@ -1502,6 +1902,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     debugger_btn.clicked.connect(lambda: _execute("open_debugger", force_action=True))
 
     _apply_mode_ui()
+    _refresh_button_preview_from_params()
     footer_layout.addWidget(container)
     _set_status(
         "QubitDeckController ready. Mode=Context lists deck buttons. Mode=Executor accepts Mediator JSON on 'mediator_input' or master pin.",
@@ -1510,8 +1911,114 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     return True
 
 
+def _qdeck_canvas_preview_text(label_text: str, source_text: str) -> str:
+    text = str(label_text or "").strip()
+    if text:
+        return text
+    source = str(source_text or "").strip()
+    if _looks_like_thumbnail_url(source):
+        return source.rstrip("/").split("/")[-1] or "thumbnail"
+    if source:
+        return Path(source).name
+    return ""
+
+
+def render_node_body(node_item, y_cursor: int) -> int:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return y_cursor
+
+    source = _param_value_from_model(model, _LAST_THUMBNAIL_SOURCE_PARAM, "").strip()
+    label_text = _param_value_from_model(model, _LAST_BUTTON_LABEL_PARAM, "").strip()
+    if not source and not label_text:
+        return y_cursor
+
+    preview_h = 72
+    pad = float(getattr(node_item, "_PADDING", 8.0) or 8.0)
+    min_required = float(y_cursor) + float(preview_h) + pad
+    try:
+        if float(getattr(node_item, "height", 0.0) or 0.0) < min_required:
+            try:
+                node_item.prepareGeometryChange()
+            except Exception:
+                pass
+            node_item.height = min_required
+    except Exception:
+        pass
+
+    body = QtWidgets.QWidget()
+    body.setObjectName("QDeckCanvasPreview")
+    body.setStyleSheet(
+        "#QDeckCanvasPreview{background:#111827;border:1px solid #334155;border-radius:5px;}"
+        "#QDeckCanvasPreview QLabel{color:#cbd5e1;font-size:11px;}"
+    )
+    layout = QtWidgets.QHBoxLayout(body)
+    layout.setContentsMargins(7, 7, 7, 7)
+    layout.setSpacing(8)
+
+    icon_label = QtWidgets.QLabel(body)
+    icon_label.setFixedSize(58, 58)
+    icon_label.setAlignment(QtCore.Qt.AlignCenter)
+    icon_label.setStyleSheet(
+        "QLabel{background:#0f1216;border:1px solid #475569;border-radius:4px;color:#64748b;font-weight:700;}"
+    )
+
+    pixmap = _thumbnail_pixmap_for_source(source, 56) if source else None
+    if pixmap is not None and not pixmap.isNull():
+        icon_label.setPixmap(pixmap)
+        icon_label.setText("")
+    else:
+        icon_label.setText("?")
+        icon_label.setStyleSheet(
+            "QLabel{background:#0f1216;border:1px dashed #475569;border-radius:4px;color:#64748b;font-weight:700;}"
+        )
+
+    text_label = QtWidgets.QLabel(_qdeck_canvas_preview_text(label_text, source), body)
+    text_label.setWordWrap(True)
+    text_label.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
+    text_label.setMinimumHeight(40)
+
+    layout.addWidget(icon_label, 0, QtCore.Qt.AlignVCenter)
+    layout.addWidget(text_label, 1)
+    body.setMinimumHeight(preview_h)
+
+    proxy = QtWidgets.QGraphicsProxyWidget(node_item)
+    proxy.setWidget(body)
+    proxy.setZValue(node_item.zValue() + 0.1)
+
+    hint = body.sizeHint().expandedTo(body.minimumSizeHint())
+    body_h = max(preview_h, int(hint.height()))
+    width = max(120, int(float(getattr(node_item, "width", 260) or 260)) - 12)
+    proxy.resize(width, body_h)
+
+    try:
+        preview_y = max(float(y_cursor), float(node_item.height) - float(body_h) - pad)
+    except Exception:
+        preview_y = float(y_cursor)
+    proxy.setPos(6, preview_y)
+
+    try:
+        node_item._plugin_proxies.append(proxy)
+    except Exception:
+        pass
+
+    bottom_y = int(preview_y + body_h)
+    try:
+        required_height = float(bottom_y) + pad
+        if float(getattr(node_item, "height", 0.0) or 0.0) < required_height:
+            try:
+                node_item.prepareGeometryChange()
+            except Exception:
+                pass
+            node_item.height = required_height
+    except Exception:
+        pass
+    return y_cursor
+
+
 QUBIT_DECK_CONTROLLER_SPEC = Spec(
     stripe_color="#0f766e",
     augment_infocard_footer=augment_infocard_footer,
+    render_node_body=render_node_body,
     build_ports=build_ports,
 )

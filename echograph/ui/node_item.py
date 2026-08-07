@@ -2345,8 +2345,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
         elif kind in ("qubit_deck_controller", "qubit deck controller", "qubitdeckcontroller"):
-            # Keep extra lower frame space so deck params do not crowd the bottom border.
-            body_h = 44
+            # Keep lower frame space for the last invoked deck button thumbnail.
+            qdeck_thumb = (self._param_value("__qdeck_last_thumbnail_source") or "").strip()
+            body_h = 92 if qdeck_thumb else 44
             node_w = max(self._BASE_W, 260)
         elif kind in ("image_collection", "imagecollection"):
             try:
