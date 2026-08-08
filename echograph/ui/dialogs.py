@@ -242,6 +242,8 @@ def _kind_label(kind: str) -> str:
         return "GEN-X Video Mocap"
     if key in ("llm", "local_server", "localserver"):
         return "Local Server"
+    if key in ("data_nexus", "data_graph", "nexus"):
+        return "Data Nexus"
     acronyms = {"llm": "LLM", "uv": "UV", "fbx": "FBX", "bvh": "BVH", "html": "HTML", "fx": "FX"}
     words = []
     for part in text.split("_"):
@@ -318,6 +320,7 @@ _NODE_KIND_SEARCH_HINTS = {
     "append": "combine merge append",
     "image_collection": "image gallery collection batch",
     "database": "data table storage database",
+    "data_nexus": "data graph nexus vault network points links agent judge",
 }
 
 
@@ -527,6 +530,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._audio_capture_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
     elif key in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
         icon_pm = node_icons._mediator_icon() or node_icons._python_icon() or node_icons._output_icon()
+    elif key in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
+        icon_pm = node_icons._db_icon() or node_icons._scene_icon() or node_icons._output_icon()
     elif key == "scene":
         icon_pm = node_icons._scene_icon()
     elif key == "camera":
@@ -659,6 +664,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
             "serial_com",
             "audio_capture",
             "qubit_deck_controller",
+            "data_nexus",
             "llm_prompt","chatbot","voice_actor","mediator_agent","librarian","note","append","image_collection","database"
         ]
         try:

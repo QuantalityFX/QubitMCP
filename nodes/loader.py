@@ -450,6 +450,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Mediator Agent plugin import failed:", e)
 
+    # 11.7) Data Nexus
+    try:
+        from nodes import data_nexus
+        if hasattr(data_nexus, "register"):
+            data_nexus.register()
+            _safe_probe("data_nexus")
+        else:
+            print("[EchoGraph] Data Nexus module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Data Nexus plugin import failed:", e)
+
     # 12) Image Collection
     try:
         from nodes import image_collection

@@ -108,6 +108,7 @@ def register_defaults() -> None:
     register("llm",       stripe_color="#14b8a6")
     register("local_server", stripe_color="#14b8a6")
     register("database",  stripe_color="#16a34a")
+    register("data_nexus", stripe_color="#22d3ee")
     register("codex_sandbox", stripe_color="#475569")
     register("audio_capture", stripe_color="#14b8a6")
     # librarian plugins can override this later
@@ -177,6 +178,14 @@ def register_defaults() -> None:
             _modeler.register(core=sys.modules[__name__])
     except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Modeler auto-register failed:", exc)
+
+    # Auto-register Data Nexus so saved workflows can rebuild its body and ports early.
+    try:
+        from nodes import data_nexus as _data_nexus  # type: ignore
+        if hasattr(_data_nexus, "register"):
+            _data_nexus.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Data Nexus auto-register failed:", exc)
 
 
 def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:

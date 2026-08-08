@@ -8028,6 +8028,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
         return True
 
+    def _sync_data_nexus_sidecars_for_save(self, path: str) -> None:
+        try:
+            from nodes.data_nexus import spec as _data_nexus_spec  # type: ignore
+            sync = getattr(_data_nexus_spec, "ensure_project_storage_for_scene", None)
+            if callable(sync):
+                sync(self.scene, path)
+        except Exception:
+            pass
+
     def _workflow_data_for_save(self, *, include_preview: bool = False) -> Dict[str, Any]:
         data = self.scene.to_dict()
         self._inject_panel_layout_into_workflow_data(data)
@@ -8057,6 +8066,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         tooltip_label: str = "Saved",
     ) -> bool:
         try:
+            self._sync_data_nexus_sidecars_for_save(path)
             data = self._workflow_data_for_save(include_preview=include_preview)
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
@@ -8155,6 +8165,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
         try:
             previous_path = self._current_path
+            self._sync_data_nexus_sidecars_for_save(path)
             data = self.scene.to_dict()
             self._inject_panel_layout_into_workflow_data(data)
             self._inject_scene_restore_into_workflow_data(data)

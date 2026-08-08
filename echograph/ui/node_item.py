@@ -1200,6 +1200,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return "LOCAL_SERVER"
         if key in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
             return "MEDIATOR_AGENT"
+        if key in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
+            return "DATA_NEXUS"
         return kind.upper()
 
     def _header_badge_width(self) -> float:
@@ -2378,6 +2380,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = max(node_w, int(getattr(_mediator_spec, "MEDIGATOR_BODY_W", node_w)))
             except Exception:
                 pass
+        elif kind in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
+            body_h = 380
+            node_w = max(self._BASE_W, 560)
+            try:
+                from nodes.data_nexus import spec as _data_nexus_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_data_nexus_spec, "DATA_NEXUS_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_data_nexus_spec, "DATA_NEXUS_BODY_W", node_w)))
+            except Exception:
+                pass
         elif kind == "output":
             body_h = 58
             node_w = max(self._BASE_W, 220)
@@ -3227,6 +3238,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "groomdeform",
                 "hair_deform",
                 "hair deform",
+                "data_nexus",
+                "data nexus",
+                "data_graph",
+                "data graph",
+                "nexus",
             )
             deferred_render = None
             if kind_lower in ("chatbot", "chat bot", "chat_bot"):
@@ -8262,6 +8278,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._audio_capture_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
             elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
                 icon_pm = node_icons._mediator_icon() or node_icons._python_icon() or node_icons._output_icon()
+            elif kind_lower in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
+                icon_pm = node_icons._db_icon() or node_icons._scene_icon() or node_icons._output_icon()
             elif kind_lower in ("codex_sandbox", "codex sandbox", "sandbox"):
                 icon_pm = node_icons._sandbox_icon() or node_icons._llm_server_icon() or node_icons._output_icon()
             elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
@@ -8444,8 +8462,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             dot_d = dot_r * 2.0
             p.setPen(QtCore.Qt.NoPen)
             p.setBrush(QtGui.QColor("#cbd5e1"))
-            p.drawEllipse(QtCore.QRectF(self.width - dot_r, self._BASE_H / 2.0 - dot_r, dot_d, dot_d))
             output_entries = list(getattr(self, "_output_port_pos", {}).items())
+            draw_default_output = True
+            if output_entries and bool(getattr(self, "_hide_default_output_with_named", False)):
+                draw_default_output = False
+            if draw_default_output:
+                p.drawEllipse(QtCore.QRectF(self.width - dot_r, self._BASE_H / 2.0 - dot_r, dot_d, dot_d))
             for _key, (pos, _) in output_entries:
                 p.setBrush(QtGui.QColor("#cbd5e1"))
                 p.drawEllipse(QtCore.QRectF(float(pos.x()) - dot_r, float(pos.y()) - dot_r, dot_d, dot_d))
@@ -8732,8 +8754,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 src_port_name = None
             edge_inset = float(getattr(self, "_PORT_EDGE_HIT_INSET", 12.0))
             edge_outset = float(getattr(self, "_PORT_EDGE_HIT_OUTSET", 6.0))
+            output_entries = list(getattr(self, "_output_port_pos", {}).items())
+            allow_default_output = not (
+                output_entries and bool(getattr(self, "_hide_default_output_with_named", False))
+            )
             on_right_socket = bool(src_port_name) or (
-                (self.width - edge_inset <= e.pos().x() <= self.width + edge_outset)
+                allow_default_output
+                and (self.width - edge_inset <= e.pos().x() <= self.width + edge_outset)
                 and (-edge_outset <= e.pos().y() <= self._BASE_H + edge_outset)
             )
             if on_right_socket:

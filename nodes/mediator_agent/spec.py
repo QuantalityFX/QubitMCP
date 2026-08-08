@@ -65,6 +65,8 @@ QDECK_CONTROLLER_KINDS = {
 }
 SYSTEM_PROMPT_KINDS = {"llm_prompt", "gpt_prompt", "prompt", "system_prompt"}
 CODEX_SANDBOX_KINDS = {"codex_sandbox", "codex sandbox", "sandbox"}
+DATA_NEXUS_KINDS = {"data_nexus", "data nexus", "data_graph", "data graph", "nexus"}
+CHATBOT_KINDS = {"chatbot", "chat bot", "chat_bot"}
 QDECK_PROMPT_PROFILE = "qubit_deck_controller"
 QDECK_DEFAULT_API_BASE = "http://127.0.0.1:8765"
 QDECK_CONTEXT_MAX_ROWS = 220
@@ -83,6 +85,7 @@ SECURITY_GUARD_PROMPT_PROFILE = "security_guard"
 SECURITY_GUARD_POPUP_NAME = "Security Guard popup"
 TANYA_PROMPT_PROFILE = "assistant_tanya"
 TRANSLATOR_PROMPT_PROFILE = "translator"
+JUDGE_PROMPT_PROFILE = "judge"
 JAPANESE_READER_PROMPT_PROFILE = "japanese_reader"
 KOREAN_READER_PROMPT_PROFILE = "korean_reader"
 CHINESE_READER_PROMPT_PROFILE = "chinese_reader"
@@ -117,6 +120,12 @@ MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "cn_reader": CHINESE_READER_PROMPT_PROFILE,
     "zh_reader": CHINESE_READER_PROMPT_PROFILE,
     "zh_translator": CHINESE_READER_PROMPT_PROFILE,
+    "data_nexus": JUDGE_PROMPT_PROFILE,
+    "data_nexus_agent": JUDGE_PROMPT_PROFILE,
+    "nexus_agent": JUDGE_PROMPT_PROFILE,
+    "judge_agent": JUDGE_PROMPT_PROFILE,
+    "medic": JUDGE_PROMPT_PROFILE,
+    "medic_agent": JUDGE_PROMPT_PROFILE,
 }
 SECURITY_AGENT_ICON_FILENAMES = ("ScurityAgent_Icon.png", "SecurityAgent_Icon.png")
 OPERATOR_AGENT_ICON_FILENAMES = ("ITOperatorAgent_Icon.png", "OperatorAgent_Icon.png")
@@ -143,6 +152,10 @@ SECURITY_REQUEST_RE = re.compile(
 )
 SECURITY_APPROVAL_RE = re.compile(
     r"<security_approval\b(?P<attrs>[^>]*)>.*?</security_approval>",
+    re.IGNORECASE | re.DOTALL,
+)
+DATA_NEXUS_UPDATE_RE = re.compile(
+    r"<data_nexus_update\b[^>]*>(?P<payload>.*?)</data_nexus_update>",
     re.IGNORECASE | re.DOTALL,
 )
 SECURITY_ATTR_RE = re.compile(
@@ -404,6 +417,21 @@ def _text_from_edges(scene, edges: list) -> str:
             text = _voice_actor_transcript(src)
         elif src_kind in QDECK_CONTROLLER_KINDS:
             text = _qdeck_context_text(scene, src)
+        elif src_kind in CHATBOT_KINDS:
+            try:
+                from nodes.chatbot import spec as chatbot_spec
+                helper = getattr(chatbot_spec, "chatbot_history_context_from_item", None)
+                if callable(helper):
+                    text = str(helper(scene, src) or "").strip()
+                else:
+                    text = ""
+            except Exception:
+                text = ""
+            if not text:
+                try:
+                    text = scene.resolve_text_value(src)
+                except Exception:
+                    text = ""
         else:
             try:
                 text = scene.resolve_text_value(src)
@@ -596,6 +624,53 @@ def _codex_sandbox_context_text(scene, node_item) -> str:
         return ""
 
 
+def _data_nexus_context_text(scene, node_item) -> str:
+    text = _text_from_input(scene, node_item, "data_nexus", allowed_kinds=DATA_NEXUS_KINDS)
+    if text:
+        return text
+    parts = []
+    try:
+        edges = _ordered_in_edges(scene, node_item)
+    except Exception:
+        edges = []
+    for edge in edges:
+        src = getattr(edge, "src", None)
+        if src is None or _kind_of_item(src) not in DATA_NEXUS_KINDS:
+            continue
+        try:
+            from nodes.data_nexus import spec as data_nexus_spec
+            helper = getattr(data_nexus_spec, "data_nexus_context_from_item", None)
+            if callable(helper):
+                text = str(helper(src) or "").strip()
+            else:
+                text = ""
+        except Exception:
+            text = ""
+        if not text:
+            try:
+                text = str(scene.resolve_text_value(src) or "").strip()
+            except Exception:
+                text = ""
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts).strip()
+
+
+def _connected_data_nexus_item(scene, node_item):
+    if scene is None or node_item is None:
+        return None
+    named_edges = _input_edges(scene, node_item, "data_nexus")
+    for edge in named_edges:
+        src = getattr(edge, "src", None)
+        if src is not None and _kind_of_item(src) in DATA_NEXUS_KINDS:
+            return src
+    for edge in _ordered_in_edges(scene, node_item):
+        src = getattr(edge, "src", None)
+        if src is not None and _kind_of_item(src) in DATA_NEXUS_KINDS:
+            return src
+    return None
+
+
 def _text_from_input(scene, node_item, port_name: str, *, allowed_kinds=None) -> str:
     named_edges = _input_edges(scene, node_item, port_name)
     if allowed_kinds is not None:
@@ -613,6 +688,8 @@ def _default_input_role_for_kind(kind: str, *, unknown_role: str | None = "chatb
     if key in VOICE_ACTOR_KINDS:
         return "voice_input"
     if key in QDECK_CONTROLLER_KINDS:
+        return "chatbot_history"
+    if key in DATA_NEXUS_KINDS:
         return "chatbot_history"
     if key in SYSTEM_PROMPT_KINDS:
         return "system_prompt"
@@ -635,6 +712,7 @@ def _input_policy_for_profile(profile: str) -> dict:
             "voice_kinds": set(VOICE_ACTOR_KINDS),
             "history_kinds": set(QDECK_CONTROLLER_KINDS),
             "system_kinds": set(SYSTEM_PROMPT_KINDS),
+            "data_nexus_kinds": set(),
             "unknown_default_role": None,
         }
     return {
@@ -642,6 +720,7 @@ def _input_policy_for_profile(profile: str) -> dict:
         "voice_kinds": None,
         "history_kinds": None,
         "system_kinds": None,
+        "data_nexus_kinds": None,
         "unknown_default_role": "chatbot_history",
     }
 
@@ -654,6 +733,13 @@ def _collect_inputs_from_named_ports(scene, node_item, profile: str) -> tuple[st
     chatbot_history = _text_from_input(
         scene, node_item, "chatbot_history", allowed_kinds=policy.get("history_kinds")
     )
+    data_nexus_context = _text_from_input(
+        scene, node_item, "data_nexus", allowed_kinds=policy.get("data_nexus_kinds")
+    )
+    if data_nexus_context:
+        chatbot_history = "\n\n".join(
+            part for part in (chatbot_history, f"Data Nexus context:\n{data_nexus_context}") if part
+        ).strip()
     voice_input = _text_from_input(
         scene, node_item, "voice_input", allowed_kinds=policy.get("voice_kinds")
     )
@@ -715,6 +801,8 @@ def _collectable_in_edges(scene, node_item, profile: str) -> list:
             if port == "voice_input" and _kind_allowed(kind, policy.get("voice_kinds")):
                 out.append(edge)
             elif port == "chatbot_history" and _kind_allowed(kind, policy.get("history_kinds")):
+                out.append(edge)
+            elif port == "data_nexus" and _kind_allowed(kind, policy.get("data_nexus_kinds")):
                 out.append(edge)
             elif port == "system_prompt" and _kind_allowed(kind, policy.get("system_kinds")):
                 out.append(edge)
@@ -946,6 +1034,18 @@ def _first_security_approval(text: str) -> tuple[str, dict[str, str]]:
     return match.group(0).strip(), _security_attrs_from_match(match)
 
 
+def _data_nexus_update_payloads(text: str) -> list[str]:
+    return [
+        str(match.groupdict().get("payload", "") or "").strip()
+        for match in DATA_NEXUS_UPDATE_RE.finditer(str(text or ""))
+        if str(match.groupdict().get("payload", "") or "").strip()
+    ]
+
+
+def _strip_data_nexus_update_tags(text: str) -> str:
+    return DATA_NEXUS_UPDATE_RE.sub("", str(text or "")).strip()
+
+
 def _xml_attr(value: str) -> str:
     return (
         str(value or "")
@@ -1012,6 +1112,9 @@ def chatbot_agent_context_from_item(scene, node_item) -> str:
     sandbox_context = _codex_sandbox_context_text(scene, node_item)
     if sandbox_context:
         parts.append(f"Sandbox policy:\n{sandbox_context}")
+    data_nexus_context = _data_nexus_context_text(scene, node_item)
+    if data_nexus_context:
+        parts.append(f"Data Nexus context:\n{data_nexus_context}")
     if profile == QDECK_PROMPT_PROFILE:
         issue = _qdeck_context_issue(scene, node_item)
         if issue:
@@ -1135,7 +1238,7 @@ def _compose_mediator_prompt(
 def build_ports(node_item) -> None:
     if not hasattr(node_item, "ensure_input"):
         return
-    for port_name in ("voice_input", "chatbot_history", "system_prompt", "sandbox"):
+    for port_name in ("voice_input", "chatbot_history", "system_prompt", "data_nexus", "sandbox"):
         node_item.ensure_input(port_name)
 
 
@@ -1609,9 +1712,15 @@ def _clean_tanya_popup_text(text: str) -> str:
     )
     if feedback_match:
         clean = str(feedback_match.group(1) or "").strip()
+    clean = _strip_data_nexus_update_tags(clean)
     clean = SECURITY_REQUEST_RE.sub("", clean)
     clean = SECURITY_APPROVAL_RE.sub("", clean)
-    clean = re.sub(r"<\s*/?\s*(?:security_request|security_approval)\b[^>]*>", "", clean, flags=re.IGNORECASE | re.DOTALL)
+    clean = re.sub(
+        r"<\s*/?\s*(?:security_request|security_approval|data_nexus_update)\b[^>]*>",
+        "",
+        clean,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
     clean = clean.replace("\r\n", "\n").replace("\r", "\n")
     clean = re.sub(r"[ \t]+\n", "\n", clean)
     clean = re.sub(r"\n{3,}", "\n\n", clean)
@@ -2734,6 +2843,45 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             return True
         return self._handle_security_approval_output(output)
 
+    def _handle_data_nexus_update_output(self, output: str) -> bool:
+        payloads = _data_nexus_update_payloads(output)
+        if not payloads:
+            return False
+        scene = self._ensure_scene()
+        nexus_item = _connected_data_nexus_item(scene, self._node_item)
+        if nexus_item is None:
+            self._set_status("Data Nexus update requested, but no Data Nexus is connected.", error=True)
+            try:
+                self._console_append.emit("[data_nexus] Update requested, but no Data Nexus is connected.")
+            except Exception:
+                pass
+            return True
+        applied_any = False
+        for payload in payloads:
+            try:
+                from nodes.data_nexus import spec as data_nexus_spec
+                handler = getattr(data_nexus_spec, "apply_data_nexus_update_from_item", None)
+                if not callable(handler):
+                    raise RuntimeError("Data Nexus update handler is unavailable.")
+                changed, message = handler(nexus_item, payload, requester=_node_name(self._node_item) or "Mediator")
+                applied_any = applied_any or bool(changed)
+                try:
+                    self._console_append.emit(f"[data_nexus] {message}")
+                except Exception:
+                    pass
+            except Exception as exc:
+                self._set_status(f"Data Nexus update failed: {exc}", error=True)
+                try:
+                    self._console_append.emit(f"[data_nexus] Update failed: {exc}")
+                except Exception:
+                    pass
+                return True
+        if applied_any:
+            self._set_status("Data Nexus updated.")
+        else:
+            self._set_status("Data Nexus update contained no changes.")
+        return True
+
     def _queue_pending(self, prompt: str, signature: str, source: str) -> None:
         if self._stop_requested:
             return
@@ -2765,14 +2913,17 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         except Exception:
             pass
         self._maybe_show_tanya_speech_popup(clean_output, source="chatbot")
-        handled = self._handle_security_output(clean_output)
-        if handled:
+        nexus_handled = self._handle_data_nexus_update_output(clean_output)
+        security_handled = self._handle_security_output(clean_output)
+        if security_handled:
             self._chatbot_handoff_active = True
             self._set_status("Chatbot response handed to Mediator security flow.")
+        elif nexus_handled:
+            self._chatbot_handoff_active = False
         else:
             self._chatbot_handoff_active = False
             self._set_status("Chatbot response observed.")
-        return bool(handled)
+        return bool(security_handled or nexus_handled)
 
     def _process_inputs_if_available(self) -> None:
         self._maybe_process_inputs(force=False, source="auto")
@@ -3100,12 +3251,14 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         elif is_codex_process:
             output = str(response_text or "").strip()
             if output:
+                visible_output = _strip_data_nexus_update_tags(output)
                 if chatbot_handoff:
                     self._console_append.emit("[mediator] Chatbot-origin execution complete; output kept off Mediator node output.")
                 else:
-                    _set_node_info(self._node_item, output)
+                    _set_node_info(self._node_item, visible_output or "Data Nexus update requested.")
                     self._console_append.emit("[mediator] Response published to node output.")
                 self._last_processed_signature = str(signature or self._last_processed_signature)
+                nexus_handled = self._handle_data_nexus_update_output(output)
                 security_handled = False
                 if not chatbot_handoff:
                     self._maybe_show_tanya_speech_popup(output, source=clean_source)
@@ -3113,7 +3266,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 if clean_source == "security_approval":
                     preview = output.splitlines()[0].strip() if output.splitlines() else output
                     self._finish_qdeck_handoff_dialog(message=preview or "Qubit Deck command published.", error=False)
-                if not security_handled:
+                if not security_handled and not nexus_handled:
                     if chatbot_handoff:
                         self._set_status("Chatbot-origin execution complete.")
                     elif clean_source == "auto":

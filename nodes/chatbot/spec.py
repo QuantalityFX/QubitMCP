@@ -223,6 +223,10 @@ _SECURITY_MARKER_RE = re.compile(
     r"<security_(?:request|approval)\b[^>]*>.*?</security_(?:request|approval)>",
     re.IGNORECASE | re.DOTALL,
 )
+_DATA_NEXUS_UPDATE_RE = re.compile(
+    r"<data_nexus_update\b[^>]*>.*?</data_nexus_update>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _display_response_text(response_text: str) -> str:
@@ -230,10 +234,14 @@ def _display_response_text(response_text: str) -> str:
     if not text:
         return ""
     had_security_marker = bool(_SECURITY_MARKER_RE.search(text))
+    had_data_nexus_update = bool(_DATA_NEXUS_UPDATE_RE.search(text))
     text = _SECURITY_MARKER_RE.sub("", text).strip()
+    text = _DATA_NEXUS_UPDATE_RE.sub("", text).strip()
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if not text and had_security_marker:
         return "Tool request sent to Mediator."
+    if not text and had_data_nexus_update:
+        return "Data Nexus update sent to Mediator."
     return text
 
 
@@ -318,6 +326,46 @@ def _load_history(cfg: dict) -> list[dict]:
     doc = coll.find_one({"$or": [{"name": project}, {"project": project}]}) or {}
     history = doc.get("history") or []
     return list(history) if isinstance(history, list) else []
+
+
+def chatbot_history_context_from_item(scene, node_item, *, max_entries: int = 24) -> str:
+    db_cfg = _connected_database(scene, node_item)
+    model = getattr(node_item, "model", None)
+    fallback = str(getattr(model, "info", "") or "").strip() if model is not None else ""
+    if not db_cfg:
+        return fallback
+    try:
+        history = _load_history(db_cfg)
+    except Exception:
+        return fallback
+    entries = [entry for entry in history if isinstance(entry, dict)]
+    if not entries:
+        return fallback
+    try:
+        limit = max(1, int(max_entries))
+    except Exception:
+        limit = 24
+    entries = entries[-limit:]
+    project = str(db_cfg.get("project") or "").strip()
+    collection = str(db_cfg.get("collection") or "").strip()
+    lines = ["Chatbot database history:"]
+    if project:
+        lines.append(f"Project: {project}")
+    if collection:
+        lines.append(f"Collection: {collection}")
+    for idx, entry in enumerate(entries, 1):
+        prompt = str(entry.get("prompt") or "").strip()
+        response = str(entry.get("response") or "").strip()
+        content = str(entry.get("content") or "").strip()
+        role = str(entry.get("role") or "").strip()
+        if prompt:
+            lines.append(f"\nTurn {idx} User:\n{prompt}")
+        if response:
+            lines.append(f"Turn {idx} Assistant:\n{response}")
+        if content and not (prompt or response):
+            label = role.title() if role else f"Entry {idx}"
+            lines.append(f"\n{label}:\n{content}")
+    return "\n".join(lines).strip()
 
 
 def _format_file_contexts(contexts) -> str:
