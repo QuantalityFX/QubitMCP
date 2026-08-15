@@ -57,6 +57,7 @@ AUDIO_INPUT_PORT = "audio"
 
 VOICE_ACTOR_BODY_W = 460
 VOICE_ACTOR_BODY_H = 330
+VOICE_ACTOR_BODY_INSET_X = 6
 VOICE_ACTOR_ICON_BTN_SIDE = 56
 VOICE_ACTOR_SELECTED_PARAM_KEY = "__voice_actor_selected_param"
 VOICE_ACTOR_MODE_KEY = "__voice_actor_mode"
@@ -136,6 +137,8 @@ MEDIGATOR_NODE_KINDS = {
     "mediator",
 }
 MEDIGATOR_OUTPUT_TOKEN_KEY = "__medigator_output_token"
+MEDIGATOR_SPEECH_TEXT_KEY = "__medigator_speech_text"
+MEDIGATOR_SPEECH_TOKEN_KEY = "__medigator_speech_token"
 DATABASE_NODE_KINDS = {"database"}
 CHATBOT_DB_NAME = "my_database"
 CHATBOT_DEFAULT_COLLECTION = "EchoGragh"
@@ -438,6 +441,16 @@ def _ordered_in_edges(scene, node_item) -> list:
         return []
 
 
+def _ordered_out_edges(scene, node_item) -> list:
+    if not scene or not node_item:
+        return []
+    try:
+        edges = list(getattr(scene, "_edges", []) or [])
+    except Exception:
+        return []
+    return [edge for edge in edges if getattr(edge, "src", None) is node_item]
+
+
 def _edge_port_name(edge) -> str:
     for attr in ("dst_port_name", "dst_label", "dst_name"):
         if hasattr(edge, attr):
@@ -629,6 +642,78 @@ def _auto_speech_source_label(node_item) -> str:
     if kind == "chatbot":
         return "Chatbot"
     return "Auto source"
+
+
+def _voice_actor_mode_from_item(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    return _param_value(model, VOICE_ACTOR_MODE_KEY, "").strip().lower()
+
+
+def _find_downstream_voice_actor(scene, node_item, *, exclude_item=None, max_depth: int = 6):
+    if scene is None or node_item is None:
+        return None
+    queue = [(node_item, 0)]
+    visited = set()
+    while queue:
+        current, depth = queue.pop(0)
+        if current is None:
+            continue
+        marker = id(current)
+        if marker in visited:
+            continue
+        visited.add(marker)
+        kind = _kind_of_item(current)
+        if depth > 0 and kind in VOICE_ACTOR_NODE_KINDS and current is not exclude_item:
+            mode = _voice_actor_mode_from_item(current)
+            if mode in {"", "text_to_voice"}:
+                return current
+        if depth >= max(1, int(max_depth)):
+            continue
+        if depth > 0 and kind not in CHATBOT_PROXY_NODE_KINDS:
+            continue
+        for edge in _ordered_out_edges(scene, current):
+            dst = getattr(edge, "dst", None)
+            if dst is not None and id(dst) not in visited:
+                queue.append((dst, depth + 1))
+    return None
+
+
+def _find_downstream_mediator_voice_sink(scene, chatbot_item, *, exclude_voice_actor=None, max_depth: int = 5):
+    if scene is None or chatbot_item is None:
+        return None
+    if _auto_speech_source_kind(chatbot_item) != "chatbot":
+        return None
+    queue = [(chatbot_item, 0)]
+    visited = set()
+    while queue:
+        current, depth = queue.pop(0)
+        if current is None:
+            continue
+        marker = id(current)
+        if marker in visited:
+            continue
+        visited.add(marker)
+        kind = _kind_of_item(current)
+        if depth > 0 and kind in MEDIGATOR_NODE_KINDS:
+            voice_actor = _find_downstream_voice_actor(
+                scene,
+                current,
+                exclude_item=exclude_voice_actor,
+                max_depth=6,
+            )
+            if voice_actor is not None:
+                return current
+        if depth >= max(1, int(max_depth)):
+            continue
+        if depth > 0 and kind not in CHATBOT_PROXY_NODE_KINDS:
+            continue
+        for edge in _ordered_out_edges(scene, current):
+            dst = getattr(edge, "dst", None)
+            if dst is None or dst is exclude_voice_actor:
+                continue
+            if id(dst) not in visited:
+                queue.append((dst, depth + 1))
+    return None
 
 
 def _find_upstream_auto_speech_source(scene, node_item, max_depth: int = 6, _visited=None):
@@ -861,6 +946,12 @@ def _latest_mediator_response(_scene, mediator_item) -> tuple[str, str, str]:
     model = getattr(mediator_item, "model", None)
     if model is None:
         return "", "", "Mediator input is unavailable."
+    speech_text = _param_value(model, MEDIGATOR_SPEECH_TEXT_KEY, "").strip()
+    speech_token = _param_value(model, MEDIGATOR_SPEECH_TOKEN_KEY, "").strip()
+    if speech_text:
+        if not speech_token:
+            speech_token = f"speech:{hashlib.sha1(speech_text.encode('utf-8', errors='ignore')).hexdigest()}"
+        return speech_text, speech_token, ""
     text = str(getattr(model, "info", "") or "").strip()
     token = _param_value(model, MEDIGATOR_OUTPUT_TOKEN_KEY, "").strip()
     if not token and text:
@@ -2681,6 +2772,19 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 return str(opt.get("value", "") or ""), str(opt.get("label", "") or "")
         return "", ""
 
+    def _selected_transcript_text(self) -> str:
+        try:
+            cursor = self._transcript.textCursor()
+        except Exception:
+            return ""
+        try:
+            if not cursor.hasSelection():
+                return ""
+            # Qt represents selected paragraph breaks with U+2029.
+            return str(cursor.selectedText() or "").replace("\u2029", "\n")
+        except Exception:
+            return ""
+
     def _set_status(self, message: str, *, error: bool = False) -> None:
         self._status.setText(message or "")
         if error:
@@ -2741,7 +2845,6 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         if not self._busy:
             self._transcript_undo_stack.clear()
-        _set_node_info(self._node_item, self._transcript.toPlainText())
         self._update_control_states()
 
     def _on_pause_or_send_clicked(self) -> None:
@@ -3794,6 +3897,18 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         self._processing_chatbot_auto = True
         try:
+            mediator_voice_sink = _find_downstream_mediator_voice_sink(
+                self._scene,
+                source_item,
+                exclude_voice_actor=self._node_item,
+            )
+            if mediator_voice_sink is not None:
+                _text, token, _err = _latest_auto_speech_response(self._scene, source_item)
+                if token:
+                    self._last_chatbot_token = token
+                self._pending_chatbot_text = ""
+                self._set_status("Mediator Voice Actor is handling this response.")
+                return
             source_name = _node_name(source_item)
             proxy_name = _node_name(self._chatbot_proxy_item)
             changed_key = str(changed_name or "").strip().lower()
@@ -3900,6 +4015,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._set_status(f"Auto-speaking latest response{language_suffix}...")
         elif source == "replay":
             self._set_status(f"Replaying last output{language_suffix}...")
+        elif source == "selection":
+            self._set_status(f"Speaking selected text{language_suffix}...")
         elif source == "input":
             self._set_status(f"Speaking text from wired input{language_suffix}...")
         else:
@@ -3962,6 +4079,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     self._last_chatbot_token = token
                 return spoken.strip(), "chatbot_latest"
             return "", "chatbot_latest"
+
+        selected_text = _clean_voice_text(self._selected_transcript_text())
+        if selected_text.strip():
+            return selected_text.strip(), "selection"
 
         selected_key = str(self._selected_param_key or "").strip()
         if selected_key:
@@ -4187,20 +4308,29 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy = QtWidgets.QGraphicsProxyWidget(node_item)
     proxy.setWidget(body)
     proxy.setZValue(node_item.zValue() + 0.1)
-    proxy.setPos(0, y_cursor)
+    inset_x = int(max(0, VOICE_ACTOR_BODY_INSET_X))
+    proxy.setPos(inset_x, y_cursor)
 
     size_hint = body.sizeHint()
     minimum_hint = body.minimumSizeHint()
     h = max(int(size_hint.height()), int(minimum_hint.height()), VOICE_ACTOR_BODY_H)
     try:
         pad = float(getattr(node_item, "_PADDING", 0))
+        min_node_w = float(max(int(minimum_hint.width()), VOICE_ACTOR_BODY_W) + inset_x * 2)
+        if float(getattr(node_item, "width", 0.0)) < min_node_w:
+            try:
+                node_item.prepareGeometryChange()
+            except Exception:
+                pass
+            node_item.width = min_node_w
         available = float(node_item.height) - float(y_cursor) - pad
         if available > h:
             h = int(available)
         node_item.height = max(float(node_item.height), float(y_cursor) + float(h) + pad)
     except Exception:
         pass
-    proxy.resize(node_item.width, h)
+    body_w = max(40, int(float(getattr(node_item, "width", VOICE_ACTOR_BODY_W)) - (inset_x * 2)))
+    proxy.resize(body_w, h)
     try:
         node_item._plugin_proxies.append(proxy)
     except Exception:

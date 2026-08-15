@@ -320,7 +320,7 @@ _NODE_KIND_SEARCH_HINTS = {
     "append": "combine merge append",
     "image_collection": "image gallery collection batch",
     "database": "data table storage database",
-    "data_nexus": "data graph nexus vault network points links agent judge",
+    "data_nexus": "data graph nexus vault network points links agent mediator planner judge",
 }
 
 

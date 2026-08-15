@@ -88,6 +88,26 @@ def _node_to_dict(node) -> Dict[str, Any]:
                 w = h = None
             if w is not None and h is not None:
                 d["chatbot_size"] = [w, h]
+    if k in ("voice_actor", "voice actor", "voiceactor"):
+        size = getattr(node, "_voice_actor_size", None)
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                w = float(size[0])
+                h = float(size[1])
+            except Exception:
+                w = h = None
+            if w is not None and h is not None:
+                d["voice_actor_size"] = [w, h]
+    if k in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
+        size = getattr(node, "_data_nexus_size", None)
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                w = float(size[0])
+                h = float(size[1])
+            except Exception:
+                w = h = None
+            if w is not None and h is not None:
+                d["data_nexus_size"] = [w, h]
     if k in ("video_player", "video player", "videoplayer"):
         size = getattr(node, "_video_player_size", None)
         if isinstance(size, (list, tuple)) and len(size) >= 2:
@@ -358,6 +378,20 @@ def deserialize_scene(
                 if isinstance(csize, (list, tuple)) and len(csize) >= 2:
                     try:
                         setattr(n, "_chatbot_size", (float(csize[0]), float(csize[1])))
+                    except Exception:
+                        pass
+            if (n.kind or "").lower() in ("voice_actor", "voice actor", "voiceactor"):
+                vasize = nd.get("voice_actor_size")
+                if isinstance(vasize, (list, tuple)) and len(vasize) >= 2:
+                    try:
+                        setattr(n, "_voice_actor_size", (float(vasize[0]), float(vasize[1])))
+                    except Exception:
+                        pass
+            if (n.kind or "").lower() in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
+                dnsize = nd.get("data_nexus_size")
+                if isinstance(dnsize, (list, tuple)) and len(dnsize) >= 2:
+                    try:
+                        setattr(n, "_data_nexus_size", (float(dnsize[0]), float(dnsize[1])))
                     except Exception:
                         pass
             if (n.kind or "").lower() in ("video_player", "video player", "videoplayer"):

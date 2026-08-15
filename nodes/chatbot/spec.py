@@ -227,6 +227,31 @@ _DATA_NEXUS_UPDATE_RE = re.compile(
     r"<data_nexus_update\b[^>]*>.*?</data_nexus_update>",
     re.IGNORECASE | re.DOTALL,
 )
+_DATA_NEXUS_REQUEST_RE = re.compile(
+    r"\b(data\s*nexus|nexus|vault|graph|points?|notes?|memory|mediator[\s_-]+planner|judge)\b",
+    re.IGNORECASE,
+)
+_GENERIC_PERMISSION_RESPONSE_RE = re.compile(
+    r"^\s*i\s+need\s+(?:your\s+)?permission\s+(?:to\s+proceed|before\s+i\s+proceed)\.?\s*$",
+    re.IGNORECASE,
+)
+_QDECK_COMMAND_OUTPUT_RE = re.compile(
+    r"\{[^{}]*\"action\"\s*:\s*\"(?:invoke|highlight_on|highlight_off|list_buttons|ping_health|open_debugger)\""
+    r"[^{}]*(?:\"button_name\"|\"button_slot\")[^{}]*\}",
+    re.IGNORECASE | re.DOTALL,
+)
+_USER_FEEDBACK_RE = re.compile(
+    r"<user_feedback\b[^>]*>.*?</user_feedback>",
+    re.IGNORECASE | re.DOTALL,
+)
+_APP_LAUNCH_REQUEST_RE = re.compile(
+    r"\b(open|launch|run|start|press|click)\b",
+    re.IGNORECASE,
+)
+_DIRECT_OPEN_FAILURE_RE = re.compile(
+    r"\b(?:can(?:not|'t)|unable\s+to)\s+open\b|\btap\s+one\s+of\s+those\b|\brun\s+.+\s+from\s+start",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _display_response_text(response_text: str) -> str:
@@ -245,7 +270,30 @@ def _display_response_text(response_text: str) -> str:
     return text
 
 
-def _dispatch_mediator_output(scene, node_item, raw_response_text: str, user_prompt: str) -> bool:
+def _mediator_handled_display_text(response_text: str, raw_response_text: str, user_prompt: str, mediator_handled: bool) -> str:
+    text = str(response_text or "").strip()
+    raw_text = str(raw_response_text or response_text or "").strip()
+    if (
+        mediator_handled
+        and _DATA_NEXUS_REQUEST_RE.search(str(user_prompt or ""))
+        and (
+            _GENERIC_PERMISSION_RESPONSE_RE.match(text)
+            or _QDECK_COMMAND_OUTPUT_RE.search(raw_text)
+            or _USER_FEEDBACK_RE.search(raw_text)
+        )
+    ):
+        return "Data Nexus update sent to Mediator."
+    if (
+        mediator_handled
+        and _APP_LAUNCH_REQUEST_RE.search(str(user_prompt or ""))
+        and not _DATA_NEXUS_REQUEST_RE.search(str(user_prompt or ""))
+        and _DIRECT_OPEN_FAILURE_RE.search(text)
+    ):
+        return "Security Guard approval requested."
+    return text
+
+
+def _dispatch_mediator_output(scene, node_item, raw_response_text: str, user_prompt: str, history_context: str = "") -> bool:
     mediator_node = _connected_mediator_node(scene, node_item)
     if mediator_node is None:
         return False
@@ -253,10 +301,24 @@ def _dispatch_mediator_output(scene, node_item, raw_response_text: str, user_pro
         from nodes.mediator_agent import spec as mediator_spec
         handler = getattr(mediator_spec, "handle_chatbot_model_output_from_item", None)
         if callable(handler):
-            return bool(handler(scene, mediator_node, raw_response_text, user_prompt))
+            return bool(handler(scene, mediator_node, raw_response_text, user_prompt, history_context))
     except Exception:
         return False
     return False
+
+
+def _mediator_data_nexus_read_response(scene, node_item, user_prompt: str) -> str:
+    mediator_node = _connected_mediator_node(scene, node_item)
+    if mediator_node is None:
+        return ""
+    try:
+        from nodes.mediator_agent import spec as mediator_spec
+        helper = getattr(mediator_spec, "data_nexus_read_response_from_item", None)
+        if callable(helper):
+            return str(helper(scene, mediator_node, user_prompt) or "").strip()
+    except Exception:
+        return ""
+    return ""
 
 
 def _edge_port_name(edge) -> str:
@@ -390,6 +452,7 @@ class ChatbotWidget(QtWidgets.QWidget):
         self._last_voice_source = ""
         self._last_voice_transcript = ""
         self._last_voice_mode = ""
+        self._last_voice_send_token = ""
         self.setMinimumSize(CHATBOT_BODY_W, CHATBOT_BODY_H)
         try:
             self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
@@ -532,18 +595,24 @@ class ChatbotWidget(QtWidgets.QWidget):
             self._last_voice_source = ""
             self._last_voice_transcript = ""
             self._last_voice_mode = ""
+            self._last_voice_send_token = ""
             return
         voice_model = getattr(voice_item, "model", None)
         source_name = str(getattr(voice_model, "name", "") or "").strip().lower() if voice_model is not None else ""
         transcript = str(getattr(voice_model, "info", "") or "").strip() if voice_model is not None else ""
         mode = self._voice_mode(voice_item)
+        token = self._voice_send_token(voice_item)
         self._last_voice_source = source_name
         self._last_voice_transcript = transcript
         self._last_voice_mode = mode
+        self._last_voice_send_token = token
 
     def _voice_mode(self, voice_item) -> str:
         mode = (_param_value_from_node(voice_item, "__voice_actor_mode") or "").strip().lower()
         return mode or "voice_to_text"
+
+    def _voice_send_token(self, voice_item) -> str:
+        return (_param_value_from_node(voice_item, "__voice_actor_send_token") or "").strip()
 
     def _handle_voice_param_change(self, changed_name=None):
         scene = self._ensure_scene()
@@ -554,6 +623,7 @@ class ChatbotWidget(QtWidgets.QWidget):
             self._last_voice_source = ""
             self._last_voice_transcript = ""
             self._last_voice_mode = ""
+            self._last_voice_send_token = ""
             return
         voice_model = getattr(voice_item, "model", None)
         if voice_model is None:
@@ -565,25 +635,34 @@ class ChatbotWidget(QtWidgets.QWidget):
 
         transcript = str(getattr(voice_model, "info", "") or "").strip()
         mode = self._voice_mode(voice_item)
+        token = self._voice_send_token(voice_item)
         if mode != self._last_voice_mode:
             self._last_voice_mode = mode
             self._last_voice_source = source_name
             self._last_voice_transcript = transcript
+            self._last_voice_send_token = token
             return
         if mode != "voice_to_text":
             self._last_voice_source = source_name
             self._last_voice_transcript = transcript
+            self._last_voice_send_token = token
             return
         if not transcript:
             self._last_voice_source = source_name
             self._last_voice_transcript = ""
+            self._last_voice_send_token = token
             return
-        if source_name == self._last_voice_source and transcript == self._last_voice_transcript:
+        if not token:
+            self._last_voice_source = source_name
+            self._last_voice_transcript = transcript
+            return
+        if source_name == self._last_voice_source and token == self._last_voice_send_token:
             return
 
         self._last_voice_mode = mode
         self._last_voice_source = source_name
         self._last_voice_transcript = transcript
+        self._last_voice_send_token = token
         self._submit_prompt(transcript, from_voice=True)
 
     def _set_sending(self, active: bool):
@@ -763,8 +842,16 @@ class ChatbotWidget(QtWidgets.QWidget):
         parts.append("Assistant:")
         return "\n\n".join([p for p in parts if p]).strip()
 
-    @QtCore.Slot(bool, str, str, str, str)
-    def _finish_send(self, ok: bool, message: str, response_text: str, raw_response_text: str, user_prompt: str):
+    @QtCore.Slot(bool, str, str, str, str, str)
+    def _finish_send(
+        self,
+        ok: bool,
+        message: str,
+        response_text: str,
+        raw_response_text: str,
+        user_prompt: str,
+        history_context: str,
+    ):
         self._set_sending(False)
         pending = (self._pending_voice_prompt or "").strip()
         self._pending_voice_prompt = ""
@@ -772,6 +859,25 @@ class ChatbotWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Chatbot", message or "Request failed.")
             return
         clean_response = (response_text or "").strip()
+        mediator_handled = False
+        try:
+            scene = self._ensure_scene()
+            if scene is not None and (raw_response_text or response_text):
+                mediator_handled = _dispatch_mediator_output(
+                    scene,
+                    self._node_item,
+                    raw_response_text or response_text,
+                    user_prompt,
+                    history_context,
+                )
+        except Exception:
+            mediator_handled = False
+        clean_response = _mediator_handled_display_text(
+            clean_response,
+            raw_response_text or response_text,
+            user_prompt,
+            mediator_handled,
+        )
         if clean_response:
             model = getattr(self._node_item, "model", None)
             if model is not None:
@@ -785,12 +891,6 @@ class ChatbotWidget(QtWidgets.QWidget):
                         scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
                     except Exception:
                         pass
-        try:
-            scene = self._ensure_scene()
-            if scene is not None and (raw_response_text or response_text):
-                _dispatch_mediator_output(scene, self._node_item, raw_response_text or response_text, user_prompt)
-        except Exception:
-            pass
         self._input.setText("")
         self._refresh_history()
         if pending:
@@ -823,11 +923,28 @@ class ChatbotWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Chatbot", "Select or create a project on the connected Database node.")
             return
 
+        mediator_node = _connected_mediator_node(scene, node_item)
+        direct_response = _mediator_data_nexus_read_response(scene, node_item, prompt_text)
+        if direct_response:
+            try:
+                gpt_spec._write_to_mongo(
+                    db_cfg,
+                    prompt_text,
+                    direct_response,
+                    {"source": "mediator_data_nexus_read"},
+                    "mediator_data_nexus_read",
+                    0.0,
+                )
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(self, "Chatbot", f"Failed to write Data Nexus read to history: {exc}")
+                return
+            self._finish_send(True, "", direct_response, direct_response, prompt_text, "")
+            return
+
         prompt_node = _connected_prompt_node(scene, node_item)
         if not prompt_node:
             QtWidgets.QMessageBox.warning(self, "Chatbot", "Connect an LLM Prompt node to the 'llm_prompt' input.")
             return
-        mediator_node = _connected_mediator_node(scene, node_item)
 
         val = self._resolve_prompt_inputs(prompt_node)
         model_raw = (val("model") or "").strip()
@@ -913,6 +1030,7 @@ class ChatbotWidget(QtWidgets.QWidget):
                 QtCore.Q_ARG(str, response_text),
                 QtCore.Q_ARG(str, raw_response_text),
                 QtCore.Q_ARG(str, prompt_text),
+                QtCore.Q_ARG(str, history_prompt),
             )
 
         threading.Thread(target=_worker, daemon=True).start()

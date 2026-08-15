@@ -32,6 +32,8 @@ MEDIGATOR_MEMORY_ROOT = "mediator_agents"
 MEDIGATOR_HIDDEN_PARAM_KEY = "__ui_hidden_params"
 MEDIGATOR_PROMPT_PROFILE_PARAM = "__prompt_profile"
 MEDIGATOR_OUTPUT_TOKEN_PARAM = "__medigator_output_token"
+MEDIGATOR_SPEECH_TEXT_PARAM = "__medigator_speech_text"
+MEDIGATOR_SPEECH_TOKEN_PARAM = "__medigator_speech_token"
 MEDIGATOR_DEFAULT_PROMPT_PROFILE = "default_mediator"
 MEDIGATOR_DEFAULT_SYSTEM_PROMPT = (
     # Fallback used only when prompt profile files are missing or empty.
@@ -85,7 +87,7 @@ SECURITY_GUARD_PROMPT_PROFILE = "security_guard"
 SECURITY_GUARD_POPUP_NAME = "Security Guard popup"
 TANYA_PROMPT_PROFILE = "assistant_tanya"
 TRANSLATOR_PROMPT_PROFILE = "translator"
-JUDGE_PROMPT_PROFILE = "judge"
+MEDIATOR_PLANNER_PROMPT_PROFILE = "mediator_planner"
 JAPANESE_READER_PROMPT_PROFILE = "japanese_reader"
 KOREAN_READER_PROMPT_PROFILE = "korean_reader"
 CHINESE_READER_PROMPT_PROFILE = "chinese_reader"
@@ -120,12 +122,15 @@ MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "cn_reader": CHINESE_READER_PROMPT_PROFILE,
     "zh_reader": CHINESE_READER_PROMPT_PROFILE,
     "zh_translator": CHINESE_READER_PROMPT_PROFILE,
-    "data_nexus": JUDGE_PROMPT_PROFILE,
-    "data_nexus_agent": JUDGE_PROMPT_PROFILE,
-    "nexus_agent": JUDGE_PROMPT_PROFILE,
-    "judge_agent": JUDGE_PROMPT_PROFILE,
-    "medic": JUDGE_PROMPT_PROFILE,
-    "medic_agent": JUDGE_PROMPT_PROFILE,
+    "data_nexus": MEDIATOR_PLANNER_PROMPT_PROFILE,
+    "data_nexus_agent": MEDIATOR_PLANNER_PROMPT_PROFILE,
+    "nexus_agent": MEDIATOR_PLANNER_PROMPT_PROFILE,
+    "mediator_planner_agent": MEDIATOR_PLANNER_PROMPT_PROFILE,
+    "planner_agent": MEDIATOR_PLANNER_PROMPT_PROFILE,
+    "judge": MEDIATOR_PLANNER_PROMPT_PROFILE,
+    "judge_agent": MEDIATOR_PLANNER_PROMPT_PROFILE,
+    "medic": MEDIATOR_PLANNER_PROMPT_PROFILE,
+    "medic_agent": MEDIATOR_PLANNER_PROMPT_PROFILE,
 }
 SECURITY_AGENT_ICON_FILENAMES = ("ScurityAgent_Icon.png", "SecurityAgent_Icon.png")
 OPERATOR_AGENT_ICON_FILENAMES = ("ITOperatorAgent_Icon.png", "OperatorAgent_Icon.png")
@@ -137,6 +142,7 @@ MEDIGATOR_PENDING_SECURITY_SIGNATURE_PARAM = "__pending_security_signature"
 MEDIGATOR_CODEX_RESPONSE_SOURCES = {
     "auto",
     "manual",
+    "data_nexus_planning",
     "security_request",
     "security_approval",
 }
@@ -157,6 +163,10 @@ SECURITY_APPROVAL_RE = re.compile(
 DATA_NEXUS_UPDATE_RE = re.compile(
     r"<data_nexus_update\b[^>]*>(?P<payload>.*?)</data_nexus_update>",
     re.IGNORECASE | re.DOTALL,
+)
+GENERIC_PERMISSION_RESPONSE_RE = re.compile(
+    r"^\s*i\s+need\s+(?:your\s+)?permission\s+(?:to\s+proceed|before\s+i\s+proceed)\.?\s*$",
+    re.IGNORECASE,
 )
 SECURITY_ATTR_RE = re.compile(
     r"([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(['\"])(.*?)\2",
@@ -625,9 +635,6 @@ def _codex_sandbox_context_text(scene, node_item) -> str:
 
 
 def _data_nexus_context_text(scene, node_item) -> str:
-    text = _text_from_input(scene, node_item, "data_nexus", allowed_kinds=DATA_NEXUS_KINDS)
-    if text:
-        return text
     parts = []
     try:
         edges = _ordered_in_edges(scene, node_item)
@@ -941,6 +948,51 @@ def _set_node_info(node_item, text: str) -> None:
         pass
 
 
+def _publish_mediator_speech_text(node_item, text: str) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    value = str(text or "").strip()
+    if not value:
+        return
+    params = list(getattr(model, "params", None) or [])
+    stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
+    digest = hashlib.sha1(value.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    token_value = f"{stamp}-{digest}"
+    wanted = {
+        MEDIGATOR_SPEECH_TEXT_PARAM.strip().lower(): (MEDIGATOR_SPEECH_TEXT_PARAM, value),
+        MEDIGATOR_SPEECH_TOKEN_PARAM.strip().lower(): (MEDIGATOR_SPEECH_TOKEN_PARAM, token_value),
+    }
+    found: set[str] = set()
+    changed = False
+    for entry in params:
+        key = str(entry.get("name", "") or "").strip().lower()
+        if key not in wanted:
+            continue
+        _name, next_value = wanted[key]
+        found.add(key)
+        if str(entry.get("value", "") or "") != next_value:
+            entry["value"] = next_value
+            changed = True
+    for key, (name, next_value) in wanted.items():
+        if key in found:
+            continue
+        params.append({"name": name, "value": next_value})
+        changed = True
+    model.params = params
+    if _ensure_hidden_params(model, [MEDIGATOR_SPEECH_TEXT_PARAM, MEDIGATOR_SPEECH_TOKEN_PARAM]):
+        changed = True
+    if not changed:
+        return
+    scene = node_item.scene() if hasattr(node_item, "scene") else None
+    if scene is None:
+        return
+    try:
+        scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
+    except Exception:
+        pass
+
+
 def _ensure_hidden_params(model, names) -> None:
     if model is None:
         return
@@ -1046,6 +1098,84 @@ def _strip_data_nexus_update_tags(text: str) -> str:
     return DATA_NEXUS_UPDATE_RE.sub("", str(text or "")).strip()
 
 
+def _data_nexus_action_op(action: dict) -> str:
+    return str(
+        action.get("op")
+        or action.get("operation")
+        or action.get("action")
+        or ""
+    ).strip().lower().replace("-", "_")
+
+
+def _data_nexus_update_payload_with_note_replace(payload: str) -> str:
+    try:
+        data = json.loads(str(payload or ""))
+    except Exception:
+        return str(payload or "")
+
+    if isinstance(data, list):
+        actions = [item for item in data if isinstance(item, dict)]
+    elif isinstance(data, dict):
+        raw_actions = data.get("actions")
+        if isinstance(raw_actions, list):
+            actions = [item for item in raw_actions if isinstance(item, dict)]
+        else:
+            actions = []
+            raw_points = data.get("points")
+            if isinstance(raw_points, list):
+                for item in raw_points:
+                    if not isinstance(item, dict):
+                        continue
+                    item.setdefault("op", "upsert_point")
+                    actions.append(item)
+            if not actions:
+                actions = [data]
+    else:
+        return str(payload or "")
+
+    changed = False
+    for action in actions:
+        op = _data_nexus_action_op(action)
+        if op not in {
+            "upsert",
+            "upsert_point",
+            "update",
+            "update_point",
+            "set_point",
+            "append",
+            "append_note",
+            "append_point_note",
+            "note",
+        }:
+            continue
+        note_alias = str(action.get("description") or action.get("comment") or "").strip()
+        if note_alias and not str(action.get("note") or "").strip():
+            action["note"] = note_alias
+            changed = True
+        has_note_body = any(
+            str(action.get(key) or "").strip()
+            for key in ("note", "description", "comment", "text", "memory", "summary")
+        )
+        if not has_note_body:
+            continue
+        mode = str(action.get("note_mode") or action.get("mode") or "").strip().lower()
+        if mode in {"append", "add", "additive"}:
+            continue
+        if op in {"append", "append_note", "append_point_note", "note"}:
+            action["op"] = "upsert_point"
+            changed = True
+        if action.get("note_mode") != "replace":
+            action["note_mode"] = "replace"
+            changed = True
+
+    if not changed:
+        return str(payload or "")
+    try:
+        return json.dumps(data, separators=(",", ":"))
+    except Exception:
+        return str(payload or "")
+
+
 def _xml_attr(value: str) -> str:
     return (
         str(value or "")
@@ -1071,6 +1201,695 @@ def _security_approval_marker(requester: str, tool: str, decision: str) -> str:
 
 def _is_qdeck_security_tool(value: str) -> bool:
     return _normalize_prompt_profile(value) == QDECK_PROMPT_PROFILE
+
+
+DATA_NEXUS_INTENT_RE = re.compile(
+    r"\b(data\s+nexus|nexus|vault|graph|point|points|memory\s+map|project\s+memory|mediator[\s_-]+planner|judge)\b"
+    r"|"
+    r"\b(add|save|remember|track|update|delete|forget|connect|link)\b.{0,80}\b(point|note|memory|nexus|graph|vault)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+QDECK_INTENT_RE = re.compile(
+    r"\b(qubit\s*deck|deck\s+controller|stream\s+deck|deck\s+button|button\s+slot|slot\s+\d+|"
+    r"highlight|invoke|open\s+debugger|deck\s+health|ping\s+health|list\s+buttons)\b",
+    re.IGNORECASE,
+)
+QDECK_APP_LAUNCH_RE = re.compile(
+    r"\b(open|launch|run|start|press|click)\b",
+    re.IGNORECASE,
+)
+QDECK_APP_TARGET_RE = re.compile(
+    r"\b(?:open|launch|run|start|press|click)\s+(?:up\s+)?(?:the\s+)?(?P<target>.+?)(?:\s+(?:app|application|program))?(?:\s+(?:for\s+me|please))?(?:[.!?;]|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+DATA_NEXUS_READ_INTENT_RE = re.compile(
+    r"\b(read|show|tell|fetch|look\s*up|what\s+(?:does|do|is)|description|contents?|says?|contains?)\b",
+    re.IGNORECASE,
+)
+DATA_NEXUS_TITLE_READ_INTENT_RE = re.compile(
+    r"\bwhat\s+(?:does|do)\s+.+?\s+says?\b"
+    r"|"
+    r"\bread\s+(?:me\s+)?(?:the\s+)?(?:description|note|text|contents?)\b"
+    r"|"
+    r"\b(?:description|note|text|contents?)\s+(?:of|for|from)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+DATA_NEXUS_DELETE_INTENT_RE = re.compile(
+    r"\b(remove|delete|forget|prune|clear|wipe)\b",
+    re.IGNORECASE,
+)
+DATA_NEXUS_DELETE_ALL_RE = re.compile(
+    r"\b(remove|delete|forget|clear|wipe)\b.{0,80}\b(all|every|everything|entire|whole)\b"
+    r"|"
+    r"\b(all|every|everything|entire|whole)\b.{0,80}\b(points?|notes?|data\s+nexus|nexus|graph|vault)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+DATA_NEXUS_DELETE_POINT_PATTERNS = [
+    re.compile(
+        r"\b(?:remove|delete|forget)\s+(?:the\s+)?(?:data\s+nexus\s+|nexus\s+)?(?:point|note)\s+(?:called|named|titled)?\s*(?P<query>.+?)(?:\s+from\s+(?:the\s+)?(?:data\s+nexus|nexus|graph|vault)|[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\b(?:remove|delete|forget)\s+(?P<query>.+?)\s+from\s+(?:the\s+)?(?:data\s+nexus|nexus|graph|vault)(?:[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+]
+DATA_NEXUS_POINT_QUERY_PATTERNS = [
+    re.compile(
+        r"\bwhat\s+(?:does|do)\s+(?P<query>.+?)\s+says?\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\bread\s+(?:me\s+)?(?:the\s+)?(?:description|note|text|contents?)\s+(?:of|for|from)\s+(?P<query>.+?)(?:[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\b(?:description|note|text|contents?)\s+(?:of|for|from)\s+(?P<query>.+?)(?:[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\bpoint\s+(?:called|named|titled)\s+(?P<query>.+?)(?:\s+(?:says?|contains?|is)\b|[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\b(?:called|named|titled)\s+(?P<query>.+?)(?:\s+(?:says?|contains?|is)\b|[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\b(?:point|note)\s+(?P<query>.+?)(?:\s+(?:says?|contains?)\b|[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+]
+DATA_NEXUS_ADD_INTENT_RE = re.compile(
+    r"\b(add|readd|re-add|restore|recreate|remember|save|track|capture|log|update)\b",
+    re.IGNORECASE,
+)
+DATA_NEXUS_LINK_INTENT_RE = re.compile(
+    r"\b(connect|link|relate|associate|join)\b",
+    re.IGNORECASE,
+)
+DATA_NEXUS_NOTE_REPLACE_INTENT_RE = re.compile(
+    r"\b(clean(?:\s+out|\s+up)?|edit|rewrite|revise|replace|remove|delete|strip)\b.{0,140}\b(descriptions?|notes?|comments?|note\s+body|text|prefix|phrase|boilerplate|irrelevant)\b"
+    r"|"
+    r"\b(descriptions?|notes?|comments?|note\s+body|text|prefix|phrase|boilerplate|irrelevant)\b.{0,140}\b(clean(?:\s+out|\s+up)?|edit|rewrite|revise|replace|remove|delete|strip)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+DATA_NEXUS_NOTE_APPEND_INTENT_RE = re.compile(
+    r"\b(append|add\s+(?:a\s+)?(?:note|comment)|add\s+to\s+(?:the\s+)?(?:description|note|comment)|keep\s+existing)\b",
+    re.IGNORECASE,
+)
+DATA_NEXUS_LINK_PATTERNS = [
+    re.compile(
+        r"\b(?:connect|link|relate|associate|join)\s+[\"'](?P<source>[^\"']+)[\"']\s+(?:to|with|and)\s+[\"'](?P<target>[^\"']+)[\"'](?:\s+(?:as|label(?:ed)?|relationship|relation)\s+(?P<label>.+?))?(?:[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\b(?:connect|link|relate|associate|join)\s+(?:the\s+)?(?:data\s+nexus\s+|nexus\s+)?(?:points?\s+)?(?:called\s+|named\s+|titled\s+)?(?P<source>.+?)\s+(?:to|with|and)\s+(?:the\s+)?(?:data\s+nexus\s+|nexus\s+)?(?:points?\s+)?(?:called\s+|named\s+|titled\s+)?(?P<target>.+?)(?:\s+(?:as|label(?:ed)?|relationship|relation)\s+(?P<label>.+?))?(?:\s+(?:in|on)\s+(?:the\s+)?(?:data\s+nexus|nexus|graph)|[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+]
+QDECK_COMMAND_OUTPUT_RE = re.compile(
+    r"\{[^{}]*\"action\"\s*:\s*\"(?:invoke|highlight_on|highlight_off|list_buttons|ping_health|open_debugger)\""
+    r"[^{}]*(?:\"button_name\"|\"button_slot\")[^{}]*\}",
+    re.IGNORECASE | re.DOTALL,
+)
+USER_FEEDBACK_RE = re.compile(
+    r"<user_feedback\b[^>]*>.*?</user_feedback>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+DATA_NEXUS_FALLBACK_STOPWORDS = {
+    "about",
+    "action",
+    "added",
+    "add",
+    "again",
+    "all",
+    "alot",
+    "also",
+    "and",
+    "assistant",
+    "because",
+    "been",
+    "bot",
+    "chat",
+    "chatbot",
+    "clear",
+    "cleared",
+    "connect",
+    "context",
+    "could",
+    "data",
+    "did",
+    "discuss",
+    "discussed",
+    "discused",
+    "do",
+    "does",
+    "for",
+    "from",
+    "graph",
+    "had",
+    "has",
+    "have",
+    "history",
+    "involve",
+    "involved",
+    "involves",
+    "involving",
+    "keep",
+    "lot",
+    "memory",
+    "nexus",
+    "node",
+    "not",
+    "note",
+    "notes",
+    "point",
+    "points",
+    "related",
+    "remember",
+    "remove",
+    "removed",
+    "save",
+    "still",
+    "that",
+    "the",
+    "them",
+    "they",
+    "this",
+    "to",
+    "track",
+    "update",
+    "vault",
+    "want",
+    "we",
+    "with",
+    "you",
+}
+
+
+def _looks_like_data_nexus_request(text: str) -> bool:
+    return bool(DATA_NEXUS_INTENT_RE.search(str(text or "")))
+
+
+def _looks_like_qdeck_request(text: str) -> bool:
+    return bool(QDECK_INTENT_RE.search(str(text or "")))
+
+
+def _qdeck_launch_target_from_request(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw or _looks_like_data_nexus_request(raw):
+        return ""
+    match = QDECK_APP_TARGET_RE.search(raw)
+    if not match:
+        return ""
+    target = str(match.group("target") or "").strip()
+    target = re.split(
+        r"\s+\b(?:and|then|after|with|using|through|from)\b\s+",
+        target,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    target = re.sub(r"^(?:an?|the)\s+", "", target, flags=re.IGNORECASE)
+    target = re.sub(r"\b(?:app|application|program)\b$", "", target, flags=re.IGNORECASE).strip()
+    target = re.sub(r"\s+", " ", target).strip(" .,:;!?\"'")
+    if not target or target.lower() in {"it", "that", "this"}:
+        return ""
+    return target[:120]
+
+
+def _looks_like_qdeck_app_launch_request(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw or _looks_like_data_nexus_request(raw):
+        return False
+    return bool(QDECK_APP_LAUNCH_RE.search(raw) and _qdeck_launch_target_from_request(raw))
+
+
+def _qdeck_security_request_marker(requester: str, target: str) -> str:
+    clean_requester = str(requester or "Tanya").strip() or "Tanya"
+    clean_target = str(target or "").strip()
+    reason = f"User asked to open {clean_target} through the connected Qubit Deck."
+    return (
+        f'<security_request requester="{_xml_attr(clean_requester)}" '
+        f'tool="qubit_deck_controller" requested_action="invoke" '
+        f'target="{_xml_attr(clean_target)}" reason="{_xml_attr(reason)}"></security_request>'
+    )
+
+
+def _clean_data_nexus_read_query(value: str) -> str:
+    query = str(value or "").strip(" .,:;!?\"'")
+    query = re.sub(r"^(?:the\s+)?(?:data\s+nexus\s+)?", "", query, flags=re.IGNORECASE).strip()
+    query = re.sub(
+        r"\s+\b(?:say|says|contain|contains|read|show|tell)\b.*$",
+        "",
+        query,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    query = re.sub(
+        r"\s+\b(?:description|note|text|content|contents)\b\s*$",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    )
+    query = _clean_data_nexus_ref(query)
+    if query.lower() in {"it", "that", "this", "they", "them", "those", "these"}:
+        return ""
+    if len(query) < 3:
+        return ""
+    return query[:160]
+
+
+def _data_nexus_read_query_from_request(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if re.search(r"\b(add|save|remember|track|update|delete|remove|forget|prune|clear|connect|link)\b", lowered):
+        return ""
+    has_nexus_intent = _looks_like_data_nexus_request(raw)
+    has_read_intent = bool(
+        DATA_NEXUS_READ_INTENT_RE.search(raw)
+        or DATA_NEXUS_TITLE_READ_INTENT_RE.search(raw)
+    )
+    if not (has_nexus_intent or has_read_intent):
+        return ""
+    if not has_read_intent:
+        return ""
+    for pattern in DATA_NEXUS_POINT_QUERY_PATTERNS:
+        match = pattern.search(raw)
+        if not match:
+            continue
+        query = _clean_data_nexus_read_query(match.group("query"))
+        if query:
+            return query
+    return ""
+
+
+def data_nexus_read_response_from_item(scene, node_item, user_input: str) -> str:
+    query = _data_nexus_read_query_from_request(user_input)
+    if not query:
+        return ""
+    nexus_item = _connected_data_nexus_item(scene, node_item)
+    if nexus_item is None:
+        return ""
+    try:
+        from nodes.data_nexus import spec as data_nexus_spec
+        reader = getattr(data_nexus_spec, "read_data_nexus_point_from_item", None)
+        if not callable(reader):
+            return ""
+        ok, message = reader(nexus_item, query)
+        clean_message = str(message or "").strip()
+        if clean_message:
+            _set_node_info(node_item, f"Data Nexus read: {query}\n\n{clean_message}")
+        if ok:
+            return clean_message
+        return clean_message if _looks_like_data_nexus_request(user_input) else ""
+    except Exception:
+        return ""
+
+
+def _looks_like_data_nexus_note_replace_request(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw or not _looks_like_data_nexus_request(raw):
+        return False
+    if DATA_NEXUS_NOTE_APPEND_INTENT_RE.search(raw):
+        return False
+    return bool(DATA_NEXUS_NOTE_REPLACE_INTENT_RE.search(raw))
+
+
+def _looks_like_data_nexus_delete_request(text: str) -> bool:
+    raw = str(text or "").strip()
+    return bool(raw and _looks_like_data_nexus_request(raw) and DATA_NEXUS_DELETE_INTENT_RE.search(raw))
+
+
+def _looks_like_data_nexus_write_request(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw or not _looks_like_data_nexus_request(raw):
+        return False
+    if _data_nexus_read_query_from_request(raw):
+        return False
+    return bool(
+        re.search(
+            r"\b(add|save|remember|track|capture|log|update|change|delete|remove|forget|prune|clear|wipe|connect|link|relate|associate|join)\b",
+            raw,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _clean_data_nexus_ref(value: str) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"^(?:the\s+)?(?:data\s+nexus\s+|nexus\s+)?(?:points?|notes?)\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^(?:called|named|titled)\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+(?:in|on|from)\s+(?:the\s+)?(?:data\s+nexus|nexus|graph|vault)\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+(?:points?|notes?)\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" .,:;!?\"'")
+    return text[:160]
+
+
+def _data_nexus_delete_all_fallback_payload(user_request: str) -> str:
+    text = str(user_request or "").strip()
+    if not text or not _looks_like_data_nexus_delete_request(text):
+        return ""
+    if not DATA_NEXUS_DELETE_ALL_RE.search(text):
+        return ""
+    return json.dumps({"actions": [{"op": "delete_all_points"}]}, separators=(",", ":"))
+
+
+def _data_nexus_delete_point_fallback_payload(user_request: str) -> str:
+    text = str(user_request or "").strip()
+    if not text or not _looks_like_data_nexus_delete_request(text):
+        return ""
+    if DATA_NEXUS_DELETE_ALL_RE.search(text):
+        return ""
+    for pattern in DATA_NEXUS_DELETE_POINT_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        query = _clean_data_nexus_ref(match.group("query"))
+        if query:
+            return json.dumps(
+                {"actions": [{"op": "delete_point", "label": query}]},
+                separators=(",", ":"),
+            )
+    return ""
+
+
+def _data_nexus_link_fallback_payload(user_request: str) -> str:
+    text = str(user_request or "").strip()
+    if not text or not _looks_like_data_nexus_request(text):
+        return ""
+    lowered = text.lower()
+    if re.search(r"\b(add|save|remember|track|update|delete|remove|forget|prune|clear|read|show|fetch)\b", lowered):
+        return ""
+    if not DATA_NEXUS_LINK_INTENT_RE.search(text):
+        return ""
+    for pattern in DATA_NEXUS_LINK_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        source = _clean_data_nexus_ref(match.group("source"))
+        target = _clean_data_nexus_ref(match.group("target"))
+        label = _clean_data_nexus_ref(match.groupdict().get("label", ""))
+        if not source or not target or source.lower() == target.lower():
+            continue
+        action = {
+            "op": "link",
+            "source": source,
+            "target": target,
+            "create_missing": False,
+        }
+        if label:
+            action["label"] = label[:120]
+        return json.dumps({"actions": [action]}, separators=(",", ":"))
+    return ""
+
+
+def _data_nexus_topic_keywords(user_request: str) -> list[str]:
+    text = str(user_request or "").strip()
+    if not text:
+        return []
+    lowered = text.lower()
+    topic = ""
+    patterns = [
+        r"(?:relate(?:d)?\s+to|about|for|involv(?:e|es|ed|ing))\s+(?:the\s+)?(?P<topic>.*?)(?:\s+(?:as\s+we|from\s+the|from\s+our|that\s+we|we\s+discuss|we\s+discused|remove|delete|forget|prune|clear|add|save|track|update)\b|[.!?;]|$)",
+        r"\b(?:pitch|presentation|deck|investor|demo|problem|solution|ask|audience|story|narrative|prep|preparation)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, lowered, re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        if "topic" in match.groupdict():
+            topic = str(match.group("topic") or "").strip(" .,:;!?")
+        else:
+            topic = str(match.group(0) or "").strip(" .,:;!?")
+        if topic:
+            break
+    source = topic or text
+    keywords = [
+        token.lower()
+        for token in re.findall(r"[A-Za-z0-9_]+", source)
+        if len(token) > 2 and token.lower() not in DATA_NEXUS_FALLBACK_STOPWORDS
+    ]
+    if "pitch" in lowered and "pitch" not in keywords:
+        keywords.insert(0, "pitch")
+    if "pitch" in keywords:
+        for extra in ("preparation", "prep", "deck", "presentation", "investor", "demo", "story", "ask"):
+            if extra in lowered and extra not in keywords:
+                keywords.append(extra)
+    deduped: list[str] = []
+    for keyword in keywords:
+        if keyword not in deduped:
+            deduped.append(keyword)
+    return deduped[:8]
+
+
+def _history_for_data_nexus_fallback(history_context: str) -> str:
+    text = str(history_context or "").strip()
+    if not text:
+        return ""
+    text = re.split(r"\n\s*Data Nexus context\s*:\s*\n", text, maxsplit=1, flags=re.IGNORECASE)[0]
+    text = DATA_NEXUS_UPDATE_RE.sub("", text)
+    text = SECURITY_REQUEST_RE.sub("", text)
+    text = SECURITY_APPROVAL_RE.sub("", text)
+    text = USER_FEEDBACK_RE.sub("", text)
+    text = re.sub(r"^\s*\{[^{}]*\"action\"\s*:\s*\"(?:invoke|highlight_on|highlight_off|list_buttons|ping_health|open_debugger)\"[^{}]*\}\s*$", "", text, flags=re.IGNORECASE | re.MULTILINE)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _clean_history_segment_for_point(segment: str) -> str:
+    text = str(segment or "").strip()
+    text = re.sub(r"^\s*(?:Turn\s+\d+\s+)?(?:User|Assistant)\s*:\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" -:;,.")
+    return text
+
+
+def _is_meta_data_nexus_segment(segment: str) -> bool:
+    lowered = str(segment or "").lower()
+    if "data nexus" not in lowered and "nexus" not in lowered:
+        return False
+    return bool(re.search(r"\b(add|update|remove|delete|clear|cleared|save|track|remember)\b", lowered))
+
+
+def _history_segments_for_keywords(history_context: str, keywords: list[str], *, limit: int = 8) -> list[str]:
+    source = _history_for_data_nexus_fallback(history_context)
+    if not source or not keywords:
+        return []
+    chunks = re.split(
+        r"(?=\n?\s*(?:Turn\s+\d+\s+)?(?:User|Assistant)\s*:)",
+        source,
+        flags=re.IGNORECASE,
+    )
+    if len(chunks) <= 1:
+        chunks = re.split(r"\n{2,}|(?<=[.!?])\s+", source)
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for raw in reversed(chunks):
+        clean = _clean_history_segment_for_point(raw)
+        if len(clean) < 24:
+            continue
+        lowered = clean.lower()
+        if not any(keyword in lowered for keyword in keywords):
+            continue
+        if _is_meta_data_nexus_segment(clean):
+            continue
+        if "here's the update to data nexus" in lowered or "updating data nexus" in lowered:
+            continue
+        key = re.sub(r"[^a-z0-9]+", " ", lowered).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(clean[:700])
+        if len(candidates) >= limit:
+            break
+    candidates.reverse()
+    return candidates
+
+
+def _fallback_point_label(segment: str, keywords: list[str]) -> str:
+    words = re.findall(r"[A-Za-z0-9_]+", str(segment or ""))
+    if not words:
+        return "Pitch Note" if "pitch" in keywords else "Recovered Note"
+    lowered_words = [word.lower() for word in words]
+    start = 0
+    for idx, word in enumerate(lowered_words):
+        if word in keywords:
+            start = max(0, idx - 1)
+            break
+    label_words = [
+        word
+        for word in words[start : start + 7]
+        if word.lower() not in DATA_NEXUS_FALLBACK_STOPWORDS
+    ]
+    if not label_words and "pitch" in keywords:
+        label_words = ["Pitch", "Discussion"]
+    elif not label_words:
+        label_words = words[:4]
+    label = " ".join(label_words[:6]).strip()
+    return label.title()[:80] or "Recovered Note"
+
+
+def _fallback_point_id(label: str, index: int) -> str:
+    base = re.sub(r"[^A-Za-z0-9_]+", "_", str(label or "").strip().lower()).strip("_")
+    while "__" in base:
+        base = base.replace("__", "_")
+    return base or f"recovered_point_{index}"
+
+
+def _data_nexus_add_fallback_payload(user_request: str, history_context: str = "") -> str:
+    text = str(user_request or "").strip()
+    if not text or not _looks_like_data_nexus_request(text):
+        return ""
+    if not DATA_NEXUS_ADD_INTENT_RE.search(text):
+        return ""
+    lowered = text.lower()
+    if re.search(r"\b(remove|delete|forget|prune)\b", lowered) and not re.search(r"\b(add|restore|recreate|remember|save|track)\b", lowered):
+        return ""
+    keywords = _data_nexus_topic_keywords(text)
+    if not keywords:
+        return ""
+    segments = _history_segments_for_keywords(history_context, keywords)
+    actions: list[dict[str, str]] = []
+    for idx, segment in enumerate(segments, 1):
+        label = _fallback_point_label(segment, keywords)
+        actions.append(
+            {
+                "op": "upsert_point",
+                "id": _fallback_point_id(label, idx),
+                "label": label,
+                "note": f"Recovered from chatbot history: {segment}",
+            }
+        )
+    if not actions:
+        topic = " ".join(keywords[:3]).strip() or "Data Nexus"
+        label = f"{topic.title()} Follow Up"
+        actions.append(
+            {
+                "op": "upsert_point",
+                "id": _fallback_point_id(label, 1),
+                "label": label,
+                "note": "User asked to restore/add related discussion points, but no matching Chatbot history was available to the Mediator fallback.",
+            }
+        )
+    return json.dumps({"actions": actions[:8]}, separators=(",", ":"))
+
+
+def _data_nexus_fallback_update_payload(user_request: str, history_context: str = "") -> str:
+    text = str(user_request or "").strip()
+    if not text or not _looks_like_data_nexus_request(text):
+        return ""
+    lowered = text.lower()
+    delete_all_payload = _data_nexus_delete_all_fallback_payload(text)
+    if delete_all_payload:
+        return delete_all_payload
+    delete_point_payload = _data_nexus_delete_point_fallback_payload(text)
+    if delete_point_payload:
+        return delete_point_payload
+    link_payload = _data_nexus_link_fallback_payload(text)
+    if link_payload:
+        return link_payload
+    wants_cleanup = bool(re.search(r"\b(remove|delete|forget|prune|clear)\b", lowered))
+    wants_scope = bool(re.search(r"\b(only|except|rest|other|unrelated)\b", lowered))
+    if not (wants_cleanup and wants_scope):
+        return _data_nexus_add_fallback_payload(text, history_context)
+
+    topic = ""
+    patterns = [
+        r"(?:relate(?:d)?\s+to|about|for)\s+(?:the\s+)?(?P<topic>.*?)(?:\s+(?:remove|delete|forget|prune|clear)\b|[.!?;]|$)",
+        r"(?:only\s+(?:want|keep)|keep\s+only)\s+(?:the\s+)?(?P<topic>.*?)(?:\s+(?:points?|notes?)\b|\s+(?:remove|delete|forget|prune|clear)\b|[.!?;]|$)",
+        r"\bexcept\s+(?:the\s+)?(?P<topic>.*?)(?:\s+(?:points?|notes?)\b|[.!?;]|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if match:
+            topic = str(match.group("topic") or "").strip(" .,:;!?")
+            if topic:
+                break
+    if not topic:
+        return ""
+    stopwords = {
+        "the",
+        "and",
+        "for",
+        "that",
+        "this",
+        "with",
+        "only",
+        "keep",
+        "want",
+        "points",
+        "point",
+        "notes",
+        "note",
+        "data",
+        "nexus",
+        "graph",
+        "vault",
+        "relate",
+        "related",
+    }
+    keywords = [
+        token.lower()
+        for token in re.findall(r"[A-Za-z0-9_]+", topic)
+        if len(token) > 2 and token.lower() not in stopwords
+    ]
+    if not keywords:
+        return ""
+    return json.dumps(
+        {
+            "actions": [
+                {
+                    "op": "prune_points",
+                    "topic": topic,
+                    "keep_keywords": keywords,
+                }
+            ]
+        },
+        separators=(",", ":"),
+    )
+
+
+def _compose_data_nexus_planning_prompt(
+    *,
+    data_nexus_context: str,
+    chatbot_history: str,
+    user_input: str,
+    chatbot_output: str,
+) -> tuple[str, str]:
+    planner_prompt = _load_prompt_profile_text(MEDIATOR_PLANNER_PROMPT_PROFILE).strip()
+    clean_nexus = _trim_text(data_nexus_context, MEDIGATOR_MAX_HISTORY_CHARS, keep_tail=False)
+    clean_history = _trim_text(chatbot_history, MEDIGATOR_MAX_HISTORY_CHARS, keep_tail=True)
+    clean_user = _trim_text(user_input, MEDIGATOR_MAX_VOICE_CHARS, keep_tail=True)
+    clean_output = _trim_text(chatbot_output, MEDIGATOR_MAX_OUTPUT_CONTEXT_CHARS, keep_tail=False)
+    instructions = (
+        f"{planner_prompt}\n\n"
+        "Data Nexus planning handoff:\n"
+        "- You are planning a graph edit for the connected Data Nexus.\n"
+        "- Think semantically from the user's request, current graph, and conversation history.\n"
+        "- Return a short user-facing answer followed by exactly one hidden <data_nexus_update> tag when a graph change is requested.\n"
+        "- Do not output Qubit Deck JSON or security_request tags.\n"
+        "- Supported actions: upsert_point, append_note, delete_point, delete_all_points, prune_points, link, unlink.\n"
+        "- For cleanup/edit/rewrite/remove-text requests against point descriptions, notes, or comments, preserve the existing id/label and include \"note_mode\":\"replace\" on every note update. Do not append the cleaned text.\n"
+        "- For delete/remove/forget/prune/clear requests, emit the destructive action; the app will show the deletion approval popup before applying it.\n"
+        "- For 'remove all points' or 'clear the nexus', use {\"op\":\"delete_all_points\"}.\n"
+        "- For connect/link requests, prefer existing point ids or labels and set create_missing=false unless the user clearly asked to create missing points.\n"
+        "- If the request is ambiguous, emit no update tag and ask one concise clarification question.\n"
+    )
+    prompt = (
+        f"{instructions}\n\n"
+        "Current Data Nexus context:\n"
+        f"{clean_nexus or '(none)'}\n\n"
+        "Conversation history:\n"
+        f"{clean_history or '(none)'}\n\n"
+        "Latest user request:\n"
+        f"{clean_user or '(none)'}\n\n"
+        "Tanya/Chatbot output that failed or lacked a valid Data Nexus update:\n"
+        f"{clean_output or '(none)'}\n"
+    )
+    signature = _security_signature("data_nexus_planning", clean_nexus, clean_history, clean_user, clean_output)
+    return prompt, signature
 
 
 def _security_signature(*parts: str) -> str:
@@ -1115,18 +1934,33 @@ def chatbot_agent_context_from_item(scene, node_item) -> str:
     data_nexus_context = _data_nexus_context_text(scene, node_item)
     if data_nexus_context:
         parts.append(f"Data Nexus context:\n{data_nexus_context}")
+        parts.append(
+            "Data Nexus write route:\n"
+            "- Data Nexus graph, point, note, vault, memory, Mediator Planner, and nexus requests are handled with a hidden data_nexus_update tag.\n"
+            "- For delete/remove/forget/prune point requests, emit the tag and let the app show the Data Nexus deletion approval popup.\n"
+            "- Do not emit security_request for Data Nexus requests.\n"
+            "- Do not output Qubit Deck command JSON for Data Nexus requests.\n"
+            "- Qubit Deck security is only for explicit Qubit Deck/deck button/deck slot/deck debugger/deck health or external app launch requests."
+        )
+    qdeck_item = _connected_qdeck_controller_item(scene, node_item)
+    if profile != QDECK_PROMPT_PROFILE and qdeck_item is not None:
+        parts.append(
+            "Qubit Deck access route:\n"
+            "- A Qubit Deck Controller is connected.\n"
+            "- For user requests like \"open Houdini\", \"launch OBS\", or \"run Unreal\", emit a security_request for qubit_deck_controller.\n"
+            "- Do not output Qubit Deck command JSON in this profile. After approval, the app routes to the qubit_deck_controller profile."
+        )
     if profile == QDECK_PROMPT_PROFILE:
         issue = _qdeck_context_issue(scene, node_item)
         if issue:
             parts.append(f"Tool context status:\n{issue}")
         else:
-            qdeck_item = _connected_qdeck_controller_item(scene, node_item)
             if qdeck_item is not None:
                 parts.append(f"Qubit Deck context:\n{_qdeck_context_text(scene, qdeck_item)}")
     return "\n\n".join(part for part in parts if str(part or "").strip()).strip()
 
 
-def handle_chatbot_model_output_from_item(scene, node_item, output: str, user_input: str) -> bool:
+def handle_chatbot_model_output_from_item(scene, node_item, output: str, user_input: str, history_context: str = "") -> bool:
     """Let a connected Mediator handle Chatbot LLM output tags/popups on the UI thread."""
     widget = _mediator_widget_from_item(node_item)
     if widget is None:
@@ -1135,7 +1969,7 @@ def handle_chatbot_model_output_from_item(scene, node_item, output: str, user_in
     if not callable(handler):
         return False
     try:
-        return bool(handler(output, user_input))
+        return bool(handler(output, user_input, history_context))
     except Exception:
         return False
 
@@ -1903,6 +2737,117 @@ class SecurityApprovalDialog(AgentPopupDialog):
         self.resize(AGENT_POPUP_MIN_WIDTH, 190)
 
 
+class DataNexusDeletionApprovalDialog(AgentPopupDialog):
+    def __init__(self, *, targets: list[dict[str, str]], request_text: str, parent=None):
+        super().__init__("Data Nexus Approval", parent=parent)
+
+        count = len(targets or [])
+        icon_label = QtWidgets.QLabel()
+        icon = _style_icon(self, "SP_MessageBoxWarning")
+        if icon is not None:
+            icon_label.setPixmap(icon.pixmap(42, 42))
+        icon_label.setFixedSize(58, 58)
+        icon_label.setAlignment(QtCore.Qt.AlignCenter)
+
+        title = QtWidgets.QLabel("Approve Data Nexus deletion")
+        title.setStyleSheet("QLabel{color:#f8fafc;font-size:15px;font-weight:600;}")
+        summary = QtWidgets.QLabel(f"{count} point{'s' if count != 1 else ''} will be removed from the graph and vault.")
+        summary.setWordWrap(True)
+        summary.setStyleSheet("QLabel{color:#fecaca;}")
+        request = QtWidgets.QLabel(str(request_text or "").strip()[:400])
+        request.setWordWrap(True)
+        request.setStyleSheet("QLabel{color:#cbd5e1;}")
+        request.setMinimumWidth(380)
+
+        target_list = QtWidgets.QListWidget()
+        target_list.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        target_list.setFocusPolicy(QtCore.Qt.NoFocus)
+        target_list.setMinimumWidth(380)
+        target_list.setMinimumHeight(96)
+        target_list.setMaximumHeight(190)
+        target_list.setStyleSheet(
+            "QListWidget{background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px;}"
+            "QListWidget::item{padding:5px 4px;border-bottom:1px solid #1f2937;}"
+        )
+        for target in targets or []:
+            label = str(target.get("label", "") or target.get("id", "") or "Point").strip()
+            point_id = str(target.get("id", "") or "").strip()
+            file_name = str(target.get("file", "") or "").strip()
+            note = str(target.get("note", "") or "").strip()
+            parts = [label]
+            meta = " / ".join(part for part in (point_id, file_name) if part)
+            if meta:
+                parts.append(meta)
+            if note:
+                parts.append(note)
+            item = QtWidgets.QListWidgetItem("\n".join(parts))
+            item.setToolTip("\n".join(parts))
+            target_list.addItem(item)
+
+        approve_btn = QtWidgets.QPushButton()
+        approve_icon = _style_icon(self, "SP_DialogApplyButton")
+        if approve_icon is not None:
+            approve_btn.setIcon(approve_icon)
+        approve_btn.setToolTip("Approve deletion")
+        approve_btn.setAccessibleName("Approve deletion")
+        approve_btn.setFixedSize(44, 36)
+        approve_btn.setStyleSheet(
+            "QPushButton{background:#b91c1c;border:1px solid #991b1b;border-radius:6px;}"
+            "QPushButton:hover{background:#dc2626;}"
+        )
+
+        deny_btn = QtWidgets.QPushButton()
+        deny_icon = _style_icon(self, "SP_DialogCancelButton")
+        if deny_icon is not None:
+            deny_btn.setIcon(deny_icon)
+        deny_btn.setToolTip("Cancel deletion")
+        deny_btn.setAccessibleName("Cancel deletion")
+        deny_btn.setFixedSize(44, 36)
+        deny_btn.setStyleSheet(
+            "QPushButton{background:#334155;border:1px solid #475569;border-radius:6px;}"
+            "QPushButton:hover{background:#475569;}"
+        )
+        approve_btn.clicked.connect(self.accept)
+        deny_btn.clicked.connect(self.reject)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        btn_row.addWidget(deny_btn, 0)
+        btn_row.addWidget(approve_btn, 0)
+
+        text_col = QtWidgets.QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(7)
+        text_col.addWidget(title, 0)
+        text_col.addWidget(summary, 0)
+        if request.text().strip():
+            text_col.addWidget(request, 0)
+        text_col.addWidget(target_list, 1)
+        text_col.addLayout(btn_row, 0)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(12)
+        top_row.addWidget(icon_label, 0, QtCore.Qt.AlignTop)
+        top_row.addLayout(text_col, 1)
+
+        content = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(content)
+        content_layout.setContentsMargins(14, 12, 14, 14)
+        content_layout.setSpacing(10)
+        content_layout.addLayout(top_row, 1)
+
+        layout = self._create_popup_surface(background="#1f1115", border="#7f1d1d")
+        layout.addWidget(
+            AgentPopupTitleBar(self, "Data Nexus", accent="#7f1d1d", hover_accent="#991b1b"),
+            0,
+        )
+        layout.addWidget(content, 1)
+        self.resize(AGENT_POPUP_MIN_WIDTH, 330)
+
+
 class QDeckHandoffDialog(AgentPopupDialog):
     def __init__(self, *, request_text: str, voice_input: str, parent=None):
         super().__init__("Qubit Deck Operator", parent=parent)
@@ -2059,7 +3004,9 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._pending_source = ""
         self._stop_requested = False
         self._last_prompt_voice_input = ""
+        self._last_prompt_chatbot_history = ""
         self._security_dialog = None
+        self._data_nexus_delete_dialog = None
         self._qdeck_handoff_dialog = None
         self._qdeck_handoff_active = False
         self._chatbot_handoff_active = False
@@ -2624,6 +3571,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         if not message:
             return
         self._tanya_popup_message = message
+        _publish_mediator_speech_text(self._node_item, message)
         old_dialog = getattr(self, "_tanya_dialog", None)
         try:
             if old_dialog is not None:
@@ -2769,12 +3717,31 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         if self._selected_prompt_profile() == SECURITY_GUARD_PROMPT_PROFILE:
             return False
 
+        original_input = self._last_prompt_voice_input.strip()
+        tool = str(attrs.get("tool", "") or "").strip()
+        target = str(attrs.get("target", "") or "").strip()
+        if _is_qdeck_security_tool(tool):
+            combined = "\n\n".join(part for part in (original_input, request_text, target) if part)
+            if _looks_like_data_nexus_request(combined):
+                try:
+                    self._console_append.emit("[security] Ignored Qubit Deck security request for Data Nexus intent.")
+                except Exception:
+                    pass
+                self._set_status("Ignored incorrect Qubit Deck request for Data Nexus prompt.", error=True)
+                return False
+            if not target and not _looks_like_qdeck_request(combined):
+                try:
+                    self._console_append.emit("[security] Ignored Qubit Deck security request without a clear deck target.")
+                except Exception:
+                    pass
+                self._set_status("Ignored unclear Qubit Deck security request.", error=True)
+                return False
+
         scene = self._ensure_scene()
         guard_item = _find_security_guard_item(scene, exclude_item=self._node_item)
         guard_widget = _mediator_widget_from_item(guard_item) if guard_item is not None else None
 
         requester_node_name = str(getattr(getattr(self._node_item, "model", None), "name", "") or "").strip()
-        original_input = self._last_prompt_voice_input.strip()
         request_signature = _security_signature(request_text, original_input)
 
         self._store_security_request_state(
@@ -2843,20 +3810,76 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             return True
         return self._handle_security_approval_output(output)
 
-    def _handle_data_nexus_update_output(self, output: str) -> bool:
-        payloads = _data_nexus_update_payloads(output)
-        if not payloads:
+    def _qdeck_security_fallback_request_text(self, user_input: str) -> str:
+        if self._selected_prompt_profile() in {SECURITY_GUARD_PROMPT_PROFILE, QDECK_PROMPT_PROFILE}:
+            return ""
+        if not _looks_like_qdeck_app_launch_request(user_input):
+            return ""
+        scene = self._ensure_scene()
+        if _connected_qdeck_controller_item(scene, self._node_item) is None:
+            return ""
+        target = _qdeck_launch_target_from_request(user_input)
+        if not target:
+            return ""
+        requester = "Tanya" if self._selected_prompt_profile() == TANYA_PROMPT_PROFILE else "Mediator"
+        marker = _qdeck_security_request_marker(requester, target)
+        return f"{marker}\nI need the Security Guard to approve Qubit Deck access before I open {target}."
+
+    def _start_data_nexus_planning(
+        self,
+        *,
+        user_input: str,
+        chatbot_output: str,
+        history_context: str,
+    ) -> bool:
+        clean_user = str(user_input or "").strip()
+        if not _looks_like_data_nexus_write_request(clean_user):
             return False
         scene = self._ensure_scene()
-        nexus_item = _connected_data_nexus_item(scene, self._node_item)
-        if nexus_item is None:
-            self._set_status("Data Nexus update requested, but no Data Nexus is connected.", error=True)
-            try:
-                self._console_append.emit("[data_nexus] Update requested, but no Data Nexus is connected.")
-            except Exception:
-                pass
-            return True
+        if _connected_data_nexus_item(scene, self._node_item) is None:
+            return False
+        data_nexus_context = _data_nexus_context_text(scene, self._node_item)
+        prompt, signature = _compose_data_nexus_planning_prompt(
+            data_nexus_context=data_nexus_context,
+            chatbot_history=history_context or self._last_prompt_chatbot_history,
+            user_input=clean_user,
+            chatbot_output=chatbot_output,
+        )
+        self._last_prompt_voice_input = clean_user
+        self._last_prompt_chatbot_history = str(history_context or self._last_prompt_chatbot_history or "").strip()
+        _set_node_info(self._node_item, "Data Nexus route: Mediator Planner is reviewing the request.")
+        try:
+            self._console_append.emit("[data_nexus] Mediator Planner started for Data Nexus edit request.")
+        except Exception:
+            pass
+        self._run_codex_prompt(prompt, signature, "data_nexus_planning")
+        return True
+
+    def _data_nexus_delete_targets_for_payloads(self, nexus_item, payloads: list[str]) -> list[dict[str, str]]:
+        from nodes.data_nexus import spec as data_nexus_spec
+
+        previewer = getattr(data_nexus_spec, "preview_data_nexus_deletions_from_item", None)
+        if not callable(previewer):
+            raise RuntimeError("Data Nexus deletion preview handler is unavailable.")
+        targets: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for payload in payloads:
+            for target in previewer(nexus_item, payload):
+                point_id = str(target.get("id", "") or "").strip().lower()
+                if not point_id or point_id in seen_ids:
+                    continue
+                seen_ids.add(point_id)
+                targets.append(dict(target))
+        return targets
+
+    def _apply_data_nexus_update_payloads(self, nexus_item, payloads: list[str]) -> bool:
         applied_any = False
+        messages: list[str] = []
+        try:
+            self._console_append.emit("[data_nexus] Mediator received Data Nexus update request.")
+        except Exception:
+            pass
+        _set_node_info(self._node_item, "Data Nexus route: Mediator received update request.")
         for payload in payloads:
             try:
                 from nodes.data_nexus import spec as data_nexus_spec
@@ -2865,6 +3888,9 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                     raise RuntimeError("Data Nexus update handler is unavailable.")
                 changed, message = handler(nexus_item, payload, requester=_node_name(self._node_item) or "Mediator")
                 applied_any = applied_any or bool(changed)
+                clean_message = str(message or "").strip()
+                if clean_message:
+                    messages.append(clean_message)
                 try:
                     self._console_append.emit(f"[data_nexus] {message}")
                 except Exception:
@@ -2878,9 +3904,151 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 return True
         if applied_any:
             self._set_status("Data Nexus updated.")
+            detail = "; ".join(messages) if messages else "Applied update."
+            _set_node_info(self._node_item, f"Data Nexus route: {detail}")
         else:
             self._set_status("Data Nexus update contained no changes.")
+            _set_node_info(self._node_item, "Data Nexus route: update reviewed, no graph changes.")
         return True
+
+    def _show_data_nexus_deletion_dialog(
+        self,
+        *,
+        payloads: list[str],
+        targets: list[dict[str, str]],
+        nexus_item,
+        original_input: str,
+        delay_for_tanya: bool = True,
+    ) -> None:
+        if delay_for_tanya:
+            tanya_dialog = getattr(self, "_tanya_dialog", None)
+            try:
+                tanya_visible = bool(tanya_dialog is not None and tanya_dialog.isVisible())
+            except Exception:
+                tanya_visible = tanya_dialog is not None
+            if tanya_visible:
+                delay_ms = _speech_popup_delay_ms(getattr(self, "_tanya_popup_message", "") or original_input)
+                self._set_status("Tanya is speaking; Data Nexus approval will open next.")
+
+                def _open_after_tanya() -> None:
+                    self._show_data_nexus_deletion_dialog(
+                        payloads=payloads,
+                        targets=targets,
+                        nexus_item=nexus_item,
+                        original_input=original_input,
+                        delay_for_tanya=False,
+                    )
+
+                QtCore.QTimer.singleShot(delay_ms, self, _open_after_tanya)
+                return
+
+        self._close_tanya_popup()
+        old_dialog = getattr(self, "_data_nexus_delete_dialog", None)
+        try:
+            if old_dialog is not None and old_dialog.isVisible():
+                old_dialog.raise_()
+                old_dialog.activateWindow()
+                self._set_status("Data Nexus approval popup is already waiting.")
+                return
+        except Exception:
+            pass
+
+        dialog = DataNexusDeletionApprovalDialog(
+            targets=targets,
+            request_text=original_input,
+            parent=self,
+        )
+        self._data_nexus_delete_dialog = dialog
+
+        def _approve() -> None:
+            if getattr(self, "_data_nexus_delete_dialog", None) is dialog:
+                self._data_nexus_delete_dialog = None
+            try:
+                self._console_append.emit(f"[data_nexus] Deletion approved for {len(targets)} point(s).")
+            except Exception:
+                pass
+            self._apply_data_nexus_update_payloads(nexus_item, payloads)
+
+        def _deny() -> None:
+            if getattr(self, "_data_nexus_delete_dialog", None) is dialog:
+                self._data_nexus_delete_dialog = None
+            message = "Data Nexus deletion canceled. No points were removed."
+            self._set_status(message)
+            try:
+                self._console_append.emit(f"[data_nexus] {message}")
+            except Exception:
+                pass
+
+        dialog.accepted.connect(_approve)
+        dialog.rejected.connect(_deny)
+        dialog.finished.connect(
+            lambda _result=0, _dialog=dialog: self._clear_data_nexus_delete_dialog_reference(_dialog)
+        )
+        dialog.destroyed.connect(
+            lambda _obj=None, _dialog=dialog: self._clear_data_nexus_delete_dialog_reference(_dialog)
+        )
+        self._set_status("Data Nexus approval popup is waiting.")
+        try:
+            _show_agent_popup(dialog, self)
+        except Exception as exc:
+            if getattr(self, "_data_nexus_delete_dialog", None) is dialog:
+                self._data_nexus_delete_dialog = None
+            self._set_status(f"Data Nexus approval popup failed: {exc}", error=True)
+
+    def _clear_data_nexus_delete_dialog_reference(self, dialog) -> None:
+        if getattr(self, "_data_nexus_delete_dialog", None) is dialog:
+            self._data_nexus_delete_dialog = None
+
+    def _handle_data_nexus_update_output(
+        self,
+        output: str,
+        *,
+        fallback_request: str = "",
+        history_context: str = "",
+        require_delete_approval: bool = True,
+        delay_delete_approval_for_tanya: bool = True,
+    ) -> bool:
+        payloads = _data_nexus_update_payloads(output)
+        if not payloads and fallback_request:
+            fallback_payload = _data_nexus_fallback_update_payload(fallback_request, history_context)
+            if fallback_payload:
+                payloads = [fallback_payload]
+        if not payloads:
+            return False
+        if _looks_like_data_nexus_note_replace_request(fallback_request or output):
+            payloads = [
+                _data_nexus_update_payload_with_note_replace(payload)
+                for payload in payloads
+            ]
+        scene = self._ensure_scene()
+        nexus_item = _connected_data_nexus_item(scene, self._node_item)
+        if nexus_item is None:
+            self._set_status("Data Nexus update requested, but no Data Nexus is connected.", error=True)
+            try:
+                self._console_append.emit("[data_nexus] Update requested, but no Data Nexus is connected.")
+            except Exception:
+                pass
+            return True
+        if require_delete_approval:
+            try:
+                delete_targets = self._data_nexus_delete_targets_for_payloads(nexus_item, payloads)
+            except Exception as exc:
+                self._set_status(f"Data Nexus deletion preview failed: {exc}", error=True)
+                try:
+                    self._console_append.emit(f"[data_nexus] Deletion preview failed: {exc}")
+                except Exception:
+                    pass
+                return True
+            if delete_targets:
+                self._show_data_nexus_deletion_dialog(
+                    payloads=payloads,
+                    targets=delete_targets,
+                    nexus_item=nexus_item,
+                    original_input=fallback_request or _clean_tanya_popup_text(output),
+                    delay_for_tanya=delay_delete_approval_for_tanya,
+                )
+                return True
+        return self._apply_data_nexus_update_payloads(nexus_item, payloads)
 
     def _queue_pending(self, prompt: str, signature: str, source: str) -> None:
         if self._stop_requested:
@@ -2903,7 +4071,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._pending_signature = ""
         self._pending_source = ""
 
-    def _handle_chatbot_model_output(self, output: str, user_input: str) -> bool:
+    def _handle_chatbot_model_output(self, output: str, user_input: str, history_context: str = "") -> bool:
         clean_output = str(output or "").strip()
         if not clean_output:
             return False
@@ -2912,9 +4080,52 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             self._console_append.emit("[chatbot] Response received from Chatbot LLM runtime.")
         except Exception:
             pass
-        self._maybe_show_tanya_speech_popup(clean_output, source="chatbot")
-        nexus_handled = self._handle_data_nexus_update_output(clean_output)
+        if (
+            _looks_like_data_nexus_write_request(self._last_prompt_voice_input)
+            and self._start_data_nexus_planning(
+                user_input=self._last_prompt_voice_input,
+                chatbot_output=clean_output,
+                history_context=history_context,
+            )
+        ):
+            self._maybe_show_tanya_speech_popup(
+                "Mediator Planner is reviewing the Data Nexus request.",
+                source="chatbot",
+            )
+            self._chatbot_handoff_active = False
+            self._set_status("Data Nexus Mediator Planner is running.")
+            return True
+        qdeck_fallback_request = ""
+        if not _first_security_request(clean_output)[0]:
+            qdeck_fallback_request = self._qdeck_security_fallback_request_text(self._last_prompt_voice_input)
+        popup_output = clean_output
+        popup_text = _clean_tanya_popup_text(clean_output)
+        if (
+            _looks_like_data_nexus_delete_request(self._last_prompt_voice_input)
+            and (
+                GENERIC_PERMISSION_RESPONSE_RE.match(popup_text)
+                or QDECK_COMMAND_OUTPUT_RE.search(clean_output)
+                or USER_FEEDBACK_RE.search(clean_output)
+            )
+        ):
+            popup_output = "Review the Data Nexus deletion approval."
+        elif (
+            _looks_like_data_nexus_request(self._last_prompt_voice_input)
+            and (QDECK_COMMAND_OUTPUT_RE.search(clean_output) or USER_FEEDBACK_RE.search(clean_output))
+        ):
+            popup_output = "Updating Data Nexus from the chat history."
+        elif qdeck_fallback_request:
+            target = _qdeck_launch_target_from_request(self._last_prompt_voice_input)
+            popup_output = f"I need Security Guard approval before I open {target}."
+        self._maybe_show_tanya_speech_popup(popup_output, source="chatbot")
+        nexus_handled = self._handle_data_nexus_update_output(
+            clean_output,
+            fallback_request=self._last_prompt_voice_input,
+            history_context=history_context,
+        )
         security_handled = self._handle_security_output(clean_output)
+        if not security_handled and qdeck_fallback_request:
+            security_handled = self._handle_security_request_output(qdeck_fallback_request)
         if security_handled:
             self._chatbot_handoff_active = True
             self._set_status("Chatbot response handed to Mediator security flow.")
@@ -2993,6 +4204,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 self._set_status("No voice_input text available.", error=True)
             return
         self._last_prompt_voice_input = clean_voice_input
+        self._last_prompt_chatbot_history = str(chatbot_history or "").strip()
         if not force:
             self._last_auto_voice_input = clean_voice_input
             self._last_auto_voice_token = current_voice_token
@@ -3025,7 +4237,12 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         if self._running:
             self._queue_pending(prompt, signature, source)
             return
-        mode = "auto" if source == "auto" else "manual"
+        if source == "auto":
+            mode = "auto"
+        elif source == "data_nexus_planning":
+            mode = "data nexus"
+        else:
+            mode = "manual"
         self._stop_requested = False
         self._set_running(True)
         self._set_status(f"Running Codex ({mode})...")
@@ -3251,18 +4468,50 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         elif is_codex_process:
             output = str(response_text or "").strip()
             if output:
+                qdeck_fallback_request = ""
+                if clean_source not in {"security_request", "security_approval"} and not _first_security_request(output)[0]:
+                    qdeck_fallback_request = self._qdeck_security_fallback_request_text(self._last_prompt_voice_input)
                 visible_output = _strip_data_nexus_update_tags(output)
+                if (
+                    _looks_like_data_nexus_request(self._last_prompt_voice_input)
+                    and (QDECK_COMMAND_OUTPUT_RE.search(output) or USER_FEEDBACK_RE.search(output))
+                ):
+                    visible_output = "Data Nexus update sent to Mediator."
+                elif qdeck_fallback_request:
+                    visible_output = "Security Guard approval requested."
                 if chatbot_handoff:
                     self._console_append.emit("[mediator] Chatbot-origin execution complete; output kept off Mediator node output.")
                 else:
                     _set_node_info(self._node_item, visible_output or "Data Nexus update requested.")
                     self._console_append.emit("[mediator] Response published to node output.")
                 self._last_processed_signature = str(signature or self._last_processed_signature)
-                nexus_handled = self._handle_data_nexus_update_output(output)
                 security_handled = False
                 if not chatbot_handoff:
-                    self._maybe_show_tanya_speech_popup(output, source=clean_source)
+                    popup_output = output
+                    popup_text = _clean_tanya_popup_text(output)
+                    if (
+                        GENERIC_PERMISSION_RESPONSE_RE.match(popup_text)
+                        and _looks_like_data_nexus_request(self._last_prompt_voice_input)
+                    ):
+                        popup_output = "Review the Data Nexus deletion approval."
+                    elif (
+                        _looks_like_data_nexus_request(self._last_prompt_voice_input)
+                        and (QDECK_COMMAND_OUTPUT_RE.search(output) or USER_FEEDBACK_RE.search(output))
+                    ):
+                        popup_output = "Updating Data Nexus from the chat history."
+                    elif qdeck_fallback_request:
+                        target = _qdeck_launch_target_from_request(self._last_prompt_voice_input)
+                        popup_output = f"I need Security Guard approval before I open {target}."
+                    self._maybe_show_tanya_speech_popup(popup_output, source=clean_source)
+                nexus_handled = self._handle_data_nexus_update_output(
+                    output,
+                    fallback_request=self._last_prompt_voice_input,
+                    history_context=self._last_prompt_chatbot_history,
+                )
+                if not chatbot_handoff:
                     security_handled = self._handle_security_output(output)
+                    if not security_handled and qdeck_fallback_request:
+                        security_handled = self._handle_security_request_output(qdeck_fallback_request)
                 if clean_source == "security_approval":
                     preview = output.splitlines()[0].strip() if output.splitlines() else output
                     self._finish_qdeck_handoff_dialog(message=preview or "Qubit Deck command published.", error=False)

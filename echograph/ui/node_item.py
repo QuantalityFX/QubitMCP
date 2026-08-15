@@ -2364,11 +2364,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("voice_actor", "voice actor", "voiceactor"):
             # Keep the voice node large enough so transcript/status controls do not clip.
             body_h = 300
-            node_w = max(self._BASE_W, 460)
+            node_w = max(self._BASE_W, 472)
             try:
                 from nodes.voice_actor import spec as _voice_actor_spec  # type: ignore
+                inset_x = int(max(0, getattr(_voice_actor_spec, "VOICE_ACTOR_BODY_INSET_X", 0)))
                 body_h = max(body_h, int(getattr(_voice_actor_spec, "VOICE_ACTOR_BODY_H", body_h)))
-                node_w = max(node_w, int(getattr(_voice_actor_spec, "VOICE_ACTOR_BODY_W", node_w)))
+                node_w = max(
+                    node_w,
+                    int(getattr(_voice_actor_spec, "VOICE_ACTOR_BODY_W", node_w)) + (inset_x * 2),
+                )
             except Exception:
                 pass
         elif kind in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
@@ -2618,6 +2622,40 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             custom_size = getattr(self.model, "_chatbot_size", None)
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    custom_w = float(custom_size[0])
+                    custom_h = float(custom_size[1])
+                except Exception:
+                    custom_w = custom_h = None
+                if custom_w is not None and custom_w > 0:
+                    new_w = max(new_w, max(self._BASE_W, custom_w))
+                if custom_h is not None and custom_h > 0:
+                    new_h = max(new_h, max(self._BASE_H, custom_h))
+        elif kind in ("voice_actor", "voice actor", "voiceactor"):
+            try:
+                self._voice_actor_min_w = float(new_w)
+                self._voice_actor_min_h = float(new_h)
+            except Exception:
+                pass
+            custom_size = getattr(self.model, "_voice_actor_size", None)
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    custom_w = float(custom_size[0])
+                    custom_h = float(custom_size[1])
+                except Exception:
+                    custom_w = custom_h = None
+                if custom_w is not None and custom_w > 0:
+                    new_w = max(new_w, max(self._BASE_W, custom_w))
+                if custom_h is not None and custom_h > 0:
+                    new_h = max(new_h, max(self._BASE_H, custom_h))
+        elif kind in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
+            try:
+                self._data_nexus_min_w = float(new_w)
+                self._data_nexus_min_h = float(new_h)
+            except Exception:
+                pass
+            custom_size = getattr(self.model, "_data_nexus_size", None)
             if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
                 try:
                     custom_w = float(custom_size[0])
@@ -7521,6 +7559,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "chatbot",
             "chat bot",
             "chat_bot",
+            "voice_actor",
+            "voice actor",
+            "voiceactor",
+            "data_nexus",
+            "data nexus",
+            "data_graph",
+            "data graph",
+            "nexus",
             "video_player",
             "video player",
             "videoplayer",
@@ -7622,6 +7668,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if kind in ("chatbot", "chat bot", "chat_bot"):
             min_w = float(getattr(self, "_chatbot_min_w", self._BASE_W))
             min_h = float(getattr(self, "_chatbot_min_h", self._BASE_H))
+        elif kind in ("voice_actor", "voice actor", "voiceactor"):
+            min_w = float(getattr(self, "_voice_actor_min_w", self._BASE_W))
+            min_h = float(getattr(self, "_voice_actor_min_h", self._BASE_H))
+        elif kind in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
+            min_w = float(getattr(self, "_data_nexus_min_w", self._BASE_W))
+            min_h = float(getattr(self, "_data_nexus_min_h", self._BASE_H))
         elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
             min_w = float(getattr(self, "_gantt_chart_min_w", self._BASE_W))
             min_h = float(getattr(self, "_gantt_chart_min_h", self._BASE_H))
@@ -7681,6 +7733,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.model._keyboard_sequence_size = (float(self.width), float(self.height))
             elif kind in ("chatbot", "chat bot", "chat_bot"):
                 self.model._chatbot_size = (float(self.width), float(self.height))
+            elif kind in ("voice_actor", "voice actor", "voiceactor"):
+                self.model._voice_actor_size = (float(self.width), float(self.height))
+            elif kind in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
+                self.model._data_nexus_size = (float(self.width), float(self.height))
             elif kind in ("video_player", "video player", "videoplayer"):
                 self.model._video_player_size = (float(self.width), float(self.height))
         except Exception:
@@ -7712,6 +7768,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self.model._keyboard_sequence_size = (float(self.width), float(self.height))
                 elif kind in ("chatbot", "chat bot", "chat_bot"):
                     self.model._chatbot_size = (float(self.width), float(self.height))
+                elif kind in ("voice_actor", "voice actor", "voiceactor"):
+                    self.model._voice_actor_size = (float(self.width), float(self.height))
+                elif kind in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
+                    self.model._data_nexus_size = (float(self.width), float(self.height))
                 elif kind in ("video_player", "video player", "videoplayer"):
                     self.model._video_player_size = (float(self.width), float(self.height))
             except Exception:
