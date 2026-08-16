@@ -638,6 +638,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _modeler.register()
             except Exception:
                 pass
+        # Ensure Skills spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("skills", "skills_library", "skill_library"):
+            try:
+                from nodes import skills as _skills  # type: ignore
+                if hasattr(_skills, "register"):
+                    _skills.register()
+            except Exception:
+                pass
         # Ensure UV Unwrap spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "uv_unwrap":
             try:
@@ -2393,6 +2401,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = max(node_w, int(getattr(_data_nexus_spec, "DATA_NEXUS_BODY_W", node_w)))
             except Exception:
                 pass
+        elif kind in ("skills", "skills_library", "skill_library"):
+            body_h = 360
+            node_w = max(self._BASE_W, 520)
         elif kind == "output":
             body_h = 58
             node_w = max(self._BASE_W, 220)
@@ -2656,6 +2667,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             custom_size = getattr(self.model, "_data_nexus_size", None)
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    custom_w = float(custom_size[0])
+                    custom_h = float(custom_size[1])
+                except Exception:
+                    custom_w = custom_h = None
+                if custom_w is not None and custom_w > 0:
+                    new_w = max(new_w, max(self._BASE_W, custom_w))
+                if custom_h is not None and custom_h > 0:
+                    new_h = max(new_h, max(self._BASE_H, custom_h))
+        elif kind in ("skills", "skills_library", "skill_library"):
+            try:
+                self._skills_min_w = float(new_w)
+                self._skills_min_h = float(new_h)
+            except Exception:
+                pass
+            custom_size = getattr(self.model, "_skills_size", None)
             if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
                 try:
                     custom_w = float(custom_size[0])
@@ -7567,6 +7595,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "data_graph",
             "data graph",
             "nexus",
+            "skills",
+            "skills_library",
+            "skill_library",
             "video_player",
             "video player",
             "videoplayer",
@@ -7674,6 +7705,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
             min_w = float(getattr(self, "_data_nexus_min_w", self._BASE_W))
             min_h = float(getattr(self, "_data_nexus_min_h", self._BASE_H))
+        elif kind in ("skills", "skills_library", "skill_library"):
+            min_w = float(getattr(self, "_skills_min_w", self._BASE_W))
+            min_h = float(getattr(self, "_skills_min_h", self._BASE_H))
         elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
             min_w = float(getattr(self, "_gantt_chart_min_w", self._BASE_W))
             min_h = float(getattr(self, "_gantt_chart_min_h", self._BASE_H))
@@ -7737,6 +7771,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.model._voice_actor_size = (float(self.width), float(self.height))
             elif kind in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
                 self.model._data_nexus_size = (float(self.width), float(self.height))
+            elif kind in ("skills", "skills_library", "skill_library"):
+                self.model._skills_size = (float(self.width), float(self.height))
             elif kind in ("video_player", "video player", "videoplayer"):
                 self.model._video_player_size = (float(self.width), float(self.height))
         except Exception:
@@ -7772,6 +7808,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self.model._voice_actor_size = (float(self.width), float(self.height))
                 elif kind in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
                     self.model._data_nexus_size = (float(self.width), float(self.height))
+                elif kind in ("skills", "skills_library", "skill_library"):
+                    self.model._skills_size = (float(self.width), float(self.height))
                 elif kind in ("video_player", "video player", "videoplayer"):
                     self.model._video_player_size = (float(self.width), float(self.height))
             except Exception:
@@ -8326,6 +8364,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
             elif kind_lower in ("html_preview", "html preview", "htmlpreview"):
                 icon_pm = node_icons._html_preview_icon() or node_icons._output_icon()
+            elif kind_lower in ("skills", "skills_library", "skill_library"):
+                icon_pm = node_icons._librarian_icon() or node_icons._db_icon() or node_icons._output_icon()
             elif kind_lower in ("image_collection", "imagecollection"):
                 icon_pm = node_icons._image_collection_icon() or node_icons._output_icon()
             elif kind_lower == "switch":

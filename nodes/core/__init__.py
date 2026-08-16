@@ -100,6 +100,8 @@ def register_defaults() -> None:
     register("colorize", stripe_color="#22d3ee")
     register("fx_music_effects", stripe_color="#84cc16")
     register("html_preview", stripe_color="#f97316")
+    register("skills", stripe_color="#38bdf8")
+    register("skills_library", stripe_color="#38bdf8")
     register("image_collection", stripe_color="#22c55e")
     register("camera",    stripe_color="#f59e0b")
     register("light",     stripe_color="#facc15")
@@ -186,6 +188,14 @@ def register_defaults() -> None:
             _data_nexus.register(core=sys.modules[__name__])
     except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Data Nexus auto-register failed:", exc)
+
+    # Auto-register Skills so saved workflows can rebuild the library browser early.
+    try:
+        from nodes import skills as _skills  # type: ignore
+        if hasattr(_skills, "register"):
+            _skills.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Skills auto-register failed:", exc)
 
 
 def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:

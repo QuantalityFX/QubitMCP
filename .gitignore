@@ -17,6 +17,9 @@ AGENTS.md
 /recent_graphs.json
 /shelf_tools.json
 
+# Local skill library/templates
+/Skills/
+
 # Librarian runtime/cache artifacts
 /nodes/librarian/ipc/
 /nodes/librarian/storage/
