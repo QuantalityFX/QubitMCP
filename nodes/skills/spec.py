@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from echograph.services.sales_agent import generate_sales_deck_from_template
 from echograph.services.skills_library import scan_skills_library, skills_root, update_agent_template_status
 from echograph.services.teacher_agent import (
     prepare_teacher_agent_conversion_request,
@@ -16,6 +17,10 @@ from nodes.core import Spec
 BODY_W = 680
 BODY_H = 380
 MEDIATOR_INPUT_PORT = "mediator"
+DATA_NEXUS_INPUT_PORT = "data_nexus"
+SALES_DECK_INDEX_PARAM = "__sales_agent_last_deck_index"
+SALES_DECK_DIR_PARAM = "__sales_agent_last_deck_dir"
+DATA_NEXUS_KINDS = {"data_nexus", "data nexus", "data_graph", "data graph", "nexus"}
 
 
 def _asset_kind_label(asset: Dict[str, Any]) -> str:
@@ -80,6 +85,33 @@ def _connected_mediator_node(scene, node_item):
     return None
 
 
+def _edge_dst_port(edge) -> str:
+    for attr in ("dst_port_name", "dst_label", "dst_name"):
+        if hasattr(edge, attr):
+            value = str(getattr(edge, attr) or "").strip().lower()
+            if value:
+                return value
+    return ""
+
+
+def _connected_data_nexus_node(scene, node_item):
+    if scene is None or node_item is None:
+        return None
+    try:
+        edges = list(scene._in_edges(node_item))
+    except Exception:
+        edges = []
+    for edge in edges:
+        src = getattr(edge, "src", None)
+        if _edge_dst_port(edge) == DATA_NEXUS_INPUT_PORT and _kind_of_item(src) in DATA_NEXUS_KINDS:
+            return src
+    for edge in edges:
+        src = getattr(edge, "src", None)
+        if _kind_of_item(src) in DATA_NEXUS_KINDS:
+            return src
+    return None
+
+
 class SkillsLibraryWidget(QtWidgets.QFrame):
     def __init__(self, node_item=None, parent=None):
         super().__init__(parent)
@@ -132,6 +164,8 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         actions.setSpacing(6)
         self._convert_btn = QtWidgets.QPushButton("Convert")
         self._convert_btn.setToolTip("Convert selected human template with Teacher Agent")
+        self._generate_btn = QtWidgets.QPushButton("Generate Deck")
+        self._generate_btn.setToolTip("Generate an HTML deck from the selected approved Sales Agent template and connected Data Nexus")
         self._approve_btn = QtWidgets.QPushButton("Approve")
         self._draft_btn = QtWidgets.QPushButton("Draft")
         self._deprecate_btn = QtWidgets.QPushButton("Deprecate")
@@ -139,10 +173,12 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         self._status_label.setObjectName("SkillsSubtle")
         self._status_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self._convert_btn.clicked.connect(self._convert_selected_human_template)
+        self._generate_btn.clicked.connect(self._generate_sales_deck_from_selected_template)
         self._approve_btn.clicked.connect(lambda _=False: self._set_selected_status("approved"))
         self._draft_btn.clicked.connect(lambda _=False: self._set_selected_status("draft"))
         self._deprecate_btn.clicked.connect(lambda _=False: self._set_selected_status("deprecated"))
         actions.addWidget(self._convert_btn, 0)
+        actions.addWidget(self._generate_btn, 0)
         actions.addWidget(self._approve_btn, 0)
         actions.addWidget(self._draft_btn, 0)
         actions.addWidget(self._deprecate_btn, 0)
@@ -156,7 +192,9 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         self._list.setUniformRowHeights(True)
         self._list.setAlternatingRowColors(True)
         self._list.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self._list.currentItemChanged.connect(self._show_asset)
+        self._list.customContextMenuRequested.connect(self._show_asset_context_menu)
         header_view = self._list.header()
         header_view.setStretchLastSection(False)
         header_view.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
@@ -268,6 +306,14 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         is_human = bool(asset and asset.get("kind") == "human_template")
         status = str((asset or {}).get("status") or "").strip().lower()
         self._convert_btn.setEnabled(is_human)
+        self._generate_btn.setEnabled(
+            bool(
+                is_agent
+                and status == "approved"
+                and str(asset.get("target_agent") or "").strip().lower() == "sales_agent"
+                and str(asset.get("artifact_kind") or "").strip().lower() == "html_deck"
+            )
+        )
         for button in (self._approve_btn, self._draft_btn, self._deprecate_btn):
             button.setEnabled(is_agent)
         if is_agent:
@@ -298,6 +344,55 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         if row < 0 or row >= len(self._assets):
             return None
         return self._assets[row]
+
+    def _asset_from_item(self, item: QtWidgets.QTreeWidgetItem | None) -> Dict[str, Any] | None:
+        if item is None:
+            return None
+        raw_row = item.data(0, QtCore.Qt.UserRole)
+        try:
+            row = int(raw_row)
+        except Exception:
+            return None
+        if row < 0 or row >= len(self._assets):
+            return None
+        return self._assets[row]
+
+    def _show_asset_context_menu(self, pos: QtCore.QPoint) -> None:
+        item = self._list.itemAt(pos)
+        asset = self._asset_from_item(item)
+        if not asset:
+            return
+        self._list.setCurrentItem(item)
+        path_text = str(asset.get("path") or "")
+        menu = QtWidgets.QMenu(self)
+        open_action = menu.addAction("Open in Explorer")
+        open_action.setEnabled(bool(path_text.strip()))
+        open_action.triggered.connect(lambda _checked=False, p=path_text: self._open_asset_folder(p))
+        menu.exec(self._list.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _resolve_asset_path(path_text: Any) -> Path | None:
+        raw = str(path_text or "").strip()
+        if not raw:
+            return None
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = skills_root().parent / path
+        return path
+
+    def _open_asset_folder(self, path_text: Any) -> None:
+        path = self._resolve_asset_path(path_text)
+        if path is None:
+            return
+        folder = path.parent if path.suffix else path
+        if not folder.exists():
+            self._status_label.setText(f"Folder not found: {folder}")
+            return
+        ok = QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder)))
+        if ok:
+            self._status_label.setText(f"Opened {folder}")
+        else:
+            self._status_label.setText(f"Could not open folder: {folder}")
 
     def _set_selected_status(self, status: str):
         asset = self._selected_asset()
@@ -366,6 +461,74 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
 
         ok, message = runner(scene, mediator_node, request.prompt, request.signature, on_done=_finish)
         self._status_label.setText(message)
+
+    def _set_hidden_node_param(self, name: str, value: str) -> None:
+        if self._node_item is None:
+            return
+        setter = getattr(self._node_item, "_set_param_value", None)
+        if callable(setter):
+            try:
+                setter(name, value, rebuild=False, notify_scene=True)
+                return
+            except Exception:
+                pass
+        model = getattr(self._node_item, "model", None)
+        if model is None:
+            return
+        params = list(getattr(model, "params", None) or [])
+        target = str(name or "").strip().lower()
+        for param in params:
+            if isinstance(param, dict) and str(param.get("name", "") or "").strip().lower() == target:
+                param["value"] = str(value or "")
+                break
+        else:
+            params.append({"name": name, "value": str(value or "")})
+        try:
+            model.params = params
+        except Exception:
+            pass
+
+    def _generate_sales_deck_from_selected_template(self):
+        asset = self._selected_asset()
+        if not asset or asset.get("kind") != "agent_template":
+            return
+        scene = None
+        try:
+            scene = self._node_item.scene()
+        except Exception:
+            scene = None
+        nexus_node = _connected_data_nexus_node(scene, self._node_item)
+        if nexus_node is None:
+            self._status_label.setText("Connect a Data Nexus node to the Skills data_nexus input.")
+            return
+
+        try:
+            from nodes.data_nexus import spec as data_nexus_spec
+        except Exception as exc:
+            self._status_label.setText(f"Data Nexus unavailable: {exc}")
+            return
+        bundle_helper = getattr(data_nexus_spec, "normalized_data_nexus_points_from_item", None)
+        if not callable(bundle_helper):
+            self._status_label.setText("Data Nexus point bundle helper is unavailable.")
+            return
+
+        try:
+            bundle = bundle_helper(nexus_node)
+        except Exception as exc:
+            self._status_label.setText(f"Failed to read Data Nexus bundle: {exc}")
+            return
+
+        result = generate_sales_deck_from_template(
+            str(asset.get("path") or ""),
+            bundle,
+            root=self._skills_root_text(),
+        )
+        self._status_label.setText(result.message)
+        if not result.ok:
+            return
+        self._set_hidden_node_param(SALES_DECK_INDEX_PARAM, result.index_path)
+        self._set_hidden_node_param(SALES_DECK_DIR_PARAM, result.deck_dir)
+        self._status_label.setToolTip(result.index_path)
 
     def _details_html(self, asset: Dict[str, Any] | None, library_warnings: List[str]) -> str:
         css = (
@@ -494,6 +657,9 @@ def _ensure_skills_params(node_item) -> None:
     hidden.add("root")
     hidden.add("__skills_size")
     hidden.add(MEDIATOR_INPUT_PORT)
+    hidden.add(DATA_NEXUS_INPUT_PORT)
+    hidden.add(SALES_DECK_INDEX_PARAM)
+    hidden.add(SALES_DECK_DIR_PARAM)
     hidden_param["value"] = ",".join(sorted(hidden))
 
 
@@ -501,9 +667,10 @@ def build_ports(node_item) -> None:
     _ensure_skills_params(node_item)
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input(MEDIATOR_INPUT_PORT)
+        node_item.ensure_input(DATA_NEXUS_INPUT_PORT)
     try:
         setattr(node_item, "_default_named_input", MEDIATOR_INPUT_PORT)
-        setattr(node_item, "_show_default_input_with_named", False)
+        setattr(node_item, "_show_default_input_with_named", True)
     except Exception:
         pass
 
@@ -531,6 +698,14 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.resize(w, h)
     try:
         node_item._plugin_proxies.append(proxy)
+    except Exception:
+        pass
+
+    try:
+        node_item._input_port_pos[DATA_NEXUS_INPUT_PORT] = (
+            QtCore.QPointF(0.0, float(y_cursor) + 76.0),
+            DATA_NEXUS_INPUT_PORT,
+        )
     except Exception:
         pass
 

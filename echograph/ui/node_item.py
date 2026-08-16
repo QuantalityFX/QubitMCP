@@ -784,7 +784,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
             names = {(p.get("name") or "").strip().lower() for p in params}
             if "path" not in names:
                 params.append({"name": "path", "value": ""})
-                self.model.params = params
+            if kind_lower == "html_preview":
+                hidden_entry = None
+                for p in params:
+                    if (p.get("name") or "").strip().lower() == "__ui_hidden_params":
+                        hidden_entry = p
+                        break
+                if hidden_entry is None:
+                    hidden_entry = {"name": "__ui_hidden_params", "value": ""}
+                    params.append(hidden_entry)
+                hidden = {t.strip().lower() for t in str(hidden_entry.get("value", "") or "").split(",") if t.strip()}
+                hidden.add("__html_preview_size")
+                hidden_entry["value"] = ",".join(sorted(hidden))
+            self.model.params = params
         elif kind_lower == "primitive":
             params = list(self.model.params or [])
             names = {(p.get("name") or "").strip().lower() for p in params}
@@ -1366,6 +1378,41 @@ class NodeItem(QtWidgets.QGraphicsObject):
             pass
         try:
             self._set_param_value("__skills_size", f"{w:.3f},{h:.3f}", rebuild=False, notify_scene=notify_scene)
+        except Exception:
+            pass
+
+    def _html_preview_size_from_model_or_param(self) -> tuple[float, float] | None:
+        size = getattr(self.model, "_html_preview_size", None)
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                w = float(size[0])
+                h = float(size[1])
+            except Exception:
+                w = h = None
+            if w is not None and h is not None and w > 0 and h > 0:
+                return w, h
+        parsed = self._size_tuple_from_param("__html_preview_size")
+        if parsed is not None:
+            try:
+                self.model._html_preview_size = parsed
+            except Exception:
+                pass
+        return parsed
+
+    def _store_html_preview_size(self, *, notify_scene: bool = False) -> None:
+        try:
+            w = float(self.width)
+            h = float(self.height)
+        except Exception:
+            return
+        if w <= 0 or h <= 0:
+            return
+        try:
+            self.model._html_preview_size = (w, h)
+        except Exception:
+            pass
+        try:
+            self._set_param_value("__html_preview_size", f"{w:.3f},{h:.3f}", rebuild=False, notify_scene=notify_scene)
         except Exception:
             pass
 
@@ -2756,6 +2803,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             custom_size = self._skills_size_from_model_or_param()
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    custom_w = float(custom_size[0])
+                    custom_h = float(custom_size[1])
+                except Exception:
+                    custom_w = custom_h = None
+                if custom_w is not None and custom_w > 0:
+                    new_w = max(new_w, max(self._BASE_W, custom_w))
+                if custom_h is not None and custom_h > 0:
+                    new_h = max(new_h, max(self._BASE_H, custom_h))
+        elif kind == "html_preview":
+            try:
+                self._html_preview_min_w = float(new_w)
+                self._html_preview_min_h = float(new_h)
+            except Exception:
+                pass
+            custom_size = self._html_preview_size_from_model_or_param()
             if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
                 try:
                     custom_w = float(custom_size[0])
@@ -6348,8 +6412,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return y_cursor
 
         y_cursor += self._PADDING * 2
-        preview_w, preview_h = self._html_preview_dimensions()
-        preview_w = max(preview_w, int(self.width))
+        preview_w, preview_h = self._html_preview_dimensions_for_y(y_cursor)
         preview_widget.setMinimumSize(preview_w, preview_h)
         preview_widget.setMaximumSize(preview_w, preview_h)
         preview_widget.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
@@ -6361,7 +6424,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         proxy.resize(self.width, preview_h)
         self._plugin_proxies.append(proxy)
 
-        return y_cursor + preview_h + self._PADDING
+        return y_cursor + preview_h + self._html_preview_resize_gutter()
 
     def _make_import_texture_widget(self, texture_path: str) -> QtWidgets.QWidget:
         row = QtWidgets.QWidget()
@@ -6401,13 +6464,25 @@ class NodeItem(QtWidgets.QGraphicsObject):
         height = max(180, int(LLM_NODE_H_BASE * scale))
         return width, height
 
+    def _html_preview_dimensions_for_y(self, y_cursor: int) -> tuple[int, int]:
+        default_w, default_h = self._html_preview_dimensions()
+        preview_w = max(default_w, int(self.width))
+        available_h = int(self.height) - int(y_cursor) - self._html_preview_resize_gutter()
+        preview_h = max(120, available_h)
+        if not getattr(self.model, "_html_preview_size", None):
+            preview_h = max(default_h, preview_h)
+        return preview_w, preview_h
+
+    def _html_preview_resize_gutter(self) -> int:
+        return max(16, self._PADDING * 2)
+
     def _html_preview_body_height(self) -> int:
         summary_h = self._PARAM_ROW_H * 2
         _, preview_h = self._html_preview_dimensions()
         path = (self._param_value("path") or "").strip()
         if not path or not os.path.exists(path):
             return summary_h
-        return summary_h + preview_h + self._PADDING
+        return summary_h + (self._PADDING * 2) + preview_h + self._html_preview_resize_gutter()
 
     def _render_file_summary(
         self,
@@ -7670,6 +7745,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "skills",
             "skills_library",
             "skill_library",
+            "html_preview",
+            "html preview",
+            "htmlpreview",
             "video_player",
             "video player",
             "videoplayer",
@@ -7780,6 +7858,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("skills", "skills_library", "skill_library"):
             min_w = float(getattr(self, "_skills_min_w", self._BASE_W))
             min_h = float(getattr(self, "_skills_min_h", self._BASE_H))
+        elif kind in ("html_preview", "html preview", "htmlpreview"):
+            min_w = float(getattr(self, "_html_preview_min_w", self._BASE_W))
+            min_h = float(getattr(self, "_html_preview_min_h", self._BASE_H))
         elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
             min_w = float(getattr(self, "_gantt_chart_min_w", self._BASE_W))
             min_h = float(getattr(self, "_gantt_chart_min_h", self._BASE_H))
@@ -7845,6 +7926,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.model._data_nexus_size = (float(self.width), float(self.height))
             elif kind in ("skills", "skills_library", "skill_library"):
                 self._store_skills_size(notify_scene=False)
+            elif kind in ("html_preview", "html preview", "htmlpreview"):
+                self._store_html_preview_size(notify_scene=False)
             elif kind in ("video_player", "video player", "videoplayer"):
                 self.model._video_player_size = (float(self.width), float(self.height))
         except Exception:
@@ -7882,6 +7965,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self.model._data_nexus_size = (float(self.width), float(self.height))
                 elif kind in ("skills", "skills_library", "skill_library"):
                     self._store_skills_size(notify_scene=True)
+                elif kind in ("html_preview", "html preview", "htmlpreview"):
+                    self._store_html_preview_size(notify_scene=True)
                 elif kind in ("video_player", "video player", "videoplayer"):
                     self.model._video_player_size = (float(self.width), float(self.height))
             except Exception:

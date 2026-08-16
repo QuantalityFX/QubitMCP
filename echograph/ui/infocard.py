@@ -223,6 +223,10 @@ class InfoCard(QtWidgets.QFrame):
         lay.addLayout(header)
         lay.addWidget(text)
         lay.addWidget(self._param_table)
+        try:
+            QtCore.QTimer.singleShot(0, self._fit_param_table_columns)
+        except Exception:
+            pass
         # Snapshot version picker (import/scene only) - display only for now
         kind = (getattr(self._node_ref, "kind", "") or "").lower()
         
@@ -472,10 +476,13 @@ class InfoCard(QtWidgets.QFrame):
                 val = values.get(pname, "")
                 item = tbl.item(r, 2)
                 if item is None:
-                    tbl.setItem(r, 2, QtWidgets.QTableWidgetItem(val))
+                    item = QtWidgets.QTableWidgetItem(val)
+                    item.setToolTip(val)
+                    tbl.setItem(r, 2, item)
                 else:
                     if item.text() != val:
                         item.setText(val)
+                    item.setToolTip(val)
             return True
         finally:
             try:
@@ -614,6 +621,34 @@ class InfoCard(QtWidgets.QFrame):
         except Exception:
             pass
         super().closeEvent(e)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit_param_table_columns()
+
+    def _fit_param_table_columns(self) -> None:
+        tbl = getattr(self, "_param_table", None)
+        if tbl is None:
+            return
+        try:
+            viewport_w = int(tbl.viewport().width())
+        except Exception:
+            viewport_w = 0
+        if viewport_w <= 0:
+            return
+        eye_w = 24
+        name_w = max(92, min(190, int(viewport_w * 0.26)))
+        value_w = max(120, viewport_w - eye_w - name_w - 6)
+        try:
+            hdr = tbl.horizontalHeader()
+            hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)
+            hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+            hdr.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
+            tbl.setColumnWidth(0, eye_w)
+            tbl.setColumnWidth(1, name_w)
+            tbl.setColumnWidth(2, value_w)
+        except Exception:
+            pass
 
     def _edit_code(self):
         dlg = CodeEditorDialog(self, initial_code=self._node_ref.code or "")
@@ -1127,6 +1162,14 @@ class InfoCard(QtWidgets.QFrame):
         )
         tbl.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         tbl.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        try:
+            tbl.setTextElideMode(QtCore.Qt.ElideNone)
+        except Exception:
+            pass
+        try:
+            tbl.setWordWrap(False)
+        except Exception:
+            pass
         tbl.setEditTriggers(
             QtWidgets.QAbstractItemView.DoubleClicked |
             QtWidgets.QAbstractItemView.EditKeyPressed |
@@ -1136,14 +1179,15 @@ class InfoCard(QtWidgets.QFrame):
             tbl._masked_value_param_names = set(_QUBIT_DECK_SENSITIVE_PARAMS)
             tbl.setItemDelegate(_SensitiveParamValueDelegate(tbl))
 
-        # make columns auto-fit the card width (Value stretches)
+        # The resize handler gives most available width to Value so paths
+        # show as much text as the current InfoCard width allows.
         hdr = tbl.horizontalHeader()
         hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)
         tbl.setColumnWidth(0, 26)
 
-        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
-        hdr.setStretchLastSection(True)
+        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+        hdr.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
+        hdr.setStretchLastSection(False)
 
         tbl.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
 
@@ -1232,8 +1276,14 @@ class InfoCard(QtWidgets.QFrame):
             lay.addWidget(eye)
             tbl.setCellWidget(r, 0, w)
 
-            tbl.setItem(r, 1, QtWidgets.QTableWidgetItem(pname))
-            tbl.setItem(r, 2, QtWidgets.QTableWidgetItem(p.get("value", "")))
+            name_item = QtWidgets.QTableWidgetItem(pname)
+            name_item.setToolTip(pname)
+            value_text = p.get("value", "") or ""
+            value_item = QtWidgets.QTableWidgetItem(value_text)
+            value_item.setToolTip(value_text)
+            value_item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            tbl.setItem(r, 1, name_item)
+            tbl.setItem(r, 2, value_item)
         
 
             def _apply_toggle(checked: bool, nm=key, btn=eye, _open=eye_open, _close=eye_close):
@@ -1287,7 +1337,11 @@ class InfoCard(QtWidgets.QFrame):
                     )
                 btn.setIcon(_open if checked else _close)      
             eye.toggled.connect(_apply_toggle)
-            
+
+        try:
+            QtCore.QTimer.singleShot(0, self._fit_param_table_columns)
+        except Exception:
+            pass
         return tbl
 
     def _build_param_controls(self) -> QtWidgets.QVBoxLayout:

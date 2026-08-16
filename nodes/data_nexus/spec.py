@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-from echograph.qt_compat import QtCore, QtGui, QtWidgets
+from echograph.qt_compat import QtCore, QtGui, QtWidgets, _qexec
 from nodes.core import Spec
 
 
@@ -28,6 +28,7 @@ DATA_NEXUS_OUTPUT_PARAM = "nexus"
 DATA_NEXUS_GRAPH_PARAM = "__data_nexus_graph_json"
 DATA_NEXUS_SIDECAR_PARAM = "__data_nexus_sidecar"
 DATA_NEXUS_VAULT_PARAM = "__data_nexus_vault"
+DATA_NEXUS_STORAGE_MODE_PARAM = "__data_nexus_storage_mode"
 DATA_NEXUS_STORAGE_VERSION = 1
 DATA_NEXUS_INDEX_FILE = "Index.md"
 DATA_NEXUS_MIN_ZOOM = 0.125
@@ -226,6 +227,7 @@ def _ensure_hidden_params(node_item) -> None:
             DATA_NEXUS_GRAPH_PARAM.lower(),
             DATA_NEXUS_SIDECAR_PARAM.lower(),
             DATA_NEXUS_VAULT_PARAM.lower(),
+            DATA_NEXUS_STORAGE_MODE_PARAM.lower(),
         }
     )
     _set_param_value_on_model(model, DATA_NEXUS_HIDDEN_PARAM_KEY, ",".join(sorted(hidden)))
@@ -367,6 +369,31 @@ def _workflow_path_for_node(node_item) -> Path | None:
         return None
     try:
         return Path(workflow_path)
+    except Exception:
+        return None
+
+
+def _dialog_parent_for_node(node_item) -> QtWidgets.QWidget | None:
+    scene = None
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    if scene is not None:
+        try:
+            views = scene.views()
+            if views:
+                return views[0].window()
+        except Exception:
+            pass
+    try:
+        parent = node_item.window()
+        if parent is not None:
+            return parent
+    except Exception:
+        pass
+    try:
+        return QtWidgets.QApplication.activeWindow()
     except Exception:
         return None
 
@@ -611,6 +638,24 @@ def _ensure_project_storage(node_item, workflow_path: Path | None = None) -> tup
     model = getattr(node_item, "model", None)
     if model is None:
         return None
+    mode = str(_param_value_from_model(model, DATA_NEXUS_STORAGE_MODE_PARAM, "") or "").strip().lower()
+    if mode in {"external", "vault", "opened_vault"}:
+        vault_text = _param_value_from_model(model, DATA_NEXUS_VAULT_PARAM, "")
+        sidecar_text = _param_value_from_model(model, DATA_NEXUS_SIDECAR_PARAM, "")
+        if not vault_text and not sidecar_text:
+            return None
+        try:
+            vault = Path(vault_text).expanduser().resolve() if vault_text else Path(sidecar_text).expanduser().resolve().parent / "vault"
+            sidecar = Path(sidecar_text).expanduser().resolve() if sidecar_text else vault.parent / "nexus.json"
+            root = sidecar.parent
+            vault.mkdir(parents=True, exist_ok=True)
+            _write_vault_readme(root, vault, getattr(model, "name", "") or DATA_NEXUS_NODE_KIND)
+            _set_param_value_on_model(model, DATA_NEXUS_VAULT_PARAM, str(vault))
+            _set_param_value_on_model(model, DATA_NEXUS_SIDECAR_PARAM, str(sidecar))
+            _ensure_hidden_params(node_item)
+            return root, vault, sidecar
+        except Exception:
+            return None
     path = workflow_path or _workflow_path_for_node(node_item)
     if path is None:
         return None
@@ -701,6 +746,151 @@ def _load_graph_for_node(node_item) -> dict[str, Any]:
     if loaded is not None:
         return _graph_with_point_files(loaded)
     return _default_graph()
+
+
+def _graph_from_data_nexus_folder(folder: str | Path) -> tuple[bool, str, dict[str, Any] | None, Path | None, Path | None]:
+    try:
+        selected = Path(folder).expanduser().resolve()
+    except Exception as exc:
+        return False, f"Invalid Data Nexus folder: {exc}", None, None, None
+    if not selected.is_dir():
+        return False, f"Folder does not exist: {selected}", None, None, None
+
+    root = selected
+    vault = selected / "vault"
+    sidecar = selected / "nexus.json"
+    if selected.name.lower() == "vault":
+        vault = selected
+        root = selected.parent
+        sidecar = root / "nexus.json"
+    elif not vault.is_dir() and any(path.suffix.lower() == ".md" for path in selected.glob("*.md")):
+        vault = selected
+        sidecar = selected.parent / "nexus.json"
+        root = selected.parent if sidecar.is_file() else selected
+
+    if not vault.is_dir():
+        return False, "Choose a Data Nexus folder containing `nexus.json` and `vault/`, or choose the `vault` folder itself.", None, None, None
+
+    base_graph = None
+    if sidecar.is_file():
+        try:
+            base_graph = _graph_from_json_text(sidecar.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            base_graph = None
+
+    graph = _graph_from_vault_files(vault, base_graph)
+    if graph is None and base_graph is not None:
+        graph = _graph_with_point_files(base_graph)
+    if graph is None:
+        return False, f"No Data Nexus markdown point files found in: {vault}", None, root, vault
+
+    nodes = graph.get("nodes", []) or []
+    return True, f"Loaded {len(nodes)} point(s) from {vault}.", graph, root, vault
+
+
+def _set_opened_vault_on_item(node_item, root: Path, vault: Path, graph: dict[str, Any]) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    root = Path(root).expanduser().resolve()
+    vault = Path(vault).expanduser().resolve()
+    sidecar = root / "nexus.json"
+    clean = _graph_with_point_files(graph)
+    graph_text = _graph_to_json_text(clean)
+    compact_output = _compact_output_for_graph(clean, vault_path=str(vault))
+    _set_param_value_on_model(model, DATA_NEXUS_STORAGE_MODE_PARAM, "external")
+    _set_param_value_on_model(model, DATA_NEXUS_VAULT_PARAM, str(vault))
+    _set_param_value_on_model(model, DATA_NEXUS_SIDECAR_PARAM, str(sidecar))
+    _set_param_value_on_model(model, DATA_NEXUS_GRAPH_PARAM, graph_text)
+    _set_param_value_on_model(model, DATA_NEXUS_OUTPUT_PARAM, compact_output)
+    _ensure_hidden_params(node_item)
+    try:
+        model.info = compact_output
+    except Exception:
+        pass
+
+
+def import_data_nexus_folder_into_item(node_item, folder: str | Path) -> tuple[bool, str]:
+    ok, message, graph, _root, _vault = _graph_from_data_nexus_folder(folder)
+    if not ok or graph is None:
+        return False, message
+    synced = _sync_model_from_graph(node_item, graph, write_sidecar=True)
+    count = len(graph.get("nodes", []) or [])
+    if synced:
+        return True, f"Imported {count} Data Nexus point(s)."
+    return True, f"Imported {count} Data Nexus point(s). Save the workflow to create/update the active vault folder."
+
+
+def open_data_nexus_folder_on_item(node_item, folder: str | Path) -> tuple[bool, str]:
+    ok, message, graph, root, vault = _graph_from_data_nexus_folder(folder)
+    if not ok or graph is None or root is None or vault is None:
+        return False, message
+    _set_opened_vault_on_item(node_item, root, vault, graph)
+    return True, f"Opened Data Nexus vault with {len(graph.get('nodes', []) or [])} point(s)."
+
+
+def merge_data_nexus_folder_into_item(node_item, folder: str | Path) -> tuple[bool, str]:
+    ok, message, graph, _root, _vault = _graph_from_data_nexus_folder(folder)
+    if not ok or graph is None:
+        return False, message
+    merged, added_nodes, added_edges = _merge_graphs(_load_graph_for_node(node_item), graph)
+    synced = _sync_model_from_graph(node_item, merged, write_sidecar=True)
+    detail = f"Added {added_nodes} point(s) and {added_edges} link(s)."
+    if synced:
+        return True, detail
+    return True, f"{detail} Save the workflow to create/update the active vault folder."
+
+
+def _merge_graphs(base_graph: dict[str, Any], import_graph: dict[str, Any]) -> tuple[dict[str, Any], int, int]:
+    base = _graph_with_point_files(base_graph)
+    incoming = _graph_with_point_files(import_graph)
+    nodes = [dict(entry) for entry in base.get("nodes", []) or [] if isinstance(entry, dict)]
+    edges = [dict(edge) for edge in base.get("edges", []) or [] if isinstance(edge, dict)]
+    existing_ids = {str(entry.get("id", "") or "").strip().lower() for entry in nodes}
+    id_map: dict[str, str] = {}
+    added_nodes = 0
+
+    for entry in incoming.get("nodes", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        original_id = str(entry.get("id", "") or "").strip()
+        next_entry = dict(entry)
+        wanted_id = original_id or str(next_entry.get("title", "") or next_entry.get("label", "") or "point")
+        next_id = _sanitize_folder_name(wanted_id, fallback="point")
+        if next_id.lower() in existing_ids:
+            next_id = _unique_point_id(next_id, nodes)
+        next_entry["id"] = next_id
+        if original_id:
+            id_map[original_id] = next_id
+        existing_ids.add(next_id.lower())
+        nodes.append(next_entry)
+        added_nodes += 1
+
+    existing_edge_keys = {
+        (
+            str(edge.get("source", "") or "").strip().lower(),
+            str(edge.get("target", "") or "").strip().lower(),
+            str(edge.get("label", "") or "").strip().lower(),
+        )
+        for edge in edges
+    }
+    added_edges = 0
+    for edge in incoming.get("edges", []) or []:
+        if not isinstance(edge, dict):
+            continue
+        source = id_map.get(str(edge.get("source", "") or "").strip(), "")
+        target = id_map.get(str(edge.get("target", "") or "").strip(), "")
+        if not source or not target or source == target:
+            continue
+        label = str(edge.get("label", "") or "").strip()
+        key = (source.lower(), target.lower(), label.lower())
+        if key in existing_edge_keys:
+            continue
+        existing_edge_keys.add(key)
+        edges.append({"source": source, "target": target, "label": label})
+        added_edges += 1
+
+    return _graph_with_point_files({"version": DATA_NEXUS_STORAGE_VERSION, "nodes": nodes, "edges": edges}), added_nodes, added_edges
 
 
 def _summary_for_graph(graph: dict[str, Any], *, vault_path: str = "") -> str:
@@ -2372,6 +2562,8 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._zoom_reset_btn = self._make_text_tool_button("1:1", "Reset zoom")
         self._zoom_in_btn = self._make_text_tool_button("+", "Zoom in")
         self._save_btn = self._make_tool_button("Save nexus sidecar", "SP_DialogSaveButton")
+        self._open_vault_btn = self._make_tool_button("Open/Switch Data Nexus vault", "SP_DialogOpenButton")
+        self._merge_vault_btn = self._make_tool_button("Merge another Data Nexus vault into this one", "SP_FileDialogNewFolder")
         self._reload_btn = self._make_tool_button("Reload graph from vault files", "SP_DialogResetButton")
         self._open_btn = self._make_tool_button("Open Data Nexus folder", "SP_DirOpenIcon")
         for btn in (
@@ -2383,6 +2575,8 @@ class DataNexusWidget(QtWidgets.QWidget):
             self._zoom_reset_btn,
             self._zoom_in_btn,
             self._save_btn,
+            self._open_vault_btn,
+            self._merge_vault_btn,
             self._reload_btn,
             self._open_btn,
         ):
@@ -2466,6 +2660,8 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._zoom_reset_btn.clicked.connect(self._zoom_reset)
         self._zoom_in_btn.clicked.connect(self._zoom_in)
         self._save_btn.clicked.connect(self._save_now)
+        self._open_vault_btn.clicked.connect(self._open_vault_folder)
+        self._merge_vault_btn.clicked.connect(self._merge_vault_folder)
         self._reload_btn.clicked.connect(self._reload_from_vault)
         self._open_btn.clicked.connect(self._open_folder)
         self._sync_storage(write_sidecar=True)
@@ -2825,6 +3021,92 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._sync_storage(write_sidecar=True)
         self._set_status("Reloaded vault files.")
 
+    def _choose_vault_folder(self, start: str) -> str:
+        parent = _dialog_parent_for_node(self._node_item) or self.window() or self
+        dlg = QtWidgets.QFileDialog(parent, "Open Data Nexus Vault", start or str(Path.cwd()))
+        dlg.setStyleSheet(
+            "QFileDialog{background:#1f232a;color:#e5e7eb;}"
+            "QWidget{background:#1f232a;color:#e5e7eb;}"
+            "QLabel,QTreeView,QListView,QComboBox,QLineEdit{color:#e5e7eb;background:#111827;}"
+            "QTreeView,QListView,QLineEdit,QComboBox{border:1px solid #334155;border-radius:4px;}"
+            "QPushButton{background:#1f2937;color:#e5e7eb;border:1px solid #334155;border-radius:4px;padding:4px 8px;}"
+            "QPushButton:hover{background:#273548;}"
+        )
+        try:
+            dlg.setFileMode(QtWidgets.QFileDialog.FileMode.Directory)
+        except Exception:
+            dlg.setFileMode(QtWidgets.QFileDialog.Directory)
+        try:
+            dlg.setOption(QtWidgets.QFileDialog.Option.ShowDirsOnly, True)
+            dlg.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog, True)
+        except Exception:
+            dlg.setOption(QtWidgets.QFileDialog.ShowDirsOnly, True)
+            dlg.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
+        try:
+            dlg.setModal(True)
+        except Exception:
+            pass
+        if _qexec(dlg) != QtWidgets.QDialog.Accepted:
+            return ""
+        try:
+            selected = dlg.selectedFiles()
+        except Exception:
+            selected = []
+        return str(selected[0] if selected else "").strip()
+
+    def _open_vault_folder(self) -> None:
+        model = getattr(self._node_item, "model", None)
+        start = _param_value_from_model(model, DATA_NEXUS_VAULT_PARAM, "")
+        if start:
+            try:
+                start = str(Path(start).expanduser().resolve().parent)
+            except Exception:
+                pass
+        folder = self._choose_vault_folder(start)
+        if not folder:
+            return
+
+        ok, message, graph, _root, vault = _graph_from_data_nexus_folder(folder)
+        if not ok or graph is None:
+            self._set_status(message)
+            return
+        if _root is None or vault is None:
+            self._set_status("Could not resolve selected Data Nexus vault folder.")
+            return
+
+        self._link_source_id = ""
+        self._canvas.set_link_target_mode(False)
+        _set_opened_vault_on_item(self._node_item, _root, vault, graph)
+        self._canvas.set_graph(graph)
+        self._refresh_point_list()
+        _emit_node_params_changed(self._node_item)
+        self._set_status(f"Opened vault: {vault}")
+
+    def _merge_vault_folder(self) -> None:
+        model = getattr(self._node_item, "model", None)
+        start = _param_value_from_model(model, DATA_NEXUS_VAULT_PARAM, "")
+        if start:
+            try:
+                start = str(Path(start).expanduser().resolve().parent)
+            except Exception:
+                pass
+        folder = self._choose_vault_folder(start)
+        if not folder:
+            return
+
+        ok, message, import_graph, _root, vault = _graph_from_data_nexus_folder(folder)
+        if not ok or import_graph is None:
+            self._set_status(message)
+            return
+
+        self._link_source_id = ""
+        self._canvas.set_link_target_mode(False)
+        merged, added_nodes, added_edges = _merge_graphs(self._canvas.graph(), import_graph)
+        self._canvas.set_graph(merged)
+        self._refresh_point_list()
+        self._sync_storage(write_sidecar=True)
+        self._set_status(f"Merged {added_nodes} point(s) and {added_edges} link(s) from {vault or folder}.")
+
     def _open_folder(self) -> None:
         model = getattr(self._node_item, "model", None)
         folder = _param_value_from_model(model, DATA_NEXUS_VAULT_PARAM, "")
@@ -2854,6 +3136,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, DATA_NEXUS_GRAPH_PARAM, _graph_to_json_text(_default_graph()))
     _ensure_param(node_item, DATA_NEXUS_SIDECAR_PARAM, "")
     _ensure_param(node_item, DATA_NEXUS_VAULT_PARAM, "")
+    _ensure_param(node_item, DATA_NEXUS_STORAGE_MODE_PARAM, "workflow")
     _ensure_hidden_params(node_item)
     if hasattr(node_item, "ensure_output"):
         node_item.ensure_output(DATA_NEXUS_OUTPUT_PARAM)
