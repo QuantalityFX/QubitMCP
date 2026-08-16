@@ -739,17 +739,20 @@ def _find_upstream_auto_speech_source(scene, node_item, max_depth: int = 6, _vis
     return None
 
 
-def _python_inputs(scene, python_item) -> tuple[dict, str]:
+def _python_inputs(scene, python_item, _visited=None) -> tuple[dict, str]:
     inputs = {}
     primary_input = ""
     for idx, edge in enumerate(_ordered_in_edges(scene, python_item), start=1):
         src = getattr(edge, "src", None)
         if src is None:
             continue
-        try:
-            txt = scene.resolve_text_value(src)
-        except Exception:
-            txt = ""
+        if _kind_of_item(src) == "python":
+            txt, _err = _run_python_transform(scene, src, _visited=_visited)
+        else:
+            try:
+                txt = scene.resolve_text_value(src)
+            except Exception:
+                txt = ""
         text = str(txt or "").strip()
         if not text:
             continue
@@ -761,13 +764,19 @@ def _python_inputs(scene, python_item) -> tuple[dict, str]:
     return inputs, primary_input
 
 
-def _run_python_transform(scene, python_item) -> tuple[str, str]:
+def _run_python_transform(scene, python_item, _visited=None) -> tuple[str, str]:
     model = getattr(python_item, "model", None)
     if model is None:
         return "", "Python transform node is unavailable."
     src = str(getattr(model, "code", "") or "").strip()
     if not src:
         return "", "Python transform node has no code."
+    if _visited is None:
+        _visited = set()
+    marker = id(python_item)
+    if marker in _visited:
+        return "", "Python transform chain has a cycle."
+    _visited.add(marker)
 
     params_map = {}
     raw_params = list(getattr(model, "params", None) or [])
@@ -777,7 +786,10 @@ def _run_python_transform(scene, python_item) -> tuple[str, str]:
         name = str(p.get("name") or f"param{idx+1}")
         params_map[name] = p.get("value", "")
 
-    inputs, primary_input = _python_inputs(scene, python_item)
+    try:
+        inputs, primary_input = _python_inputs(scene, python_item, _visited=_visited)
+    finally:
+        _visited.discard(marker)
     ns = {
         "__name__": "__echograph_exec__",
         "node": model,
@@ -812,8 +824,6 @@ def _run_python_transform(scene, python_item) -> tuple[str, str]:
         output_text = ns.get("result", None)
     if output_text is None or not str(output_text).strip():
         output_text = out_text
-    if output_text is None or not str(output_text).strip():
-        output_text = getattr(model, "info", "")
     clean = str(output_text or "").strip()
 
     changed = False
@@ -985,6 +995,13 @@ def _clean_voice_text(text: str) -> str:
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = _MULTI_BLANK_RE.sub("\n\n", cleaned)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(
+        r"^\s*(?:assistant|tanya|mediator)\s*:\s*",
+        "",
+        cleaned,
+        count=1,
+        flags=re.IGNORECASE,
+    )
     return cleaned.strip()
 
 
@@ -3934,9 +3951,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     if py_error and py_error != "Python transform produced empty output.":
                         self._set_status(f"{py_error} Falling back to auto response.", error=True)
                 if not text:
-                    text = _text_from_input(self._scene, self._node_item, "text").strip()
-                if not text:
                     text = str(source_text or "").strip()
+                if not text:
+                    text = _text_from_input(self._scene, self._node_item, "text").strip()
                 text = _proxy_auto_speech_text(source_item, text, fallback_text=source_text)
                 if not text:
                     self._set_status("Waiting for Python output from auto response...")
@@ -4052,17 +4069,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     )
                     if spoken:
                         return spoken, "chatbot_latest"
-                wired = _text_from_input(scene, self._node_item, "text")
                 spoken = _proxy_auto_speech_text(
                     self._chatbot_input_item,
-                    wired,
+                    source_text,
                     fallback_text=source_text,
                 )
                 if spoken:
                     return spoken, "chatbot_latest"
+                wired = _text_from_input(scene, self._node_item, "text")
                 spoken = _proxy_auto_speech_text(
                     self._chatbot_input_item,
-                    source_text,
+                    wired,
                     fallback_text=source_text,
                 )
                 if spoken:

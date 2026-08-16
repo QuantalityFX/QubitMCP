@@ -5,6 +5,7 @@ import math
 import os
 import re
 import subprocess
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,8 @@ DATA_NEXUS_LINK_MAX_GRID_DISTANCE = 0.48
 DATA_NEXUS_LABEL_MIN_ZOOM = 0.55
 DATA_NEXUS_GRID_BASE_PX = 360.0
 POINT_ID_RE = re.compile(r"^Point ID:\s*`?(?P<id>[^`\r\n]+)`?\s*$", re.IGNORECASE | re.MULTILINE)
+FRONT_MATTER_RE = re.compile(r"\A---\s*\r?\n(?P<front>.*?)\r?\n---\s*(?:\r?\n|\Z)", re.DOTALL)
+AUTO_SUMMARY_RE = re.compile(r"^Contains knowledge for .+\.$", re.IGNORECASE)
 
 
 def _default_graph() -> dict[str, Any]:
@@ -76,16 +79,82 @@ def _sanitize_markdown_file_name(value: str, fallback: str = "point") -> str:
     name = Path(str(value or "").strip()).name
     if name.lower().endswith(".md"):
         name = name[:-3]
-    stem = _sanitize_folder_name(name, fallback=fallback)
+    stem = _sanitize_folder_name(name, fallback=fallback).lower()
     return f"{stem}.md"
 
 
+def _clean_inline_text(value: Any, *, limit: int = 500) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:limit].strip()
+
+
+def _normalize_point_type(value: Any, fallback: str = "concept") -> str:
+    return _sanitize_folder_name(str(value or "").strip().lower(), fallback=fallback)
+
+
+def _derive_summary(value: Any, fallback_title: str = "") -> str:
+    text = str(value or "").strip()
+    for line in text.splitlines():
+        clean = _clean_inline_text(line, limit=240)
+        if clean:
+            return clean
+    return ""
+
+
+def _is_auto_summary(value: Any) -> bool:
+    text = _clean_inline_text(value, limit=500)
+    return bool(text and AUTO_SUMMARY_RE.match(text))
+
+
+def _yaml_scalar(value: Any) -> str:
+    return json.dumps(_clean_inline_text(value, limit=500), ensure_ascii=False)
+
+
+def _parse_front_matter(text: str) -> tuple[dict[str, str], str]:
+    raw = str(text or "")
+    match = FRONT_MATTER_RE.match(raw)
+    if not match:
+        return {}, raw
+    metadata: dict[str, str] = {}
+    for raw_line in match.group("front").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            if value[0] == '"':
+                try:
+                    value = str(json.loads(value))
+                except Exception:
+                    value = value[1:-1]
+            else:
+                value = value[1:-1]
+        metadata[key] = value.strip()
+    return metadata, raw[match.end():].lstrip("\r\n")
+
+
+def _point_metadata_from_markdown(text: str) -> dict[str, str]:
+    metadata, _body = _parse_front_matter(text)
+    return metadata
+
+
 def _point_file_name(entry: dict[str, Any]) -> str:
+    point_id = str(entry.get("id", "") or "").strip()
+    title = str(entry.get("title", "") or entry.get("label", "") or "").strip()
+    preferred = _sanitize_markdown_file_name(title or point_id, fallback=point_id or "point")
     raw = str(entry.get("file", "") or "").strip()
     if raw:
-        return _sanitize_markdown_file_name(raw, fallback=str(entry.get("id", "") or "point"))
-    point_id = str(entry.get("id", "") or "").strip()
-    return _sanitize_markdown_file_name(point_id, fallback="point")
+        current = _sanitize_markdown_file_name(raw, fallback=point_id or "point")
+        id_file = _sanitize_markdown_file_name(point_id, fallback="point")
+        if title and current.lower() == id_file.lower() and preferred.lower() != id_file.lower():
+            return preferred
+        return current
+    return preferred
 
 
 def _param_value_from_model(model, name: str, default: str = "") -> str:
@@ -191,8 +260,11 @@ def _coerce_graph(data: Any) -> dict[str, Any]:
                 node_id = f"{base_id}_{counter}"
                 counter += 1
             seen.add(node_id)
-            label = str(entry.get("label", "") or "").strip() or node_id.replace("_", " ").title()
-            note = str(entry.get("note", "") or "")
+            label = str(entry.get("label", "") or entry.get("title", "") or "").strip() or node_id.replace("_", " ").title()
+            title = str(entry.get("title", "") or label).strip()[:120]
+            note = str(entry.get("note", "") or entry.get("content", "") or "")
+            point_type = _normalize_point_type(entry.get("type", "concept"))
+            summary = _clean_inline_text(entry.get("summary", ""), limit=500) or _derive_summary(note, title)
             file_name = _sanitize_markdown_file_name(
                 str(entry.get("file", "") or ""),
                 fallback=node_id or f"point_{idx + 1}",
@@ -201,6 +273,9 @@ def _coerce_graph(data: Any) -> dict[str, Any]:
                 {
                     "id": node_id,
                     "label": label[:120],
+                    "title": title,
+                    "type": point_type,
+                    "summary": summary,
                     "note": note[:5000],
                     "x": _coerce_float(entry.get("x"), 0.5),
                     "y": _coerce_float(entry.get("y"), 0.5),
@@ -251,6 +326,28 @@ def _graph_to_json_text(graph: dict[str, Any]) -> str:
     return json.dumps(clean, ensure_ascii=False, indent=2)
 
 
+def _graph_to_sidecar_json_text(graph: dict[str, Any]) -> str:
+    clean = _graph_with_point_files(graph)
+    nodes = []
+    for entry in clean.get("nodes", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        nodes.append(
+            {
+                "id": str(entry.get("id", "") or "").strip(),
+                "x": _coerce_float(entry.get("x"), 0.5),
+                "y": _coerce_float(entry.get("y"), 0.5),
+                "file": _point_file_name(entry),
+            }
+        )
+    sidecar = {
+        "version": DATA_NEXUS_STORAGE_VERSION,
+        "nodes": nodes,
+        "edges": clean.get("edges", []) or [],
+    }
+    return json.dumps(sidecar, ensure_ascii=False, indent=2)
+
+
 def _workflow_path_for_node(node_item) -> Path | None:
     scene = None
     try:
@@ -285,6 +382,10 @@ def _storage_paths_for(workflow_path: Path, node_name: str) -> tuple[Path, Path,
 
 
 def _point_id_from_markdown(text: str) -> str:
+    metadata = _point_metadata_from_markdown(text)
+    point_id = str(metadata.get("id", "") or "").strip()
+    if point_id:
+        return _sanitize_folder_name(point_id, fallback="")
     match = POINT_ID_RE.search(str(text or ""))
     if not match:
         return ""
@@ -292,7 +393,11 @@ def _point_id_from_markdown(text: str) -> str:
 
 
 def _point_label_from_markdown(text: str, fallback: str) -> str:
-    for line in str(text or "").splitlines():
+    metadata, body = _parse_front_matter(text)
+    title = str(metadata.get("title", "") or "").strip()
+    if title:
+        return title[:120]
+    for line in body.splitlines():
         stripped = line.strip()
         if stripped.startswith("# "):
             return stripped[2:].strip()[:120] or fallback
@@ -300,9 +405,10 @@ def _point_label_from_markdown(text: str, fallback: str) -> str:
 
 
 def _point_note_from_markdown(text: str) -> str:
+    _metadata, body = _parse_front_matter(text)
     lines = []
     skipped_heading = False
-    for line in str(text or "").splitlines():
+    for line in body.splitlines():
         stripped = line.strip()
         if not skipped_heading and stripped.startswith("# "):
             skipped_heading = True
@@ -313,14 +419,34 @@ def _point_note_from_markdown(text: str) -> str:
     return "\n".join(lines).strip()[:5000]
 
 
+def _point_type_from_markdown(text: str) -> str:
+    metadata = _point_metadata_from_markdown(text)
+    return _normalize_point_type(metadata.get("type", ""), fallback="")
+
+
+def _point_summary_from_markdown(text: str, *, title: str = "", note: str = "") -> str:
+    metadata = _point_metadata_from_markdown(text)
+    summary = _clean_inline_text(metadata.get("summary", ""), limit=500)
+    return summary or _derive_summary(note, title)
+
+
 def _point_markdown(entry: dict[str, Any]) -> str:
     point_id = str(entry.get("id", "") or "").strip()
-    label = str(entry.get("label", "") or point_id or "Point").strip()
+    label = str(entry.get("title", "") or entry.get("label", "") or point_id or "Point").strip()
+    point_type = _normalize_point_type(entry.get("type", "concept"))
     note = str(entry.get("note", "") or "").strip()
+    raw_summary = _clean_inline_text(entry.get("summary", ""), limit=500)
+    summary = _derive_summary(note, label) if _is_auto_summary(raw_summary) else raw_summary
+    summary = summary or _derive_summary(note, label)
     body = [
-        f"# {label}",
+        "---",
+        f"id: {_yaml_scalar(point_id)}",
+        f"type: {_yaml_scalar(point_type)}",
+        f"title: {_yaml_scalar(label)}",
+        f"summary: {_yaml_scalar(summary)}",
+        "---",
         "",
-        f"Point ID: `{point_id}`",
+        f"# {label}",
     ]
     if note:
         body.extend(["", note])
@@ -333,6 +459,10 @@ def _graph_with_point_files(graph: dict[str, Any]) -> dict[str, Any]:
     nodes = []
     for entry in clean.get("nodes", []) or []:
         next_entry = dict(entry)
+        title = str(next_entry.get("title", "") or next_entry.get("label", "") or next_entry.get("id", "") or "").strip()
+        summary = str(next_entry.get("summary", "") or "").strip()
+        if not summary or _is_auto_summary(summary):
+            next_entry["summary"] = _derive_summary(str(next_entry.get("note", "") or ""), title)
         file_name = _point_file_name(next_entry)
         if file_name.lower() == DATA_NEXUS_INDEX_FILE.lower():
             file_name = _sanitize_markdown_file_name(next_entry.get("id", ""), fallback="point")
@@ -386,11 +516,17 @@ def _graph_from_vault_files(vault: Path, base_graph: dict[str, Any] | None = Non
         base_entry = base_by_id.get(point_id) or base_by_file.get(path.name.lower()) or {}
         angle = ((idx + 1) * 2.3999632297) % (math.pi * 2.0)
         label_fallback = str(base_entry.get("label", "") or point_id.replace("_", " ").title()).strip()
+        label = _point_label_from_markdown(text, label_fallback)
+        note = _point_note_from_markdown(text) or str(base_entry.get("note", "") or "")
         nodes.append(
             {
                 "id": point_id,
-                "label": _point_label_from_markdown(text, label_fallback),
-                "note": _point_note_from_markdown(text) or str(base_entry.get("note", "") or ""),
+                "label": label,
+                "title": label,
+                "type": _point_type_from_markdown(text) or str(base_entry.get("type", "") or "concept"),
+                "summary": _point_summary_from_markdown(text, title=label, note=note)
+                or str(base_entry.get("summary", "") or ""),
+                "note": note,
                 "x": _coerce_float(base_entry.get("x"), 0.5 + math.cos(angle) * 0.24),
                 "y": _coerce_float(base_entry.get("y"), 0.5 + math.sin(angle) * 0.24),
                 "file": _sanitize_markdown_file_name(path.name, fallback=point_id),
@@ -434,9 +570,13 @@ def _write_vault_graph_notes(vault: Path, graph: dict[str, Any]) -> None:
         "## Points",
     ]
     for entry in nodes:
-        label = str(entry.get("label", "") or entry.get("id", "") or "Point").strip()
+        label = str(entry.get("title", "") or entry.get("label", "") or entry.get("id", "") or "Point").strip()
+        point_type = str(entry.get("type", "") or "").strip()
+        summary = str(entry.get("summary", "") or "").strip()
         file_name = _point_file_name(entry)
-        lines.append(f"- [[{Path(file_name).stem}]]")
+        type_text = f" [{point_type}]" if point_type else ""
+        summary_text = f" - {summary}" if summary else ""
+        lines.append(f"- [[{Path(file_name).stem}]] {label}{type_text}{summary_text}")
         point_path = vault / file_name
         point_path.write_text(_point_markdown(entry), encoding="utf-8")
 
@@ -577,9 +717,13 @@ def _summary_for_graph(graph: dict[str, Any], *, vault_path: str = "") -> str:
     if nodes:
         lines.append("Points:")
         for entry in nodes[:30]:
-            label = str(entry.get("label", "") or entry.get("id", "") or "Point").strip()
+            label = str(entry.get("title", "") or entry.get("label", "") or entry.get("id", "") or "Point").strip()
+            point_type = str(entry.get("type", "") or "").strip()
+            summary = str(entry.get("summary", "") or "").strip()
             note = str(entry.get("note", "") or "").strip()
-            lines.append(f"- {label}" + (f": {note}" if note else ""))
+            body = summary or note
+            type_text = f" [{point_type}]" if point_type else ""
+            lines.append(f"- {label}{type_text}" + (f": {body}" if body else ""))
         if len(nodes) > 30:
             lines.append(f"- ... {len(nodes) - 30} more points")
     if edges:
@@ -630,7 +774,7 @@ def _sync_model_from_graph(node_item, graph: dict[str, Any], *, workflow_path: P
     if write_sidecar and sidecar is not None:
         try:
             sidecar.parent.mkdir(parents=True, exist_ok=True)
-            sidecar.write_text(graph_text + "\n", encoding="utf-8")
+            sidecar.write_text(_graph_to_sidecar_json_text(clean) + "\n", encoding="utf-8")
             if paths is not None:
                 _write_vault_graph_notes(vault, clean)
         except Exception:
@@ -749,6 +893,9 @@ def _find_point(nodes: list[dict[str, Any]], ref: str) -> dict[str, Any] | None:
     for entry in nodes:
         if str(entry.get("label", "") or "").strip().lower() == key:
             return entry
+    for entry in nodes:
+        if str(entry.get("title", "") or "").strip().lower() == key:
+            return entry
     return None
 
 
@@ -793,20 +940,57 @@ def _lookup_tokens(value: str) -> set[str]:
     }
 
 
+def _lookup_token_family(token: str) -> str:
+    text = str(token or "").strip().lower()
+    if text.startswith("compet"):
+        return "compet"
+    if text.startswith("differ") or text.startswith("difer"):
+        return "differ"
+    return ""
+
+
+def _lookup_tokens_match(query_token: str, content_token: str) -> bool:
+    query = str(query_token or "").strip().lower()
+    content = str(content_token or "").strip().lower()
+    if not query or not content:
+        return False
+    if query == content:
+        return True
+    if len(query) < 4 or len(content) < 4:
+        return False
+    query_family = _lookup_token_family(query)
+    if query_family and query_family == _lookup_token_family(content):
+        return True
+    return SequenceMatcher(None, query, content).ratio() >= 0.88
+
+
+def _fuzzy_token_match_count(query_tokens: set[str], content_tokens: set[str]) -> int:
+    if not query_tokens or not content_tokens:
+        return 0
+    matched = 0
+    for query_token in query_tokens:
+        if any(_lookup_tokens_match(query_token, content_token) for content_token in content_tokens):
+            matched += 1
+    return matched
+
+
 def _point_lookup_score(entry: dict[str, Any], query: str) -> int:
     q = _lookup_text(query)
     if not q:
         return 0
     point_id = _lookup_text(str(entry.get("id", "") or ""))
-    label = _lookup_text(str(entry.get("label", "") or ""))
+    label = _lookup_text(str(entry.get("label", "") or entry.get("title", "") or ""))
+    title = _lookup_text(str(entry.get("title", "") or ""))
     file_stem = _lookup_text(Path(_point_file_name(entry)).stem)
+    point_type = _lookup_text(str(entry.get("type", "") or ""))
+    summary = _lookup_text(str(entry.get("summary", "") or ""))
     note = _lookup_text(str(entry.get("note", "") or ""))
-    content = " ".join(part for part in (point_id, label, file_stem, note) if part)
-    if q in {point_id, label, file_stem}:
+    content = " ".join(part for part in (point_id, label, title, file_stem, point_type, summary, note) if part)
+    if q in {point_id, label, title, file_stem}:
         return 100
-    if label.startswith(q) or point_id.startswith(q) or file_stem.startswith(q):
+    if label.startswith(q) or title.startswith(q) or point_id.startswith(q) or file_stem.startswith(q):
         return 92
-    if q in label or q in point_id or q in file_stem:
+    if q in label or q in title or q in point_id or q in file_stem:
         return 86
     query_tokens = _lookup_tokens(query)
     if not query_tokens:
@@ -815,12 +999,17 @@ def _point_lookup_score(entry: dict[str, Any], query: str) -> int:
     id_tokens = _lookup_tokens(point_id)
     file_tokens = _lookup_tokens(file_stem)
     content_tokens = _lookup_tokens(content)
-    if query_tokens and query_tokens.issubset(label_tokens | id_tokens | file_tokens):
+    key_tokens = label_tokens | id_tokens | file_tokens
+    if query_tokens and query_tokens.issubset(key_tokens):
         return 78 + len(query_tokens)
+    if _fuzzy_token_match_count(query_tokens, key_tokens) == len(query_tokens):
+        return 74 + len(query_tokens)
     overlap = query_tokens & content_tokens
-    if not overlap:
+    fuzzy_count = _fuzzy_token_match_count(query_tokens, content_tokens)
+    match_count = max(len(overlap), fuzzy_count)
+    if not match_count:
         return 0
-    return int((len(overlap) / max(1, len(query_tokens))) * 70)
+    return int((match_count / max(1, len(query_tokens))) * 70)
 
 
 def _find_point_for_query(nodes: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
@@ -844,13 +1033,19 @@ def read_data_nexus_point_from_item(node_item, query: str) -> tuple[bool, str]:
     entry = _find_point_for_query(nodes, query)
     if entry is None:
         return False, f"I could not find a Data Nexus point matching '{str(query or '').strip()}'."
-    label = str(entry.get("label", "") or entry.get("id", "") or "Point").strip()
+    label = str(entry.get("title", "") or entry.get("label", "") or entry.get("id", "") or "Point").strip()
     point_id = str(entry.get("id", "") or "").strip()
+    point_type = str(entry.get("type", "") or "").strip()
+    summary = str(entry.get("summary", "") or "").strip()
     file_name = _point_file_name(entry)
     note = str(entry.get("note", "") or "").strip()
     lines = [f"Data Nexus point: {label}"]
+    if point_type:
+        lines.extend(["", f"Type: {point_type}"])
+    if summary:
+        lines.extend(["", f"Summary: {summary}"])
     if note:
-        lines.extend(["", note])
+        lines.extend(["", "Content:", note])
     else:
         lines.extend(["", "This point has no note body. Its title is the only saved text."])
     details = []
@@ -886,15 +1081,29 @@ def _append_note(existing: str, addition: str) -> str:
     return f"{current}\n\n{note}"[:5000]
 
 
-def _new_point(label: str, nodes: list[dict[str, Any]], *, note: str = "", point_id: str = "") -> dict[str, Any]:
+def _new_point(
+    label: str,
+    nodes: list[dict[str, Any]],
+    *,
+    note: str = "",
+    point_id: str = "",
+    point_type: str = "",
+    summary: str = "",
+) -> dict[str, Any]:
     clean_label = str(label or point_id or "Point").strip()[:120] or "Point"
     clean_id = _unique_point_id(point_id or clean_label, nodes)
+    clean_note = str(note or "").strip()[:5000]
+    clean_summary = _clean_inline_text(summary, limit=500) or _derive_summary(clean_note, clean_label)
     idx = len(nodes) + 1
     angle = (idx * 2.3999632297) % (math.pi * 2.0)
     return {
         "id": clean_id,
         "label": clean_label,
-        "note": str(note or "").strip()[:5000],
+        "title": clean_label,
+        "type": _normalize_point_type(point_type, fallback="concept"),
+        "summary": clean_summary,
+        "note": clean_note,
+        "file": _sanitize_markdown_file_name(clean_label, fallback=clean_id),
         "x": max(0.08, min(0.92, 0.5 + math.cos(angle) * 0.24)),
         "y": max(0.08, min(0.92, 0.5 + math.sin(angle) * 0.24)),
     }
@@ -1212,30 +1421,64 @@ def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str
             ref = point_id or label
             if not ref:
                 continue
-            note = _action_text(action, "note", "description", "comment", "text", "memory", "summary")
+            point_type = _action_text(action, "type", "point_type", "kind")
+            summary = _action_text(action, "summary")
+            note = _action_text(action, "note", "description", "comment", "text", "memory", "content")
+            if not note and summary:
+                # Backward compatibility: older planner payloads used `summary` as note text.
+                note = summary
             entry = _find_point(nodes, point_id) if point_id else None
             entry = entry or _find_point(nodes, label)
             was_new = False
             if entry is None:
-                entry = _new_point(label or point_id, nodes, note=note, point_id=point_id)
+                entry = _new_point(
+                    label or point_id,
+                    nodes,
+                    note=note,
+                    point_id=point_id,
+                    point_type=point_type,
+                    summary=summary,
+                )
                 nodes.append(entry)
                 was_new = True
                 counts["added"] += 1
                 changed = True
             if label and str(entry.get("label", "") or "") != label:
                 entry["label"] = label[:120]
+                entry["title"] = label[:120]
+                entry["file"] = _sanitize_markdown_file_name(label, fallback=str(entry.get("id", "") or "point"))
                 if not was_new:
                     counts["updated"] += 1
                 changed = True
+            if point_type:
+                normalized_type = _normalize_point_type(point_type)
+                if str(entry.get("type", "") or "") != normalized_type:
+                    entry["type"] = normalized_type
+                    if not was_new:
+                        counts["updated"] += 1
+                    changed = True
+            if summary:
+                clean_summary = _clean_inline_text(summary, limit=500)
+                if str(entry.get("summary", "") or "") != clean_summary:
+                    entry["summary"] = clean_summary
+                    if not was_new:
+                        counts["updated"] += 1
+                    changed = True
             if note:
                 mode = _action_text(action, "note_mode", "mode").lower()
                 old_note = str(entry.get("note", "") or "")
+                old_summary = str(entry.get("summary", "") or "")
                 if mode == "replace":
                     new_note = note[:5000]
                 else:
                     new_note = _append_note(old_note, note)
                 if new_note != old_note:
                     entry["note"] = new_note
+                    if not old_summary.strip() or _is_auto_summary(old_summary):
+                        entry["summary"] = _derive_summary(
+                            new_note,
+                            str(entry.get("title", "") or entry.get("label", "") or ""),
+                        )
                     if not was_new:
                         counts["updated"] += 1
                     changed = True
@@ -1380,6 +1623,52 @@ def data_nexus_context_from_item(node_item) -> str:
     model = getattr(node_item, "model", None)
     vault_path = _param_value_from_model(model, DATA_NEXUS_VAULT_PARAM, "")
     return _summary_for_graph(graph, vault_path=vault_path)
+
+
+def data_nexus_point_bundle_from_item(node_item) -> dict[str, Any]:
+    graph = _graph_with_point_files(_load_graph_for_node(node_item))
+    model = getattr(node_item, "model", None)
+    vault_path = _param_value_from_model(model, DATA_NEXUS_VAULT_PARAM, "")
+    nodes = [dict(entry) for entry in graph.get("nodes", []) or [] if isinstance(entry, dict)]
+    edges = [dict(edge) for edge in graph.get("edges", []) or [] if isinstance(edge, dict)]
+    links_by_point: dict[str, list[dict[str, str]]] = {}
+    for edge in edges:
+        source = str(edge.get("source", "") or "").strip()
+        target = str(edge.get("target", "") or "").strip()
+        label = str(edge.get("label", "") or "").strip()
+        if source:
+            links_by_point.setdefault(source, []).append(
+                {"direction": "out", "target": target, "label": label}
+            )
+        if target:
+            links_by_point.setdefault(target, []).append(
+                {"direction": "in", "source": source, "label": label}
+            )
+    points = []
+    for entry in nodes:
+        title = str(entry.get("title", "") or entry.get("label", "") or entry.get("id", "") or "Point").strip()
+        content = str(entry.get("note", "") or "").strip()
+        points.append(
+            {
+                "id": str(entry.get("id", "") or "").strip(),
+                "type": _normalize_point_type(entry.get("type", "concept")),
+                "title": title,
+                "summary": str(entry.get("summary", "") or "").strip() or _derive_summary(content, title),
+                "content": content,
+                "file": _point_file_name(entry),
+                "links": links_by_point.get(str(entry.get("id", "") or "").strip(), []),
+            }
+        )
+    return {
+        "version": 2,
+        "vault": vault_path,
+        "points": points,
+        "edges": edges,
+    }
+
+
+def normalized_data_nexus_points_from_item(node_item) -> dict[str, Any]:
+    return data_nexus_point_bundle_from_item(node_item)
 
 
 class DataNexusCanvas(QtWidgets.QWidget):
@@ -2221,6 +2510,9 @@ class DataNexusWidget(QtWidgets.QWidget):
             [
                 str(entry.get("id", "") or ""),
                 str(entry.get("label", "") or ""),
+                str(entry.get("title", "") or ""),
+                str(entry.get("type", "") or ""),
+                str(entry.get("summary", "") or ""),
                 str(entry.get("note", "") or ""),
                 str(entry.get("file", "") or ""),
             ]
@@ -2228,14 +2520,20 @@ class DataNexusWidget(QtWidgets.QWidget):
         return needle in haystack
 
     def _point_row_text(self, entry: dict[str, Any]) -> str:
-        label = str(entry.get("label", "") or entry.get("id", "") or "Point").strip()
+        label = str(entry.get("title", "") or entry.get("label", "") or entry.get("id", "") or "Point").strip()
         return label
 
     def _point_row_tooltip(self, entry: dict[str, Any]) -> str:
-        label = str(entry.get("label", "") or entry.get("id", "") or "Point").strip()
+        label = str(entry.get("title", "") or entry.get("label", "") or entry.get("id", "") or "Point").strip()
         file_name = _point_file_name(entry)
+        point_type = str(entry.get("type", "") or "").strip()
+        summary = str(entry.get("summary", "") or "").strip()
         note = re.sub(r"\s+", " ", str(entry.get("note", "") or "")).strip()
         parts = [label, file_name]
+        if point_type:
+            parts.append(f"type: {point_type}")
+        if summary:
+            parts.append(f"summary: {summary}")
         if note:
             parts.append(note[:260])
         return "\n".join(parts)
@@ -2358,7 +2656,7 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._label_edit.blockSignals(True)
         self._note_edit.blockSignals(True)
         try:
-            self._label_edit.setText(str(node.get("label", "") if node else ""))
+            self._label_edit.setText(str((node.get("title", "") or node.get("label", "")) if node else ""))
             self._note_edit.setPlainText(str(node.get("note", "") if node else ""))
         finally:
             self._label_edit.blockSignals(False)
@@ -2396,7 +2694,13 @@ class DataNexusWidget(QtWidgets.QWidget):
         graph = self._canvas.graph()
         for entry in graph.get("nodes", []) or []:
             if entry.get("id") == selected:
-                entry["label"] = str(text or "").strip()[:120] or entry.get("id", "Point")
+                old_summary = str(entry.get("summary", "") or "")
+                label = str(text or "").strip()[:120] or entry.get("id", "Point")
+                entry["label"] = label
+                entry["title"] = label
+                entry["file"] = _sanitize_markdown_file_name(label, fallback=str(entry.get("id", "") or "point"))
+                if not old_summary.strip() or _is_auto_summary(old_summary):
+                    entry["summary"] = _derive_summary(str(entry.get("note", "") or ""), label)
                 break
         self._canvas.replace_graph(graph)
         self._refresh_point_list()
@@ -2407,7 +2711,11 @@ class DataNexusWidget(QtWidgets.QWidget):
         graph = self._canvas.graph()
         for entry in graph.get("nodes", []) or []:
             if entry.get("id") == selected:
-                entry["note"] = self._note_edit.toPlainText()[:5000]
+                note = self._note_edit.toPlainText()[:5000]
+                entry["note"] = note
+                summary = str(entry.get("summary", "") or "")
+                if not summary.strip() or _is_auto_summary(summary):
+                    entry["summary"] = _derive_summary(note, str(entry.get("title", "") or entry.get("label", "") or ""))
                 break
         self._canvas.replace_graph(graph)
         self._on_graph_changed()
@@ -2429,7 +2737,11 @@ class DataNexusWidget(QtWidgets.QWidget):
             {
                 "id": point_id,
                 "label": f"Point {idx}",
+                "title": f"Point {idx}",
+                "type": "concept",
+                "summary": "",
                 "note": "",
+                "file": f"point_{idx}.md",
                 "x": max(0.08, min(0.92, 0.5 + math.cos(angle) * radius)),
                 "y": max(0.08, min(0.92, 0.5 + math.sin(angle) * radius)),
             }
@@ -2613,7 +2925,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
 
 
 DATA_NEXUS_SPEC = Spec(
-    stripe_color="#22d3ee",
+    stripe_color="#1e3a8a",
     render_node_body=render_node_body,
     build_ports=build_ports,
 )

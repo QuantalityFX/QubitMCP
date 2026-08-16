@@ -1212,7 +1212,7 @@ def _is_qdeck_security_tool(value: str) -> bool:
 DATA_NEXUS_INTENT_RE = re.compile(
     r"\b(data\s+nexus|nexus|vault|graph|point|points|memory\s+map|project\s+memory|mediator[\s_-]+planner|judge)\b"
     r"|"
-    r"\b(add|save|remember|track|update|delete|forget|connect|link)\b.{0,80}\b(point|note|memory|nexus|graph|vault)\b",
+    r"\b(add|create|make|save|remember|track|update|delete|forget|connect|link)\b.{0,80}\b(point|note|memory|nexus|graph|vault)\b",
     re.IGNORECASE | re.DOTALL,
 )
 QDECK_INTENT_RE = re.compile(
@@ -1262,6 +1262,10 @@ DATA_NEXUS_DELETE_POINT_PATTERNS = [
 ]
 DATA_NEXUS_POINT_QUERY_PATTERNS = [
     re.compile(
+        r"\b(?:data\s+nexus\s+|nexus\s+)?(?:point|note)\s*[:#-]\s*(?P<query>.+?)(?:[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
         r"\bwhat\s+(?:does|do)\s+(?P<query>.+?)\s+says?\b",
         re.IGNORECASE | re.DOTALL,
     ),
@@ -1287,7 +1291,7 @@ DATA_NEXUS_POINT_QUERY_PATTERNS = [
     ),
 ]
 DATA_NEXUS_ADD_INTENT_RE = re.compile(
-    r"\b(add|readd|re-add|restore|recreate|remember|save|track|capture|log|update)\b",
+    r"\b(add|create|make|readd|re-add|restore|recreate|remember|save|track|capture|log|update)\b",
     re.IGNORECASE,
 )
 DATA_NEXUS_LINK_INTENT_RE = re.compile(
@@ -1343,8 +1347,11 @@ DATA_NEXUS_FALLBACK_STOPWORDS = {
     "clear",
     "cleared",
     "connect",
+    "contains",
     "context",
     "could",
+    "create",
+    "created",
     "data",
     "did",
     "discuss",
@@ -1363,9 +1370,13 @@ DATA_NEXUS_FALLBACK_STOPWORDS = {
     "involved",
     "involves",
     "involving",
+    "into",
     "keep",
     "lot",
+    "make",
+    "made",
     "memory",
+    "new",
     "nexus",
     "node",
     "not",
@@ -1373,6 +1384,7 @@ DATA_NEXUS_FALLBACK_STOPWORDS = {
     "notes",
     "point",
     "points",
+    "question",
     "related",
     "remember",
     "remove",
@@ -1389,7 +1401,9 @@ DATA_NEXUS_FALLBACK_STOPWORDS = {
     "update",
     "vault",
     "want",
+    "where",
     "we",
+    "who",
     "with",
     "you",
 }
@@ -1471,16 +1485,19 @@ def _data_nexus_read_query_from_request(text: str) -> str:
     if not raw:
         return ""
     lowered = raw.lower()
-    if re.search(r"\b(add|save|remember|track|update|delete|remove|forget|prune|clear|connect|link)\b", lowered):
+    if re.search(r"\b(add|create|make|save|remember|track|update|delete|remove|forget|prune|clear|connect|link)\b", lowered):
         return ""
     has_nexus_intent = _looks_like_data_nexus_request(raw)
     has_read_intent = bool(
         DATA_NEXUS_READ_INTENT_RE.search(raw)
         or DATA_NEXUS_TITLE_READ_INTENT_RE.search(raw)
     )
+    has_point_reference = bool(
+        re.search(r"\b(?:data\s+nexus\s+|nexus\s+)?(?:point|note)\b", raw, re.IGNORECASE)
+    )
     if not (has_nexus_intent or has_read_intent):
         return ""
-    if not has_read_intent:
+    if not has_read_intent and not has_point_reference:
         return ""
     for pattern in DATA_NEXUS_POINT_QUERY_PATTERNS:
         match = pattern.search(raw)
@@ -1537,7 +1554,7 @@ def _looks_like_data_nexus_write_request(text: str) -> bool:
         return False
     return bool(
         re.search(
-            r"\b(add|save|remember|track|capture|log|update|change|delete|remove|forget|prune|clear|wipe|connect|link|relate|associate|join)\b",
+            r"\b(add|create|make|save|remember|track|capture|log|update|change|delete|remove|forget|prune|clear|wipe|connect|link|relate|associate|join)\b",
             raw,
             re.IGNORECASE,
         )
@@ -1587,7 +1604,7 @@ def _data_nexus_link_fallback_payload(user_request: str) -> str:
     if not text or not _looks_like_data_nexus_request(text):
         return ""
     lowered = text.lower()
-    if re.search(r"\b(add|save|remember|track|update|delete|remove|forget|prune|clear|read|show|fetch)\b", lowered):
+    if re.search(r"\b(add|create|make|save|remember|track|update|delete|remove|forget|prune|clear|read|show|fetch)\b", lowered):
         return ""
     if not DATA_NEXUS_LINK_INTENT_RE.search(text):
         return ""
@@ -1619,7 +1636,7 @@ def _data_nexus_topic_keywords(user_request: str) -> list[str]:
     lowered = text.lower()
     topic = ""
     patterns = [
-        r"(?:relate(?:d)?\s+to|about|for|involv(?:e|es|ed|ing))\s+(?:the\s+)?(?P<topic>.*?)(?:\s+(?:as\s+we|from\s+the|from\s+our|that\s+we|we\s+discuss|we\s+discused|remove|delete|forget|prune|clear|add|save|track|update)\b|[.!?;]|$)",
+        r"(?:relate(?:d)?\s+to|about|for|involv(?:e|es|ed|ing))\s+(?:the\s+)?(?P<topic>.*?)(?:\s+(?:as\s+we|from\s+the|from\s+our|that\s+we|we\s+discuss|we\s+discused|remove|delete|forget|prune|clear|add|create|make|save|track|update)\b|[.!?;]|$)",
         r"\b(?:pitch|presentation|deck|investor|demo|problem|solution|ask|audience|story|narrative|prep|preparation)\b",
     ]
     for pattern in patterns:
@@ -1675,7 +1692,7 @@ def _is_meta_data_nexus_segment(segment: str) -> bool:
     lowered = str(segment or "").lower()
     if "data nexus" not in lowered and "nexus" not in lowered:
         return False
-    return bool(re.search(r"\b(add|update|remove|delete|clear|cleared|save|track|remember)\b", lowered))
+    return bool(re.search(r"\b(add|create|make|update|remove|delete|clear|cleared|save|track|remember)\b", lowered))
 
 
 def _history_segments_for_keywords(history_context: str, keywords: list[str], *, limit: int = 8) -> list[str]:
@@ -1744,6 +1761,93 @@ def _fallback_point_id(label: str, index: int) -> str:
     return base or f"recovered_point_{index}"
 
 
+def _clean_direct_point_note(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text).strip(" .,:;!?\"'")
+    text = re.sub(
+        r"^(?:a\s+|an\s+|the\s+)?(?:question|description|note|content|body)\s*(?:about|called|named|titled)?\s*[:=-]?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip(" .,:;!?\"'")
+    if not text:
+        return ""
+    if re.match(
+        r"^(who|what|when|where|why|how|which|is|are|do|does|can|should|could|would|will|did|has|have)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        text = text[:1].upper() + text[1:]
+        if not text.endswith("?"):
+            text = f"{text}?"
+    return text[:1000]
+
+
+def _direct_point_note_from_request(text: str) -> str:
+    patterns = [
+        r"\bwhere\s+it\s+(?:contains?|says?|asks?)\s+(?P<note>.+?)(?:[.!?;]|$)",
+        r"\b(?:that|which)\s+(?:contains?|says?|asks?)\s+(?P<note>.+?)(?:[.!?;]|$)",
+        r"\b(?:with|containing)\s+(?P<note>.+?)(?:[.!?;]|$)",
+        r"\b(?:question|description|note|content|body)\s*[:=-]?\s*(?P<note>.+?)(?:[.!?;]|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        note = _clean_direct_point_note(match.group("note"))
+        if note:
+            return note
+    return ""
+
+
+def _direct_point_label_from_request(text: str, note: str) -> str:
+    patterns = [
+        r"\b(?:called|named|titled|label(?:ed)?)\s+[\"']?(?P<label>.+?)[\"']?(?:\s+(?:with|where|that|which|containing|contains?|says?|asks?|description|note|content|body)\b|[.!?;]|$)",
+        r"\b(?:page\s+name|point\s+name|title)\s*[:=-]\s*(?P<label>.+?)(?:\s+(?:description|note|content|body)\b|[.!?;]|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        label = _clean_data_nexus_ref(match.group("label"))
+        if label:
+            return label[:80]
+
+    words = re.findall(r"[A-Za-z0-9_]+", note)
+    ignore = DATA_NEXUS_FALLBACK_STOPWORDS | {
+        "are",
+        "ask",
+        "asks",
+        "how",
+        "what",
+        "when",
+        "which",
+        "why",
+    }
+    label_words = [word for word in words if word.lower() not in ignore]
+    if label_words:
+        label = " ".join(label_words[:5]).title()
+        if note.strip().endswith("?") and "question" not in label.lower():
+            label = f"{label} Question"
+        return label[:80]
+    return "Data Nexus Question" if note.strip().endswith("?") else "Data Nexus Point"
+
+
+def _direct_data_nexus_add_action_from_request(text: str) -> dict[str, str]:
+    note = _direct_point_note_from_request(text)
+    if not note:
+        return {}
+    label = _direct_point_label_from_request(text, note)
+    return {
+        "op": "upsert_point",
+        "id": _fallback_point_id(label, 1),
+        "label": label,
+        "note": note,
+    }
+
+
 def _data_nexus_add_fallback_payload(user_request: str, history_context: str = "") -> str:
     text = str(user_request or "").strip()
     if not text or not _looks_like_data_nexus_request(text):
@@ -1751,8 +1855,11 @@ def _data_nexus_add_fallback_payload(user_request: str, history_context: str = "
     if not DATA_NEXUS_ADD_INTENT_RE.search(text):
         return ""
     lowered = text.lower()
-    if re.search(r"\b(remove|delete|forget|prune)\b", lowered) and not re.search(r"\b(add|restore|recreate|remember|save|track)\b", lowered):
+    if re.search(r"\b(remove|delete|forget|prune)\b", lowered) and not re.search(r"\b(add|create|make|restore|recreate|remember|save|track)\b", lowered):
         return ""
+    direct_action = _direct_data_nexus_add_action_from_request(text)
+    if direct_action:
+        return json.dumps({"actions": [direct_action]}, separators=(",", ":"))
     keywords = _data_nexus_topic_keywords(text)
     if not keywords:
         return ""
@@ -1874,7 +1981,7 @@ def _compose_data_nexus_planning_prompt(
         "Data Nexus planning handoff:\n"
         "- You are planning a graph edit for the connected Data Nexus.\n"
         "- Think semantically from the user's request, current graph, and conversation history.\n"
-        "- Return a short user-facing answer followed by exactly one hidden <data_nexus_update> tag when a graph change is requested.\n"
+        "- Return a short user-facing answer followed by exactly one hidden <data_nexus_update> tag when a graph change is requested, including add/create/save/update/delete/connect/link requests.\n"
         "- Do not output Qubit Deck JSON or security_request tags.\n"
         "- Supported actions: upsert_point, append_note, delete_point, delete_all_points, prune_points, link, unlink.\n"
         "- For cleanup/edit/rewrite/remove-text requests against point descriptions, notes, or comments, preserve the existing id/label and include \"note_mode\":\"replace\" on every note update. Do not append the cleaned text.\n"
@@ -1941,8 +2048,9 @@ def chatbot_agent_context_from_item(scene, node_item) -> str:
     if data_nexus_context:
         parts.append(f"Data Nexus context:\n{data_nexus_context}")
         parts.append(
-            "Data Nexus write route:\n"
-            "- Data Nexus graph, point, note, vault, memory, Mediator Planner, and nexus requests are handled with a hidden data_nexus_update tag.\n"
+            "Data Nexus access route:\n"
+            "- Read-only Data Nexus requests should be answered from the Data Nexus context when possible. Do not emit a data_nexus_update tag for read/show/fetch/what-does-this-point-say requests.\n"
+            "- Data Nexus write requests to add, create, save, update, delete, connect, or link graph, point, note, vault, memory, Mediator Planner, and nexus changes are handled with a hidden data_nexus_update tag.\n"
             "- For delete/remove/forget/prune point requests, emit the tag and let the app show the Data Nexus deletion approval popup.\n"
             "- Do not emit security_request for Data Nexus requests.\n"
             "- Do not output Qubit Deck command JSON for Data Nexus requests.\n"
@@ -4091,7 +4199,17 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         delay_delete_approval_for_tanya: bool = True,
     ) -> bool:
         payloads = _data_nexus_update_payloads(output)
-        if not payloads and fallback_request:
+        explicit_payloads = bool(payloads)
+        fallback_is_write = _looks_like_data_nexus_write_request(fallback_request)
+        if fallback_request and not fallback_is_write:
+            if explicit_payloads and _data_nexus_read_query_from_request(fallback_request):
+                self._set_status("Data Nexus read-only request; ignored update tag.")
+                try:
+                    self._console_append.emit("[data_nexus] Ignored update tag for read-only Data Nexus request.")
+                except Exception:
+                    pass
+            return False
+        if not payloads and fallback_request and fallback_is_write:
             fallback_payload = _data_nexus_fallback_update_payload(fallback_request, history_context)
             if fallback_payload:
                 payloads = [fallback_payload]
@@ -4192,7 +4310,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         ):
             popup_output = "Review the Data Nexus deletion approval."
         elif (
-            _looks_like_data_nexus_request(self._last_prompt_voice_input)
+            _looks_like_data_nexus_write_request(self._last_prompt_voice_input)
             and (QDECK_COMMAND_OUTPUT_RE.search(clean_output) or USER_FEEDBACK_RE.search(clean_output))
         ):
             popup_output = "Updating Data Nexus from the chat history."
@@ -4559,7 +4677,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 if clean_source == "teacher_agent":
                     visible_output = "Teacher Agent conversion response received."
                 if (
-                    _looks_like_data_nexus_request(self._last_prompt_voice_input)
+                    _looks_like_data_nexus_write_request(self._last_prompt_voice_input)
                     and (QDECK_COMMAND_OUTPUT_RE.search(output) or USER_FEEDBACK_RE.search(output))
                 ):
                     visible_output = "Data Nexus update sent to Mediator."
@@ -4579,11 +4697,11 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                         popup_output = "Teacher Agent conversion response received."
                     elif (
                         GENERIC_PERMISSION_RESPONSE_RE.match(popup_text)
-                        and _looks_like_data_nexus_request(self._last_prompt_voice_input)
+                        and _looks_like_data_nexus_delete_request(self._last_prompt_voice_input)
                     ):
                         popup_output = "Review the Data Nexus deletion approval."
                     elif (
-                        _looks_like_data_nexus_request(self._last_prompt_voice_input)
+                        _looks_like_data_nexus_write_request(self._last_prompt_voice_input)
                         and (QDECK_COMMAND_OUTPUT_RE.search(output) or USER_FEEDBACK_RE.search(output))
                     ):
                         popup_output = "Updating Data Nexus from the chat history."

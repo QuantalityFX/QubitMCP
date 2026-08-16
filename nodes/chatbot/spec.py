@@ -231,6 +231,18 @@ _DATA_NEXUS_REQUEST_RE = re.compile(
     r"\b(data\s*nexus|nexus|vault|graph|points?|notes?|memory|mediator[\s_-]+planner|judge)\b",
     re.IGNORECASE,
 )
+_DATA_NEXUS_READ_INTENT_RE = re.compile(
+    r"\b(read|show|tell|fetch|look\s*up|quote|explain|what\s+(?:does|do|is)|description|contents?|says?|contains?)\b",
+    re.IGNORECASE,
+)
+_DATA_NEXUS_WRITE_INTENT_RE = re.compile(
+    r"\b(add|create|make|save|remember|track|capture|log|update|change|delete|remove|forget|prune|clear|wipe|connect|link|relate|associate|join)\b",
+    re.IGNORECASE,
+)
+_DATA_NEXUS_POINT_REF_RE = re.compile(
+    r"\b(?:data\s*nexus\s+|nexus\s+)?(?:points?|notes?)\b",
+    re.IGNORECASE,
+)
 _GENERIC_PERMISSION_RESPONSE_RE = re.compile(
     r"^\s*i\s+need\s+(?:your\s+)?permission\s+(?:to\s+proceed|before\s+i\s+proceed)\.?\s*$",
     re.IGNORECASE,
@@ -254,6 +266,49 @@ _DIRECT_OPEN_FAILURE_RE = re.compile(
 )
 
 
+def _looks_like_data_nexus_read_request(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw or not _DATA_NEXUS_REQUEST_RE.search(raw):
+        return False
+    if not (_DATA_NEXUS_READ_INTENT_RE.search(raw) or _DATA_NEXUS_POINT_REF_RE.search(raw)):
+        return False
+    return not _DATA_NEXUS_WRITE_INTENT_RE.search(raw)
+
+
+def _looks_like_data_nexus_write_request(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw or not _DATA_NEXUS_REQUEST_RE.search(raw):
+        return False
+    if _looks_like_data_nexus_read_request(raw):
+        return False
+    return bool(_DATA_NEXUS_WRITE_INTENT_RE.search(raw))
+
+
+def _is_data_nexus_read_response(text: str) -> bool:
+    clean = str(text or "").strip()
+    return bool(
+        clean.startswith("Data Nexus point:")
+        or clean.startswith("The connected Data Nexus has no points.")
+        or clean.startswith("I could not find a Data Nexus point matching")
+    )
+
+
+def _strip_response_role_prefix(text: str) -> str:
+    clean = str(text or "").strip()
+    for _ in range(3):
+        updated = re.sub(
+            r"^\s*(?:assistant|tanya|mediator)\s*:\s*",
+            "",
+            clean,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
+        if updated == clean:
+            break
+        clean = updated
+    return clean
+
+
 def _display_response_text(response_text: str) -> str:
     text = str(response_text or "").strip()
     if not text:
@@ -263,6 +318,7 @@ def _display_response_text(response_text: str) -> str:
     text = _SECURITY_MARKER_RE.sub("", text).strip()
     text = _DATA_NEXUS_UPDATE_RE.sub("", text).strip()
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = _strip_response_role_prefix(text)
     if not text and had_security_marker:
         return "Tool request sent to Mediator."
     if not text and had_data_nexus_update:
@@ -275,7 +331,7 @@ def _mediator_handled_display_text(response_text: str, raw_response_text: str, u
     raw_text = str(raw_response_text or response_text or "").strip()
     if (
         mediator_handled
-        and _DATA_NEXUS_REQUEST_RE.search(str(user_prompt or ""))
+        and _looks_like_data_nexus_write_request(user_prompt)
         and (
             _GENERIC_PERMISSION_RESPONSE_RE.match(text)
             or _QDECK_COMMAND_OUTPUT_RE.search(raw_text)
@@ -862,7 +918,11 @@ class ChatbotWidget(QtWidgets.QWidget):
         mediator_handled = False
         try:
             scene = self._ensure_scene()
-            if scene is not None and (raw_response_text or response_text):
+            skip_mediator_dispatch = (
+                _looks_like_data_nexus_read_request(user_prompt)
+                and _is_data_nexus_read_response(raw_response_text or response_text)
+            )
+            if scene is not None and (raw_response_text or response_text) and not skip_mediator_dispatch:
                 mediator_handled = _dispatch_mediator_output(
                     scene,
                     self._node_item,

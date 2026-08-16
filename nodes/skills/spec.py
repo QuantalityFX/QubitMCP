@@ -554,7 +554,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
 
 
 SKILLS_SPEC = Spec(
-    stripe_color="#38bdf8",
+    stripe_color="#1e3a8a",
     render_node_body=render_node_body,
     build_ports=build_ports,
 )

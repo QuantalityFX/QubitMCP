@@ -8100,6 +8100,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "html_preview",
                 "html preview",
                 "htmlpreview",
+                "skills",
+                "skills_library",
+                "skill_library",
+                "data_nexus",
+                "data nexus",
+                "data_graph",
+                "data graph",
+                "nexus",
                 "image_collection",
                 "imagecollection",
                 "uv_unwrap",
@@ -8451,7 +8459,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
                 icon_pm = node_icons._mediator_icon() or node_icons._python_icon() or node_icons._output_icon()
             elif kind_lower in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
-                icon_pm = node_icons._db_icon() or node_icons._scene_icon() or node_icons._output_icon()
+                icon_pm = node_icons._data_nexus_icon() or node_icons._db_icon() or node_icons._scene_icon() or node_icons._output_icon()
             elif kind_lower in ("codex_sandbox", "codex sandbox", "sandbox"):
                 icon_pm = node_icons._sandbox_icon() or node_icons._llm_server_icon() or node_icons._output_icon()
             elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
