@@ -6,25 +6,78 @@ from typing import Any, Dict, List
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from echograph.services.skills_library import scan_skills_library, skills_root, update_agent_template_status
+from echograph.services.teacher_agent import (
+    prepare_teacher_agent_conversion_request,
+    write_teacher_agent_ai_response,
+)
 from nodes.core import Spec
 
 
-BODY_W = 520
-BODY_H = 360
+BODY_W = 680
+BODY_H = 380
+MEDIATOR_INPUT_PORT = "mediator"
 
 
-def _asset_label(asset: Dict[str, Any]) -> str:
+def _asset_kind_label(asset: Dict[str, Any]) -> str:
     if asset.get("kind") == "agent_template":
-        version = str(asset.get("template_version_id") or "").strip()
-        status = str(asset.get("status") or "").strip()
-        badges: List[str] = []
-        if asset.get("is_latest_approved"):
-            badges.append("latest approved")
-        elif asset.get("is_latest_version"):
-            badges.append("latest")
-        suffix = " ".join(part for part in (version, status, *badges) if part)
-        return f"{asset.get('name', '')}  {suffix}".strip()
-    return str(asset.get("name", "") or "")
+        return "Agent"
+    if asset.get("kind") == "human_template":
+        return "Human"
+    return str(asset.get("kind") or "")
+
+
+def _asset_marker(asset: Dict[str, Any]) -> str:
+    if asset.get("warnings"):
+        return "warnings"
+    if asset.get("kind") != "agent_template":
+        return ""
+    status = str(asset.get("status") or "").strip().lower()
+    version = str(asset.get("template_version_id") or "").strip()
+    latest_approved = str(asset.get("latest_approved_version_id") or "").strip()
+    if asset.get("is_latest_approved"):
+        return "active"
+    if asset.get("is_latest_version"):
+        return "latest"
+    if latest_approved and version != latest_approved:
+        return "older"
+    return ""
+
+
+def _kind_of_item(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    return str(getattr(model, "kind", "") or "").strip().lower()
+
+
+def _connected_mediator_node(scene, node_item):
+    if scene is None or node_item is None:
+        return None
+    mediator_kinds = {
+        "mediator_agent",
+        "medigator_agent",
+        "medigator",
+        "medigator agent",
+        "mediator",
+        "mediator agent",
+    }
+    try:
+        edges = list(scene._in_edges(node_item))
+    except Exception:
+        edges = []
+    for edge in edges:
+        dst_port = ""
+        for attr in ("dst_port_name", "dst_label", "dst_name"):
+            if hasattr(edge, attr):
+                dst_port = str(getattr(edge, attr) or "").strip().lower()
+                if dst_port:
+                    break
+        src = getattr(edge, "src", None)
+        if dst_port == MEDIATOR_INPUT_PORT and _kind_of_item(src) in mediator_kinds:
+            return src
+    for edge in edges:
+        src = getattr(edge, "src", None)
+        if _kind_of_item(src) in mediator_kinds:
+            return src
+    return None
 
 
 class SkillsLibraryWidget(QtWidgets.QFrame):
@@ -40,9 +93,10 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
             QLabel{color:#e5e7eb;}
             QLabel#SkillsTitle{font-weight:600;color:#f8fafc;}
             QLabel#SkillsSubtle{color:#94a3b8;}
-            QListWidget{background:#111827;color:#e5e7eb;border:1px solid #334155;border-radius:4px;}
-            QListWidget::item{padding:4px 6px;}
-            QListWidget::item:selected{background:#1f3a5f;color:#f8fafc;}
+            QTreeWidget{background:#111827;color:#e5e7eb;border:1px solid #334155;border-radius:4px;}
+            QTreeWidget::item{padding:3px 4px;}
+            QTreeWidget::item:selected{background:#1f3a5f;color:#f8fafc;}
+            QHeaderView::section{background:#0f172a;color:#cbd5e1;border:0;border-right:1px solid #334155;padding:4px 6px;}
             QTextBrowser{background:#0b1018;color:#dbeafe;border:1px solid #334155;border-radius:4px;}
             QPushButton{background:#1e293b;color:#e5e7eb;border:1px solid #475569;border-radius:4px;padding:4px 8px;}
             QPushButton:hover{background:#334155;}
@@ -76,15 +130,19 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         actions = QtWidgets.QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(6)
+        self._convert_btn = QtWidgets.QPushButton("Convert")
+        self._convert_btn.setToolTip("Convert selected human template with Teacher Agent")
         self._approve_btn = QtWidgets.QPushButton("Approve")
         self._draft_btn = QtWidgets.QPushButton("Draft")
         self._deprecate_btn = QtWidgets.QPushButton("Deprecate")
         self._status_label = QtWidgets.QLabel("")
         self._status_label.setObjectName("SkillsSubtle")
         self._status_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self._convert_btn.clicked.connect(self._convert_selected_human_template)
         self._approve_btn.clicked.connect(lambda _=False: self._set_selected_status("approved"))
         self._draft_btn.clicked.connect(lambda _=False: self._set_selected_status("draft"))
         self._deprecate_btn.clicked.connect(lambda _=False: self._set_selected_status("deprecated"))
+        actions.addWidget(self._convert_btn, 0)
         actions.addWidget(self._approve_btn, 0)
         actions.addWidget(self._draft_btn, 0)
         actions.addWidget(self._deprecate_btn, 0)
@@ -92,13 +150,23 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         layout.addLayout(actions)
 
         split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        self._list = QtWidgets.QListWidget()
-        self._list.currentRowChanged.connect(self._show_asset)
+        self._list = QtWidgets.QTreeWidget()
+        self._list.setHeaderLabels(["Name", "Kind", "Version", "Status", "Marker"])
+        self._list.setRootIsDecorated(False)
+        self._list.setUniformRowHeights(True)
+        self._list.setAlternatingRowColors(True)
+        self._list.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._list.currentItemChanged.connect(self._show_asset)
+        header_view = self._list.header()
+        header_view.setStretchLastSection(False)
+        header_view.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        for column in range(1, 5):
+            header_view.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeToContents)
         self._details = QtWidgets.QTextBrowser()
         self._details.setOpenExternalLinks(False)
         split.addWidget(self._list)
         split.addWidget(self._details)
-        split.setSizes([230, 290])
+        split.setSizes([380, 300])
         layout.addWidget(split, 1)
 
         self.refresh()
@@ -140,7 +208,7 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
                     if str(asset.get("path") or "") == wanted_path:
                         row = idx
                         break
-            self._list.setCurrentRow(row)
+            self._list.setCurrentItem(self._list.topLevelItem(row))
         else:
             warnings = data.get("warnings", [])
             self._details.setHtml(self._details_html(None, warnings))
@@ -149,24 +217,43 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
     def _add_asset(self, asset: Dict[str, Any]):
         row = len(self._assets)
         self._assets.append(asset)
-        item = QtWidgets.QListWidgetItem(_asset_label(asset))
-        item.setData(QtCore.Qt.UserRole, row)
+        item = QtWidgets.QTreeWidgetItem(
+            [
+                str(asset.get("name") or ""),
+                _asset_kind_label(asset),
+                str(asset.get("template_version_id") or ""),
+                str(asset.get("status") or ""),
+                _asset_marker(asset),
+            ]
+        )
+        for column in range(5):
+            item.setData(column, QtCore.Qt.UserRole, row)
+            item.setToolTip(column, str(asset.get("path") or ""))
         if asset.get("kind") == "human_template":
-            item.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_FileIcon))
+            item.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.SP_FileIcon))
         else:
-            item.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_FileDialogDetailedView))
+            item.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.SP_FileDialogDetailedView))
         if asset.get("warnings"):
-            item.setForeground(QtGui.QBrush(QtGui.QColor("#fbbf24")))
+            color = QtGui.QColor("#fbbf24")
         elif asset.get("is_latest_approved"):
-            item.setForeground(QtGui.QBrush(QtGui.QColor("#86efac")))
+            color = QtGui.QColor("#86efac")
         elif str(asset.get("status") or "").strip().lower() == "approved":
-            item.setForeground(QtGui.QBrush(QtGui.QColor("#bbf7d0")))
+            color = QtGui.QColor("#bbf7d0")
         elif asset.get("is_latest_version"):
-            item.setForeground(QtGui.QBrush(QtGui.QColor("#93c5fd")))
-        item.setToolTip(str(asset.get("path") or ""))
-        self._list.addItem(item)
+            color = QtGui.QColor("#93c5fd")
+        else:
+            color = QtGui.QColor("#e5e7eb")
+        brush = QtGui.QBrush(color)
+        for column in range(5):
+            item.setForeground(column, brush)
+        self._list.addTopLevelItem(item)
 
-    def _show_asset(self, row: int):
+    def _show_asset(self, current, _previous=None):
+        if current is None:
+            row = -1
+        else:
+            raw_row = current.data(0, QtCore.Qt.UserRole)
+            row = int(raw_row) if raw_row is not None else -1
         if row < 0 or row >= len(self._assets):
             self._current_path = ""
             self._sync_actions(None)
@@ -178,7 +265,9 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
 
     def _sync_actions(self, asset: Dict[str, Any] | None):
         is_agent = bool(asset and asset.get("kind") == "agent_template")
+        is_human = bool(asset and asset.get("kind") == "human_template")
         status = str((asset or {}).get("status") or "").strip().lower()
+        self._convert_btn.setEnabled(is_human)
         for button in (self._approve_btn, self._draft_btn, self._deprecate_btn):
             button.setEnabled(is_agent)
         if is_agent:
@@ -187,7 +276,12 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
             self._deprecate_btn.setEnabled(status != "deprecated")
             latest = str(asset.get("latest_version_id") or "")
             approved = str(asset.get("latest_approved_version_id") or "")
-            if approved:
+            current = str(asset.get("template_version_id") or "")
+            if asset.get("is_latest_approved"):
+                self._status_label.setText(f"active approved {current}")
+            elif status == "approved" and approved:
+                self._status_label.setText(f"older approved / active {approved}")
+            elif approved:
                 self._status_label.setText(f"latest {latest} / approved {approved}")
             else:
                 self._status_label.setText(f"latest {latest} / no approved")
@@ -195,7 +289,12 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
             self._status_label.setText("")
 
     def _selected_asset(self) -> Dict[str, Any] | None:
-        row = self._list.currentRow()
+        current = self._list.currentItem()
+        if current is None:
+            row = -1
+        else:
+            raw_row = current.data(0, QtCore.Qt.UserRole)
+            row = int(raw_row) if raw_row is not None else -1
         if row < 0 or row >= len(self._assets):
             return None
         return self._assets[row]
@@ -209,6 +308,64 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         self._status_label.setText(message)
         if ok:
             self.refresh(select_path=path)
+
+    def _convert_selected_human_template(self):
+        asset = self._selected_asset()
+        if not asset or asset.get("kind") != "human_template":
+            return
+        request = prepare_teacher_agent_conversion_request(
+            str(asset.get("path") or ""),
+            root=self._skills_root_text(),
+            target_agent="sales_agent",
+            artifact_kind="html_deck",
+        )
+        if not request.ok:
+            self._status_label.setText(request.message)
+            return
+
+        scene = None
+        try:
+            scene = self._node_item.scene()
+        except Exception:
+            scene = None
+        mediator_node = _connected_mediator_node(scene, self._node_item)
+        if mediator_node is None:
+            self._status_label.setText("Connect a Mediator node to run Teacher Agent AI conversion.")
+            return
+
+        try:
+            from nodes.mediator_agent import spec as mediator_spec
+        except Exception as exc:
+            self._status_label.setText(f"Mediator unavailable: {exc}")
+            return
+        runner = getattr(mediator_spec, "run_teacher_agent_conversion_from_item", None)
+        if not callable(runner):
+            self._status_label.setText("Mediator Teacher Agent bridge is unavailable.")
+            return
+
+        request_data = request.to_dict()
+
+        def _finish(exit_code: int, error_text: str, response_text: str):
+            def _apply():
+                if int(exit_code) != 0 or str(error_text or "").strip():
+                    self._status_label.setText(str(error_text or f"Teacher Agent exited with code {exit_code}."))
+                    return
+                result = write_teacher_agent_ai_response(
+                    response_text,
+                    request_data,
+                    root=self._skills_root_text(),
+                )
+                self._status_label.setText(result.message)
+                if result.ok:
+                    self.refresh(select_path=result.agent_template_path)
+
+            try:
+                QtCore.QTimer.singleShot(0, self, _apply)
+            except Exception:
+                _apply()
+
+        ok, message = runner(scene, mediator_node, request.prompt, request.signature, on_done=_finish)
+        self._status_label.setText(message)
 
     def _details_html(self, asset: Dict[str, Any] | None, library_warnings: List[str]) -> str:
         css = (
@@ -244,6 +401,9 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
             "slide_count",
             "duplicate_slots",
             "modified_at",
+            "conversion_report",
+            "generated_by",
+            "generated_at",
         ):
             value = asset.get(key)
             if value is None or value == "":
@@ -280,10 +440,7 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
             text = path.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:
             return f"Preview unavailable: {exc}"
-        text = text.strip()
-        if len(text) > 1800:
-            return text[:1800].rstrip() + "\n..."
-        return text
+        return text.strip()
 
     @staticmethod
     def _esc(value: Any) -> str:
@@ -301,6 +458,7 @@ def _ensure_skills_params(node_item) -> None:
     params = getattr(model, "params", None)
     if not isinstance(params, list):
         return
+    filtered_params: List[Dict[str, Any]] = []
     root_param = None
     hidden_param = None
     for param in params:
@@ -308,12 +466,21 @@ def _ensure_skills_params(node_item) -> None:
             continue
         name = str(param.get("name", "") or "").strip().lower()
         legacy_key = str(param.get("key", "") or "").strip().lower()
+        if name == MEDIATOR_INPUT_PORT:
+            continue
         if name == "root" or (legacy_key == "root" and not name):
             param["name"] = "root"
             param.pop("key", None)
             root_param = param
         elif name == "__ui_hidden_params":
             hidden_param = param
+        filtered_params.append(param)
+    if len(filtered_params) != len(params):
+        params = filtered_params
+        try:
+            model.params = params
+        except Exception:
+            pass
     if root_param is None:
         root_param = {"name": "root", "value": "Skills"}
         params.append(root_param)
@@ -325,11 +492,24 @@ def _ensure_skills_params(node_item) -> None:
         params.append(hidden_param)
     hidden = {part.strip().lower() for part in str(hidden_param.get("value", "") or "").split(",") if part.strip()}
     hidden.add("root")
+    hidden.add("__skills_size")
+    hidden.add(MEDIATOR_INPUT_PORT)
     hidden_param["value"] = ",".join(sorted(hidden))
 
 
-def render_node_body(node_item, y_cursor: int) -> int:
+def build_ports(node_item) -> None:
     _ensure_skills_params(node_item)
+    if hasattr(node_item, "ensure_input"):
+        node_item.ensure_input(MEDIATOR_INPUT_PORT)
+    try:
+        setattr(node_item, "_default_named_input", MEDIATOR_INPUT_PORT)
+        setattr(node_item, "_show_default_input_with_named", False)
+    except Exception:
+        pass
+
+
+def render_node_body(node_item, y_cursor: int) -> int:
+    build_ports(node_item)
     body = SkillsLibraryWidget(node_item, None)
     proxy = QtWidgets.QGraphicsProxyWidget(node_item)
     proxy.setWidget(body)
@@ -376,4 +556,5 @@ def render_node_body(node_item, y_cursor: int) -> int:
 SKILLS_SPEC = Spec(
     stripe_color="#38bdf8",
     render_node_body=render_node_body,
+    build_ports=build_ports,
 )

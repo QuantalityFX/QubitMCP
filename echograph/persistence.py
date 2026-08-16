@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 import time
 from typing import Callable, Dict, Any
 from echograph.constants import LLM_SCALE_DEFAULT
@@ -15,6 +16,27 @@ def _coerce_bool(value, default: bool) -> bool:
         if text in {"0", "false", "no", "off", "n"}:
             return False
     return bool(default)
+
+
+def _size_from_param_list(params, name: str):
+    key = (name or "").strip().lower()
+    for entry in params or []:
+        if not isinstance(entry, dict):
+            continue
+        if (entry.get("name", "") or "").strip().lower() != key:
+            continue
+        raw = str(entry.get("value", "") or "").strip()
+        parts = [part.strip() for part in re.split(r"[,xX]", raw) if part.strip()]
+        if len(parts) < 2:
+            return None
+        try:
+            w = float(parts[0])
+            h = float(parts[1])
+        except Exception:
+            return None
+        if w <= 0 or h <= 0:
+            return None
+        return w, h
 
 
 def _node_to_dict(node) -> Dict[str, Any]:
@@ -108,6 +130,18 @@ def _node_to_dict(node) -> Dict[str, Any]:
                 w = h = None
             if w is not None and h is not None:
                 d["data_nexus_size"] = [w, h]
+    if k in ("skills", "skills_library", "skill_library"):
+        size = getattr(node, "_skills_size", None)
+        if not (isinstance(size, (list, tuple)) and len(size) >= 2):
+            size = _size_from_param_list(getattr(node, "params", None), "__skills_size")
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                w = float(size[0])
+                h = float(size[1])
+            except Exception:
+                w = h = None
+            if w is not None and h is not None:
+                d["skills_size"] = [w, h]
     if k in ("video_player", "video player", "videoplayer"):
         size = getattr(node, "_video_player_size", None)
         if isinstance(size, (list, tuple)) and len(size) >= 2:
@@ -392,6 +426,15 @@ def deserialize_scene(
                 if isinstance(dnsize, (list, tuple)) and len(dnsize) >= 2:
                     try:
                         setattr(n, "_data_nexus_size", (float(dnsize[0]), float(dnsize[1])))
+                    except Exception:
+                        pass
+            if (n.kind or "").lower() in ("skills", "skills_library", "skill_library"):
+                ssize = nd.get("skills_size")
+                if not (isinstance(ssize, (list, tuple)) and len(ssize) >= 2):
+                    ssize = _size_from_param_list(getattr(n, "params", None), "__skills_size")
+                if isinstance(ssize, (list, tuple)) and len(ssize) >= 2:
+                    try:
+                        setattr(n, "_skills_size", (float(ssize[0]), float(ssize[1])))
                     except Exception:
                         pass
             if (n.kind or "").lower() in ("video_player", "video player", "videoplayer"):

@@ -199,9 +199,6 @@ def _validate_agent_metadata(metadata: Dict[str, Any]) -> List[str]:
         warnings.append("No named `{{...}}` slots found.")
     if int(metadata.get("slide_count", 0) or 0) <= 0:
         warnings.append("No `## Slide ##` headings found.")
-    duplicates = metadata.get("duplicate_slots")
-    if isinstance(duplicates, list) and duplicates:
-        warnings.append(f"Duplicate slot declarations found: {', '.join(str(v) for v in duplicates[:8])}.")
     return warnings
 
 

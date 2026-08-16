@@ -86,6 +86,7 @@ AGENT_POPUP_CLOSE_ICON_COLOR = "#d1d5db"
 SECURITY_GUARD_PROMPT_PROFILE = "security_guard"
 SECURITY_GUARD_POPUP_NAME = "Security Guard popup"
 TANYA_PROMPT_PROFILE = "assistant_tanya"
+TEACHER_AGENT_PROMPT_PROFILE = "teacher_agent"
 TRANSLATOR_PROMPT_PROFILE = "translator"
 MEDIATOR_PLANNER_PROMPT_PROFILE = "mediator_planner"
 JAPANESE_READER_PROMPT_PROFILE = "japanese_reader"
@@ -93,6 +94,10 @@ KOREAN_READER_PROMPT_PROFILE = "korean_reader"
 CHINESE_READER_PROMPT_PROFILE = "chinese_reader"
 MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "romantic_dark_assistant": TANYA_PROMPT_PROFILE,
+    "teacher": TEACHER_AGENT_PROMPT_PROFILE,
+    "teacher_agent": TEACHER_AGENT_PROMPT_PROFILE,
+    "template_teacher": TEACHER_AGENT_PROMPT_PROFILE,
+    "template_compiler": TEACHER_AGENT_PROMPT_PROFILE,
     "translator_agent": TRANSLATOR_PROMPT_PROFILE,
     "translation_agent": TRANSLATOR_PROMPT_PROFILE,
     "japanese_agent": JAPANESE_READER_PROMPT_PROFILE,
@@ -143,6 +148,7 @@ MEDIGATOR_CODEX_RESPONSE_SOURCES = {
     "auto",
     "manual",
     "data_nexus_planning",
+    "teacher_agent",
     "security_request",
     "security_approval",
 }
@@ -1976,6 +1982,82 @@ def handle_chatbot_model_output_from_item(scene, node_item, output: str, user_in
 
 def _mediator_widget_from_item(node_item):
     return getattr(node_item, "_mediator_console_widget", None)
+
+
+def run_teacher_agent_conversion_from_item(
+    scene,
+    node_item,
+    prompt: str,
+    signature: str,
+    on_done=None,
+) -> tuple[bool, str]:
+    """Run a Teacher Agent conversion prompt through a connected Mediator widget."""
+    widget = _mediator_widget_from_item(node_item)
+    if widget is None:
+        return False, "Connected Mediator node is not initialized."
+    runner = getattr(widget, "_run_codex_prompt", None)
+    if not callable(runner):
+        return False, "Connected Mediator node cannot run AI prompts."
+
+    clean_prompt = str(prompt or "").strip()
+    if not clean_prompt:
+        return False, "Teacher Agent prompt is empty."
+    clean_signature = str(signature or "").strip() or _security_signature("teacher_agent", clean_prompt)
+
+    callback_ref = None
+    if callable(on_done):
+        def _done(exit_code: int, error_text: str, response_text: str, done_signature: str, source: str) -> None:
+            if str(source or "").strip().lower() != "teacher_agent":
+                return
+            if str(done_signature or "").strip() != clean_signature:
+                return
+            try:
+                widget._command_done.disconnect(_done)
+            except Exception:
+                pass
+            try:
+                refs = getattr(widget, "_teacher_agent_callbacks", None)
+                if isinstance(refs, list) and callback_ref in refs:
+                    refs.remove(callback_ref)
+            except Exception:
+                pass
+            try:
+                on_done(int(exit_code), str(error_text or ""), str(response_text or ""))
+            except Exception:
+                pass
+
+        callback_ref = _done
+        try:
+            refs = getattr(widget, "_teacher_agent_callbacks", None)
+            if not isinstance(refs, list):
+                refs = []
+                setattr(widget, "_teacher_agent_callbacks", refs)
+            refs.append(callback_ref)
+            widget._command_done.connect(_done)
+        except Exception as exc:
+            return False, f"Failed to attach Teacher Agent callback: {exc}"
+
+    try:
+        widget._last_prompt_voice_input = "Teacher Agent template conversion"
+        widget._last_prompt_chatbot_history = ""
+    except Exception:
+        pass
+    try:
+        runner(clean_prompt, clean_signature, "teacher_agent")
+    except Exception as exc:
+        if callback_ref is not None:
+            try:
+                widget._command_done.disconnect(callback_ref)
+            except Exception:
+                pass
+            try:
+                refs = getattr(widget, "_teacher_agent_callbacks", None)
+                if isinstance(refs, list) and callback_ref in refs:
+                    refs.remove(callback_ref)
+            except Exception:
+                pass
+        return False, f"Failed to start Teacher Agent through Mediator: {exc}"
+    return True, "Teacher Agent conversion sent to Mediator AI."
 
 
 def _find_security_guard_item(scene, *, exclude_item=None):
@@ -4241,6 +4323,8 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             mode = "auto"
         elif source == "data_nexus_planning":
             mode = "data nexus"
+        elif source == "teacher_agent":
+            mode = "teacher agent"
         else:
             mode = "manual"
         self._stop_requested = False
@@ -4472,6 +4556,8 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 if clean_source not in {"security_request", "security_approval"} and not _first_security_request(output)[0]:
                     qdeck_fallback_request = self._qdeck_security_fallback_request_text(self._last_prompt_voice_input)
                 visible_output = _strip_data_nexus_update_tags(output)
+                if clean_source == "teacher_agent":
+                    visible_output = "Teacher Agent conversion response received."
                 if (
                     _looks_like_data_nexus_request(self._last_prompt_voice_input)
                     and (QDECK_COMMAND_OUTPUT_RE.search(output) or USER_FEEDBACK_RE.search(output))
@@ -4489,7 +4575,9 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 if not chatbot_handoff:
                     popup_output = output
                     popup_text = _clean_tanya_popup_text(output)
-                    if (
+                    if clean_source == "teacher_agent":
+                        popup_output = "Teacher Agent conversion response received."
+                    elif (
                         GENERIC_PERMISSION_RESPONSE_RE.match(popup_text)
                         and _looks_like_data_nexus_request(self._last_prompt_voice_input)
                     ):

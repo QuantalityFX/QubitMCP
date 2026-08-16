@@ -1318,6 +1318,57 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return p.get("value", "") or ""
         return ""
 
+    def _size_tuple_from_param(self, name: str) -> tuple[float, float] | None:
+        raw = (self._param_value(name) or "").strip()
+        if not raw:
+            return None
+        parts = [part.strip() for part in re.split(r"[,xX]", raw) if part.strip()]
+        if len(parts) < 2:
+            return None
+        try:
+            w = float(parts[0])
+            h = float(parts[1])
+        except Exception:
+            return None
+        if w <= 0 or h <= 0:
+            return None
+        return w, h
+
+    def _skills_size_from_model_or_param(self) -> tuple[float, float] | None:
+        size = getattr(self.model, "_skills_size", None)
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                w = float(size[0])
+                h = float(size[1])
+            except Exception:
+                w = h = None
+            if w is not None and h is not None and w > 0 and h > 0:
+                return w, h
+        parsed = self._size_tuple_from_param("__skills_size")
+        if parsed is not None:
+            try:
+                self.model._skills_size = parsed
+            except Exception:
+                pass
+        return parsed
+
+    def _store_skills_size(self, *, notify_scene: bool = False) -> None:
+        try:
+            w = float(self.width)
+            h = float(self.height)
+        except Exception:
+            return
+        if w <= 0 or h <= 0:
+            return
+        try:
+            self.model._skills_size = (w, h)
+        except Exception:
+            pass
+        try:
+            self._set_param_value("__skills_size", f"{w:.3f},{h:.3f}", rebuild=False, notify_scene=notify_scene)
+        except Exception:
+            pass
+
     def _sync_light_param_visibility(self, light_type: str | None = None) -> bool:
         if (self.model.kind or "").strip().lower() not in _LIGHT_NODE_KINDS:
             return False
@@ -1548,13 +1599,25 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 except Exception:
                     return self.scenePos() + QtCore.QPointF(point.x(), point.y())
         else:
-            entry = getattr(self, "_input_port_pos", {}).get(port_key)
+            input_entries = getattr(self, "_input_port_pos", {}) or {}
+            entry = input_entries.get(port_key)
             if entry:
                 point = entry[0]
                 try:
                     return self.mapToScene(point)
                 except Exception:
                     return self.scenePos() + QtCore.QPointF(point.x(), point.y())
+            default_named_input = str(getattr(self, "_default_named_input", "") or "").strip().lower()
+            if (
+                port_key
+                and default_named_input
+                and port_key == default_named_input
+                and (not input_entries or bool(getattr(self, "_show_default_input_with_named", False)))
+            ):
+                try:
+                    return self.mapToScene(QtCore.QPointF(0, self._BASE_H / 2.0))
+                except Exception:
+                    return self.scenePos() + QtCore.QPointF(0, self._BASE_H / 2.0)
         if (side or "").strip().lower() == "in":
             try:
                 return self.mapToScene(QtCore.QPointF(0, self._BASE_H / 2.0))
@@ -1611,7 +1674,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         tol_sq = tol * tol
         best_name = None
         best_dist_sq = None
-        for name_key, entry in getattr(self, "_input_port_pos", {}).items():
+        input_entries = getattr(self, "_input_port_pos", {}) or {}
+        for name_key, entry in input_entries.items():
             pos, canonical = entry
             dx = lx - float(pos.x())
             dy = ly - float(pos.y())
@@ -1619,6 +1683,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if dist_sq <= tol_sq and (best_dist_sq is None or dist_sq < best_dist_sq):
                 best_name = canonical or name_key
                 best_dist_sq = dist_sq
+        if best_name:
+            return best_name
+        default_named_input = str(getattr(self, "_default_named_input", "") or "").strip()
+        if default_named_input and (not input_entries or bool(getattr(self, "_show_default_input_with_named", False))):
+            dx = lx
+            dy = ly - float(self._BASE_H / 2.0)
+            if (dx * dx + dy * dy) <= tol_sq:
+                return default_named_input
         return best_name
 
     def output_port_hit(self, local_point, tolerance: float | None = None) -> str | None:
@@ -2683,7 +2755,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._skills_min_h = float(new_h)
             except Exception:
                 pass
-            custom_size = getattr(self.model, "_skills_size", None)
+            custom_size = self._skills_size_from_model_or_param()
             if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
                 try:
                     custom_w = float(custom_size[0])
@@ -7772,7 +7844,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
                 self.model._data_nexus_size = (float(self.width), float(self.height))
             elif kind in ("skills", "skills_library", "skill_library"):
-                self.model._skills_size = (float(self.width), float(self.height))
+                self._store_skills_size(notify_scene=False)
             elif kind in ("video_player", "video player", "videoplayer"):
                 self.model._video_player_size = (float(self.width), float(self.height))
         except Exception:
@@ -7809,7 +7881,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 elif kind in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
                     self.model._data_nexus_size = (float(self.width), float(self.height))
                 elif kind in ("skills", "skills_library", "skill_library"):
-                    self.model._skills_size = (float(self.width), float(self.height))
+                    self._store_skills_size(notify_scene=True)
                 elif kind in ("video_player", "video player", "videoplayer"):
                     self.model._video_player_size = (float(self.width), float(self.height))
             except Exception:
