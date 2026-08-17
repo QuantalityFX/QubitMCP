@@ -368,6 +368,244 @@ def _select_points_for_slide(
     return selected, has_exact
 
 
+QUESTION_HINTS = {
+    "company_profile": "the company name, product one-liner, buyer, and concrete value promise",
+    "product_one_liner": "the one-sentence product description and who it is for",
+    "product_positioning": "the category, buyer, and why this product is different",
+    "market_timing": "what changed recently and why the timing matters now",
+    "customer_problem": "the customer pain, current workaround, and cost of doing nothing",
+    "product_demo": "the input, action, output, and visible workflow result",
+    "product_workflow": "the workflow steps and the before/after outcome",
+    "workflow_outcome": "the measurable workflow improvement, baseline, and result",
+    "technical_moat": "the technical edge, integration depth, reliability, or data advantage",
+    "market_icp": "the buyer/user profile, initial use case, budget owner, and market segment",
+    "traction_metric": "the metric, timeframe, source, and what it proves about demand",
+    "go_to_market": "the acquisition channel, sales motion, conversion mechanism, and expansion loop",
+    "pricing_economics": "the pricing model, charge metric, margin/cost structure, and willingness to pay",
+    "competitive_positioning": "the alternatives, why buyers switch, and the winning criteria",
+    "team_background": "the founder-market fit, relevant execution proof, milestones, and resource needs",
+}
+
+
+def _point_type(point: Dict[str, Any]) -> str:
+    return _normalize_type(point.get("type", "concept"))
+
+
+def _point_is_question_like(point: Dict[str, Any]) -> bool:
+    point_type = _point_type(point)
+    text = " ".join(
+        [
+            _point_title(point),
+            _point_summary(point),
+            _point_content(point),
+        ]
+    ).strip()
+    if point_type in {"question", "prep_question"}:
+        return True
+    return bool(text and text.endswith("?"))
+
+
+def _usable_sales_points(point_bundle: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_points = (point_bundle or {}).get("points", [])
+    points = [dict(point) for point in raw_points if isinstance(point, dict)]
+    return [point for point in points if not _point_is_question_like(point)]
+
+
+def _target_point_type_for_slide(slide: SalesTemplateSlide, selected: List[Dict[str, Any]]) -> str:
+    accepted = [_normalize_type(item) for item in slide.accepted_point_types if str(item or "").strip()]
+    accepted_set = set(accepted)
+    for point in selected:
+        point_type = _point_type(point)
+        if point_type in accepted_set:
+            return point_type
+    if accepted:
+        return accepted[0]
+    return _slug(slide.title, fallback="concept")
+
+
+def _readiness_notes_for_slide(
+    slide: SalesTemplateSlide,
+    selected: List[Dict[str, Any]],
+    has_exact_type: bool,
+) -> List[str]:
+    notes: List[str] = []
+    if not selected:
+        notes.append("No Data Nexus point matched this slide.")
+        return notes
+    if slide.accepted_point_types and not has_exact_type:
+        notes.append("No exact accepted point-type match; add a more specific Data Nexus answer.")
+
+    primary = selected[0]
+    if not _point_title(primary):
+        notes.append("Matched point is missing a title.")
+    if not _point_summary(primary):
+        notes.append("Matched point is missing a concise summary.")
+    content = _clean_markdown_text(_point_content(primary), limit=1200)
+    if len(content) < 40:
+        notes.append("Matched point needs a more concrete answer body.")
+    if _point_is_question_like(primary):
+        notes.append("Matched point still looks like an unanswered question.")
+    return notes
+
+
+def _readiness_question_for_slide(
+    slide: SalesTemplateSlide,
+    *,
+    status: str,
+    target_point_type: str,
+    notes: List[str],
+) -> Dict[str, Any]:
+    hint = QUESTION_HINTS.get(target_point_type) or "the specific claim, evidence, and source the slide should use"
+    prefix = f"Slide {slide.number:02d} ({slide.title})"
+    if status == "missing":
+        text = f"What should {prefix} say? Add a `{target_point_type}` answer with {hint}."
+    elif any("No exact accepted point-type match" in note for note in notes):
+        text = f"What `{target_point_type}` answer should support {prefix}? Include {hint}."
+    else:
+        text = f"Can you strengthen the Data Nexus answer for {prefix}? Include {hint}."
+    return {
+        "question_id": f"slide_{slide.number:02d}_{_slug(target_point_type, fallback='prep')}",
+        "point_type": "prep_question",
+        "slide_number": slide.number,
+        "slide_title": slide.title,
+        "accepted_point_type": target_point_type,
+        "text": text,
+    }
+
+
+def _refinement_question_for_slide(
+    slide: SalesTemplateSlide,
+    *,
+    target_point_type: str,
+    selected: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    hint = QUESTION_HINTS.get(target_point_type) or "the claim, evidence, source, and buyer-relevant detail the slide should use"
+    source_ids = _format_source_ids(selected)
+    source_text = ", ".join(source_ids[:3]) if source_ids else "the matched Data Nexus answer"
+    return {
+        "question_id": f"slide_{slide.number:02d}_refine_{_slug(target_point_type, fallback='prep')}",
+        "point_type": "prep_question",
+        "question_kind": "refinement",
+        "slide_number": slide.number,
+        "slide_title": slide.title,
+        "accepted_point_type": target_point_type,
+        "matched_point_ids": source_ids,
+        "text": (
+            f"What detail would make Slide {slide.number:02d} ({slide.title}) stronger? "
+            f"Review {source_text} and add or confirm {hint}."
+        ),
+    }
+
+
+def analyze_sales_deck_readiness(
+    template_path: str | Path | None,
+    point_bundle: Dict[str, Any],
+    *,
+    root: str | Path | None = None,
+) -> Dict[str, Any]:
+    root_path = _library_root(root)
+    if template_path:
+        try:
+            resolved_template = resolve_library_path(str(template_path), root=root_path)
+        except Exception as exc:
+            return {"ok": False, "status": "needs_setup", "message": str(exc), "slides": [], "questions": []}
+    else:
+        resolved_template, message = resolve_latest_approved_sales_agent_template(root=root_path)
+        if resolved_template is None:
+            return {"ok": False, "status": "needs_setup", "message": message, "slides": [], "questions": []}
+
+    try:
+        template_text = _read_text(resolved_template)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "needs_setup",
+            "message": f"Failed to read agent template: {exc}",
+            "slides": [],
+            "questions": [],
+        }
+
+    metadata, _template_body, template_slides = parse_sales_agent_template(template_text)
+    status = str(metadata.get("status", "") or "").strip().lower()
+    target_agent = str(metadata.get("target_agent", "") or "").strip().lower()
+    artifact_kind = str(metadata.get("artifact_kind", "") or "").strip().lower()
+    if status != "approved":
+        return {"ok": False, "status": "needs_setup", "message": "Approve the agent template before readiness analysis.", "slides": [], "questions": []}
+    if target_agent != "sales_agent":
+        return {"ok": False, "status": "needs_setup", "message": "Selected template is not a `sales_agent` template.", "slides": [], "questions": []}
+    if artifact_kind != "html_deck":
+        return {"ok": False, "status": "needs_setup", "message": "Selected template does not generate `html_deck` artifacts.", "slides": [], "questions": []}
+    if not template_slides:
+        return {"ok": False, "status": "needs_setup", "message": "Selected template has no `## Slide NN: ...` sections.", "slides": [], "questions": []}
+
+    points = _usable_sales_points(point_bundle)
+    slide_reports: List[Dict[str, Any]] = []
+    questions: List[Dict[str, Any]] = []
+    refinement_questions: List[Dict[str, Any]] = []
+    for slide in template_slides:
+        selected, has_exact = _select_points_for_slide(points, slide)
+        notes = _readiness_notes_for_slide(slide, selected, has_exact)
+        if not selected:
+            slide_status = "missing"
+        elif notes:
+            slide_status = "weak"
+        else:
+            slide_status = "ready"
+        target_point_type = _target_point_type_for_slide(slide, selected)
+        if slide_status != "ready":
+            questions.append(
+                _readiness_question_for_slide(
+                    slide,
+                    status=slide_status,
+                    target_point_type=target_point_type,
+                    notes=notes,
+                )
+            )
+        else:
+            refinement_questions.append(
+                _refinement_question_for_slide(
+                    slide,
+                    target_point_type=target_point_type,
+                    selected=selected,
+                )
+            )
+        slide_reports.append(
+            {
+                "slide_id": slide.slide_id,
+                "number": slide.number,
+                "title": slide.title,
+                "status": slide_status,
+                "accepted_point_types": list(slide.accepted_point_types),
+                "target_point_type": target_point_type,
+                "matched_point_ids": _format_source_ids(selected),
+                "has_exact_type_match": has_exact,
+                "notes": notes,
+            }
+        )
+
+    ready_count = sum(1 for slide in slide_reports if slide.get("status") == "ready")
+    weak_count = sum(1 for slide in slide_reports if slide.get("status") == "weak")
+    missing_count = sum(1 for slide in slide_reports if slide.get("status") == "missing")
+    overall_status = "ready_to_generate" if weak_count == 0 and missing_count == 0 else "needs_answers"
+    return {
+        "ok": True,
+        "status": overall_status,
+        "message": "All slides have usable Data Nexus support." if overall_status == "ready_to_generate" else "Some slides need stronger Data Nexus answers.",
+        "template_path": _display_path(resolved_template),
+        "template_family_id": str(metadata.get("template_family_id", "") or ""),
+        "template_version_id": str(metadata.get("template_version_id", "") or ""),
+        "slide_count": len(slide_reports),
+        "ready_slide_count": ready_count,
+        "weak_slide_count": weak_count,
+        "missing_slide_count": missing_count,
+        "point_count": len((point_bundle or {}).get("points", []) or []),
+        "usable_point_count": len(points),
+        "slides": slide_reports,
+        "questions": questions,
+        "refinement_questions": refinement_questions,
+    }
+
+
 def _deck_title(metadata: Dict[str, Any], template_body: str, points: List[Dict[str, Any]]) -> str:
     for point in points:
         point_type = _normalize_type(point.get("type", ""))
@@ -812,10 +1050,9 @@ def generate_sales_deck_from_template(
     if not template_slides:
         return SalesDeckResult(False, "Selected template has no `## Slide NN: ...` sections.")
 
-    raw_points = (point_bundle or {}).get("points", [])
-    points = [dict(point) for point in raw_points if isinstance(point, dict)]
+    points = _usable_sales_points(point_bundle)
     if not points:
-        return SalesDeckResult(False, "The normalized Data Nexus point bundle has no points.")
+        return SalesDeckResult(False, "The normalized Data Nexus point bundle has no usable answer points.")
 
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     slide_outputs = []

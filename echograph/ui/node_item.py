@@ -7578,17 +7578,212 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             view.setHtml(html, QtCore.QUrl.fromLocalFile(path))
-            return view
+            return self._make_html_preview_find_widget(view, is_web=True)
 
         browser = QtWidgets.QTextBrowser()
         browser.setObjectName("HtmlPreviewFallback")
         browser.setStyleSheet(
             "QTextBrowser{background:#0f1216;color:#e6edf3;"
-            "border:1px solid #3c4450;border-radius:6px;padding:6px;}"
+            "border:0;padding:6px;}"
         )
         browser.setHtml(html)
         browser.setOpenExternalLinks(True)
-        return browser
+        try:
+            browser.setFrameShape(QtWidgets.QFrame.NoFrame)
+        except Exception:
+            pass
+        return self._make_html_preview_find_widget(browser, is_web=False)
+
+    def _make_html_preview_find_widget(self, view: QtWidgets.QWidget, *, is_web: bool) -> QtWidgets.QWidget:
+        frame = QtWidgets.QWidget()
+        frame.setObjectName("HtmlPreviewFrame")
+        frame.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        frame.setStyleSheet(
+            "QWidget#HtmlPreviewFrame{background:#0f1216;border:1px solid #3c4450;border-radius:6px;}"
+            "QWidget#HtmlPreviewFindBar{background:#151a21;border-bottom:1px solid #2d3440;}"
+            "QLineEdit#HtmlPreviewFindEdit{background:#0f1216;color:#e6edf3;"
+            "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+            "QToolButton#HtmlPreviewFindButton{background:#1f2630;color:#e6edf3;"
+            "border:1px solid #3c4450;border-radius:4px;}"
+            "QToolButton#HtmlPreviewFindButton:hover{background:#273241;}"
+            "QToolButton#HtmlPreviewFindButton:disabled{color:#64748b;background:#151a21;}"
+        )
+
+        outer = QtWidgets.QVBoxLayout(frame)
+        outer.setContentsMargins(1, 1, 1, 1)
+        outer.setSpacing(0)
+
+        find_bar = QtWidgets.QWidget()
+        find_bar.setObjectName("HtmlPreviewFindBar")
+        find_bar.setFixedHeight(32)
+        find_lay = QtWidgets.QHBoxLayout(find_bar)
+        find_lay.setContentsMargins(6, 4, 6, 4)
+        find_lay.setSpacing(4)
+
+        find_edit = QtWidgets.QLineEdit()
+        find_edit.setObjectName("HtmlPreviewFindEdit")
+        find_edit.setPlaceholderText("Find text")
+        find_edit.setClearButtonEnabled(True)
+        find_edit.setFixedHeight(24)
+        find_lay.addWidget(find_edit, 1)
+
+        prev_btn = QtWidgets.QToolButton()
+        next_btn = QtWidgets.QToolButton()
+        btn_style = QtWidgets.QApplication.style()
+        arrow_up = getattr(QtWidgets.QStyle, "SP_ArrowUp", None)
+        arrow_down = getattr(QtWidgets.QStyle, "SP_ArrowDown", None)
+        if btn_style is not None and arrow_up is not None:
+            prev_btn.setIcon(btn_style.standardIcon(arrow_up))
+        else:
+            prev_btn.setText("^")
+        if btn_style is not None and arrow_down is not None:
+            next_btn.setIcon(btn_style.standardIcon(arrow_down))
+        else:
+            next_btn.setText("v")
+
+        for btn, tip in ((prev_btn, "Previous match"), (next_btn, "Next match")):
+            btn.setObjectName("HtmlPreviewFindButton")
+            btn.setToolTip(tip)
+            btn.setFixedSize(24, 24)
+            btn.setEnabled(False)
+            find_lay.addWidget(btn, 0)
+
+        outer.addWidget(find_bar, 0)
+        view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        outer.addWidget(view, 1)
+
+        def _run_find(*, backward: bool = False, restart: bool = False) -> None:
+            query = find_edit.text()
+            if is_web:
+                self._find_in_html_web_view(view, query, backward=backward)
+            else:
+                self._find_in_html_text_browser(view, query, backward=backward, restart=restart)
+
+        def _on_text_changed(text: str) -> None:
+            has_text = bool(text)
+            prev_btn.setEnabled(has_text)
+            next_btn.setEnabled(has_text)
+            _run_find(backward=False, restart=True)
+
+        find_edit.textChanged.connect(_on_text_changed)
+        find_edit.returnPressed.connect(lambda: _run_find(backward=False, restart=False))
+        prev_btn.clicked.connect(lambda _=False: _run_find(backward=True, restart=False))
+        next_btn.clicked.connect(lambda _=False: _run_find(backward=False, restart=False))
+
+        try:
+            find_shortcut = QShortcut(QKeySequence.Find, frame)
+            shortcut_context = getattr(QtCore.Qt, "WidgetWithChildrenShortcut", None)
+            if shortcut_context is None:
+                shortcut_context_enum = getattr(QtCore.Qt, "ShortcutContext", None)
+                if shortcut_context_enum is not None:
+                    shortcut_context = getattr(shortcut_context_enum, "WidgetWithChildrenShortcut", None)
+            if shortcut_context is not None:
+                find_shortcut.setContext(shortcut_context)
+            find_shortcut.activated.connect(lambda: (find_edit.setFocus(), find_edit.selectAll()))
+            frame._html_preview_find_shortcut = find_shortcut
+        except Exception:
+            pass
+
+        return frame
+
+    def _find_in_html_web_view(self, view, query: str, *, backward: bool = False) -> None:
+        query = query or ""
+        if not query:
+            try:
+                view.findText("")
+            except Exception:
+                pass
+            return
+
+        flags = self._html_find_flags_for_page(getattr(view, "page", lambda: None)(), backward=backward)
+        try:
+            if flags is None:
+                view.findText(query)
+            else:
+                view.findText(query, flags)
+        except TypeError:
+            try:
+                view.findText(query)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _find_in_html_text_browser(self, browser, query: str, *, backward: bool = False, restart: bool = False) -> None:
+        query = query or ""
+        if not query:
+            try:
+                cursor = browser.textCursor()
+                cursor.clearSelection()
+                browser.setTextCursor(cursor)
+            except Exception:
+                pass
+            return
+
+        flags = self._html_find_flags_for_text_document(backward=backward)
+        try:
+            if restart:
+                self._move_text_browser_find_cursor(browser, to_end=backward)
+            found = browser.find(query, flags) if flags is not None else browser.find(query)
+            if found:
+                return
+            self._move_text_browser_find_cursor(browser, to_end=backward)
+            if flags is not None:
+                browser.find(query, flags)
+            else:
+                browser.find(query)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _html_find_flags_for_page(page, *, backward: bool = False):
+        page_cls = page.__class__ if page is not None else None
+        if page_cls is None:
+            return None
+
+        flag = getattr(page_cls, "FindBackward", None)
+        if flag is None:
+            enum = getattr(page_cls, "FindFlag", None)
+            if enum is not None:
+                flag = getattr(enum, "FindBackward", None)
+        if not backward or flag is None:
+            return None
+        return flag
+
+    @staticmethod
+    def _html_find_flags_for_text_document(*, backward: bool = False):
+        text_document = getattr(QtGui, "QTextDocument", None)
+        if text_document is None:
+            return None
+
+        def _flag(name: str):
+            flag = getattr(text_document, name, None)
+            if flag is None:
+                enum = getattr(text_document, "FindFlag", None)
+                if enum is not None:
+                    flag = getattr(enum, name, None)
+            return flag
+
+        if not backward:
+            return None
+        return _flag("FindBackward")
+
+    @staticmethod
+    def _move_text_browser_find_cursor(browser, *, to_end: bool = False) -> None:
+        cursor_class = getattr(QtGui, "QTextCursor", None)
+        if cursor_class is None:
+            return
+        operation_name = "End" if to_end else "Start"
+        operation = getattr(cursor_class, operation_name, None)
+        if operation is None:
+            move_operation = getattr(cursor_class, "MoveOperation", None)
+            if move_operation is not None:
+                operation = getattr(move_operation, operation_name, None)
+        if operation is None:
+            return
+        cursor = browser.textCursor()
+        cursor.movePosition(operation)
+        browser.setTextCursor(cursor)
 
     @staticmethod
     def _read_plaintext_file(path: str) -> str:

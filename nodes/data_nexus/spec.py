@@ -26,6 +26,7 @@ DATA_NEXUS_BODY_H = 400
 DATA_NEXUS_HIDDEN_PARAM_KEY = "__ui_hidden_params"
 DATA_NEXUS_OUTPUT_PARAM = "nexus"
 DATA_NEXUS_GRAPH_PARAM = "__data_nexus_graph_json"
+DATA_NEXUS_VIEW_ZOOM_PARAM = "__data_nexus_view_zoom"
 DATA_NEXUS_SIDECAR_PARAM = "__data_nexus_sidecar"
 DATA_NEXUS_VAULT_PARAM = "__data_nexus_vault"
 DATA_NEXUS_STORAGE_MODE_PARAM = "__data_nexus_storage_mode"
@@ -225,6 +226,7 @@ def _ensure_hidden_params(node_item) -> None:
         {
             DATA_NEXUS_OUTPUT_PARAM.lower(),
             DATA_NEXUS_GRAPH_PARAM.lower(),
+            DATA_NEXUS_VIEW_ZOOM_PARAM.lower(),
             DATA_NEXUS_SIDECAR_PARAM.lower(),
             DATA_NEXUS_VAULT_PARAM.lower(),
             DATA_NEXUS_STORAGE_MODE_PARAM.lower(),
@@ -238,7 +240,19 @@ def _coerce_float(value, default: float) -> float:
         out = float(value)
     except Exception:
         out = default
+    if not math.isfinite(out):
+        out = default
     return max(DATA_NEXUS_WORLD_MIN, min(DATA_NEXUS_WORLD_MAX, out))
+
+
+def _coerce_zoom(value, default: float = 1.0) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        out = default
+    if not math.isfinite(out):
+        out = default
+    return max(DATA_NEXUS_MIN_ZOOM, min(DATA_NEXUS_MAX_ZOOM, out))
 
 
 def _coerce_graph(data: Any) -> dict[str, Any]:
@@ -1988,7 +2002,7 @@ class DataNexusCanvas(QtWidgets.QWidget):
 
     def set_zoom(self, zoom: float, anchor_screen: QtCore.QPointF | None = None) -> None:
         old_zoom = float(self._zoom or 1.0)
-        next_zoom = max(DATA_NEXUS_MIN_ZOOM, min(DATA_NEXUS_MAX_ZOOM, float(zoom or 1.0)))
+        next_zoom = _coerce_zoom(zoom)
         if abs(next_zoom - old_zoom) < 0.001:
             return
         anchor_world = None
@@ -2644,6 +2658,10 @@ class DataNexusWidget(QtWidgets.QWidget):
         layout.addLayout(body_row, 1)
 
         self._canvas.set_graph(_load_graph_for_node(node_item))
+        saved_zoom = _coerce_zoom(
+            _param_value_from_model(getattr(node_item, "model", None), DATA_NEXUS_VIEW_ZOOM_PARAM, "1.0")
+        )
+        self._canvas.set_zoom(saved_zoom)
         self._canvas.graphChanged.connect(self._on_graph_changed)
         self._canvas.selectionChanged.connect(self._on_selection_changed)
         self._canvas.linkTargetChosen.connect(self._on_link_target_chosen)
@@ -2872,9 +2890,13 @@ class DataNexusWidget(QtWidgets.QWidget):
             self._set_status(f"{len(links)} connected link(s).")
 
     def _on_zoom_changed(self, zoom: float) -> None:
-        self._zoom_out_btn.setEnabled(float(zoom or 1.0) > DATA_NEXUS_MIN_ZOOM + 0.001)
-        self._zoom_in_btn.setEnabled(float(zoom or 1.0) < DATA_NEXUS_MAX_ZOOM - 0.001)
-        self._set_status(f"Zoom {int(round(float(zoom or 1.0) * 100.0))}%")
+        zoom_value = _coerce_zoom(zoom)
+        model = getattr(self._node_item, "model", None)
+        _set_param_value_on_model(model, DATA_NEXUS_VIEW_ZOOM_PARAM, f"{zoom_value:.4f}")
+        _ensure_hidden_params(self._node_item)
+        self._zoom_out_btn.setEnabled(zoom_value > DATA_NEXUS_MIN_ZOOM + 0.001)
+        self._zoom_in_btn.setEnabled(zoom_value < DATA_NEXUS_MAX_ZOOM - 0.001)
+        self._set_status(f"Zoom {int(round(zoom_value * 100.0))}%")
 
     def _zoom_in(self) -> None:
         self._canvas.zoom_by(1.18)
@@ -3134,6 +3156,7 @@ def build_ports(node_item) -> None:
         pass
     _ensure_param(node_item, DATA_NEXUS_OUTPUT_PARAM, "Data Nexus output")
     _ensure_param(node_item, DATA_NEXUS_GRAPH_PARAM, _graph_to_json_text(_default_graph()))
+    _ensure_param(node_item, DATA_NEXUS_VIEW_ZOOM_PARAM, "1.0000")
     _ensure_param(node_item, DATA_NEXUS_SIDECAR_PARAM, "")
     _ensure_param(node_item, DATA_NEXUS_VAULT_PARAM, "")
     _ensure_param(node_item, DATA_NEXUS_STORAGE_MODE_PARAM, "workflow")

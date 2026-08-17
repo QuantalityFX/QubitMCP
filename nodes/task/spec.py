@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import html as html_lib
 import json
+import re
 from datetime import datetime
 from typing import Any, Dict, List
 
 from PySide6 import QtCore, QtWidgets
 
-from echograph.services.sales_agent import generate_sales_deck_from_template
+from echograph.services.sales_agent import analyze_sales_deck_readiness, generate_sales_deck_from_template
 from echograph.services.skills_library import scan_skills_library
 from nodes.core import Spec
 
@@ -223,6 +225,18 @@ def _is_question_like_point(point: Dict[str, Any]) -> bool:
     return content.endswith("?")
 
 
+def _slug(value: Any, fallback: str = "item") -> str:
+    text = str(value or "").strip().lower()
+    out = []
+    for ch in text:
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in {" ", "-", "_", ".", "/", ":"}:
+            out.append("_")
+    clean = re.sub(r"_+", "_", "".join(out)).strip("._-")
+    return clean or fallback
+
+
 def _point_type_counts(points: List[Dict[str, Any]]) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for point in points:
@@ -302,6 +316,10 @@ def _persist_task_report(node_item, report: Dict[str, Any], *, notify_scene: boo
     questions = report.get("questions") or []
     if not isinstance(questions, list):
         questions = []
+    refinement_questions = report.get("refinement_questions") or []
+    if not isinstance(refinement_questions, list):
+        refinement_questions = []
+    output_questions = questions if questions else refinement_questions
     guide = report.get("guide") if isinstance(report.get("guide"), dict) else {}
     template = report.get("agent_template") if isinstance(report.get("agent_template"), dict) else {}
     artifact_path = _artifact_path_from_report(report)
@@ -318,7 +336,7 @@ def _persist_task_report(node_item, report: Dict[str, Any], *, notify_scene: boo
     _set_param_on_item(
         node_item,
         QUESTIONS_OUTPUT_PORT,
-        "\n".join(str(question.get("text", "") or "") for question in questions if isinstance(question, dict)),
+        "\n".join(str(question.get("text", "") or "") for question in output_questions if isinstance(question, dict)),
         notify_scene=False,
     )
     _set_param_on_item(node_item, ARTIFACT_OUTPUT_PORT, artifact_path, notify_scene=notify_scene)
@@ -398,6 +416,172 @@ def _refresh_connected_html_previews(node_item, artifact_path: str) -> None:
                 pass
 
 
+def _report_from_model(node_item) -> Dict[str, Any]:
+    raw = _param_value_from_model(getattr(node_item, "model", None), TASK_LAST_REPORT_PARAM, "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _question_point_id(task_id: str, question: Dict[str, Any]) -> str:
+    base = str(question.get("question_id") or "").strip()
+    if not base:
+        slide_number = int(question.get("slide_number", 0) or 0)
+        point_type = str(question.get("accepted_point_type") or question.get("point_type") or "prep").strip()
+        base = f"slide_{slide_number:02d}_{point_type}"
+    return _slug(f"{task_id}_{base}", fallback=f"{task_id}_prep_question")
+
+
+def _question_label(question: Dict[str, Any]) -> str:
+    slide_number = int(question.get("slide_number", 0) or 0)
+    slide_title = str(question.get("slide_title") or "").strip()
+    suffix = "Refinement Question" if str(question.get("question_kind") or "").strip().lower() == "refinement" else "Prep Question"
+    if slide_number and slide_title:
+        return f"Slide {slide_number:02d} {slide_title} {suffix}"
+    if slide_number:
+        return f"Slide {slide_number:02d} {suffix}"
+    return f"Sales {suffix}"
+
+
+def _question_note(task_id: str, question: Dict[str, Any], slide: Dict[str, Any] | None) -> str:
+    slide_number = int(question.get("slide_number", 0) or 0)
+    slide_title = str(question.get("slide_title") or (slide or {}).get("title") or "").strip()
+    accepted_type = str(question.get("accepted_point_type") or (slide or {}).get("target_point_type") or "").strip()
+    status = str((slide or {}).get("status") or "needs_answer").strip()
+    lines = [
+        "Question:",
+        str(question.get("text") or "").strip(),
+        "",
+        f"Task: {task_id}",
+    ]
+    if slide_number or slide_title:
+        lines.append(f"Slide: {slide_number:02d} - {slide_title}".strip())
+    if accepted_type:
+        lines.append(f"Expected answer point type: {accepted_type}")
+    question_kind = str(question.get("question_kind") or "blocking").strip()
+    if question_kind:
+        lines.append(f"Question kind: {question_kind}")
+    if status:
+        lines.append(f"Readiness status: {status}")
+    matched_ids = list(question.get("matched_point_ids") or (slide or {}).get("matched_point_ids") or [])
+    if matched_ids:
+        lines.append("Matched source points: " + ", ".join(str(item) for item in matched_ids if str(item or "").strip()))
+    notes = list((slide or {}).get("notes") or [])
+    if notes:
+        lines.extend(["", "Why this is needed:"])
+        lines.extend(f"- {note}" for note in notes)
+    lines.extend(
+        [
+            "",
+            "Answering workflow:",
+            f"- Add or update a Data Nexus answer point with type `{accepted_type or 'concept'}`.",
+            "- Include the concrete claim, evidence, and source context the slide should use.",
+            "- Link the answer back to this prep question when the answer is ready.",
+        ]
+    )
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def _question_actions_from_report(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    task_id = str(report.get("task_id") or "").strip() or "task"
+    blocking_questions = [question for question in (report.get("questions") or []) if isinstance(question, dict)]
+    refinement_questions = [question for question in (report.get("refinement_questions") or []) if isinstance(question, dict)]
+    questions = blocking_questions if blocking_questions else refinement_questions
+    readiness = report.get("readiness") if isinstance(report.get("readiness"), dict) else {}
+    slides = [slide for slide in (readiness.get("slides") or []) if isinstance(slide, dict)]
+    slides_by_number = {int(slide.get("number", 0) or 0): slide for slide in slides}
+    actions: List[Dict[str, Any]] = []
+    for question in questions:
+        if str(question.get("point_type") or "").strip().lower() != "prep_question":
+            continue
+        point_id = _question_point_id(task_id, question)
+        slide = slides_by_number.get(int(question.get("slide_number", 0) or 0))
+        accepted_type = str(question.get("accepted_point_type") or (slide or {}).get("target_point_type") or "").strip()
+        label = _question_label(question)
+        question_kind = str(question.get("question_kind") or "").strip().lower()
+        summary = f"{'Refinement' if question_kind == 'refinement' else 'Prep'} question for {label.replace(' Prep Question', '').replace(' Refinement Question', '')}"
+        if accepted_type:
+            summary += f" requiring `{accepted_type}`."
+        else:
+            summary += "."
+        actions.append(
+            {
+                "op": "upsert_point",
+                "id": point_id,
+                "label": label,
+                "type": "prep_question",
+                "summary": summary,
+                "note": _question_note(task_id, question, slide),
+                "note_mode": "replace",
+            }
+        )
+        link_label = "refines_answer" if question_kind == "refinement" else "needs_stronger_answer"
+        matched_ids = list(question.get("matched_point_ids") or (slide or {}).get("matched_point_ids") or [])
+        for matched_id in matched_ids:
+            matched_text = str(matched_id or "").strip()
+            if not matched_text:
+                continue
+            actions.append(
+                {
+                    "op": "link",
+                    "source": point_id,
+                    "target": matched_text,
+                    "label": link_label,
+                    "create_missing": False,
+                }
+            )
+    return actions
+
+
+def write_task_questions_to_data_nexus_from_item(node_item) -> Dict[str, Any]:
+    report = _report_from_model(node_item)
+    if not report:
+        report = run_task_step_from_item(node_item)
+    actions = _question_actions_from_report(report)
+    write_result = {
+        "ok": False,
+        "message": "No pending prep questions to write.",
+        "question_count": 0,
+    }
+    if not actions:
+        report["data_nexus_write"] = write_result
+        _persist_task_report(node_item, report)
+        return report
+
+    _, _, data_nexus_node = _connected_task_nodes(node_item)
+    if data_nexus_node is None:
+        write_result["message"] = "Connect a Data Nexus node to the Task data_nexus input."
+        report["data_nexus_write"] = write_result
+        _persist_task_report(node_item, report)
+        return report
+
+    try:
+        from nodes.data_nexus import spec as data_nexus_spec
+
+        handler = getattr(data_nexus_spec, "apply_data_nexus_update_from_item", None)
+        if not callable(handler):
+            write_result["message"] = "Data Nexus update helper is unavailable."
+        else:
+            ok, message = handler(data_nexus_node, {"actions": actions}, requester="Task")
+            already_current = str(message or "").startswith("No Data Nexus changes")
+            write_result = {
+                "ok": bool(ok or already_current),
+                "message": "Prep questions already exist in Data Nexus." if already_current else str(message or ""),
+                "question_count": sum(1 for action in actions if action.get("op") == "upsert_point"),
+                "action_count": len(actions),
+            }
+    except Exception as exc:
+        write_result["message"] = f"Failed to write prep questions to Data Nexus: {exc}"
+
+    report["data_nexus_write"] = write_result
+    _persist_task_report(node_item, report)
+    return report
+
+
 def run_task_step_from_item(node_item) -> Dict[str, Any]:
     task_id = _task_id_for_item(node_item)
     _, skills_node, data_nexus_node = _connected_task_nodes(node_item)
@@ -408,8 +592,10 @@ def run_task_step_from_item(node_item) -> Dict[str, Any]:
         "guide_found": False,
         "template_found": False,
         "points_found": False,
+        "readiness_ready": False,
     }
     questions: List[Dict[str, str]] = []
+    refinement_questions: List[Dict[str, Any]] = []
     snapshot: Dict[str, Any] = {}
     guide = None
     template = None
@@ -456,6 +642,7 @@ def run_task_step_from_item(node_item) -> Dict[str, Any]:
     point_counts: Dict[str, int] = {}
     usable_points = 0
     vault_path = ""
+    readiness: Dict[str, Any] = {}
     if data_nexus_node is None:
         questions.append(
             {
@@ -501,10 +688,40 @@ def run_task_step_from_item(node_item) -> Dict[str, Any]:
                 }
             )
 
+    can_analyze = (
+        checks["skills_connected"]
+        and checks["data_nexus_connected"]
+        and checks["guide_found"]
+        and checks["template_found"]
+    )
+    if can_analyze:
+        readiness = analyze_sales_deck_readiness(
+            str((template or {}).get("path") or ""),
+            bundle,
+            root=skills_root or "Skills",
+        )
+        checks["readiness_ready"] = str(readiness.get("status") or "").strip().lower() == "ready_to_generate"
+        if not bool(readiness.get("ok", False)):
+            questions.append(
+                {
+                    "question_id": "readiness_error",
+                    "point_type": "setup",
+                    "text": str(readiness.get("message") or "Sales Agent readiness analysis failed."),
+                }
+            )
+        readiness_questions = readiness.get("questions") if isinstance(readiness, dict) else []
+        if isinstance(readiness_questions, list) and readiness_questions:
+            questions.extend(question for question in readiness_questions if isinstance(question, dict))
+        raw_refinement_questions = readiness.get("refinement_questions") if isinstance(readiness, dict) else []
+        if isinstance(raw_refinement_questions, list):
+            refinement_questions = [question for question in raw_refinement_questions if isinstance(question, dict)]
+
     if not checks["skills_connected"] or not checks["data_nexus_connected"] or not checks["guide_found"] or not checks["template_found"]:
         status = "needs_setup"
     elif not checks["points_found"] or usable_points <= 0:
         status = "needs_answers"
+    elif readiness:
+        status = str(readiness.get("status") or "needs_answers").strip().lower() or "needs_answers"
     else:
         status = "ready_to_generate"
 
@@ -521,7 +738,9 @@ def run_task_step_from_item(node_item) -> Dict[str, Any]:
             "point_types": point_counts,
         },
         "checks": checks,
+        "readiness": readiness,
         "questions": questions,
+        "refinement_questions": refinement_questions,
         "snapshot_warnings": list(snapshot.get("warnings", []) or []) if isinstance(snapshot, dict) else [],
     }
 
@@ -608,6 +827,30 @@ def _format_report(report: Dict[str, Any]) -> str:
         f"  usable_points: {data_nexus.get('usable_point_count', 0)}",
         f"  types: {type_text}",
     ]
+    readiness = report.get("readiness") if isinstance(report.get("readiness"), dict) else {}
+    if readiness:
+        lines.extend(
+            [
+                "",
+                "readiness:",
+                f"  status: {readiness.get('status') or 'unknown'}",
+                f"  slides: {readiness.get('ready_slide_count', 0)} ready / {readiness.get('weak_slide_count', 0)} weak / {readiness.get('missing_slide_count', 0)} missing",
+            ]
+        )
+        slides = readiness.get("slides") or []
+        if slides:
+            lines.append("  slide_detail:")
+            for slide in slides:
+                if not isinstance(slide, dict):
+                    continue
+                number = int(slide.get("number", 0) or 0)
+                status = str(slide.get("status") or "unknown")
+                title = str(slide.get("title") or "")
+                matched = ", ".join(str(item) for item in (slide.get("matched_point_ids") or [])) or "none"
+                lines.append(f"    {number:02d} {status}: {title} [{matched}]")
+                notes = slide.get("notes") or []
+                for note in notes[:2]:
+                    lines.append(f"      - {note}")
     generation = _generation_result_from_report(report)
     if generation:
         lines.extend(
@@ -632,7 +875,124 @@ def _format_report(report: Dict[str, Any]) -> str:
     if questions:
         lines.extend(["", "next:"])
         lines.extend(f"  - {question.get('text') or ''}" for question in questions)
+    refinement_questions = report.get("refinement_questions") or []
+    if refinement_questions:
+        lines.extend(["", "refinement_questions:"])
+        lines.extend(f"  - {question.get('text') or ''}" for question in refinement_questions)
+    data_nexus_write = report.get("data_nexus_write") if isinstance(report.get("data_nexus_write"), dict) else {}
+    if data_nexus_write:
+        lines.extend(
+            [
+                "",
+                "data_nexus_write:",
+                f"  ok: {data_nexus_write.get('ok')}",
+                f"  questions: {data_nexus_write.get('question_count', 0)}",
+                f"  message: {data_nexus_write.get('message') or ''}",
+            ]
+        )
     return "\n".join(lines)
+
+
+def _status_css_class(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {
+        "ready",
+        "ready_to_generate",
+        "draft_ready",
+        "approved",
+        "true",
+        "yes",
+        "ok",
+        "ready_for_review",
+    }:
+        return "ok"
+    if text in {"needs_answers", "needs_review", "weak", "generating", "pending"}:
+        return "warn"
+    if text in {"needs_setup", "missing", "failed", "false", "no", "error"}:
+        return "bad"
+    return "value"
+
+
+def _status_span(value: Any) -> str:
+    clean = str(value or "").strip()
+    return f"<span class=\"{_status_css_class(clean)}\">{html_lib.escape(clean)}</span>"
+
+
+def _highlight_count_summary(text: str) -> str:
+    escaped = html_lib.escape(text)
+
+    def repl(match) -> str:
+        count = match.group(1)
+        label = match.group(2)
+        return f"{count} <span class=\"{_status_css_class(label)}\">{label}</span>"
+
+    return re.sub(r"\b(\d+)\s+(ready|weak|missing)\b", repl, escaped)
+
+
+def _format_report_line_html(line: str) -> str:
+    raw = str(line or "")
+    stripped = raw.strip()
+    if not stripped:
+        return ""
+    if not raw.startswith(" ") and stripped.endswith(":"):
+        return f"<span class=\"section\">{html_lib.escape(raw)}</span>"
+
+    match = re.match(r"^(\s*)(status|ok):\s*(.+?)\s*$", raw, flags=re.IGNORECASE)
+    if match:
+        indent, label, value = match.groups()
+        return f"{html_lib.escape(indent)}<span class=\"label\">{html_lib.escape(label)}:</span> {_status_span(value)}"
+
+    match = re.match(r"^(\s*)(skills|data_nexus):\s*(yes|no)\s*$", raw, flags=re.IGNORECASE)
+    if match:
+        indent, label, value = match.groups()
+        return f"{html_lib.escape(indent)}<span class=\"label\">{html_lib.escape(label)}:</span> {_status_span(value)}"
+
+    match = re.match(r"^(\s*slides:\s*)(.+?)\s*$", raw, flags=re.IGNORECASE)
+    if match:
+        return f"<span class=\"label\">{html_lib.escape(match.group(1))}</span>{_highlight_count_summary(match.group(2))}"
+
+    match = re.match(r"^(\s*\d{2}\s+)(ready|weak|missing|failed|unknown)(:.*)$", raw, flags=re.IGNORECASE)
+    if match:
+        prefix, status, suffix = match.groups()
+        return f"{html_lib.escape(prefix)}{_status_span(status)}{html_lib.escape(suffix)}"
+
+    match = re.match(r"^(\s*)(message):\s*(.+?)\s*$", raw, flags=re.IGNORECASE)
+    if match:
+        indent, label, value = match.groups()
+        lower = value.lower()
+        cls = "bad" if "failed" in lower or "error" in lower else "warn" if "no " in lower or "needs" in lower else "info"
+        return (
+            f"{html_lib.escape(indent)}<span class=\"label\">{html_lib.escape(label)}:</span> "
+            f"<span class=\"{cls}\">{html_lib.escape(value)}</span>"
+        )
+
+    if stripped.startswith("- "):
+        return f"<span class=\"question\">{html_lib.escape(raw)}</span>"
+    return html_lib.escape(raw)
+
+
+def _format_report_text_html(text: str) -> str:
+    body = "\n".join(_format_report_line_html(line) for line in str(text or "").splitlines())
+    return (
+        "<html><head><style>"
+        "body{margin:0;background:#0b1018;color:#dbeafe;}"
+        "pre{margin:0;white-space:pre-wrap;font-family:Cascadia Mono,Consolas,monospace;font-size:12px;line-height:1.38;}"
+        ".section{color:#93c5fd;font-weight:700;}"
+        ".label{color:#94a3b8;font-weight:600;}"
+        ".value{color:#dbeafe;}"
+        ".ok{color:#86efac;font-weight:800;}"
+        ".warn{color:#fbbf24;font-weight:800;}"
+        ".bad{color:#fb7185;font-weight:800;}"
+        ".info{color:#67e8f9;font-weight:700;}"
+        ".question{color:#fef3c7;}"
+        "</style></head><body><pre>"
+        f"{body}"
+        "</pre></body></html>"
+    )
+
+
+def _format_report_html(report: Dict[str, Any]) -> str:
+    return _format_report_text_html(_format_report(report))
 
 
 class TaskWidget(QtWidgets.QFrame):
@@ -646,7 +1006,7 @@ class TaskWidget(QtWidgets.QFrame):
             QLabel{color:#e5e7eb;}
             QLabel#TaskTitle{font-weight:600;color:#f8fafc;}
             QLabel#TaskSubtle{color:#94a3b8;}
-            QPlainTextEdit{background:#0b1018;color:#dbeafe;border:1px solid #334155;border-radius:4px;padding:6px;}
+            QTextEdit{background:#0b1018;color:#dbeafe;border:1px solid #334155;border-radius:4px;padding:6px;}
             QPushButton{background:#1e293b;color:#e5e7eb;border:1px solid #475569;border-radius:4px;padding:4px 8px;}
             QPushButton:hover{background:#334155;}
             """
@@ -671,7 +1031,7 @@ class TaskWidget(QtWidgets.QFrame):
         self._summary.setWordWrap(True)
         layout.addWidget(self._summary)
 
-        self._report = QtWidgets.QPlainTextEdit()
+        self._report = QtWidgets.QTextEdit()
         self._report.setReadOnly(True)
         self._report.setMinimumHeight(190)
         layout.addWidget(self._report, 1)
@@ -681,14 +1041,17 @@ class TaskWidget(QtWidgets.QFrame):
         actions.setSpacing(6)
         self._run_btn = QtWidgets.QPushButton("Run Step")
         self._generate_btn = QtWidgets.QPushButton("Generate Draft")
+        self._write_questions_btn = QtWidgets.QPushButton("Write Questions")
         self._approve_btn = QtWidgets.QPushButton("Approve")
         self._dismiss_btn = QtWidgets.QPushButton("Dismiss")
         self._run_btn.clicked.connect(self._run_step)
         self._generate_btn.clicked.connect(self._generate_draft)
+        self._write_questions_btn.clicked.connect(self._write_questions)
         self._approve_btn.clicked.connect(lambda _=False: self._set_status("approved"))
         self._dismiss_btn.clicked.connect(lambda _=False: self._set_status("dismissed"))
         actions.addWidget(self._run_btn, 0)
         actions.addWidget(self._generate_btn, 0)
+        actions.addWidget(self._write_questions_btn, 0)
         actions.addWidget(self._approve_btn, 0)
         actions.addWidget(self._dismiss_btn, 0)
         actions.addStretch(1)
@@ -718,32 +1081,65 @@ class TaskWidget(QtWidgets.QFrame):
                 report = {}
         self._status.setText(status)
         self._generate_btn.setEnabled(status in {"ready_to_generate", "draft_ready"})
+        self._write_questions_btn.setEnabled(self._has_prep_questions(report))
         self._summary.setText(
             f"guide: {guide_path or 'unresolved'}\n"
             f"template: {template_path or 'unresolved'}"
         )
-        self._report.setPlainText(_format_report(report) if report else f"status: {status}\n\nClick Run Step to inspect connected Skills and Data Nexus.")
+        if report:
+            self._report.setHtml(_format_report_html(report))
+        else:
+            self._report.setHtml(_format_report_text_html(f"status: {status}\n\nClick Run Step to inspect connected Skills and Data Nexus."))
 
     def _run_step(self) -> None:
         report = run_task_step_from_item(self._node_item)
         self._status.setText(str(report.get("status") or "unknown"))
         self._generate_btn.setEnabled(str(report.get("status") or "").strip().lower() in {"ready_to_generate", "draft_ready"})
+        self._write_questions_btn.setEnabled(self._has_prep_questions(report))
         self._summary.setText(
             f"guide: {str((report.get('guide') or {}).get('path') or 'unresolved')}\n"
             f"template: {str((report.get('agent_template') or {}).get('path') or 'unresolved')}"
         )
-        self._report.setPlainText(_format_report(report))
+        self._report.setHtml(_format_report_html(report))
 
     def _generate_draft(self) -> None:
         report = generate_task_draft_from_item(self._node_item)
         status = str(report.get("status") or "unknown")
         self._status.setText(status)
         self._generate_btn.setEnabled(status in {"ready_to_generate", "draft_ready"})
+        self._write_questions_btn.setEnabled(self._has_prep_questions(report))
         self._summary.setText(
             f"guide: {str((report.get('guide') or {}).get('path') or 'unresolved')}\n"
             f"template: {str((report.get('agent_template') or {}).get('path') or 'unresolved')}"
         )
-        self._report.setPlainText(_format_report(report))
+        self._report.setHtml(_format_report_html(report))
+
+    def _write_questions(self) -> None:
+        report = write_task_questions_to_data_nexus_from_item(self._node_item)
+        status = str(report.get("status") or "unknown")
+        self._status.setText(status)
+        self._generate_btn.setEnabled(status in {"ready_to_generate", "draft_ready"})
+        self._write_questions_btn.setEnabled(self._has_prep_questions(report))
+        self._summary.setText(
+            f"guide: {str((report.get('guide') or {}).get('path') or 'unresolved')}\n"
+            f"template: {str((report.get('agent_template') or {}).get('path') or 'unresolved')}"
+        )
+        self._report.setHtml(_format_report_html(report))
+
+    @staticmethod
+    def _has_prep_questions(report: Dict[str, Any]) -> bool:
+        if not isinstance(report, dict):
+            return False
+        questions = []
+        for key in ("questions", "refinement_questions"):
+            value = report.get(key)
+            if isinstance(value, list):
+                questions.extend(value)
+        return any(
+            isinstance(question, dict)
+            and str(question.get("point_type") or "").strip().lower() == "prep_question"
+            for question in questions
+        )
 
     def _set_status(self, status: str) -> None:
         clean = str(status or "").strip().lower()
