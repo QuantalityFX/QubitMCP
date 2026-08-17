@@ -6,7 +6,7 @@ import os
 import re
 import subprocess
 from difflib import SequenceMatcher
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, _qexec
@@ -51,6 +51,7 @@ def _default_graph() -> dict[str, Any]:
         "version": DATA_NEXUS_STORAGE_VERSION,
         "nodes": [],
         "edges": [],
+        "folders": [],
     }
 
 
@@ -85,6 +86,82 @@ def _sanitize_markdown_file_name(value: str, fallback: str = "point") -> str:
     return f"{stem}.md"
 
 
+def _sanitize_point_folder(value: Any) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    index_stem = Path(DATA_NEXUS_INDEX_FILE).stem.lower()
+    parts: list[str] = []
+    for raw_part in text.split("/"):
+        part = raw_part.strip()
+        if not part or part in {".", ".."}:
+            continue
+        clean = _sanitize_folder_name(part, fallback="")
+        if clean and clean.lower() != index_stem:
+            parts.append(clean)
+    return "/".join(parts)
+
+
+def _folder_from_file_value(value: Any) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if "/" not in text:
+        return ""
+    return _sanitize_point_folder("/".join(text.split("/")[:-1]))
+
+
+def _entry_folder(entry: dict[str, Any]) -> str:
+    return _sanitize_point_folder(entry.get("folder") or _folder_from_file_value(entry.get("file")))
+
+
+def _point_file_key(value: Any) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    parts = [part for part in text.split("/") if part and part not in {".", ".."}]
+    return "/".join(parts).lower()
+
+
+def _point_file_base_name(value: Any, fallback: str = "point") -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    name = PurePosixPath(text).name if text else ""
+    return _sanitize_markdown_file_name(name, fallback=fallback)
+
+
+def _join_point_file(folder: str, file_name: str) -> str:
+    clean_folder = _sanitize_point_folder(folder)
+    clean_file = _point_file_base_name(file_name)
+    return f"{clean_folder}/{clean_file}" if clean_folder else clean_file
+
+
+def _vault_path_for_point_file(vault: Path, file_name: str) -> Path:
+    text = str(file_name or "").strip().replace("\\", "/")
+    raw_parts = [part for part in text.split("/") if part and part not in {".", ".."}]
+    if not raw_parts:
+        raw_parts = ["point.md"]
+    safe_parts = [
+        _sanitize_folder_name(part, fallback="folder")
+        for part in raw_parts[:-1]
+    ]
+    safe_parts.append(_sanitize_markdown_file_name(raw_parts[-1], fallback="point"))
+    return Path(vault).joinpath(*safe_parts)
+
+
+def _graph_folder_values(graph: dict[str, Any]) -> list[str]:
+    folders: set[str] = set()
+    raw_folders = graph.get("folders", []) if isinstance(graph, dict) else []
+    if isinstance(raw_folders, list):
+        for value in raw_folders:
+            folder = _sanitize_point_folder(value)
+            if folder:
+                folders.add(folder)
+    raw_nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
+    if isinstance(raw_nodes, list):
+        for entry in raw_nodes:
+            if isinstance(entry, dict):
+                folder = _entry_folder(entry)
+                if folder:
+                    folders.add(folder)
+    return sorted(folders, key=lambda item: item.lower())
+
+
 def _clean_inline_text(value: Any, *, limit: int = 500) -> str:
     text = str(value or "").strip()
     text = re.sub(r"\s+", " ", text)
@@ -93,6 +170,14 @@ def _clean_inline_text(value: Any, *, limit: int = 500) -> str:
 
 def _normalize_point_type(value: Any, fallback: str = "concept") -> str:
     return _sanitize_folder_name(str(value or "").strip().lower(), fallback=fallback)
+
+
+def _is_question_point(entry: dict[str, Any]) -> bool:
+    point_type = _normalize_point_type(entry.get("type", ""), fallback="")
+    if point_type in {"prep_question", "question", "refinement_question"}:
+        return True
+    folder = _entry_folder(entry).lower()
+    return folder in {"prep_questions", "refinement_questions"}
 
 
 def _derive_summary(value: Any, fallback_title: str = "") -> str:
@@ -149,14 +234,31 @@ def _point_file_name(entry: dict[str, Any]) -> str:
     point_id = str(entry.get("id", "") or "").strip()
     title = str(entry.get("title", "") or entry.get("label", "") or "").strip()
     preferred = _sanitize_markdown_file_name(title or point_id, fallback=point_id or "point")
-    raw = str(entry.get("file", "") or "").strip()
+    folder = _entry_folder(entry)
+    raw = str(entry.get("file", "") or "").strip().replace("\\", "/")
     if raw:
-        current = _sanitize_markdown_file_name(raw, fallback=point_id or "point")
+        if not folder:
+            folder = _folder_from_file_value(raw)
+        current = _point_file_base_name(raw, fallback=point_id or "point")
         id_file = _sanitize_markdown_file_name(point_id, fallback="point")
         if title and current.lower() == id_file.lower() and preferred.lower() != id_file.lower():
-            return preferred
-        return current
-    return preferred
+            return _join_point_file(folder, preferred)
+        return _join_point_file(folder, current)
+    return _join_point_file(folder, preferred)
+
+
+def _set_point_folder(entry: dict[str, Any], folder: str) -> None:
+    clean_folder = _sanitize_point_folder(folder)
+    point_id = str(entry.get("id", "") or "point").strip()
+    label = str(entry.get("title", "") or entry.get("label", "") or point_id or "point").strip()
+    raw_file = str(entry.get("file", "") or "").strip().replace("\\", "/")
+    file_name = _point_file_base_name(raw_file or label, fallback=point_id or "point")
+    if clean_folder:
+        entry["folder"] = clean_folder
+        entry["file"] = f"{clean_folder}/{file_name}"
+    else:
+        entry.pop("folder", None)
+        entry["file"] = file_name
 
 
 def _param_value_from_model(model, name: str, default: str = "") -> str:
@@ -260,6 +362,16 @@ def _coerce_graph(data: Any) -> dict[str, Any]:
         data = {}
     raw_nodes = data.get("nodes", [])
     raw_edges = data.get("edges", [])
+    raw_folders = data.get("folders", [])
+    folders: list[str] = []
+    folder_seen: set[str] = set()
+    if isinstance(raw_folders, list):
+        for value in raw_folders:
+            folder = _sanitize_point_folder(value)
+            if not folder or folder.lower() in folder_seen:
+                continue
+            folder_seen.add(folder.lower())
+            folders.append(folder)
     nodes = []
     seen = set()
     if isinstance(raw_nodes, list):
@@ -281,25 +393,42 @@ def _coerce_graph(data: Any) -> dict[str, Any]:
             note = str(entry.get("note", "") or entry.get("content", "") or "")
             point_type = _normalize_point_type(entry.get("type", "concept"))
             summary = _clean_inline_text(entry.get("summary", ""), limit=500) or _derive_summary(note, title)
-            file_name = _sanitize_markdown_file_name(
-                str(entry.get("file", "") or ""),
-                fallback=node_id or f"point_{idx + 1}",
-            ) if str(entry.get("file", "") or "").strip() else ""
-            nodes.append(
-                {
-                    "id": node_id,
-                    "label": label[:120],
-                    "title": title,
-                    "type": point_type,
-                    "summary": summary,
-                    "note": note[:5000],
-                    "x": _coerce_float(entry.get("x"), 0.5),
-                    "y": _coerce_float(entry.get("y"), 0.5),
-                    "file": file_name,
-                }
-            )
+            folder = _entry_folder(entry)
+            if folder and folder.lower() not in folder_seen:
+                folder_seen.add(folder.lower())
+                folders.append(folder)
+            file_name = ""
+            if str(entry.get("file", "") or "").strip():
+                file_name = _point_file_name(
+                    {
+                        **entry,
+                        "id": node_id,
+                        "label": label,
+                        "title": title,
+                        "folder": folder,
+                    }
+                )
+            node = {
+                "id": node_id,
+                "label": label[:120],
+                "title": title,
+                "type": point_type,
+                "summary": summary,
+                "note": note[:5000],
+                "x": _coerce_float(entry.get("x"), 0.5),
+                "y": _coerce_float(entry.get("y"), 0.5),
+                "file": file_name,
+            }
+            if folder:
+                node["folder"] = folder
+            nodes.append(node)
     if not nodes:
-        return _default_graph()
+        return {
+            "version": DATA_NEXUS_STORAGE_VERSION,
+            "nodes": [],
+            "edges": [],
+            "folders": sorted(folders, key=lambda item: item.lower()),
+        }
 
     ids = {entry["id"] for entry in nodes}
     edge_keys = set()
@@ -324,7 +453,12 @@ def _coerce_graph(data: Any) -> dict[str, Any]:
                     "label": str(entry.get("label", "") or "").strip()[:120],
                 }
             )
-    return {"version": DATA_NEXUS_STORAGE_VERSION, "nodes": nodes, "edges": edges}
+    return {
+        "version": DATA_NEXUS_STORAGE_VERSION,
+        "nodes": nodes,
+        "edges": edges,
+        "folders": sorted(folders, key=lambda item: item.lower()),
+    }
 
 
 def _graph_from_json_text(text: str) -> dict[str, Any] | None:
@@ -354,12 +488,14 @@ def _graph_to_sidecar_json_text(graph: dict[str, Any]) -> str:
                 "x": _coerce_float(entry.get("x"), 0.5),
                 "y": _coerce_float(entry.get("y"), 0.5),
                 "file": _point_file_name(entry),
+                "folder": _entry_folder(entry),
             }
         )
     sidecar = {
         "version": DATA_NEXUS_STORAGE_VERSION,
         "nodes": nodes,
         "edges": clean.get("edges", []) or [],
+        "folders": clean.get("folders", []) or [],
     }
     return json.dumps(sidecar, ensure_ascii=False, indent=2)
 
@@ -471,10 +607,16 @@ def _point_summary_from_markdown(text: str, *, title: str = "", note: str = "") 
     return summary or _derive_summary(note, title)
 
 
+def _point_folder_from_markdown(text: str) -> str:
+    metadata = _point_metadata_from_markdown(text)
+    return _sanitize_point_folder(metadata.get("folder", ""))
+
+
 def _point_markdown(entry: dict[str, Any]) -> str:
     point_id = str(entry.get("id", "") or "").strip()
     label = str(entry.get("title", "") or entry.get("label", "") or point_id or "Point").strip()
     point_type = _normalize_point_type(entry.get("type", "concept"))
+    folder = _entry_folder(entry)
     note = str(entry.get("note", "") or "").strip()
     raw_summary = _clean_inline_text(entry.get("summary", ""), limit=500)
     summary = _derive_summary(note, label) if _is_auto_summary(raw_summary) else raw_summary
@@ -485,10 +627,10 @@ def _point_markdown(entry: dict[str, Any]) -> str:
         f"type: {_yaml_scalar(point_type)}",
         f"title: {_yaml_scalar(label)}",
         f"summary: {_yaml_scalar(summary)}",
-        "---",
-        "",
-        f"# {label}",
     ]
+    if folder:
+        body.append(f"folder: {_yaml_scalar(folder)}")
+    body.extend(["---", "", f"# {label}"])
     if note:
         body.extend(["", note])
     return "\n".join(body).rstrip() + "\n"
@@ -504,18 +646,25 @@ def _graph_with_point_files(graph: dict[str, Any]) -> dict[str, Any]:
         summary = str(next_entry.get("summary", "") or "").strip()
         if not summary or _is_auto_summary(summary):
             next_entry["summary"] = _derive_summary(str(next_entry.get("note", "") or ""), title)
+        folder = _entry_folder(next_entry)
+        if folder:
+            next_entry["folder"] = folder
+        else:
+            next_entry.pop("folder", None)
         file_name = _point_file_name(next_entry)
-        if file_name.lower() == DATA_NEXUS_INDEX_FILE.lower():
+        if PurePosixPath(file_name).name.lower() == DATA_NEXUS_INDEX_FILE.lower():
             file_name = _sanitize_markdown_file_name(next_entry.get("id", ""), fallback="point")
-        stem = Path(file_name).stem
+            file_name = _join_point_file(folder, file_name)
+        stem = PurePosixPath(file_name).stem
         suffix = 2
-        while file_name.lower() in used or file_name.lower() == DATA_NEXUS_INDEX_FILE.lower():
-            file_name = _sanitize_markdown_file_name(f"{stem}_{suffix}", fallback=f"point_{suffix}")
+        while _point_file_key(file_name) in used or PurePosixPath(file_name).name.lower() == DATA_NEXUS_INDEX_FILE.lower():
+            file_name = _join_point_file(folder, f"{stem}_{suffix}.md")
             suffix += 1
         next_entry["file"] = file_name
-        used.add(file_name.lower())
+        used.add(_point_file_key(file_name))
         nodes.append(next_entry)
     clean["nodes"] = nodes
+    clean["folders"] = _graph_folder_values(clean)
     return clean
 
 
@@ -523,7 +672,7 @@ def _graph_from_vault_files(vault: Path, base_graph: dict[str, Any] | None = Non
     try:
         files = [
             path
-            for path in sorted(vault.glob("*.md"), key=lambda item: item.name.lower())
+            for path in sorted(vault.rglob("*.md"), key=lambda item: item.relative_to(vault).as_posix().lower())
             if path.name.lower() != DATA_NEXUS_INDEX_FILE.lower()
         ]
     except Exception:
@@ -534,17 +683,25 @@ def _graph_from_vault_files(vault: Path, base_graph: dict[str, Any] | None = Non
     base = _graph_with_point_files(base_graph or _default_graph())
     base_by_id = {str(entry.get("id", "") or ""): entry for entry in base.get("nodes", []) or []}
     base_by_file = {
-        str(entry.get("file", "") or "").strip().lower(): entry
+        _point_file_key(entry.get("file", "")): entry
         for entry in base.get("nodes", []) or []
         if str(entry.get("file", "") or "").strip()
     }
     nodes = []
+    folders = set(_graph_folder_values(base))
     seen_ids: set[str] = set()
     for idx, path in enumerate(files):
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             text = ""
+        try:
+            relative_path = path.relative_to(vault)
+            relative_file = relative_path.as_posix()
+            relative_folder = "" if str(relative_path.parent) == "." else _sanitize_point_folder(relative_path.parent.as_posix())
+        except Exception:
+            relative_file = path.name
+            relative_folder = ""
         fallback_id = _sanitize_folder_name(path.stem, fallback=f"point_{idx + 1}")
         point_id = _point_id_from_markdown(text) or fallback_id
         base_id = point_id
@@ -554,30 +711,41 @@ def _graph_from_vault_files(vault: Path, base_graph: dict[str, Any] | None = Non
             suffix += 1
         seen_ids.add(point_id)
 
-        base_entry = base_by_id.get(point_id) or base_by_file.get(path.name.lower()) or {}
+        base_entry = (
+            base_by_id.get(point_id)
+            or base_by_file.get(_point_file_key(relative_file))
+            or base_by_file.get(_point_file_key(path.name))
+            or {}
+        )
         angle = ((idx + 1) * 2.3999632297) % (math.pi * 2.0)
         label_fallback = str(base_entry.get("label", "") or point_id.replace("_", " ").title()).strip()
         label = _point_label_from_markdown(text, label_fallback)
         note = _point_note_from_markdown(text) or str(base_entry.get("note", "") or "")
-        nodes.append(
-            {
-                "id": point_id,
-                "label": label,
-                "title": label,
-                "type": _point_type_from_markdown(text) or str(base_entry.get("type", "") or "concept"),
-                "summary": _point_summary_from_markdown(text, title=label, note=note)
-                or str(base_entry.get("summary", "") or ""),
-                "note": note,
-                "x": _coerce_float(base_entry.get("x"), 0.5 + math.cos(angle) * 0.24),
-                "y": _coerce_float(base_entry.get("y"), 0.5 + math.sin(angle) * 0.24),
-                "file": _sanitize_markdown_file_name(path.name, fallback=point_id),
-            }
-        )
+        folder = _point_folder_from_markdown(text) or relative_folder or _entry_folder(base_entry)
+        if folder:
+            folders.add(folder)
+        file_name = _join_point_file(folder, path.name)
+        node = {
+            "id": point_id,
+            "label": label,
+            "title": label,
+            "type": _point_type_from_markdown(text) or str(base_entry.get("type", "") or "concept"),
+            "summary": _point_summary_from_markdown(text, title=label, note=note)
+            or str(base_entry.get("summary", "") or ""),
+            "note": note,
+            "x": _coerce_float(base_entry.get("x"), 0.5 + math.cos(angle) * 0.24),
+            "y": _coerce_float(base_entry.get("y"), 0.5 + math.sin(angle) * 0.24),
+            "file": file_name,
+        }
+        if folder:
+            node["folder"] = folder
+        nodes.append(node)
     return _coerce_graph(
         {
             "version": DATA_NEXUS_STORAGE_VERSION,
             "nodes": nodes,
             "edges": base.get("edges", []),
+            "folders": sorted(folders, key=lambda item: item.lower()),
         }
     )
 
@@ -599,12 +767,17 @@ def _write_vault_graph_notes(vault: Path, graph: dict[str, Any]) -> None:
     nodes = clean.get("nodes", []) or []
     edges = clean.get("edges", []) or []
     by_id = {entry.get("id"): entry for entry in nodes if isinstance(entry, dict)}
-    active_files = {str(entry.get("file", "") or "").strip().lower() for entry in nodes}
+    active_files = {_point_file_key(entry.get("file", "")) for entry in nodes}
     active_ids = {str(entry.get("id", "") or "").strip().lower() for entry in nodes}
     active_file_by_id = {
-        str(entry.get("id", "") or "").strip().lower(): str(entry.get("file", "") or "").strip().lower()
+        str(entry.get("id", "") or "").strip().lower(): _point_file_key(entry.get("file", ""))
         for entry in nodes
     }
+    for folder in _graph_folder_values(clean):
+        try:
+            vault.joinpath(*folder.split("/")).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
     lines = [
         "# Data Nexus Index",
         "",
@@ -617,21 +790,28 @@ def _write_vault_graph_notes(vault: Path, graph: dict[str, Any]) -> None:
         file_name = _point_file_name(entry)
         type_text = f" [{point_type}]" if point_type else ""
         summary_text = f" - {summary}" if summary else ""
-        lines.append(f"- [[{Path(file_name).stem}]] {label}{type_text}{summary_text}")
-        point_path = vault / file_name
+        link_name = PurePosixPath(file_name).with_suffix("").as_posix()
+        lines.append(f"- [[{link_name}]] {label}{type_text}{summary_text}")
+        point_path = _vault_path_for_point_file(vault, file_name)
+        point_path.parent.mkdir(parents=True, exist_ok=True)
         point_path.write_text(_point_markdown(entry), encoding="utf-8")
 
-    for path in vault.glob("*.md"):
+    vault_root = vault.resolve()
+    for path in vault.rglob("*.md"):
         if path.name.lower() == DATA_NEXUS_INDEX_FILE.lower():
             continue
-        if path.name.lower() in active_files:
+        try:
+            relative_key = _point_file_key(path.resolve().relative_to(vault_root).as_posix())
+        except Exception:
+            continue
+        if relative_key in active_files:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             text = ""
         point_id = _point_id_from_markdown(text).lower()
-        if point_id and (point_id not in active_ids or active_file_by_id.get(point_id) != path.name.lower()):
+        if point_id and (point_id not in active_ids or active_file_by_id.get(point_id) != relative_key):
             try:
                 path.unlink()
             except Exception:
@@ -699,10 +879,10 @@ def _unlink_vault_note_for_entry(node_item, entry: dict[str, Any] | None) -> Non
     if not vault.is_dir():
         return
     point_id = str(entry.get("id", "") or "").strip().lower()
-    targets = {vault / _point_file_name(entry)}
+    targets = {_vault_path_for_point_file(vault, _point_file_name(entry))}
     if point_id:
         try:
-            for path in vault.glob("*.md"):
+            for path in vault.rglob("*.md"):
                 if path.name.lower() == DATA_NEXUS_INDEX_FILE.lower():
                     continue
                 try:
@@ -713,12 +893,17 @@ def _unlink_vault_note_for_entry(node_item, entry: dict[str, Any] | None) -> Non
                     targets.add(path)
         except Exception:
             pass
+    vault_root = vault.resolve()
     for path in targets:
         try:
             target = path.resolve()
         except Exception:
             continue
-        if target.parent != vault or target.name.lower() == DATA_NEXUS_INDEX_FILE.lower():
+        try:
+            target.relative_to(vault_root)
+        except Exception:
+            continue
+        if target.name.lower() == DATA_NEXUS_INDEX_FILE.lower():
             continue
         try:
             if target.is_file():
@@ -777,7 +962,7 @@ def _graph_from_data_nexus_folder(folder: str | Path) -> tuple[bool, str, dict[s
         vault = selected
         root = selected.parent
         sidecar = root / "nexus.json"
-    elif not vault.is_dir() and any(path.suffix.lower() == ".md" for path in selected.glob("*.md")):
+    elif not vault.is_dir() and any(path.suffix.lower() == ".md" for path in selected.rglob("*.md")):
         vault = selected
         sidecar = selected.parent / "nexus.json"
         root = selected.parent if sidecar.is_file() else selected
@@ -860,6 +1045,8 @@ def _merge_graphs(base_graph: dict[str, Any], import_graph: dict[str, Any]) -> t
     incoming = _graph_with_point_files(import_graph)
     nodes = [dict(entry) for entry in base.get("nodes", []) or [] if isinstance(entry, dict)]
     edges = [dict(edge) for edge in base.get("edges", []) or [] if isinstance(edge, dict)]
+    folders = set(_graph_folder_values(base))
+    folders.update(_graph_folder_values(incoming))
     existing_ids = {str(entry.get("id", "") or "").strip().lower() for entry in nodes}
     id_map: dict[str, str] = {}
     added_nodes = 0
@@ -904,7 +1091,14 @@ def _merge_graphs(base_graph: dict[str, Any], import_graph: dict[str, Any]) -> t
         edges.append({"source": source, "target": target, "label": label})
         added_edges += 1
 
-    return _graph_with_point_files({"version": DATA_NEXUS_STORAGE_VERSION, "nodes": nodes, "edges": edges}), added_nodes, added_edges
+    return _graph_with_point_files(
+        {
+            "version": DATA_NEXUS_STORAGE_VERSION,
+            "nodes": nodes,
+            "edges": edges,
+            "folders": sorted(folders, key=lambda item: item.lower()),
+        }
+    ), added_nodes, added_edges
 
 
 def _summary_for_graph(graph: dict[str, Any], *, vault_path: str = "") -> str:
@@ -1293,6 +1487,7 @@ def _new_point(
     point_id: str = "",
     point_type: str = "",
     summary: str = "",
+    folder: str = "",
 ) -> dict[str, Any]:
     clean_label = str(label or point_id or "Point").strip()[:120] or "Point"
     clean_id = _unique_point_id(point_id or clean_label, nodes)
@@ -1300,17 +1495,18 @@ def _new_point(
     clean_summary = _clean_inline_text(summary, limit=500) or _derive_summary(clean_note, clean_label)
     idx = len(nodes) + 1
     angle = (idx * 2.3999632297) % (math.pi * 2.0)
-    return {
+    entry = {
         "id": clean_id,
         "label": clean_label,
         "title": clean_label,
         "type": _normalize_point_type(point_type, fallback="concept"),
         "summary": clean_summary,
         "note": clean_note,
-        "file": _sanitize_markdown_file_name(clean_label, fallback=clean_id),
         "x": max(0.08, min(0.92, 0.5 + math.cos(angle) * 0.24)),
         "y": max(0.08, min(0.92, 0.5 + math.sin(angle) * 0.24)),
     }
+    _set_point_folder(entry, folder)
+    return entry
 
 
 def _resolve_or_create_point(nodes: list[dict[str, Any]], ref: str, *, create_missing: bool = True) -> dict[str, Any] | None:
@@ -1365,7 +1561,10 @@ def _arrange_graph_wide_angles(graph: dict[str, Any]) -> dict[str, Any]:
                 stack.append(neighbor_id)
         components.append(sorted(component, key=sort_key))
 
-    arm_length = max(DATA_NEXUS_LINK_MIN_GRID_DISTANCE, DATA_NEXUS_LINK_MAX_GRID_DISTANCE)
+    arm_length = max(
+        DATA_NEXUS_LINK_MIN_GRID_DISTANCE * 1.1,
+        (DATA_NEXUS_LINK_MIN_GRID_DISTANCE + DATA_NEXUS_LINK_MAX_GRID_DISTANCE) * 0.5,
+    )
     placed_ids: set[str] = set()
 
     def clamp(value: float) -> float:
@@ -1384,7 +1583,7 @@ def _arrange_graph_wide_angles(graph: dict[str, Any]) -> dict[str, Any]:
     def component_radius(component: list[str]) -> float:
         if len(component) <= 1:
             return 0.0
-        return arm_length * max(1.0, math.sqrt(float(len(component))) * 0.55)
+        return arm_length * max(0.85, math.sqrt(float(len(component))) * 0.42)
 
     def compact_component_center(component: list[str], ordinal: int) -> tuple[float, float]:
         positions = placed_positions()
@@ -1410,7 +1609,7 @@ def _arrange_graph_wide_angles(graph: dict[str, Any]) -> dict[str, Any]:
             math.pi * 3.0 / 4.0,
             -math.pi * 3.0 / 4.0,
         ]
-        required_gap = arm_length * 0.92 + component_radius(component)
+        required_gap = arm_length * 0.78 + component_radius(component)
         best: tuple[float, float] | None = None
         best_score = float("inf")
         for ring in range(1, max(6, len(positions) + 3)):
@@ -1628,6 +1827,8 @@ def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str
             point_type = _action_text(action, "type", "point_type", "kind")
             summary = _action_text(action, "summary")
             note = _action_text(action, "note", "description", "comment", "text", "memory", "content")
+            folder_text = _action_text(action, "folder", "vault_folder", "group")
+            folder = _sanitize_point_folder(folder_text)
             if not note and summary:
                 # Backward compatibility: older planner payloads used `summary` as note text.
                 note = summary
@@ -1642,15 +1843,21 @@ def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str
                     point_id=point_id,
                     point_type=point_type,
                     summary=summary,
+                    folder=folder,
                 )
                 nodes.append(entry)
                 was_new = True
                 counts["added"] += 1
                 changed = True
+            if folder_text and _entry_folder(entry) != folder:
+                _set_point_folder(entry, folder)
+                if not was_new:
+                    counts["updated"] += 1
+                changed = True
             if label and str(entry.get("label", "") or "") != label:
                 entry["label"] = label[:120]
                 entry["title"] = label[:120]
-                entry["file"] = _sanitize_markdown_file_name(label, fallback=str(entry.get("id", "") or "point"))
+                entry["file"] = _join_point_file(_entry_folder(entry), label)
                 if not was_new:
                     counts["updated"] += 1
                 changed = True
@@ -1786,6 +1993,7 @@ def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str
             "version": DATA_NEXUS_STORAGE_VERSION,
             "nodes": nodes,
             "edges": edges,
+            "folders": _graph_folder_values(graph),
         }
     )
     status_parts = [f"{value} {name}" for name, value in counts.items() if value]
@@ -1859,6 +2067,7 @@ def data_nexus_point_bundle_from_item(node_item) -> dict[str, Any]:
                 "title": title,
                 "summary": str(entry.get("summary", "") or "").strip() or _derive_summary(content, title),
                 "content": content,
+                "folder": _entry_folder(entry),
                 "file": _point_file_name(entry),
                 "links": links_by_point.get(str(entry.get("id", "") or "").strip(), []),
             }
@@ -2390,15 +2599,26 @@ class DataNexusCanvas(QtWidgets.QWidget):
             center = self._to_screen(entry.get("x", 0.5), entry.get("y", 0.5))
             selected = point_id == self._selected_id
             hovered = point_id == self._hover_id
+            is_question = _is_question_point(entry)
             radius = self._point_radius(selected=selected)
             glow_radius = radius * (2.8 if selected or hovered else 2.25)
             glow = QtGui.QRadialGradient(center, glow_radius)
-            outer = QtGui.QColor("#67e8f9" if selected or hovered else "#60a5fa")
+            if is_question:
+                outer = QtGui.QColor("#f59e0b" if selected or hovered else "#facc15")
+                mid = QtGui.QColor("#fbbf24" if selected or hovered else "#eab308")
+                inner = QtGui.QColor("#fef3c7" if selected or hovered else "#fde68a")
+                core = QtGui.QColor("#fff7ed")
+                label_color = QtGui.QColor("#fef3c7" if selected else "#facc15")
+            else:
+                outer = QtGui.QColor("#67e8f9" if selected or hovered else "#60a5fa")
+                mid = QtGui.QColor("#67e8f9" if selected or hovered else "#93c5fd")
+                inner = QtGui.QColor("#cffafe" if selected or hovered else "#dbeafe")
+                core = QtGui.QColor("#ffffff")
+                label_color = QtGui.QColor("#dbeafe" if selected else "#cbd5e1")
             outer.setAlpha(0)
-            mid = QtGui.QColor("#67e8f9" if selected or hovered else "#93c5fd")
             mid.setAlpha(112 if selected or hovered else 76)
             glow.setColorAt(0.0, QtGui.QColor("#ffffff"))
-            glow.setColorAt(0.2, QtGui.QColor("#cffafe" if selected or hovered else "#dbeafe"))
+            glow.setColorAt(0.2, inner)
             glow.setColorAt(0.58, mid)
             glow.setColorAt(1.0, outer)
             painter.setPen(QtCore.Qt.NoPen)
@@ -2406,7 +2626,7 @@ class DataNexusCanvas(QtWidgets.QWidget):
             painter.drawEllipse(center, glow_radius, glow_radius)
 
             painter.setPen(QtCore.Qt.NoPen)
-            painter.setBrush(QtGui.QColor("#ffffff"))
+            painter.setBrush(core)
             core_radius = max(1.2, radius * 0.34)
             painter.drawEllipse(center, core_radius, core_radius)
             if not draw_labels and not hovered:
@@ -2418,7 +2638,7 @@ class DataNexusCanvas(QtWidgets.QWidget):
                 max(120.0, 160.0 * max(0.75, min(1.8, self._zoom))),
                 max(18.0, 22.0 * max(0.75, min(1.6, self._zoom))),
             )
-            painter.setPen(QtGui.QPen(QtGui.QColor("#dbeafe" if selected else "#cbd5e1"), 1.0))
+            painter.setPen(QtGui.QPen(label_color, 1.0))
             painter.drawText(label_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, label)
         painter.restore()
 
@@ -2537,6 +2757,161 @@ class DataNexusCanvas(QtWidgets.QWidget):
         event.accept()
 
 
+class DataNexusPointTree(QtWidgets.QTreeWidget):
+    folderDropRequested = QtCore.Signal(object, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._drag_point_ids: list[str] = []
+        self._pressed_point_ids: list[str] = []
+        self.setHeaderHidden(True)
+        self.setRootIsDecorated(True)
+        self.setIndentation(14)
+        self.setUniformRowHeights(True)
+        try:
+            selection_mode = getattr(QtWidgets.QAbstractItemView, "ExtendedSelection", None)
+            if selection_mode is None:
+                selection_mode = QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+            self.setSelectionMode(selection_mode)
+        except Exception:
+            self.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.viewport().setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        try:
+            mode = getattr(QtWidgets.QAbstractItemView, "DragDrop", None)
+            if mode is None:
+                mode = QtWidgets.QAbstractItemView.DragDropMode.DragDrop
+            self.setDragDropMode(mode)
+        except Exception:
+            pass
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        try:
+            self.setTextElideMode(QtCore.Qt.TextElideMode.ElideRight)
+        except Exception:
+            self.setTextElideMode(QtCore.Qt.ElideRight)
+
+    @staticmethod
+    def _role(offset: int = 0):
+        try:
+            base = QtCore.Qt.ItemDataRole.UserRole
+        except Exception:
+            try:
+                base = QtCore.Qt.UserRole
+            except Exception:
+                base = 256
+        try:
+            return base + offset
+        except Exception:
+            try:
+                return int(base) + offset
+            except Exception:
+                return int(getattr(base, "value", 256)) + offset
+
+    @staticmethod
+    def _item_flag(name: str):
+        try:
+            return getattr(QtCore.Qt.ItemFlag, name)
+        except Exception:
+            try:
+                return getattr(QtCore.Qt, name)
+            except Exception:
+                return None
+
+    @staticmethod
+    def _is_left_button(event) -> bool:
+        try:
+            button = event.button()
+        except Exception:
+            return False
+        try:
+            left_button = QtCore.Qt.MouseButton.LeftButton
+        except Exception:
+            try:
+                left_button = QtCore.Qt.LeftButton
+            except Exception:
+                return False
+        return button == left_button
+
+    @staticmethod
+    def _event_pos(event):
+        try:
+            return event.position().toPoint()
+        except Exception:
+            try:
+                return event.pos()
+            except Exception:
+                return QtCore.QPoint()
+
+    def _selected_point_ids(self) -> list[str]:
+        ids: list[str] = []
+        seen: set[str] = set()
+        try:
+            items = list(self.selectedItems())
+        except Exception:
+            items = []
+        for item in items:
+            if item is None or str(item.data(0, self._role(2)) or "") != "point":
+                continue
+            point_id = str(item.data(0, self._role(0)) or "").strip()
+            if point_id and point_id not in seen:
+                seen.add(point_id)
+                ids.append(point_id)
+        if ids:
+            return ids
+        item = self.currentItem()
+        if item is not None and str(item.data(0, self._role(2)) or "") == "point":
+            point_id = str(item.data(0, self._role(0)) or "").strip()
+            if point_id:
+                ids.append(point_id)
+        return ids
+
+    def mousePressEvent(self, event):
+        self._pressed_point_ids = []
+        if self._is_left_button(event):
+            item = self.itemAt(self._event_pos(event))
+            if item is not None and str(item.data(0, self._role(2)) or "") == "point":
+                clicked_id = str(item.data(0, self._role(0)) or "").strip()
+                selected_ids = self._selected_point_ids()
+                if clicked_id and clicked_id in selected_ids and len(selected_ids) > 1:
+                    self._pressed_point_ids = selected_ids
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._pressed_point_ids = []
+
+    def startDrag(self, supported_actions):
+        self._drag_point_ids = list(self._pressed_point_ids or self._selected_point_ids())
+        if not self._drag_point_ids:
+            return
+        super().startDrag(supported_actions)
+        self._drag_point_ids = []
+        self._pressed_point_ids = []
+
+    def dropEvent(self, event):
+        point_ids = list(self._drag_point_ids)
+        if not point_ids:
+            super().dropEvent(event)
+            return
+        try:
+            pos = event.position().toPoint()
+        except Exception:
+            pos = event.pos()
+        target = self.itemAt(pos)
+        folder = ""
+        if target is not None:
+            kind = str(target.data(0, self._role(2)) or "")
+            if kind == "folder":
+                folder = str(target.data(0, self._role(1)) or "")
+            elif kind == "point":
+                folder = str(target.data(0, self._role(1)) or "")
+        self.folderDropRequested.emit(point_ids, folder)
+        self._drag_point_ids = []
+        event.acceptProposedAction()
+
+
 class DataNexusWidget(QtWidgets.QWidget):
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
@@ -2552,10 +2927,10 @@ class DataNexusWidget(QtWidgets.QWidget):
         self.setStyleSheet(
             "QWidget{color:#e5e7eb;}"
             "QLineEdit,QPlainTextEdit{background:#0f1216;color:#e5e7eb;border:1px solid #334155;border-radius:4px;padding:4px;}"
-            "QListWidget{background:#0b1018;color:#e5e7eb;border:1px solid #334155;border-radius:4px;outline:0;}"
-            "QListWidget::item{padding:1px 5px;border-bottom:1px solid #111827;}"
-            "QListWidget::item:selected{background:#164e63;color:#f8fafc;}"
-            "QListWidget::item:hover{background:#1f2937;}"
+            "QTreeWidget{background:#0b1018;color:#e5e7eb;border:1px solid #334155;border-radius:4px;outline:0;}"
+            "QTreeWidget::item{padding:1px 5px;border-bottom:1px solid #111827;}"
+            "QTreeWidget::item:selected{background:#164e63;color:#f8fafc;}"
+            "QTreeWidget::item:hover{background:#1f2937;}"
             "QToolButton,QPushButton{background:#1f2937;color:#e5e7eb;border:1px solid #334155;border-radius:4px;padding:4px 8px;}"
             "QToolButton:hover,QPushButton:hover{background:#273548;}"
             "QLabel{color:#cbd5e1;}"
@@ -2569,6 +2944,7 @@ class DataNexusWidget(QtWidgets.QWidget):
         toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(5)
         self._add_btn = self._make_tool_button("Add point", "SP_FileDialogNewFolder")
+        self._add_folder_btn = self._make_tool_button("Create folder", "SP_DirIcon")
         self._link_btn = self._make_tool_button("Link selected point", "SP_ArrowRight")
         self._delete_btn = self._make_tool_button("Delete selected point", "SP_TrashIcon")
         self._layout_btn = self._make_tool_button("Arrange linked points", "SP_BrowserReload")
@@ -2582,6 +2958,7 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._open_btn = self._make_tool_button("Open Data Nexus folder", "SP_DirOpenIcon")
         for btn in (
             self._add_btn,
+            self._add_folder_btn,
             self._link_btn,
             self._delete_btn,
             self._layout_btn,
@@ -2619,14 +2996,7 @@ class DataNexusWidget(QtWidgets.QWidget):
         point_header.addWidget(self._point_count, 0)
         self._point_filter = QtWidgets.QLineEdit()
         self._point_filter.setPlaceholderText("Filter points")
-        self._point_list = QtWidgets.QListWidget()
-        self._point_list.setUniformItemSizes(True)
-        self._point_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self._point_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        try:
-            self._point_list.setTextElideMode(QtCore.Qt.TextElideMode.ElideRight)
-        except Exception:
-            self._point_list.setTextElideMode(QtCore.Qt.ElideRight)
+        self._point_list = DataNexusPointTree()
         point_panel_layout.addLayout(point_header)
         point_panel_layout.addWidget(self._point_filter)
         point_panel_layout.addWidget(self._point_list, 1)
@@ -2668,9 +3038,11 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._canvas.zoomChanged.connect(self._on_zoom_changed)
         self._point_filter.textChanged.connect(self._on_point_filter_changed)
         self._point_list.currentItemChanged.connect(self._on_point_list_current_item_changed)
+        self._point_list.folderDropRequested.connect(self._move_point_to_folder)
         self._label_edit.textEdited.connect(self._on_label_edited)
         self._note_edit.textChanged.connect(self._on_note_edited)
         self._add_btn.clicked.connect(self._add_point)
+        self._add_folder_btn.clicked.connect(self._add_folder)
         self._link_btn.clicked.connect(self._begin_link)
         self._delete_btn.clicked.connect(self._delete_selected)
         self._layout_btn.clicked.connect(self._arrange_points)
@@ -2709,10 +3081,35 @@ class DataNexusWidget(QtWidgets.QWidget):
 
     @staticmethod
     def _item_user_role():
-        try:
-            return QtCore.Qt.ItemDataRole.UserRole
-        except Exception:
-            return QtCore.Qt.UserRole
+        return DataNexusPointTree._role(0)
+
+    @staticmethod
+    def _item_folder_role():
+        return DataNexusPointTree._role(1)
+
+    @staticmethod
+    def _item_kind_role():
+        return DataNexusPointTree._role(2)
+
+    def _iter_point_tree_items(self):
+        def walk(item):
+            yield item
+            for child_index in range(item.childCount()):
+                yield from walk(item.child(child_index))
+
+        for index in range(self._point_list.topLevelItemCount()):
+            yield from walk(self._point_list.topLevelItem(index))
+
+    def _expanded_folder_paths(self) -> set[str]:
+        folder_role = self._item_folder_role()
+        kind_role = self._item_kind_role()
+        expanded: set[str] = set()
+        for item in self._iter_point_tree_items():
+            if str(item.data(0, kind_role) or "") == "folder" and item.isExpanded():
+                folder = str(item.data(0, folder_role) or "")
+                if folder:
+                    expanded.add(folder)
+        return expanded
 
     def _point_filter_text(self) -> str:
         return str(self._point_filter.text() or "").strip().lower()
@@ -2728,6 +3125,7 @@ class DataNexusWidget(QtWidgets.QWidget):
                 str(entry.get("type", "") or ""),
                 str(entry.get("summary", "") or ""),
                 str(entry.get("note", "") or ""),
+                _entry_folder(entry),
                 str(entry.get("file", "") or ""),
             ]
         ).lower()
@@ -2740,10 +3138,13 @@ class DataNexusWidget(QtWidgets.QWidget):
     def _point_row_tooltip(self, entry: dict[str, Any]) -> str:
         label = str(entry.get("title", "") or entry.get("label", "") or entry.get("id", "") or "Point").strip()
         file_name = _point_file_name(entry)
+        folder = _entry_folder(entry)
         point_type = str(entry.get("type", "") or "").strip()
         summary = str(entry.get("summary", "") or "").strip()
         note = re.sub(r"\s+", " ", str(entry.get("note", "") or "")).strip()
         parts = [label, file_name]
+        if folder:
+            parts.append(f"folder: {folder}")
         if point_type:
             parts.append(f"type: {point_type}")
         if summary:
@@ -2763,18 +3164,103 @@ class DataNexusWidget(QtWidgets.QWidget):
         visible = [entry for entry in nodes if self._point_matches_filter(entry, needle)]
         selected = self._canvas.selected_id()
         role = self._item_user_role()
+        folder_role = self._item_folder_role()
+        kind_role = self._item_kind_role()
+        expanded = self._expanded_folder_paths()
+        had_tree = self._point_list.topLevelItemCount() > 0
+
+        def folder_with_ancestors(folder: str) -> list[str]:
+            parts = [part for part in _sanitize_point_folder(folder).split("/") if part]
+            out = []
+            for index in range(1, len(parts) + 1):
+                out.append("/".join(parts[:index]))
+            return out
+
+        visible_folders: set[str] = set()
+        for folder in _graph_folder_values(graph):
+            if not needle or needle in folder.lower():
+                visible_folders.update(folder_with_ancestors(folder))
+        for entry in visible:
+            visible_folders.update(folder_with_ancestors(_entry_folder(entry)))
+
+        folder_items: dict[str, QtWidgets.QTreeWidgetItem] = {}
+
+        def ensure_folder_item(folder: str) -> QtWidgets.QTreeWidgetItem | None:
+            clean_folder = _sanitize_point_folder(folder)
+            if not clean_folder:
+                return None
+            parent = None
+            parts = clean_folder.split("/")
+            for index in range(1, len(parts) + 1):
+                folder_path = "/".join(parts[:index])
+                existing = folder_items.get(folder_path)
+                if existing is not None:
+                    parent = existing
+                    continue
+                item = QtWidgets.QTreeWidgetItem([parts[index - 1]])
+                item.setData(0, role, "")
+                item.setData(0, folder_role, folder_path)
+                item.setData(0, kind_role, "folder")
+                item.setToolTip(0, folder_path)
+                item.setSizeHint(0, QtCore.QSize(160, 24))
+                try:
+                    item.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.SP_DirIcon))
+                except Exception:
+                    pass
+                try:
+                    drop_flag = DataNexusPointTree._item_flag("ItemIsDropEnabled")
+                    drag_flag = DataNexusPointTree._item_flag("ItemIsDragEnabled")
+                    if drop_flag is not None and drag_flag is not None:
+                        item.setFlags((item.flags() | drop_flag) & ~drag_flag)
+                except Exception:
+                    pass
+                should_expand = (folder_path in expanded) if had_tree else True
+                if parent is None:
+                    self._point_list.addTopLevelItem(item)
+                else:
+                    parent.addChild(item)
+                item.setExpanded(should_expand)
+                folder_items[folder_path] = item
+                parent = item
+            return parent
+
         self._syncing_point_list = True
         try:
             self._point_list.clear()
+            for folder in sorted(visible_folders, key=lambda item: item.lower()):
+                ensure_folder_item(folder)
             for entry in sorted(visible, key=lambda item: str(item.get("label", "") or item.get("id", "")).lower()):
                 point_id = str(entry.get("id", "") or "")
-                item = QtWidgets.QListWidgetItem(self._point_row_text(entry))
-                item.setData(role, point_id)
-                item.setToolTip(self._point_row_tooltip(entry))
-                item.setSizeHint(QtCore.QSize(160, 24))
-                self._point_list.addItem(item)
+                folder = _entry_folder(entry)
+                item = QtWidgets.QTreeWidgetItem([self._point_row_text(entry)])
+                item.setData(0, role, point_id)
+                item.setData(0, folder_role, folder)
+                item.setData(0, kind_role, "point")
+                item.setToolTip(0, self._point_row_tooltip(entry))
+                item.setSizeHint(0, QtCore.QSize(160, 24))
+                try:
+                    item.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.SP_FileIcon))
+                except Exception:
+                    pass
+                if _is_question_point(entry):
+                    try:
+                        item.setForeground(0, QtGui.QBrush(QtGui.QColor("#facc15")))
+                    except Exception:
+                        pass
+                try:
+                    drag_flag = DataNexusPointTree._item_flag("ItemIsDragEnabled")
+                    if drag_flag is not None:
+                        item.setFlags(item.flags() | drag_flag)
+                except Exception:
+                    pass
+                parent = ensure_folder_item(folder)
+                if parent is None:
+                    self._point_list.addTopLevelItem(item)
+                else:
+                    parent.addChild(item)
                 if point_id == selected:
                     self._point_list.setCurrentItem(item)
+                    self._point_list.scrollToItem(item, QtWidgets.QAbstractItemView.PositionAtCenter)
             count_text = f"{len(visible)}/{len(nodes)}" if needle else str(len(nodes))
             self._point_count.setText(count_text)
         finally:
@@ -2785,15 +3271,20 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._syncing_point_list = True
         try:
             if not point_id:
-                self._point_list.setCurrentRow(-1)
+                try:
+                    self._point_list.setCurrentItem(None)
+                except Exception:
+                    self._point_list.clearSelection()
                 return
-            for row in range(self._point_list.count()):
-                item = self._point_list.item(row)
-                if str(item.data(role) or "") == point_id:
+            for item in self._iter_point_tree_items():
+                if str(item.data(0, role) or "") == point_id:
                     self._point_list.setCurrentItem(item)
                     self._point_list.scrollToItem(item, QtWidgets.QAbstractItemView.PositionAtCenter)
                     return
-            self._point_list.setCurrentRow(-1)
+            try:
+                self._point_list.setCurrentItem(None)
+            except Exception:
+                self._point_list.clearSelection()
         finally:
             self._syncing_point_list = False
 
@@ -2803,7 +3294,9 @@ class DataNexusWidget(QtWidgets.QWidget):
     def _on_point_list_current_item_changed(self, current, _previous) -> None:
         if self._syncing_point_list or current is None:
             return
-        point_id = str(current.data(self._item_user_role()) or "")
+        if str(current.data(0, self._item_kind_role()) or "") != "point":
+            return
+        point_id = str(current.data(0, self._item_user_role()) or "")
         if point_id:
             self._canvas.select_id(point_id)
 
@@ -2916,7 +3409,7 @@ class DataNexusWidget(QtWidgets.QWidget):
                 label = str(text or "").strip()[:120] or entry.get("id", "Point")
                 entry["label"] = label
                 entry["title"] = label
-                entry["file"] = _sanitize_markdown_file_name(label, fallback=str(entry.get("id", "") or "point"))
+                entry["file"] = _join_point_file(_entry_folder(entry), label)
                 if not old_summary.strip() or _is_auto_summary(old_summary):
                     entry["summary"] = _derive_summary(str(entry.get("note", "") or ""), label)
                 break
@@ -2938,6 +3431,83 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._canvas.replace_graph(graph)
         self._on_graph_changed()
 
+    def _selected_tree_folder(self) -> str:
+        item = self._point_list.currentItem()
+        if item is None:
+            return ""
+        kind = str(item.data(0, self._item_kind_role()) or "")
+        if kind in {"folder", "point"}:
+            return _sanitize_point_folder(item.data(0, self._item_folder_role()))
+        return ""
+
+    def _add_folder(self) -> None:
+        parent = _dialog_parent_for_node(self._node_item) or self.window() or self
+        text, ok = QtWidgets.QInputDialog.getText(parent, "Create Data Nexus Folder", "Folder name:")
+        if not ok:
+            return
+        folder = _sanitize_point_folder(text)
+        if not folder:
+            self._set_status("Enter a valid folder name.")
+            return
+        graph = self._canvas.graph()
+        folders = set(_graph_folder_values(graph))
+        if folder in folders:
+            self._set_status(f"Folder already exists: {folder}")
+            return
+        folders.add(folder)
+        graph["folders"] = sorted(folders, key=lambda item: item.lower())
+        self._canvas.replace_graph(graph)
+        self._refresh_point_list()
+        self._on_graph_changed()
+        self._set_status(f"Created folder: {folder}")
+
+    def _move_point_to_folder(self, point_ids, folder: str) -> None:
+        if isinstance(point_ids, str):
+            raw_ids = [point_ids]
+        else:
+            try:
+                raw_ids = list(point_ids or [])
+            except Exception:
+                raw_ids = []
+        target_ids: list[str] = []
+        seen: set[str] = set()
+        for raw_id in raw_ids:
+            point_id = str(raw_id or "").strip()
+            if point_id and point_id not in seen:
+                seen.add(point_id)
+                target_ids.append(point_id)
+        if not target_ids:
+            return
+        clean_folder = _sanitize_point_folder(folder)
+        graph = self._canvas.graph()
+        changed = False
+        moved_ids: list[str] = []
+        target_id_set = set(target_ids)
+        for entry in graph.get("nodes", []) or []:
+            point_id = str(entry.get("id", "") or "")
+            if point_id not in target_id_set:
+                continue
+            if _entry_folder(entry) == clean_folder:
+                continue
+            _set_point_folder(entry, clean_folder)
+            moved_ids.append(point_id)
+            changed = True
+        if not changed:
+            return
+        folders = set(_graph_folder_values(graph))
+        if clean_folder:
+            folders.add(clean_folder)
+        graph["folders"] = sorted(folders, key=lambda item: item.lower())
+        self._canvas.replace_graph(graph)
+        self._canvas.select_id(moved_ids[0])
+        self._refresh_point_list()
+        self._on_graph_changed()
+        destination = clean_folder or "root"
+        if len(moved_ids) == 1:
+            self._set_status(f"Moved point to {destination}.")
+        else:
+            self._set_status(f"Moved {len(moved_ids)} points to {destination}.")
+
     def _add_point(self) -> None:
         self._link_source_id = ""
         self._canvas.set_link_target_mode(False)
@@ -2949,22 +3519,13 @@ class DataNexusWidget(QtWidgets.QWidget):
         while point_id in ids:
             idx += 1
             point_id = f"point_{idx}"
-        angle = (idx * 2.3999632297) % (math.pi * 2.0)
-        radius = 0.24
-        nodes.append(
-            {
-                "id": point_id,
-                "label": f"Point {idx}",
-                "title": f"Point {idx}",
-                "type": "concept",
-                "summary": "",
-                "note": "",
-                "file": f"point_{idx}.md",
-                "x": max(0.08, min(0.92, 0.5 + math.cos(angle) * radius)),
-                "y": max(0.08, min(0.92, 0.5 + math.sin(angle) * radius)),
-            }
-        )
+        folder = self._selected_tree_folder()
+        nodes.append(_new_point(f"Point {idx}", nodes, point_id=point_id, point_type="concept", folder=folder))
         graph["nodes"] = nodes
+        if folder:
+            folders = set(_graph_folder_values(graph))
+            folders.add(folder)
+            graph["folders"] = sorted(folders, key=lambda item: item.lower())
         self._canvas.set_graph(graph)
         self._canvas.select_id(point_id)
         self._refresh_point_list()
@@ -3029,7 +3590,7 @@ class DataNexusWidget(QtWidgets.QWidget):
         graph = _arrange_graph_wide_angles(self._canvas.graph())
         self._canvas.set_graph(graph)
         self._on_graph_changed()
-        self._set_status("Arranged linked points with wider angles.")
+        self._set_status("Arranged linked points.")
 
     def _save_now(self) -> None:
         self._sync_storage(write_sidecar=True)

@@ -508,12 +508,14 @@ def _question_actions_from_report(report: Dict[str, Any]) -> List[Dict[str, Any]
             summary += f" requiring `{accepted_type}`."
         else:
             summary += "."
+        folder = "refinement_questions" if question_kind == "refinement" else "prep_questions"
         actions.append(
             {
                 "op": "upsert_point",
                 "id": point_id,
                 "label": label,
                 "type": "prep_question",
+                "folder": folder,
                 "summary": summary,
                 "note": _question_note(task_id, question, slide),
                 "note_mode": "replace",
