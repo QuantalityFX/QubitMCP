@@ -461,6 +461,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Data Nexus plugin import failed:", e)
 
+    # 11.8) Task
+    try:
+        from nodes import task
+        if hasattr(task, "register"):
+            task.register()
+            _safe_probe("task")
+        else:
+            print("[EchoGraph] Task module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Task plugin import failed:", e)
+
     # 12) Image Collection
     try:
         from nodes import image_collection

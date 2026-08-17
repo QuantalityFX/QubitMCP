@@ -246,6 +246,8 @@ def _kind_label(kind: str) -> str:
         return "Data Nexus"
     if key in ("skills", "skills_library", "skill_library"):
         return "Skills"
+    if key in ("task", "agent_task", "task_node", "workflow_task"):
+        return "Task"
     acronyms = {"llm": "LLM", "uv": "UV", "fbx": "FBX", "bvh": "BVH", "html": "HTML", "fx": "FX"}
     words = []
     for part in text.split("_"):
@@ -306,6 +308,10 @@ _NODE_KIND_SEARCH_HINTS = {
     "html_preview": "html web preview browser",
     "skills": "skills library templates agent teacher sales package",
     "skills_library": "skills library templates agent teacher sales package",
+    "task": "task agent guide workflow approval questions",
+    "agent_task": "task agent guide workflow approval questions",
+    "task_node": "task agent guide workflow approval questions",
+    "workflow_task": "task agent guide workflow approval questions",
     "python": "script code automation",
     "switch": "choose branch toggle route",
     "output": "final result display",
@@ -537,7 +543,9 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
     elif key in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
         icon_pm = node_icons._db_icon() or node_icons._scene_icon() or node_icons._output_icon()
     elif key in ("skills", "skills_library", "skill_library"):
-        icon_pm = node_icons._librarian_icon() or node_icons._db_icon() or node_icons._output_icon()
+        icon_pm = node_icons._skills_icon() or node_icons._librarian_icon() or node_icons._db_icon() or node_icons._output_icon()
+    elif key in ("task", "agent_task", "task_node", "workflow_task"):
+        icon_pm = node_icons._tasks_icon() or node_icons._gantt_icon() or node_icons._note_icon() or node_icons._output_icon()
     elif key == "scene":
         icon_pm = node_icons._scene_icon()
     elif key == "camera":
@@ -670,7 +678,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
             "serial_com",
             "audio_capture",
             "qubit_deck_controller",
-            "data_nexus","skills",
+            "data_nexus","skills","task",
             "llm_prompt","chatbot","voice_actor","mediator_agent","librarian","note","append","image_collection","database"
         ]
         try:

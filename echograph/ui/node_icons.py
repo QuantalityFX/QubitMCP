@@ -53,6 +53,8 @@ _AUDIO_CAPTURE_ICON = None
 _MEDIGATOR_ICON = None
 _SANDBOX_ICON = None
 _DATA_NEXUS_ICON = None
+_SKILLS_ICON = None
+_TASKS_ICON = None
 _GENX_ICON = None
 _MOCAP_IMPORT_ICON = None
 _ANIM_RETARGET_ICON = None
@@ -500,3 +502,19 @@ def _data_nexus_icon():
         return _DATA_NEXUS_ICON
     _DATA_NEXUS_ICON = _load_pm("DataNexus_Icon.png")
     return _DATA_NEXUS_ICON
+
+
+def _skills_icon():
+    global _SKILLS_ICON
+    if _SKILLS_ICON is not None:
+        return _SKILLS_ICON
+    _SKILLS_ICON = _load_pm("skills_Icon_s.png") or _librarian_icon()
+    return _SKILLS_ICON
+
+
+def _tasks_icon():
+    global _TASKS_ICON
+    if _TASKS_ICON is not None:
+        return _TASKS_ICON
+    _TASKS_ICON = _load_pm("Tasks_Icon_s.png") or _gantt_icon() or _note_icon()
+    return _TASKS_ICON

@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from echograph.services.sales_agent import generate_sales_deck_from_template
-from echograph.services.skills_library import scan_skills_library, skills_root, update_agent_template_status
+from echograph.services.skills_library import scan_skills_library, skills_root, update_skill_asset_status
 from echograph.services.teacher_agent import (
     prepare_teacher_agent_conversion_request,
     write_teacher_agent_ai_response,
@@ -18,6 +18,7 @@ BODY_W = 680
 BODY_H = 380
 MEDIATOR_INPUT_PORT = "mediator"
 DATA_NEXUS_INPUT_PORT = "data_nexus"
+SKILLS_OUTPUT_PORT = "skills"
 SALES_DECK_INDEX_PARAM = "__sales_agent_last_deck_index"
 SALES_DECK_DIR_PARAM = "__sales_agent_last_deck_dir"
 DATA_NEXUS_KINDS = {"data_nexus", "data nexus", "data_graph", "data graph", "nexus"}
@@ -28,16 +29,22 @@ def _asset_kind_label(asset: Dict[str, Any]) -> str:
         return "Agent"
     if asset.get("kind") == "human_template":
         return "Human"
+    if asset.get("kind") == "task_guide":
+        return "Task Guide"
     return str(asset.get("kind") or "")
+
+
+def _asset_version_id(asset: Dict[str, Any]) -> str:
+    return str(asset.get("template_version_id") or asset.get("guide_version_id") or "")
 
 
 def _asset_marker(asset: Dict[str, Any]) -> str:
     if asset.get("warnings"):
         return "warnings"
-    if asset.get("kind") != "agent_template":
+    if asset.get("kind") not in {"agent_template", "task_guide"}:
         return ""
     status = str(asset.get("status") or "").strip().lower()
-    version = str(asset.get("template_version_id") or "").strip()
+    version = _asset_version_id(asset).strip()
     latest_approved = str(asset.get("latest_approved_version_id") or "").strip()
     if asset.get("is_latest_approved"):
         return "active"
@@ -234,11 +241,14 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
             self._add_asset(asset)
         for asset in data.get("agent_templates", []):
             self._add_asset(asset)
+        for asset in data.get("task_guides", []):
+            self._add_asset(asset)
 
         human_count = len(data.get("human_templates", []))
         agent_count = len(data.get("agent_templates", []))
+        guide_count = len(data.get("task_guides", []))
         warning_count = len(data.get("warnings", [])) + sum(len(a.get("warnings", [])) for a in self._assets)
-        self._summary.setText(f"{human_count} human / {agent_count} agent / {warning_count} warnings")
+        self._summary.setText(f"{human_count} human / {agent_count} agent / {guide_count} guides / {warning_count} warnings")
         if self._assets:
             row = 0
             if wanted_path:
@@ -259,7 +269,7 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
             [
                 str(asset.get("name") or ""),
                 _asset_kind_label(asset),
-                str(asset.get("template_version_id") or ""),
+                _asset_version_id(asset),
                 str(asset.get("status") or ""),
                 _asset_marker(asset),
             ]
@@ -269,6 +279,8 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
             item.setToolTip(column, str(asset.get("path") or ""))
         if asset.get("kind") == "human_template":
             item.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.SP_FileIcon))
+        elif asset.get("kind") == "task_guide":
+            item.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.SP_FileDialogInfoView))
         else:
             item.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.SP_FileDialogDetailedView))
         if asset.get("warnings"):
@@ -303,6 +315,7 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
 
     def _sync_actions(self, asset: Dict[str, Any] | None):
         is_agent = bool(asset and asset.get("kind") == "agent_template")
+        is_task_guide = bool(asset and asset.get("kind") == "task_guide")
         is_human = bool(asset and asset.get("kind") == "human_template")
         status = str((asset or {}).get("status") or "").strip().lower()
         self._convert_btn.setEnabled(is_human)
@@ -315,14 +328,14 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
             )
         )
         for button in (self._approve_btn, self._draft_btn, self._deprecate_btn):
-            button.setEnabled(is_agent)
-        if is_agent:
+            button.setEnabled(is_agent or is_task_guide)
+        if is_agent or is_task_guide:
             self._approve_btn.setEnabled(status != "approved")
             self._draft_btn.setEnabled(status != "draft")
             self._deprecate_btn.setEnabled(status != "deprecated")
             latest = str(asset.get("latest_version_id") or "")
             approved = str(asset.get("latest_approved_version_id") or "")
-            current = str(asset.get("template_version_id") or "")
+            current = _asset_version_id(asset)
             if asset.get("is_latest_approved"):
                 self._status_label.setText(f"active approved {current}")
             elif status == "approved" and approved:
@@ -396,10 +409,10 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
 
     def _set_selected_status(self, status: str):
         asset = self._selected_asset()
-        if not asset or asset.get("kind") != "agent_template":
+        if not asset or asset.get("kind") not in {"agent_template", "task_guide"}:
             return
         path = str(asset.get("path") or "")
-        ok, message = update_agent_template_status(path, status, root=self._skills_root_text())
+        ok, message = update_skill_asset_status(path, status, root=self._skills_root_text())
         self._status_label.setText(message)
         if ok:
             self.refresh(select_path=path)
@@ -551,15 +564,26 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
             "template_id",
             "template_family_id",
             "template_version_id",
+            "guide_id",
+            "guide_family_id",
+            "guide_version_id",
             "target_agent",
+            "task_kind",
             "artifact_kind",
             "delivery_formats",
+            "required_inputs",
+            "default_steps",
+            "approval_required",
             "status",
             "family_version_count",
             "is_latest_version",
             "latest_version_id",
+            "latest_asset_id",
+            "latest_asset_path",
             "is_latest_approved",
             "latest_approved_version_id",
+            "latest_approved_asset_id",
+            "latest_approved_asset_path",
             "slot_count",
             "slide_count",
             "duplicate_slots",
@@ -658,6 +682,7 @@ def _ensure_skills_params(node_item) -> None:
     hidden.add("__skills_size")
     hidden.add(MEDIATOR_INPUT_PORT)
     hidden.add(DATA_NEXUS_INPUT_PORT)
+    hidden.add(SKILLS_OUTPUT_PORT)
     hidden.add(SALES_DECK_INDEX_PARAM)
     hidden.add(SALES_DECK_DIR_PARAM)
     hidden_param["value"] = ",".join(sorted(hidden))
@@ -668,9 +693,12 @@ def build_ports(node_item) -> None:
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input(MEDIATOR_INPUT_PORT)
         node_item.ensure_input(DATA_NEXUS_INPUT_PORT)
+    if hasattr(node_item, "ensure_output"):
+        node_item.ensure_output(SKILLS_OUTPUT_PORT)
     try:
         setattr(node_item, "_default_named_input", MEDIATOR_INPUT_PORT)
         setattr(node_item, "_show_default_input_with_named", True)
+        setattr(node_item, "_hide_default_output_with_named", True)
     except Exception:
         pass
 

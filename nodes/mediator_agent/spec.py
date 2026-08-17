@@ -72,6 +72,10 @@ CHATBOT_KINDS = {"chatbot", "chat bot", "chat_bot"}
 QDECK_PROMPT_PROFILE = "qubit_deck_controller"
 QDECK_DEFAULT_API_BASE = "http://127.0.0.1:8765"
 QDECK_CONTEXT_MAX_ROWS = 220
+QDECK_CONNECTION_RECOVERY_HINT = (
+    "Refresh the Qubit Deck app to reestablish the connection, then try again."
+)
+QDECK_CONNECTION_USER_MESSAGE = f"Qubit Deck app API is not reachable. {QDECK_CONNECTION_RECOVERY_HINT}"
 AGENT_POPUP_MIN_WIDTH = 520
 AGENT_POPUP_RADIUS = 8
 AGENT_POPUP_BORDER_WIDTH = 2
@@ -512,15 +516,26 @@ def _parse_int(value) -> int | None:
         return None
 
 
-def _qdeck_fetch_buttons(api_base: str) -> list[dict]:
+def _qdeck_api_base_from_item(node_item) -> str:
+    return _param_value_from_item(node_item, "api_base", QDECK_DEFAULT_API_BASE).strip() or QDECK_DEFAULT_API_BASE
+
+
+def _qdeck_connection_failure_message(exc: Exception | str = "") -> str:
+    detail = str(exc or "").strip()
+    if detail:
+        return f"{QDECK_CONNECTION_USER_MESSAGE} Detail: {detail}"
+    return QDECK_CONNECTION_USER_MESSAGE
+
+
+def _qdeck_request_json(api_base: str, path: str, *, timeout: float = 2.5) -> dict:
     base = str(api_base or "").strip() or QDECK_DEFAULT_API_BASE
     request = Request(
-        url=urljoin((base.rstrip("/") + "/"), "api/buttons"),
+        url=urljoin((base.rstrip("/") + "/"), path.lstrip("/")),
         headers={"Accept": "application/json"},
         method="GET",
     )
     try:
-        with urlopen(request, timeout=2.5) as response:
+        with urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace").strip()
     except HTTPError as ex:
         detail = ex.read().decode("utf-8", errors="replace").strip()
@@ -529,11 +544,26 @@ def _qdeck_fetch_buttons(api_base: str) -> list[dict]:
         raise RuntimeError(f"Connection failed: {ex.reason}") from ex
 
     if not raw:
-        return []
+        return {}
     try:
-        payload = json.loads(raw)
+        parsed = json.loads(raw)
     except Exception as ex:
         raise RuntimeError(f"Invalid JSON response: {ex}") from ex
+
+    return parsed if isinstance(parsed, dict) else {"buttons": parsed}
+
+
+def _qdeck_health_issue_for_item(node_item) -> str:
+    api_base = _qdeck_api_base_from_item(node_item)
+    try:
+        _qdeck_request_json(api_base, "api/health", timeout=1.75)
+        return ""
+    except Exception as exc:
+        return _qdeck_connection_failure_message(exc)
+
+
+def _qdeck_fetch_buttons(api_base: str) -> list[dict]:
+    payload = _qdeck_request_json(api_base, "api/buttons", timeout=2.5)
 
     if isinstance(payload, dict):
         buttons = payload.get("buttons", [])
@@ -570,22 +600,19 @@ def _qdeck_summarize_buttons(buttons: list[dict], *, max_rows: int = QDECK_CONTE
 
 
 def _qdeck_context_text(scene, node_item) -> str:
-    api_base = _param_value_from_item(node_item, "api_base", QDECK_DEFAULT_API_BASE).strip() or QDECK_DEFAULT_API_BASE
+    api_base = _qdeck_api_base_from_item(node_item)
     try:
         buttons = _qdeck_fetch_buttons(api_base)
         return _qdeck_summarize_buttons(buttons)
-    except Exception:
-        pass
+    except Exception as exc:
+        failure_text = _qdeck_connection_failure_message(exc)
 
     model = getattr(node_item, "model", None)
     info_text = str(getattr(model, "info", "") or "").strip() if model is not None else ""
     if info_text:
-        return info_text
+        return "\n".join([failure_text, "Previous Qubit Deck status:", info_text]).strip()
 
-    try:
-        return str(scene.resolve_text_value(node_item) or "").strip()
-    except Exception:
-        return ""
+    return failure_text
 
 
 def _connected_qdeck_controller_item(scene, node_item):
@@ -3202,6 +3229,8 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._chatbot_handoff_active = False
         self._tanya_dialog = None
         self._tanya_popup_message = ""
+        self._last_tanya_speech_key = ""
+        self._last_tanya_speech_ms = 0
 
         self.setMinimumSize(MEDIGATOR_BODY_W, MEDIGATOR_BODY_H)
         try:
@@ -3760,6 +3789,24 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         message = _clean_tanya_popup_text(output)
         if not message:
             return
+        lowered = message.lower()
+        if "qubit deck app api is not reachable" in lowered:
+            dedupe_key = "qdeck_connection_unreachable"
+        elif "security guard" in lowered and any(
+            token in lowered for token in ("approval", "approve", "permission", "access")
+        ):
+            target = _qdeck_launch_target_from_request(getattr(self, "_last_prompt_voice_input", "")).lower()
+            dedupe_key = f"security_guard_request:{target or 'generic'}"
+        else:
+            dedupe_key = hashlib.sha1(message.encode("utf-8", errors="ignore")).hexdigest()
+        now_ms = int(QtCore.QDateTime.currentMSecsSinceEpoch())
+        last_key = str(getattr(self, "_last_tanya_speech_key", "") or "")
+        last_ms = int(getattr(self, "_last_tanya_speech_ms", 0) or 0)
+        dedupe_window_ms = max(3500, _speech_popup_delay_ms(message) + 1000)
+        if dedupe_key and dedupe_key == last_key and (now_ms - last_ms) < dedupe_window_ms:
+            return
+        self._last_tanya_speech_key = dedupe_key
+        self._last_tanya_speech_ms = now_ms
         self._tanya_popup_message = message
         _publish_mediator_speech_text(self._node_item, message)
         old_dialog = getattr(self, "_tanya_dialog", None)
@@ -3795,6 +3842,39 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         original_user_input: str,
         guard_node_name: str,
     ) -> None:
+        scene = self._ensure_scene()
+        issue = _qdeck_context_issue(scene, self._node_item)
+        if issue:
+            self._set_status(issue, error=True)
+            _set_node_info(self._node_item, issue)
+            self._maybe_show_tanya_speech_popup(issue, source="qdeck_health")
+            return
+
+        qdeck_item = _connected_qdeck_controller_item(scene, self._node_item)
+        clean_voice_input = _normalize_qdeck_voice_input((original_user_input or "").strip())
+        if not clean_voice_input:
+            _system_prompt, _chatbot_history, voice_input = self._collect_inputs_for_profile(
+                QDECK_PROMPT_PROFILE,
+                include_pending_security=False,
+            )
+            clean_voice_input = _normalize_qdeck_voice_input((voice_input or "").strip())
+        if not clean_voice_input:
+            self._set_status("Security approval received, but original voice request is unavailable.", error=True)
+            return
+
+        self._show_qdeck_handoff_dialog(request_text=request_text, voice_input=clean_voice_input)
+        health_issue = _qdeck_health_issue_for_item(qdeck_item)
+        if health_issue:
+            self._finish_qdeck_handoff_dialog(message=health_issue, error=True)
+            self._set_status(health_issue, error=True)
+            _set_node_info(self._node_item, health_issue)
+            try:
+                self._console_append.emit(f"[qdeck] {health_issue}")
+            except Exception:
+                pass
+            self._maybe_show_tanya_speech_popup(QDECK_CONNECTION_USER_MESSAGE, source="qdeck_health")
+            return
+
         system_prompt, chatbot_history, voice_input = self._collect_inputs_for_profile(
             QDECK_PROMPT_PROFILE,
             include_pending_security=False,
@@ -3808,12 +3888,6 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             history_parts.append(f"Decision source node: {guard_node_name}")
         chatbot_history = "\n\n".join(part for part in history_parts if part).strip()
 
-        clean_voice_input = _normalize_qdeck_voice_input((original_user_input or voice_input or "").strip())
-        if not clean_voice_input:
-            self._set_status("Security approval received, but original voice request is unavailable.", error=True)
-            return
-
-        self._show_qdeck_handoff_dialog(request_text=request_text, voice_input=clean_voice_input)
         prompt, signature = _compose_mediator_prompt(
             system_prompt,
             chatbot_history,

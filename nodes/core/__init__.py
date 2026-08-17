@@ -111,6 +111,10 @@ def register_defaults() -> None:
     register("local_server", stripe_color="#14b8a6")
     register("database",  stripe_color="#16a34a")
     register("data_nexus", stripe_color="#22d3ee")
+    register("task", stripe_color="#0f766e")
+    register("agent_task", stripe_color="#0f766e")
+    register("task_node", stripe_color="#0f766e")
+    register("workflow_task", stripe_color="#0f766e")
     register("codex_sandbox", stripe_color="#475569")
     register("audio_capture", stripe_color="#14b8a6")
     # librarian plugins can override this later
@@ -196,6 +200,14 @@ def register_defaults() -> None:
             _skills.register(core=sys.modules[__name__])
     except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Skills auto-register failed:", exc)
+
+    # Auto-register Task so saved workflows can rebuild the task guide shell early.
+    try:
+        from nodes import task as _task  # type: ignore
+        if hasattr(_task, "register"):
+            _task.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Task auto-register failed:", exc)
 
 
 def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:

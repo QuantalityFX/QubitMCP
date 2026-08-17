@@ -646,6 +646,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _skills.register()
             except Exception:
                 pass
+        # Ensure Task spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("task", "agent_task", "task_node", "workflow_task"):
+            try:
+                from nodes import task as _task  # type: ignore
+                if hasattr(_task, "register"):
+                    _task.register()
+            except Exception:
+                pass
         # Ensure UV Unwrap spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "uv_unwrap":
             try:
@@ -785,6 +793,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if "path" not in names:
                 params.append({"name": "path", "value": ""})
             if kind_lower == "html_preview":
+                try:
+                    self.ensure_input("path")
+                    setattr(self, "_default_named_input", "path")
+                    setattr(self, "_show_default_input_with_named", True)
+                except Exception:
+                    pass
                 hidden_entry = None
                 for p in params:
                     if (p.get("name") or "").strip().lower() == "__ui_hidden_params":
@@ -1378,6 +1392,41 @@ class NodeItem(QtWidgets.QGraphicsObject):
             pass
         try:
             self._set_param_value("__skills_size", f"{w:.3f},{h:.3f}", rebuild=False, notify_scene=notify_scene)
+        except Exception:
+            pass
+
+    def _task_size_from_model_or_param(self) -> tuple[float, float] | None:
+        size = getattr(self.model, "_task_size", None)
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                w = float(size[0])
+                h = float(size[1])
+            except Exception:
+                w = h = None
+            if w is not None and h is not None and w > 0 and h > 0:
+                return w, h
+        parsed = self._size_tuple_from_param("__task_size")
+        if parsed is not None:
+            try:
+                self.model._task_size = parsed
+            except Exception:
+                pass
+        return parsed
+
+    def _store_task_size(self, *, notify_scene: bool = False) -> None:
+        try:
+            w = float(self.width)
+            h = float(self.height)
+        except Exception:
+            return
+        if w <= 0 or h <= 0:
+            return
+        try:
+            self.model._task_size = (w, h)
+        except Exception:
+            pass
+        try:
+            self._set_param_value("__task_size", f"{w:.3f},{h:.3f}", rebuild=False, notify_scene=notify_scene)
         except Exception:
             pass
 
@@ -2523,6 +2572,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("skills", "skills_library", "skill_library"):
             body_h = 360
             node_w = max(self._BASE_W, 520)
+        elif kind in ("task", "agent_task", "task_node", "workflow_task"):
+            body_h = 320
+            node_w = max(self._BASE_W, 560)
+            try:
+                from nodes.task import spec as _task_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_task_spec, "TASK_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_task_spec, "TASK_BODY_W", node_w)))
+            except Exception:
+                pass
         elif kind == "output":
             body_h = 58
             node_w = max(self._BASE_W, 220)
@@ -2803,6 +2861,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             custom_size = self._skills_size_from_model_or_param()
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    custom_w = float(custom_size[0])
+                    custom_h = float(custom_size[1])
+                except Exception:
+                    custom_w = custom_h = None
+                if custom_w is not None and custom_w > 0:
+                    new_w = max(new_w, max(self._BASE_W, custom_w))
+                if custom_h is not None and custom_h > 0:
+                    new_h = max(new_h, max(self._BASE_H, custom_h))
+        elif kind in ("task", "agent_task", "task_node", "workflow_task"):
+            try:
+                self._task_min_w = float(new_w)
+                self._task_min_h = float(new_h)
+            except Exception:
+                pass
+            custom_size = self._task_size_from_model_or_param()
             if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
                 try:
                     custom_w = float(custom_size[0])
@@ -6399,8 +6474,67 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         return y_cursor + summary_h
 
+    def _param_value_from_graph_item(self, item, name: str) -> str:
+        model = getattr(item, "model", None)
+        key = str(name or "").strip().lower()
+        for param in (getattr(model, "params", None) or []):
+            if not isinstance(param, dict):
+                continue
+            if str(param.get("name", "") or "").strip().lower() == key:
+                return str(param.get("value", "") or "")
+        return ""
+
+    def _connected_html_preview_path(self) -> str:
+        if (self.model.kind or "").strip().lower() != "html_preview":
+            return ""
+        sc = self.scene()
+        if sc is None:
+            return ""
+        try:
+            edges = list(sc._ordered_in_edges(self))
+        except Exception:
+            try:
+                edges = list(sc._in_edges(self))
+            except Exception:
+                edges = []
+        accepted_inputs = {"", "path", "artifact", "html", "input"}
+        fallback_names = ("artifact", "path", "output", "html", "index_path")
+        for edge in edges:
+            dst_port = (
+                getattr(edge, "dst_port_name", None)
+                or getattr(edge, "dst_label", None)
+                or getattr(edge, "dst_name", None)
+                or ""
+            )
+            dst_key = str(dst_port or "").strip().lower()
+            if dst_key not in accepted_inputs:
+                continue
+            src = getattr(edge, "src", None)
+            src_port = str(getattr(edge, "src_port_name", "") or "").strip()
+            candidates = []
+            if src_port:
+                candidates.append(src_port)
+            candidates.extend(name for name in fallback_names if name not in candidates)
+            for name in candidates:
+                value = self._param_value_from_graph_item(src, name).strip()
+                if not value:
+                    continue
+                lowered = value.lower()
+                if lowered.endswith((".html", ".htm")) or os.path.exists(value):
+                    return value
+        return ""
+
+    def _html_preview_path(self) -> str:
+        connected_path = self._connected_html_preview_path().strip()
+        if connected_path:
+            current = (self._param_value("path") or "").strip()
+            if current != connected_path:
+                self._set_param_value("path", connected_path, rebuild=False, notify_scene=False)
+            return connected_path
+        return self._param_value("path")
+
     def _build_html_preview(self, y_cursor: int) -> int:
-        path = self._param_value("path")
+        path = self._html_preview_path()
         detail, btn_enabled = self._file_detail_for_path(path)
         y_cursor = self._render_file_summary(y_cursor, detail, btn_enabled, path)
 
@@ -7745,6 +7879,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "skills",
             "skills_library",
             "skill_library",
+            "task",
+            "agent_task",
+            "task_node",
+            "workflow_task",
             "html_preview",
             "html preview",
             "htmlpreview",
@@ -7858,6 +7996,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("skills", "skills_library", "skill_library"):
             min_w = float(getattr(self, "_skills_min_w", self._BASE_W))
             min_h = float(getattr(self, "_skills_min_h", self._BASE_H))
+        elif kind in ("task", "agent_task", "task_node", "workflow_task"):
+            min_w = float(getattr(self, "_task_min_w", self._BASE_W))
+            min_h = float(getattr(self, "_task_min_h", self._BASE_H))
         elif kind in ("html_preview", "html preview", "htmlpreview"):
             min_w = float(getattr(self, "_html_preview_min_w", self._BASE_W))
             min_h = float(getattr(self, "_html_preview_min_h", self._BASE_H))
@@ -7926,6 +8067,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.model._data_nexus_size = (float(self.width), float(self.height))
             elif kind in ("skills", "skills_library", "skill_library"):
                 self._store_skills_size(notify_scene=False)
+            elif kind in ("task", "agent_task", "task_node", "workflow_task"):
+                self._store_task_size(notify_scene=False)
             elif kind in ("html_preview", "html preview", "htmlpreview"):
                 self._store_html_preview_size(notify_scene=False)
             elif kind in ("video_player", "video player", "videoplayer"):
@@ -7965,6 +8108,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self.model._data_nexus_size = (float(self.width), float(self.height))
                 elif kind in ("skills", "skills_library", "skill_library"):
                     self._store_skills_size(notify_scene=True)
+                elif kind in ("task", "agent_task", "task_node", "workflow_task"):
+                    self._store_task_size(notify_scene=True)
                 elif kind in ("html_preview", "html preview", "htmlpreview"):
                     self._store_html_preview_size(notify_scene=True)
                 elif kind in ("video_player", "video player", "videoplayer"):
@@ -8188,6 +8333,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "skills",
                 "skills_library",
                 "skill_library",
+                "task",
+                "agent_task",
+                "task_node",
+                "workflow_task",
                 "data_nexus",
                 "data nexus",
                 "data_graph",
@@ -8530,7 +8679,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower in ("html_preview", "html preview", "htmlpreview"):
                 icon_pm = node_icons._html_preview_icon() or node_icons._output_icon()
             elif kind_lower in ("skills", "skills_library", "skill_library"):
-                icon_pm = node_icons._librarian_icon() or node_icons._db_icon() or node_icons._output_icon()
+                icon_pm = node_icons._skills_icon() or node_icons._librarian_icon() or node_icons._db_icon() or node_icons._output_icon()
+            elif kind_lower in ("task", "agent_task", "task_node", "workflow_task"):
+                icon_pm = node_icons._tasks_icon() or node_icons._gantt_icon() or node_icons._note_icon() or node_icons._output_icon()
             elif kind_lower in ("image_collection", "imagecollection"):
                 icon_pm = node_icons._image_collection_icon() or node_icons._output_icon()
             elif kind_lower == "switch":

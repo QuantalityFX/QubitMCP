@@ -137,6 +137,19 @@ def _list_markdown(directory: Path) -> List[Path]:
         return []
 
 
+def _list_markdown_many(directories: Iterable[Path]) -> List[Path]:
+    paths: List[Path] = []
+    seen: set[str] = set()
+    for directory in directories:
+        for path in _list_markdown(directory):
+            key = str(path.resolve()).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(path)
+    return sorted(paths, key=lambda p: (_display_path(p).lower(), p.name.lower()))
+
+
 @dataclass
 class SkillAsset:
     kind: str
@@ -163,6 +176,7 @@ class SkillsLibrarySnapshot:
     root: str
     human_templates: List[SkillAsset] = field(default_factory=list)
     agent_templates: List[SkillAsset] = field(default_factory=list)
+    task_guides: List[SkillAsset] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -170,6 +184,7 @@ class SkillsLibrarySnapshot:
             "root": self.root,
             "human_templates": [asset.to_dict() for asset in self.human_templates],
             "agent_templates": [asset.to_dict() for asset in self.agent_templates],
+            "task_guides": [asset.to_dict() for asset in self.task_guides],
             "warnings": list(self.warnings),
         }
 
@@ -199,6 +214,34 @@ def _validate_agent_metadata(metadata: Dict[str, Any]) -> List[str]:
         warnings.append("No named `{{...}}` slots found.")
     if int(metadata.get("slide_count", 0) or 0) <= 0:
         warnings.append("No `## Slide ##` headings found.")
+    return warnings
+
+
+def _validate_task_guide_metadata(metadata: Dict[str, Any]) -> List[str]:
+    warnings: List[str] = []
+    required = (
+        "guide_id",
+        "guide_family_id",
+        "guide_version_id",
+        "target_agent",
+        "task_kind",
+        "artifact_kind",
+        "status",
+    )
+    for key in required:
+        value = metadata.get(key)
+        if value is None or value == "" or value == []:
+            warnings.append(f"Missing `{key}`.")
+    kind = str(metadata.get("kind", "") or "").strip().lower()
+    if kind and kind != "task_guide":
+        warnings.append("`kind` should be `task_guide`.")
+    for key in ("required_inputs", "default_steps"):
+        value = metadata.get(key)
+        if value is not None and value != [] and not isinstance(value, list):
+            warnings.append(f"`{key}` should be a list.")
+    status = str(metadata.get("status", "") or "").strip().lower()
+    if status and status not in VALID_TEMPLATE_STATUSES:
+        warnings.append(f"`status` should be one of: {', '.join(sorted(VALID_TEMPLATE_STATUSES))}.")
     return warnings
 
 
@@ -237,6 +280,35 @@ def _agent_template_asset(path: Path) -> SkillAsset:
     )
 
 
+def _task_guide_asset(path: Path) -> SkillAsset:
+    try:
+        text = _read_text(path)
+    except Exception:
+        text = ""
+    metadata = _parse_front_matter(text)
+    version_from_name = _version_from_stem(path.stem)
+    family_from_name = _family_from_stem(path.stem)
+    metadata.setdefault("kind", "task_guide")
+    metadata.setdefault("guide_version_id", version_from_name)
+    metadata.setdefault("guide_family_id", family_from_name)
+    if not metadata.get("guide_id") and metadata.get("guide_family_id") and metadata.get("guide_version_id"):
+        metadata["guide_id"] = f"{metadata['guide_family_id']}_{metadata['guide_version_id']}"
+    metadata["version_sort"] = _version_sort_key(str(metadata.get("guide_version_id") or ""))
+    warnings = _validate_task_guide_metadata(metadata)
+    if not version_from_name:
+        warnings.append("Filename is missing `_v_###` version suffix.")
+    if version_from_name and metadata.get("guide_version_id") != version_from_name:
+        warnings.append("Filename version does not match `guide_version_id`.")
+    return SkillAsset(
+        kind="task_guide",
+        path=_display_path(path),
+        name=path.name,
+        modified_at=_modified_timestamp(path),
+        metadata=metadata,
+        warnings=warnings,
+    )
+
+
 def _human_template_asset(path: Path) -> SkillAsset:
     return SkillAsset(
         kind="human_template",
@@ -261,6 +333,7 @@ def scan_skills_library(root: str | Path | None = None) -> SkillsLibrarySnapshot
 
     human_dir = base / "human_templates"
     agent_dir = base / "agent_templates"
+    task_guide_dirs = [base / "task_guides", base / "agent_guides"]
     if not human_dir.exists():
         snapshot.warnings.append(f"Missing human templates directory: {_display_path(human_dir)}")
     if not agent_dir.exists():
@@ -268,6 +341,7 @@ def scan_skills_library(root: str | Path | None = None) -> SkillsLibrarySnapshot
 
     snapshot.human_templates = [_human_template_asset(path) for path in _list_markdown(human_dir)]
     snapshot.agent_templates = _annotate_agent_versions([_agent_template_asset(path) for path in _list_markdown(agent_dir)])
+    snapshot.task_guides = _annotate_task_guide_versions([_task_guide_asset(path) for path in _list_markdown_many(task_guide_dirs)])
     return snapshot
 
 
@@ -329,6 +403,64 @@ def _annotate_agent_versions(assets: List[SkillAsset]) -> List[SkillAsset]:
     )
 
 
+def _annotate_task_guide_versions(assets: List[SkillAsset]) -> List[SkillAsset]:
+    by_family: Dict[str, List[SkillAsset]] = {}
+    for asset in assets:
+        family = str(asset.metadata.get("guide_family_id", "") or "").strip()
+        if not family:
+            continue
+        by_family.setdefault(family, []).append(asset)
+
+    for family, family_assets in by_family.items():
+        ordered = sorted(
+            family_assets,
+            key=lambda asset: (
+                int(asset.metadata.get("version_sort", -1) or -1),
+                str(asset.metadata.get("guide_version_id", "") or ""),
+                asset.name,
+            ),
+            reverse=True,
+        )
+        latest = ordered[0] if ordered else None
+        approved = [
+            asset
+            for asset in ordered
+            if str(asset.metadata.get("status", "") or "").strip().lower() == "approved"
+        ]
+        latest_approved = approved[0] if approved else None
+        for asset in family_assets:
+            asset.metadata["guide_family_id"] = family
+            asset.metadata["family_version_count"] = len(family_assets)
+            if latest is not None:
+                asset.metadata["latest_version_id"] = latest.metadata.get("guide_version_id", "")
+                asset.metadata["latest_asset_id"] = latest.metadata.get("guide_id", "")
+                asset.metadata["latest_asset_path"] = latest.path
+                asset.metadata["is_latest_version"] = asset.path == latest.path
+            else:
+                asset.metadata["is_latest_version"] = False
+            if latest_approved is not None:
+                asset.metadata["latest_approved_version_id"] = latest_approved.metadata.get("guide_version_id", "")
+                asset.metadata["latest_approved_asset_id"] = latest_approved.metadata.get("guide_id", "")
+                asset.metadata["latest_approved_asset_path"] = latest_approved.path
+                asset.metadata["is_latest_approved"] = asset.path == latest_approved.path
+                asset.metadata["has_approved_version"] = True
+            else:
+                asset.metadata["latest_approved_version_id"] = ""
+                asset.metadata["latest_approved_asset_id"] = ""
+                asset.metadata["latest_approved_asset_path"] = ""
+                asset.metadata["is_latest_approved"] = False
+                asset.metadata["has_approved_version"] = False
+
+    return sorted(
+        assets,
+        key=lambda asset: (
+            str(asset.metadata.get("guide_family_id", "") or "").lower(),
+            -int(asset.metadata.get("version_sort", -1) or -1),
+            asset.name.lower(),
+        ),
+    )
+
+
 def latest_by_family(assets: Iterable[SkillAsset], *, status: str | None = None) -> Dict[str, SkillAsset]:
     out: Dict[str, SkillAsset] = {}
     wanted_status = str(status or "").strip().lower()
@@ -366,13 +498,13 @@ def resolve_library_path(path: str | Path, root: str | Path | None = None) -> Pa
     return raw_path
 
 
-def update_agent_template_status(path: str | Path, status: str, root: str | Path | None = None) -> tuple[bool, str]:
+def update_skill_asset_status(path: str | Path, status: str, root: str | Path | None = None) -> tuple[bool, str]:
     next_status = str(status or "").strip().lower()
     if next_status not in VALID_TEMPLATE_STATUSES:
-        return False, f"Unsupported template status: {status}"
+        return False, f"Unsupported asset status: {status}"
 
     try:
-        template_path = resolve_library_path(path, root=root)
+        asset_path = resolve_library_path(path, root=root)
     except Exception as exc:
         return False, str(exc)
 
@@ -382,23 +514,28 @@ def update_agent_template_status(path: str | Path, status: str, root: str | Path
     else:
         base = base.resolve()
     agent_dir = base / "agent_templates"
-    if not _is_relative_to(template_path, agent_dir):
-        return False, "Only files under `Skills/agent_templates/` can be approved from the Skills node."
-    if template_path.suffix.lower() != ".md":
-        return False, "Only markdown agent templates can be updated."
-    if not template_path.exists():
-        return False, f"Template not found: {_display_path(template_path)}"
+    task_guide_dirs = [base / "task_guides", base / "agent_guides"]
+    if _is_relative_to(asset_path, agent_dir):
+        asset_label = "template"
+    elif any(_is_relative_to(asset_path, directory) for directory in task_guide_dirs):
+        asset_label = "task guide"
+    else:
+        return False, "Only files under `Skills/agent_templates/`, `Skills/task_guides/`, or `Skills/agent_guides/` can be approved from the Skills node."
+    if asset_path.suffix.lower() != ".md":
+        return False, "Only markdown Skills assets can be updated."
+    if not asset_path.exists():
+        return False, f"Skills asset not found: {_display_path(asset_path)}"
 
     try:
-        text = template_path.read_text(encoding="utf-8")
+        text = asset_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        text = template_path.read_text(encoding="utf-8", errors="replace")
+        text = asset_path.read_text(encoding="utf-8", errors="replace")
     except Exception as exc:
-        return False, f"Failed to read template: {exc}"
+        return False, f"Failed to read Skills asset: {exc}"
 
     match = FRONT_MATTER_RE.match(text or "")
     if not match:
-        return False, "Agent template must have front matter before status can be updated."
+        return False, "Skills asset must have front matter before status can be updated."
 
     lines = match.group(1).splitlines()
     replaced = False
@@ -413,7 +550,11 @@ def update_agent_template_status(path: str | Path, status: str, root: str | Path
     suffix = text[match.end():]
     new_text = "---\n" + "\n".join(lines).rstrip() + "\n---\n" + suffix
     try:
-        template_path.write_text(new_text, encoding="utf-8")
+        asset_path.write_text(new_text, encoding="utf-8")
     except Exception as exc:
-        return False, f"Failed to update template status: {exc}"
-    return True, f"Updated {template_path.name} to `{next_status}`."
+        return False, f"Failed to update Skills asset status: {exc}"
+    return True, f"Updated {asset_label} {asset_path.name} to `{next_status}`."
+
+
+def update_agent_template_status(path: str | Path, status: str, root: str | Path | None = None) -> tuple[bool, str]:
+    return update_skill_asset_status(path, status, root=root)

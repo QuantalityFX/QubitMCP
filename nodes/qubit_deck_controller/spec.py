@@ -22,6 +22,8 @@ from nodes.core import Spec
 
 DEFAULT_API_BASE = "http://127.0.0.1:8765"
 MASKED_ADDRESS_TEXT = "******"
+CONNECTION_RECOVERY_HINT = "Refresh the Qubit Deck app to reestablish the connection, then try again."
+CONNECTION_USER_MESSAGE = f"Qubit Deck app API is not reachable. {CONNECTION_RECOVERY_HINT}"
 QUBIT_DECK_CONTROLLER_KINDS = {
     "qubit_deck_controller",
     "qubit deck controller",
@@ -126,6 +128,22 @@ def _mask_api_base_text(text: str, *api_bases: str) -> str:
     for api_base in _api_base_mask_variants(*api_bases):
         out = out.replace(api_base, MASKED_ADDRESS_TEXT)
     return out
+
+
+def _connection_failure_message(reason: object = "") -> str:
+    detail = str(reason or "").strip()
+    if detail:
+        return f"{CONNECTION_USER_MESSAGE} Detail: {detail}"
+    return CONNECTION_USER_MESSAGE
+
+
+def _action_error_message(exc: Exception) -> str:
+    text = str(exc or "").strip()
+    if CONNECTION_USER_MESSAGE in text:
+        return text
+    if text.lower().startswith("connection failed:"):
+        return _connection_failure_message(text)
+    return f"Action failed: {text}"
 
 
 def _line_edit_echo_mode(mode_name: str):
@@ -762,7 +780,7 @@ def _execute_command_on_node_item(node_item, command: dict[str, str]) -> tuple[b
             )
         success = True
     except Exception as exc:
-        message = f"Action failed: {exc}"
+        message = _action_error_message(exc)
         success = False
     finally:
         try:
@@ -923,7 +941,7 @@ def _request_json(base_url: str, method: str, path: str, body: dict | None = Non
         detail = ex.read().decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"HTTP {ex.code}: {detail or ex.reason}") from ex
     except URLError as ex:
-        raise RuntimeError(f"Connection failed: {ex.reason}") from ex
+        raise RuntimeError(_connection_failure_message(ex.reason)) from ex
     except json.JSONDecodeError as ex:
         raise RuntimeError(f"Invalid JSON response: {ex}") from ex
 
@@ -1787,7 +1805,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), display_message[:220], card)
             return True
         except Exception as exc:
-            _set_status(f"Action failed: {exc}", error=True)
+            _set_status(_action_error_message(exc), error=True)
             return False
         finally:
             try:
