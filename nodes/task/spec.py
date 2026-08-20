@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 import html as html_lib
 import json
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
-from echograph.services.sales_agent import analyze_sales_deck_readiness, generate_sales_deck_from_template
+from echograph.services.sales_agent import (
+    analyze_sales_deck_readiness,
+    generate_sales_deck_from_ai_draft,
+    restyle_sales_deck_from_index,
+    sales_deck_prompt_context_from_index,
+)
 from echograph.services.skills_library import scan_skills_library
 from nodes.core import Spec
 
@@ -19,12 +26,13 @@ TASK_NODE_KINDS = {TASK_NODE_KIND, *TASK_NODE_ALIASES}
 
 SKILLS_INPUT_PORT = "skills"
 DATA_NEXUS_INPUT_PORT = "data_nexus"
+MEDIATOR_INPUT_PORT = "mediator"
 STATUS_OUTPUT_PORT = "status"
 QUESTIONS_OUTPUT_PORT = "questions"
 ARTIFACT_OUTPUT_PORT = "artifact"
 
-TASK_BODY_W = 600
-TASK_BODY_H = 340
+TASK_BODY_W = 540
+TASK_BODY_H = 350
 
 TASK_STATUS_PARAM = "__task_status"
 TASK_ID_PARAM = "__task_id"
@@ -35,8 +43,33 @@ TASK_LAST_REPORT_PARAM = "__task_last_report_json"
 TASK_LAST_ARTIFACT_PARAM = "__task_last_artifact_path"
 TASK_SIZE_PARAM = "__task_size"
 
+TASK_STATUS_CHOICES = (
+    ("created", "Created"),
+    ("needs_setup", "Needs Setup"),
+    ("needs_answers", "Needs Answers"),
+    ("ready_to_generate", "Ready"),
+    ("draft_ready", "Draft"),
+    ("generating", "Generating"),
+    ("approved", "Approved"),
+    ("dismissed", "Dismissed"),
+    ("failed", "Failed"),
+)
+
 SKILLS_KINDS = {"skills", "skills_library", "skill_library"}
 DATA_NEXUS_KINDS = {"data_nexus", "data nexus", "data_graph", "data graph", "nexus"}
+MEDIATOR_KINDS = {"mediator_agent", "medigator_agent", "medigator", "mediator", "mediator agent", "medigator agent"}
+SALES_AGENT_QUESTIONS_RE = re.compile(
+    r"<sales_agent_questions\b[^>]*>(?P<payload>.*?)</sales_agent_questions>",
+    re.IGNORECASE | re.DOTALL,
+)
+SALES_AGENT_REVIEW_RE = re.compile(
+    r"<sales_agent_review\b[^>]*>(?P<payload>.*?)</sales_agent_review>",
+    re.IGNORECASE | re.DOTALL,
+)
+SALES_AGENT_DRAFT_RE = re.compile(
+    r"<sales_agent_draft\b[^>]*>(?P<payload>.*?)</sales_agent_draft>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _kind_of_item(node_item) -> str:
@@ -164,6 +197,7 @@ def _ensure_hidden_params(node_item) -> None:
             TASK_SIZE_PARAM,
             SKILLS_INPUT_PORT,
             DATA_NEXUS_INPUT_PORT,
+            MEDIATOR_INPUT_PORT,
             STATUS_OUTPUT_PORT,
             QUESTIONS_OUTPUT_PORT,
             ARTIFACT_OUTPUT_PORT,
@@ -279,6 +313,11 @@ def _connected_task_nodes(node_item):
     )
 
 
+def _connected_task_mediator_node(node_item):
+    scene = _scene_for_item(node_item)
+    return _connected_input_node(scene, node_item, MEDIATOR_INPUT_PORT, MEDIATOR_KINDS)
+
+
 def _data_nexus_bundle_from_node(data_nexus_node) -> tuple[Dict[str, Any], str]:
     if data_nexus_node is None:
         return {}, "Connect a Data Nexus node to the Task data_nexus input."
@@ -296,6 +335,63 @@ def _data_nexus_bundle_from_node(data_nexus_node) -> tuple[Dict[str, Any], str]:
         return {}, f"Failed to read Data Nexus bundle: {exc}"
 
 
+def _data_nexus_bundle_fingerprint(bundle: Dict[str, Any]) -> str:
+    points = []
+    for point in (bundle or {}).get("points", []) or []:
+        if not isinstance(point, dict):
+            continue
+        point_id = str(point.get("id") or "").strip()
+        links = []
+        for link in point.get("links", []) or []:
+            if not isinstance(link, dict):
+                continue
+            links.append(
+                {
+                    "direction": str(link.get("direction") or "").strip(),
+                    "source": str(link.get("source") or "").strip(),
+                    "target": str(link.get("target") or "").strip(),
+                    "label": str(link.get("label") or "").strip(),
+                }
+            )
+        links.sort(key=lambda item: (item["direction"], item["source"], item["target"], item["label"]))
+        points.append(
+            {
+                "id": point_id,
+                "type": str(point.get("type") or "").strip(),
+                "title": str(point.get("title") or point.get("label") or "").strip(),
+                "summary": str(point.get("summary") or "").strip(),
+                "content": str(point.get("content") or point.get("note") or "").strip(),
+                "folder": str(point.get("folder") or "").strip(),
+                "source_point_ids": _coerce_string_list(point.get("source_point_ids") or [], limit=80),
+                "answer_status": str(point.get("answer_status") or "").strip(),
+                "question_text": str(point.get("question_text") or "").strip(),
+                "expected_answer_point_type": str(point.get("expected_answer_point_type") or "").strip(),
+                "links": links,
+            }
+        )
+    points.sort(key=lambda item: item["id"])
+    edges = []
+    for edge in (bundle or {}).get("edges", []) or []:
+        if not isinstance(edge, dict):
+            continue
+        edges.append(
+            {
+                "source": str(edge.get("source") or "").strip(),
+                "target": str(edge.get("target") or "").strip(),
+                "label": str(edge.get("label") or "").strip(),
+            }
+        )
+    edges.sort(key=lambda item: (item["source"], item["target"], item["label"]))
+    payload = {"points": points, "edges": edges, "active_question_id": str((bundle or {}).get("active_question_id") or "")}
+    return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _current_data_nexus_fingerprint(node_item) -> str:
+    _scene, _skills_node, data_nexus_node = _connected_task_nodes(node_item)
+    bundle, _error = _data_nexus_bundle_from_node(data_nexus_node)
+    return _data_nexus_bundle_fingerprint(bundle) if bundle else ""
+
+
 def _generation_result_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
     generation = report.get("generation")
     if isinstance(generation, dict):
@@ -309,6 +405,187 @@ def _generation_result_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
 def _artifact_path_from_report(report: Dict[str, Any]) -> str:
     generation = _generation_result_from_report(report)
     return str(generation.get("index_path") or generation.get("html") or "")
+
+
+def _deck_artifact_path_for_report(node_item, report: Dict[str, Any]) -> str:
+    artifact_path = _artifact_path_from_report(report)
+    if not artifact_path:
+        artifact_path = _param_value_from_model(getattr(node_item, "model", None), TASK_LAST_ARTIFACT_PARAM, "").strip()
+    return artifact_path
+
+
+def _slide_point_id(task_id: str, slide_number: int) -> str:
+    clean_task_id = _slug(task_id, fallback="task")
+    try:
+        number = int(slide_number or 0)
+    except Exception:
+        number = 0
+    return _slug(f"{clean_task_id}_slide_{number:02d}", fallback=f"{clean_task_id}_slide")
+
+
+def _slide_point_note(deck_context: Dict[str, Any], slide: Dict[str, Any]) -> str:
+    try:
+        number = int(slide.get("number") or 0)
+    except Exception:
+        number = 0
+    title = str(slide.get("title") or f"Slide {number:02d}").strip()
+    headline = str(slide.get("headline") or "").strip()
+    supporting = _coerce_string_list(slide.get("supporting_proof") or [], limit=12)
+    speaker_note = str(slide.get("speaker_note") or "").strip()
+    source_ids = _coerce_string_list(slide.get("source_point_ids") or [], limit=40)
+    review_status = str(slide.get("review_status") or "").strip()
+    lines = [
+        f"# Slide {number:02d}: {title}" if number else f"# {title or 'Slide'}",
+        "",
+        f"Deck: {deck_context.get('deck_title') or 'Generated Deck'}",
+    ]
+    if deck_context.get("index_path"):
+        lines.append(f"Artifact: {deck_context.get('index_path')}")
+    if deck_context.get("generated_at"):
+        lines.append(f"Generated: {deck_context.get('generated_at')}")
+    if review_status:
+        lines.append(f"Review status: {review_status}")
+    if headline:
+        lines.extend(["", "## Headline", "", headline])
+    if supporting:
+        lines.extend(["", "## Supporting Notes", ""])
+        lines.extend(f"- {item}" for item in supporting)
+    if speaker_note:
+        lines.extend(["", "## Speaker Note", "", speaker_note])
+    if source_ids:
+        lines.extend(["", "## Source Point IDs", ""])
+        lines.extend(f"- {item}" for item in source_ids)
+    return "\n".join(lines).strip()
+
+
+def _slide_actions_from_deck_context(task_id: str, deck_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    actions: List[Dict[str, Any]] = []
+    slide_points: List[tuple[int, str]] = []
+    slides = deck_context.get("slides") if isinstance(deck_context, dict) else []
+    raw_slides = [slide for slide in (slides if isinstance(slides, list) else []) if isinstance(slide, dict)]
+    raw_slides.sort(key=lambda slide: _int_or_zero(slide.get("number") or slide.get("slide_number") or slide.get("slide")))
+    for raw_slide in raw_slides:
+        if not isinstance(raw_slide, dict):
+            continue
+        try:
+            number = int(raw_slide.get("number") or 0)
+        except Exception:
+            number = 0
+        if not number:
+            continue
+        title = str(raw_slide.get("title") or f"Slide {number:02d}").strip()
+        headline = str(raw_slide.get("headline") or "").strip()
+        source_ids = _coerce_string_list(raw_slide.get("source_point_ids") or [], limit=40)
+        point_id = _slide_point_id(task_id, number)
+        slide_points.append((number, point_id))
+        actions.append(
+            {
+                "op": "upsert_point",
+                "id": point_id,
+                "label": f"Slide {number:02d} - {title}"[:120],
+                "type": "slide",
+                "folder": "Slides",
+                "summary": headline or title,
+                "note": _slide_point_note(deck_context, raw_slide),
+                "note_mode": "replace",
+                "source_point_ids": source_ids,
+                "replace_source_edges": True,
+                "create_source_edges": True,
+                "source_edge_label": "uses_source",
+            }
+        )
+    for (_source_number, source_id), (_target_number, target_id) in zip(slide_points, slide_points[1:]):
+        actions.append(
+            {
+                "op": "link",
+                "source": source_id,
+                "target": target_id,
+                "label": "next_slide",
+                "create_missing": False,
+            }
+        )
+    return actions
+
+
+def _index_deck_slides_to_data_nexus(node_item, artifact_path: str, report: Dict[str, Any]) -> Dict[str, Any]:
+    result = {
+        "ok": False,
+        "slide_count": 0,
+        "message": "No generated deck artifact is available yet. Generate a draft first.",
+        "index_path": str(artifact_path or "").strip(),
+    }
+    path = str(artifact_path or "").strip()
+    if not path:
+        updated = dict(report)
+        updated["slide_index"] = result
+        return updated
+
+    deck_context = sales_deck_prompt_context_from_index(path)
+    if not deck_context.get("ok"):
+        result["message"] = str(deck_context.get("message") or "Could not read slide data from the deck HTML.")
+        updated = dict(report)
+        updated["slide_index"] = result
+        return updated
+
+    task_id = str(report.get("task_id") or _task_id_for_item(node_item) or "task").strip()
+    actions = _slide_actions_from_deck_context(task_id, deck_context)
+    slide_point_count = sum(1 for action in actions if action.get("op") == "upsert_point")
+    source_link_count = sum(
+        len(action.get("source_point_ids") or [])
+        for action in actions
+        if action.get("op") == "upsert_point" and action.get("type") == "slide"
+    )
+    if not slide_point_count:
+        result["message"] = "Deck HTML did not contain any slide data to index."
+        updated = dict(report)
+        updated["slide_index"] = result
+        return updated
+
+    _, _, data_nexus_node = _connected_task_nodes(node_item)
+    if data_nexus_node is None:
+        result["message"] = "Connect a Data Nexus node to the Task data_nexus input before indexing slides."
+        updated = dict(report)
+        updated["slide_index"] = result
+        return updated
+
+    try:
+        from nodes.data_nexus import spec as data_nexus_spec
+
+        handler = getattr(data_nexus_spec, "apply_data_nexus_update_from_item", None)
+        if not callable(handler):
+            result["message"] = "Data Nexus update helper is unavailable."
+        else:
+            ok, message = handler(data_nexus_node, {"actions": actions}, requester="Task")
+            already_current = str(message or "").startswith("No Data Nexus changes")
+            result = {
+                "ok": bool(ok or already_current),
+                "slide_count": slide_point_count,
+                "message": str(message or "Indexed generated deck slides into Data Nexus."),
+                "index_path": path,
+                "folder": "Slides",
+                "point_type": "slide",
+                "sequence_link_count": max(0, slide_point_count - 1),
+                "source_link_count": source_link_count,
+            }
+    except Exception as exc:
+        result["message"] = f"Failed to index deck slides into Data Nexus: {exc}"
+
+    updated = dict(report)
+    updated["slide_index"] = result
+    return updated
+
+
+def index_task_slides_to_data_nexus_from_item(node_item) -> Dict[str, Any]:
+    report = _report_from_model(node_item)
+    if not report:
+        report = {
+            "task_id": _task_id_for_item(node_item),
+            "status": _param_value_from_model(getattr(node_item, "model", None), TASK_STATUS_PARAM, "created"),
+        }
+    artifact_path = _deck_artifact_path_for_report(node_item, report)
+    report = _index_deck_slides_to_data_nexus(node_item, artifact_path, report)
+    _persist_task_report(node_item, report)
+    return report
 
 
 def _persist_task_report(node_item, report: Dict[str, Any], *, notify_scene: bool = True) -> None:
@@ -336,7 +613,7 @@ def _persist_task_report(node_item, report: Dict[str, Any], *, notify_scene: boo
     _set_param_on_item(
         node_item,
         QUESTIONS_OUTPUT_PORT,
-        "\n".join(str(question.get("text", "") or "") for question in output_questions if isinstance(question, dict)),
+        "\n\n".join(str(question.get("text", "") or "") for question in output_questions if isinstance(question, dict)),
         notify_scene=False,
     )
     _set_param_on_item(node_item, ARTIFACT_OUTPUT_PORT, artifact_path, notify_scene=notify_scene)
@@ -427,12 +704,494 @@ def _report_from_model(node_item) -> Dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _trim_prompt_text(value: Any, limit: int = 1200) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "..."
+
+
+def _coerce_string_list(value: Any, *, limit: int = 20) -> List[str]:
+    raw_values = value if isinstance(value, list) else [value]
+    out: List[str] = []
+    for raw in raw_values:
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            pieces = re.split(r"[,;\n]+", raw)
+        else:
+            pieces = [str(raw)]
+        for piece in pieces:
+            text = str(piece or "").strip().strip("\"'")
+            if text and text not in out:
+                out.append(text[:180])
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        match = re.search(r"\b(\d{1,2})\b", str(value or ""))
+        return int(match.group(1)) if match else 0
+
+
+def _coerce_sales_agent_question(raw: Any, *, default_kind: str = "") -> Dict[str, Any] | None:
+    if isinstance(raw, str):
+        data: Dict[str, Any] = {"text": raw}
+    elif isinstance(raw, dict):
+        data = dict(raw)
+    else:
+        return None
+
+    text = str(data.get("text") or data.get("question") or data.get("prompt") or "").strip()
+    if len(text) < 8:
+        return None
+
+    question_kind = str(
+        data.get("question_kind")
+        or data.get("kind")
+        or data.get("status")
+        or default_kind
+        or "weak"
+    ).strip().lower()
+    if question_kind in {"blocking", "missing_answer", "needs_answer"}:
+        question_kind = "missing"
+    if question_kind not in {"missing", "weak", "refinement"}:
+        question_kind = "refinement" if default_kind == "refinement" else "weak"
+
+    slide_number = _int_or_zero(data.get("slide_number") or data.get("slide") or data.get("slide_index"))
+    if not slide_number:
+        match = re.search(r"\bslide\s+(\d{1,2})\b", text, re.IGNORECASE)
+        slide_number = int(match.group(1)) if match else 0
+
+    accepted_type = str(
+        data.get("accepted_point_type")
+        or data.get("expected_answer_point_type")
+        or data.get("answer_point_type")
+        or data.get("point_answer_type")
+        or ""
+    ).strip()
+    slide_title = str(data.get("slide_title") or data.get("title") or "").strip()
+    question_id = str(data.get("question_id") or data.get("id") or "").strip()
+    if not question_id:
+        kind_token = "refine" if question_kind == "refinement" else "prep"
+        type_token = _slug(accepted_type or slide_title or "answer", fallback="answer")
+        question_id = f"slide_{slide_number:02d}_{kind_token}_{type_token}" if slide_number else f"{kind_token}_{type_token}"
+
+    out: Dict[str, Any] = {
+        "question_id": _slug(question_id, fallback="prep_question"),
+        "point_type": "prep_question",
+        "question_kind": question_kind,
+        "slide_number": slide_number,
+        "slide_title": slide_title,
+        "accepted_point_type": accepted_type,
+        "matched_point_ids": _coerce_string_list(
+            data.get("matched_point_ids")
+            if "matched_point_ids" in data
+            else data.get("source_point_ids")
+            if "source_point_ids" in data
+            else data.get("source_ids")
+        ),
+        "text": text,
+    }
+    criteria = _coerce_string_list(
+        data.get("evaluation_criteria")
+        if "evaluation_criteria" in data
+        else data.get("criteria")
+        if "criteria" in data
+        else data.get("checks")
+    )
+    if criteria:
+        out["evaluation_criteria"] = criteria
+    return out
+
+
+def _coerce_sales_agent_question_list(value: Any, *, default_kind: str = "") -> List[Dict[str, Any]]:
+    raw_items = value if isinstance(value, list) else [value] if value else []
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        question = _coerce_sales_agent_question(raw, default_kind=default_kind)
+        if question is None:
+            continue
+        key = str(question.get("question_id") or question.get("text") or "").strip().lower()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        out.append(question)
+    return out
+
+
+def _coerce_sales_agent_resolved_question(raw: Any) -> Dict[str, Any] | None:
+    if isinstance(raw, str):
+        question_id = raw.strip()
+        answer_ids: List[str] = []
+    elif isinstance(raw, dict):
+        question_id = str(
+            raw.get("question_id")
+            or raw.get("id")
+            or raw.get("question")
+            or raw.get("prep_question")
+            or ""
+        ).strip()
+        answer_ids = _coerce_string_list(
+            raw.get("answer_point_ids")
+            if "answer_point_ids" in raw
+            else raw.get("answer_ids")
+            if "answer_ids" in raw
+            else raw.get("source_point_ids")
+            if "source_point_ids" in raw
+            else raw.get("matched_point_ids")
+            if "matched_point_ids" in raw
+            else raw.get("answer_point_id")
+            if "answer_point_id" in raw
+            else raw.get("answer_id")
+            if "answer_id" in raw
+            else raw.get("source_point_id")
+            if "source_point_id" in raw
+            else raw.get("source")
+        )
+        answer_type = str(
+            raw.get("answer_point_type")
+            or raw.get("accepted_point_type")
+            or raw.get("expected_answer_point_type")
+            or raw.get("type")
+            or ""
+        ).strip()
+    else:
+        return None
+    if not isinstance(raw, dict):
+        answer_type = ""
+    question_id = _slug(question_id, fallback="")
+    answer_ids = [_slug(item, fallback="") for item in answer_ids if str(item or "").strip()]
+    answer_ids = [item for item in answer_ids if item]
+    if not question_id or not answer_ids:
+        return None
+    out = {"question_id": question_id, "answer_point_ids": answer_ids}
+    if answer_type:
+        out["answer_point_type"] = _slug(answer_type, fallback="")
+    return out
+
+
+def _coerce_sales_agent_resolved_question_list(value: Any) -> List[Dict[str, Any]]:
+    raw_items = value if isinstance(value, list) else [value] if value else []
+    out: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in raw_items:
+        resolved = _coerce_sales_agent_resolved_question(raw)
+        if resolved is None:
+            continue
+        clean_answer_ids: List[str] = []
+        question_id = str(resolved.get("question_id") or "").strip()
+        for answer_id in resolved.get("answer_point_ids") or []:
+            key = (question_id, str(answer_id or "").strip())
+            if not key[0] or not key[1] or key in seen:
+                continue
+            seen.add(key)
+            clean_answer_ids.append(key[1])
+        if clean_answer_ids:
+            item = {"question_id": question_id, "answer_point_ids": clean_answer_ids}
+            answer_type = str(resolved.get("answer_point_type") or "").strip()
+            if answer_type:
+                item["answer_point_type"] = answer_type
+            out.append(item)
+    return out
+
+
+def _normalize_sales_agent_slide_status(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "ok": "ready",
+        "good": "ready",
+        "complete": "ready",
+        "ready_to_generate": "ready",
+        "ready_for_review": "ready",
+        "needs_answer": "weak",
+        "needs_answers": "weak",
+        "needs_review": "weak",
+        "needs_work": "weak",
+        "incomplete": "weak",
+        "thin": "weak",
+        "generic": "weak",
+        "not_ready": "weak",
+        "missing_answer": "missing",
+        "no_source": "missing",
+        "no_sources": "missing",
+        "absent": "missing",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in {"ready", "weak", "missing"} else ""
+
+
+def _coerce_sales_agent_notes(value: Any, *, limit: int = 5) -> List[str]:
+    raw_values = value if isinstance(value, list) else [value]
+    notes: List[str] = []
+    for raw in raw_values:
+        if raw is None:
+            continue
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        text = re.sub(r"\s+", " ", text)
+        if text and text not in notes:
+            notes.append(text[:260])
+        if len(notes) >= limit:
+            break
+    return notes
+
+
+def _coerce_sales_agent_slide_review(raw: Any) -> Dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    slide_number = _int_or_zero(raw.get("slide_number") or raw.get("number") or raw.get("slide") or raw.get("slide_index"))
+    if not slide_number:
+        return None
+    status = _normalize_sales_agent_slide_status(raw.get("status") or raw.get("readiness") or raw.get("verdict"))
+    if not status:
+        return None
+
+    notes: List[str] = []
+    for key in ("notes", "note", "reason", "reasoning", "message", "gaps", "missing_fields", "quality_notes"):
+        notes.extend(_coerce_sales_agent_notes(raw.get(key), limit=5))
+        if len(notes) >= 5:
+            notes = notes[:5]
+            break
+
+    out: Dict[str, Any] = {
+        "slide_number": slide_number,
+        "status": status,
+    }
+    title = str(raw.get("slide_title") or raw.get("title") or "").strip()
+    if title:
+        out["slide_title"] = title
+    if notes:
+        out["notes"] = notes
+
+    source_keys = ("matched_point_ids", "source_point_ids", "source_ids", "kept_point_ids")
+    for key in source_keys:
+        if key in raw:
+            out["matched_point_ids"] = _coerce_string_list(raw.get(key), limit=12)
+            break
+    return out
+
+
+def _coerce_sales_agent_slide_review_list(value: Any) -> List[Dict[str, Any]]:
+    raw_items = value if isinstance(value, list) else [value] if value else []
+    out: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    for raw in raw_items:
+        review = _coerce_sales_agent_slide_review(raw)
+        if review is None:
+            continue
+        slide_number = int(review.get("slide_number") or 0)
+        if slide_number in seen:
+            continue
+        seen.add(slide_number)
+        out.append(review)
+    return out
+
+
+def _merge_sales_agent_notes(existing: Any, additions: List[str]) -> List[str]:
+    notes = _coerce_sales_agent_notes(existing, limit=12)
+    for note in additions:
+        clean = str(note or "").strip()
+        if not clean:
+            continue
+        if not clean.lower().startswith("sales agent:"):
+            clean = f"Sales Agent: {clean}"
+        if clean not in notes:
+            notes.append(clean[:280])
+    return notes[:12]
+
+
+def _apply_sales_agent_slide_reviews(readiness: Dict[str, Any], reviews: List[Dict[str, Any]]) -> tuple[Dict[str, Any], int]:
+    if not isinstance(readiness, dict) or not reviews:
+        return readiness, 0
+    slides = [dict(slide) for slide in (readiness.get("slides") or []) if isinstance(slide, dict)]
+    if not slides:
+        return readiness, 0
+    reviews_by_number = {int(review.get("slide_number") or 0): review for review in reviews}
+    changed = 0
+    updated_slides: List[Dict[str, Any]] = []
+    for slide in slides:
+        number = int(slide.get("number") or 0)
+        review = reviews_by_number.get(number)
+        if review:
+            previous_status = str(slide.get("status") or "").strip().lower()
+            status = str(review.get("status") or "").strip().lower()
+            if status:
+                slide["status"] = status
+                slide["ai_status"] = status
+            if "matched_point_ids" in review:
+                slide["matched_point_ids"] = list(review.get("matched_point_ids") or [])
+            notes = list(review.get("notes") or [])
+            if notes:
+                slide["notes"] = _merge_sales_agent_notes(slide.get("notes") or [], notes)
+            elif status and status != previous_status:
+                slide["notes"] = _merge_sales_agent_notes(slide.get("notes") or [], [f"Marked {status} after semantic review."])
+            changed += 1
+        updated_slides.append(slide)
+
+    ready_count = sum(1 for slide in updated_slides if str(slide.get("status") or "").strip().lower() == "ready")
+    weak_count = sum(1 for slide in updated_slides if str(slide.get("status") or "").strip().lower() == "weak")
+    missing_count = sum(1 for slide in updated_slides if str(slide.get("status") or "").strip().lower() == "missing")
+    updated = dict(readiness)
+    updated["slides"] = updated_slides
+    updated["ready_slide_count"] = ready_count
+    updated["weak_slide_count"] = weak_count
+    updated["missing_slide_count"] = missing_count
+    updated["status"] = "ready_to_generate" if weak_count == 0 and missing_count == 0 else "needs_answers"
+    return updated, changed
+
+
+def _sales_agent_payload_from_response(text: str, *, mode: str = "") -> tuple[Dict[str, Any], str]:
+    clean = str(text or "").strip()
+    regexes = [SALES_AGENT_QUESTIONS_RE, SALES_AGENT_REVIEW_RE, SALES_AGENT_DRAFT_RE]
+    if mode == "review":
+        regexes = [SALES_AGENT_REVIEW_RE, SALES_AGENT_QUESTIONS_RE]
+    elif mode == "draft":
+        regexes = [SALES_AGENT_DRAFT_RE, SALES_AGENT_REVIEW_RE, SALES_AGENT_QUESTIONS_RE]
+    elif mode == "write_questions":
+        regexes = [SALES_AGENT_QUESTIONS_RE, SALES_AGENT_REVIEW_RE]
+    for regex in regexes:
+        match = regex.search(clean)
+        if not match:
+            continue
+        payload = str(match.groupdict().get("payload", "") or "").strip()
+        if not payload:
+            continue
+        try:
+            parsed = json.loads(payload)
+        except Exception as exc:
+            return {}, f"Sales Agent returned invalid JSON: {exc}"
+        if isinstance(parsed, dict):
+            return parsed, ""
+        return {}, "Sales Agent payload was not a JSON object."
+    if clean.startswith("{") and clean.endswith("}"):
+        try:
+            parsed = json.loads(clean)
+            if isinstance(parsed, dict):
+                return parsed, ""
+        except Exception as exc:
+            return {}, f"Sales Agent returned invalid JSON: {exc}"
+    return {}, "Sales Agent response did not include a sales_agent_review or sales_agent_questions payload."
+
+
+def _apply_sales_agent_ai_output(report: Dict[str, Any], response_text: str, *, mode: str) -> Dict[str, Any]:
+    updated = dict(report)
+    payload, error = _sales_agent_payload_from_response(response_text, mode=mode)
+    if error:
+        updated["sales_agent_ai"] = {
+            "ok": False,
+            "mode": mode,
+            "message": error,
+        }
+        return updated
+
+    questions = _coerce_sales_agent_question_list(
+        payload.get("questions")
+        or payload.get("blocking_questions")
+        or payload.get("missing_questions"),
+        default_kind="missing",
+    )
+    refinement_questions = _coerce_sales_agent_question_list(
+        payload.get("refinement_questions")
+        or payload.get("followup_questions")
+        or payload.get("improvement_questions"),
+        default_kind="refinement",
+    )
+    slide_reviews = _coerce_sales_agent_slide_review_list(
+        payload.get("slide_reviews")
+        or payload.get("readiness_reviews")
+        or payload.get("slide_readiness")
+        or payload.get("slides")
+    )
+    resolved_questions = _coerce_sales_agent_resolved_question_list(
+        payload.get("resolved_questions")
+        or payload.get("answered_questions")
+        or payload.get("question_answers")
+        or payload.get("resolved_prep_questions")
+    )
+
+    if "questions" in payload or "blocking_questions" in payload or "missing_questions" in payload:
+        updated["questions"] = questions
+    if "refinement_questions" in payload or "followup_questions" in payload or "improvement_questions" in payload:
+        updated["refinement_questions"] = refinement_questions
+    if (
+        "resolved_questions" in payload
+        or "answered_questions" in payload
+        or "question_answers" in payload
+        or "resolved_prep_questions" in payload
+    ):
+        updated["resolved_questions"] = resolved_questions
+    slide_review_count = 0
+    if slide_reviews and isinstance(updated.get("readiness"), dict):
+        readiness, slide_review_count = _apply_sales_agent_slide_reviews(dict(updated.get("readiness") or {}), slide_reviews)
+        updated["readiness"] = readiness
+
+    current_status = str(updated.get("status") or "").strip().lower()
+    payload_status = str(payload.get("status") or "").strip().lower()
+    ai_readiness_status = ""
+    if isinstance(updated.get("readiness"), dict):
+        ai_readiness_status = str((updated.get("readiness") or {}).get("status") or "").strip().lower()
+    allowed_status = {"needs_setup", "needs_answers", "ready_to_generate", "draft_ready", "failed"}
+    if questions:
+        updated["status"] = "needs_answers"
+    elif payload_status == "needs_answers":
+        updated["status"] = "needs_answers"
+    elif slide_review_count and ai_readiness_status in allowed_status:
+        updated["status"] = ai_readiness_status
+    elif payload_status in allowed_status:
+        updated["status"] = payload_status
+    elif current_status:
+        updated["status"] = current_status
+    final_status = str(updated.get("status") or "").strip().lower()
+    if isinstance(updated.get("readiness"), dict) and final_status in {"needs_answers", "ready_to_generate"}:
+        readiness = dict(updated.get("readiness") or {})
+        readiness["status"] = final_status
+        updated["readiness"] = readiness
+    if isinstance(updated.get("checks"), dict) and final_status in {"needs_answers", "ready_to_generate"}:
+        checks = dict(updated.get("checks") or {})
+        checks["readiness_ready"] = final_status == "ready_to_generate"
+        updated["checks"] = checks
+
+    next_question_id = str(payload.get("next_question_id") or "").strip()
+    next_question_text = str(payload.get("next_question_text") or "").strip()
+    if not next_question_text:
+        next_question = (questions or refinement_questions or [{}])[0]
+        if isinstance(next_question, dict):
+            next_question_id = next_question_id or str(next_question.get("question_id") or "").strip()
+            next_question_text = str(next_question.get("text") or "").strip()
+
+    updated["sales_agent_ai"] = {
+        "ok": True,
+        "mode": mode,
+        "message": str(payload.get("message") or payload.get("summary") or "Sales Agent AI review completed.").strip(),
+        "question_count": len(questions),
+        "refinement_question_count": len(refinement_questions),
+        "slide_review_count": slide_review_count,
+        "resolved_question_count": len(resolved_questions),
+        "next_question_id": next_question_id,
+        "next_question_text": next_question_text,
+    }
+    return updated
+
+
 def _question_point_id(task_id: str, question: Dict[str, Any]) -> str:
     base = str(question.get("question_id") or "").strip()
     if not base:
         slide_number = int(question.get("slide_number", 0) or 0)
         point_type = str(question.get("accepted_point_type") or question.get("point_type") or "prep").strip()
         base = f"slide_{slide_number:02d}_{point_type}"
+    clean_task_id = _slug(task_id, fallback="task")
+    clean_base = _slug(base, fallback="prep_question")
+    if clean_base.startswith(f"{clean_task_id}_"):
+        return clean_base
     return _slug(f"{task_id}_{base}", fallback=f"{task_id}_prep_question")
 
 
@@ -445,6 +1204,18 @@ def _question_label(question: Dict[str, Any]) -> str:
     if slide_number:
         return f"Slide {slide_number:02d} {suffix}"
     return f"Sales {suffix}"
+
+
+def _question_matched_point_ids(question: Dict[str, Any], slide: Dict[str, Any] | None) -> List[str]:
+    if "matched_point_ids" in question:
+        raw = question.get("matched_point_ids")
+    elif "source_point_ids" in question:
+        raw = question.get("source_point_ids")
+    elif "source_ids" in question:
+        raw = question.get("source_ids")
+    else:
+        raw = (slide or {}).get("matched_point_ids") or []
+    return _coerce_string_list(raw)
 
 
 def _question_note(task_id: str, question: Dict[str, Any], slide: Dict[str, Any] | None) -> str:
@@ -467,13 +1238,17 @@ def _question_note(task_id: str, question: Dict[str, Any], slide: Dict[str, Any]
         lines.append(f"Question kind: {question_kind}")
     if status:
         lines.append(f"Readiness status: {status}")
-    matched_ids = list(question.get("matched_point_ids") or (slide or {}).get("matched_point_ids") or [])
+    matched_ids = _question_matched_point_ids(question, slide)
     if matched_ids:
         lines.append("Matched source points: " + ", ".join(str(item) for item in matched_ids if str(item or "").strip()))
     notes = list((slide or {}).get("notes") or [])
     if notes:
         lines.extend(["", "Why this is needed:"])
         lines.extend(f"- {note}" for note in notes)
+    criteria = _coerce_string_list(question.get("evaluation_criteria"))
+    if criteria:
+        lines.extend(["", "Evaluation criteria:"])
+        lines.extend(f"- {item}" for item in criteria)
     lines.extend(
         [
             "",
@@ -509,50 +1284,480 @@ def _question_actions_from_report(report: Dict[str, Any]) -> List[Dict[str, Any]
         else:
             summary += "."
         folder = "refinement_questions" if question_kind == "refinement" else "prep_questions"
-        actions.append(
-            {
-                "op": "upsert_point",
-                "id": point_id,
-                "label": label,
-                "type": "prep_question",
-                "folder": folder,
-                "summary": summary,
-                "note": _question_note(task_id, question, slide),
-                "note_mode": "replace",
-            }
-        )
         link_label = "refines_answer" if question_kind == "refinement" else "needs_stronger_answer"
-        matched_ids = list(question.get("matched_point_ids") or (slide or {}).get("matched_point_ids") or [])
-        for matched_id in matched_ids:
-            matched_text = str(matched_id or "").strip()
-            if not matched_text:
-                continue
-            actions.append(
-                {
-                    "op": "link",
-                    "source": point_id,
-                    "target": matched_text,
-                    "label": link_label,
-                    "create_missing": False,
-                }
-            )
+        matched_ids = _question_matched_point_ids(question, slide)
+        source_point_ids = [str(matched_id or "").strip() for matched_id in matched_ids if str(matched_id or "").strip()]
+        action = {
+            "op": "upsert_point",
+            "id": point_id,
+            "label": label,
+            "type": "prep_question",
+            "folder": folder,
+            "summary": summary,
+            "note": _question_note(task_id, question, slide),
+            "note_mode": "replace",
+            "source_point_ids": source_point_ids,
+            "source_edge_label": link_label,
+            "replace_source_edges": True,
+            "create_source_edges": False,
+        }
+        actions.append(action)
     return actions
 
 
-def write_task_questions_to_data_nexus_from_item(node_item) -> Dict[str, Any]:
-    report = _report_from_model(node_item)
-    if not report:
-        report = run_task_step_from_item(node_item)
+def _resolved_question_actions_from_report(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    actions: List[Dict[str, Any]] = []
+    for resolved in report.get("resolved_questions", []) or []:
+        if not isinstance(resolved, dict):
+            continue
+        question_id = str(resolved.get("question_id") or "").strip()
+        if not question_id:
+            continue
+        answer_type = str(resolved.get("answer_point_type") or "").strip()
+        for answer_id in _coerce_string_list(resolved.get("answer_point_ids") or [], limit=80):
+            clean_answer_id = str(answer_id or "").strip()
+            if not clean_answer_id:
+                continue
+            action = {
+                "op": "answer_question",
+                "question": question_id,
+                "answer_point_id": clean_answer_id,
+            }
+            if answer_type:
+                action["type"] = answer_type
+            actions.append(action)
+    return actions
+
+
+def _apply_resolved_question_actions_to_data_nexus(node_item, report: Dict[str, Any]) -> Dict[str, Any]:
+    actions = _resolved_question_actions_from_report(report if isinstance(report, dict) else {})
+    if not actions:
+        return report
+    updated = dict(report)
+    write_result = {
+        "ok": False,
+        "message": "No resolved prep-question links were written.",
+        "resolved_question_count": 0,
+        "action_count": len(actions),
+    }
+    _scene, _skills_node, data_nexus_node = _connected_task_nodes(node_item)
+    if data_nexus_node is None:
+        write_result["message"] = "Connect a Data Nexus node to the Task data_nexus input."
+        updated["data_nexus_answer_links"] = write_result
+        return updated
+    try:
+        from nodes.data_nexus import spec as data_nexus_spec
+
+        handler = getattr(data_nexus_spec, "apply_data_nexus_update_from_item", None)
+        if not callable(handler):
+            write_result["message"] = "Data Nexus update helper is unavailable."
+        else:
+            ok, message = handler(data_nexus_node, {"actions": actions}, requester="Task")
+            already_current = str(message or "").startswith("No Data Nexus changes")
+            write_result = {
+                "ok": bool(ok or already_current),
+                "message": str(message or ("Resolved prep-question links are already current." if already_current else "")),
+                "resolved_question_count": len({str(action.get("question") or "") for action in actions}),
+                "action_count": len(actions),
+            }
+    except Exception as exc:
+        write_result["message"] = f"Failed to link resolved prep questions in Data Nexus: {exc}"
+    updated["data_nexus_answer_links"] = write_result
+    fingerprint = _current_data_nexus_fingerprint(node_item)
+    if fingerprint:
+        data_nexus = dict(updated.get("data_nexus") or {})
+        data_nexus["fingerprint"] = fingerprint
+        updated["data_nexus"] = data_nexus
+    return updated
+
+
+def _report_has_writable_questions(report: Dict[str, Any]) -> bool:
+    return bool(_question_actions_from_report(report if isinstance(report, dict) else {}))
+
+
+def _question_text_from_nexus_point(point: Dict[str, Any]) -> str:
+    for key in ("question_text", "text", "prompt"):
+        text = str(point.get(key) or "").strip()
+        if text:
+            return text
+    raw = str(point.get("content") or point.get("note") or point.get("summary") or "").strip()
+    match = re.search(r"(?is)\bQuestion:\s*(?P<text>.+?)(?:\n\s*\n|\nTask:|\Z)", raw)
+    if match:
+        text = re.sub(r"\s+", " ", match.group("text")).strip()
+        if text:
+            return text
+    return raw
+
+
+def _field_from_question_note(note: str, label: str) -> str:
+    pattern = rf"(?im)^\s*{re.escape(label)}\s*:\s*(?P<value>.+?)\s*$"
+    match = re.search(pattern, str(note or ""))
+    return str(match.group("value") or "").strip() if match else ""
+
+
+def _slide_from_question_point(point: Dict[str, Any]) -> tuple[int, str]:
+    raw = " ".join(
+        str(point.get(key) or "")
+        for key in ("id", "title", "label", "content", "note", "summary")
+    )
+    slide_number = 0
+    slide_title = ""
+    match = re.search(r"\bslide[_\s-]*(?P<number>\d{1,2})\b", raw, re.IGNORECASE)
+    if match:
+        slide_number = int(match.group("number") or 0)
+    note = str(point.get("content") or point.get("note") or "")
+    slide_line = _field_from_question_note(note, "Slide")
+    if slide_line:
+        match = re.search(r"\b(?P<number>\d{1,2})\b\s*-?\s*(?P<title>.*)$", slide_line)
+        if match:
+            slide_number = slide_number or int(match.group("number") or 0)
+            slide_title = str(match.group("title") or "").strip(" -")
+    if not slide_title:
+        title = str(point.get("title") or point.get("label") or "").strip()
+        title = re.sub(r"\b(?:Prep|Refinement)\s+Question\b", "", title, flags=re.IGNORECASE).strip(" -")
+        title = re.sub(r"^Slide\s+\d{1,2}\s*", "", title, flags=re.IGNORECASE).strip(" -")
+        slide_title = title
+    return slide_number, slide_title
+
+
+def _open_task_questions_from_bundle(task_id: str, bundle: Dict[str, Any]) -> List[Dict[str, Any]]:
+    clean_task_id = _slug(task_id, fallback="task")
+    questions: List[Dict[str, Any]] = []
+    for point in (bundle or {}).get("points", []) or []:
+        if not isinstance(point, dict):
+            continue
+        point_type = str(point.get("type") or "").strip().lower()
+        if point_type != "prep_question" and not bool(point.get("is_question")):
+            continue
+        point_id = str(point.get("id") or "").strip()
+        if clean_task_id and point_id and not _slug(point_id, fallback="point").startswith(f"{clean_task_id}_"):
+            continue
+        answer_status = str(point.get("answer_status") or "").strip().lower()
+        if answer_status and answer_status not in {"open", "unanswered", "pending", "needs_answer", "needs_answers"}:
+            continue
+        question_text = _question_text_from_nexus_point(point)
+        if len(question_text) < 8:
+            continue
+        note = str(point.get("content") or point.get("note") or "")
+        slide_number, slide_title = _slide_from_question_point(point)
+        folder = str(point.get("folder") or "").strip().lower()
+        question_kind = _field_from_question_note(note, "Question kind").strip().lower()
+        if not question_kind:
+            question_kind = "refinement" if "refine" in point_id.lower() or "refinement" in folder else "weak"
+        if question_kind not in {"missing", "weak", "refinement"}:
+            question_kind = "refinement" if question_kind == "refine" else "weak"
+        accepted_type = (
+            str(point.get("expected_answer_point_type") or point.get("accepted_point_type") or "").strip()
+            or _field_from_question_note(note, "Expected answer point type")
+        )
+        questions.append(
+            {
+                "question_id": point_id or f"slide_{slide_number:02d}_{question_kind}",
+                "point_type": "prep_question",
+                "question_kind": question_kind,
+                "slide_number": slide_number,
+                "slide_title": slide_title,
+                "accepted_point_type": accepted_type,
+                "matched_point_ids": _coerce_string_list(point.get("source_point_ids") or []),
+                "text": question_text,
+            }
+        )
+    questions.sort(key=lambda item: (int(item.get("slide_number") or 999), str(item.get("question_id") or "")))
+    return questions
+
+
+def _apply_open_data_nexus_questions(node_item, report: Dict[str, Any], *, generation_message: str = "") -> tuple[Dict[str, Any], bool]:
+    _, _, data_nexus_node = _connected_task_nodes(node_item)
+    bundle, _bundle_error = _data_nexus_bundle_from_node(data_nexus_node)
+    open_questions = _open_task_questions_from_bundle(str(report.get("task_id") or _task_id_for_item(node_item)), bundle)
+    if not open_questions:
+        return report, False
+    blocking = [question for question in open_questions if str(question.get("question_kind") or "").strip().lower() != "refinement"]
+    refinements = [question for question in open_questions if str(question.get("question_kind") or "").strip().lower() == "refinement"]
+    active_id = str((bundle or {}).get("active_question_id") or "").strip()
+    next_question = next(
+        (question for question in open_questions if active_id and str(question.get("question_id") or "") == active_id),
+        open_questions[0],
+    )
+    updated = dict(report)
+    updated["status"] = "needs_answers"
+    updated["questions"] = blocking or []
+    updated["refinement_questions"] = refinements
+    checks = dict(updated.get("checks") or {})
+    checks["readiness_ready"] = False
+    updated["checks"] = checks
+    if isinstance(updated.get("readiness"), dict):
+        readiness = dict(updated.get("readiness") or {})
+        readiness["status"] = "needs_answers"
+        updated["readiness"] = readiness
+    message = "Open Data Nexus prep questions already exist; answer them before generating new questions."
+    updated["sales_agent_ai"] = {
+        "ok": True,
+        "pending": False,
+        "mode": "open_questions",
+        "message": message,
+        "open_question_count": len(open_questions),
+        "next_question_id": str(next_question.get("question_id") or ""),
+        "next_question_text": str(next_question.get("text") or ""),
+    }
+    if generation_message:
+        updated["generation"] = {
+            "ok": False,
+            "message": generation_message,
+        }
+        updated["artifact"] = updated["generation"]
+    return updated, True
+
+
+def _asset_prompt_excerpt(asset: Dict[str, Any], *, root: str, limit: int = 5000) -> str:
+    path_text = str((asset or {}).get("path") or "").strip()
+    if not path_text:
+        return ""
+    candidates: List[Path] = []
+    try:
+        raw_path = Path(path_text)
+        candidates.append(raw_path)
+        if not raw_path.is_absolute():
+            if root:
+                candidates.append(Path(root) / raw_path)
+            candidates.append(Path.cwd() / raw_path)
+    except Exception:
+        return ""
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if candidate.exists() and candidate.is_file():
+                return _trim_prompt_text(candidate.read_text(encoding="utf-8", errors="ignore"), limit)
+        except Exception:
+            continue
+    return ""
+
+
+def _sales_agent_report_for_prompt(report: Dict[str, Any]) -> Dict[str, Any]:
+    readiness = report.get("readiness") if isinstance(report.get("readiness"), dict) else {}
+    slides = []
+    for slide in readiness.get("slides", []) or []:
+        if not isinstance(slide, dict):
+            continue
+        slides.append(
+            {
+                "number": slide.get("number"),
+                "title": slide.get("title"),
+                "status": slide.get("status"),
+                "accepted_point_types": slide.get("accepted_point_types") or [],
+                "target_point_type": slide.get("target_point_type"),
+                "matched_point_ids": slide.get("matched_point_ids") or [],
+                "has_exact_type_match": bool(slide.get("has_exact_type_match")),
+                "quality_schema": slide.get("quality_schema") or {},
+                "notes": slide.get("notes") or [],
+            }
+        )
+    questions = []
+    for key in ("questions", "refinement_questions"):
+        for question in report.get(key, []) or []:
+            if not isinstance(question, dict):
+                continue
+            questions.append(
+                {
+                    "question_id": question.get("question_id"),
+                    "question_kind": question.get("question_kind") or ("refinement" if key == "refinement_questions" else "missing"),
+                    "slide_number": question.get("slide_number"),
+                    "slide_title": question.get("slide_title"),
+                    "accepted_point_type": question.get("accepted_point_type"),
+                    "matched_point_ids": question.get("matched_point_ids") or [],
+                    "text": question.get("text"),
+                }
+            )
+    return {
+        "task_id": report.get("task_id"),
+        "status": report.get("status"),
+        "guide": {
+            "name": (report.get("guide") or {}).get("name"),
+            "path": (report.get("guide") or {}).get("path"),
+            "version": (report.get("guide") or {}).get("guide_version_id"),
+        },
+        "template": {
+            "name": (report.get("agent_template") or {}).get("name"),
+            "path": (report.get("agent_template") or {}).get("path"),
+            "version": (report.get("agent_template") or {}).get("template_version_id"),
+        },
+        "data_nexus": report.get("data_nexus") or {},
+        "readiness": {
+            "status": readiness.get("status"),
+            "ready_slide_count": readiness.get("ready_slide_count"),
+            "weak_slide_count": readiness.get("weak_slide_count"),
+            "missing_slide_count": readiness.get("missing_slide_count"),
+            "slides": slides,
+        },
+        "current_questions": questions,
+    }
+
+
+def _sales_agent_bundle_for_prompt(bundle: Dict[str, Any]) -> Dict[str, Any]:
+    points = []
+    for point in (bundle or {}).get("points", []) or []:
+        if not isinstance(point, dict):
+            continue
+        points.append(
+            {
+                "id": point.get("id"),
+                "type": point.get("type"),
+                "title": point.get("title") or point.get("label"),
+                "summary": _trim_prompt_text(point.get("summary"), 420),
+                "content": _trim_prompt_text(point.get("content") or point.get("note"), 1200),
+                "folder": point.get("folder"),
+                "is_question": bool(point.get("is_question")),
+                "answer_status": point.get("answer_status"),
+                "is_active_question": bool(point.get("is_active_question")),
+                "question_text": _trim_prompt_text(point.get("question_text"), 700),
+                "expected_answer_point_type": point.get("expected_answer_point_type"),
+                "source_point_ids": point.get("source_point_ids") or [],
+            }
+        )
+        if len(points) >= 100:
+            break
+    return {
+        "vault": (bundle or {}).get("vault"),
+        "active_question_id": (bundle or {}).get("active_question_id"),
+        "points": points,
+    }
+
+
+def _compose_sales_agent_task_prompt(report: Dict[str, Any], bundle: Dict[str, Any], *, mode: str) -> str:
+    prompt_report = _sales_agent_report_for_prompt(report)
+    root = str(report.get("skills_root") or "Skills")
+    guide_excerpt = _asset_prompt_excerpt(report.get("guide") or {}, root=root)
+    template_excerpt = _asset_prompt_excerpt(report.get("agent_template") or {}, root=root)
+    if mode == "draft":
+        existing_deck = report.get("existing_deck") if isinstance(report.get("existing_deck"), dict) else {}
+        existing_deck_json = (
+            json.dumps(existing_deck, ensure_ascii=False, indent=2)
+            if existing_deck and existing_deck.get("ok")
+            else "(none)"
+        )
+        return (
+            "You are the Sales Pitch Deck Agent for QubitMCP.\n"
+            "Generate the actual pitch deck slide copy with the Mediator LLM.\n"
+            "Use only the approved guide, approved HTML deck template, deterministic readiness report, and current Data Nexus facts.\n"
+            "The app will render your structured copy into HTML; do not output raw HTML.\n\n"
+            "Draft rules:\n"
+            "- Write one complete slide object for every slide in the approved template.\n"
+            "- Use Data Nexus facts as the source of truth. Do not invent customers, revenue, traction, prices, metrics, competitors, team members, or claims that are not supported.\n"
+            "- Each slide must include: number, title, headline, supporting_proof, speaker_note, and source_point_ids.\n"
+            "- supporting_proof must be an array of 2-5 concise evidence bullets.\n"
+            "- source_point_ids must contain only existing Data Nexus point ids that support that specific slide.\n"
+            "- This is a draft-anyway request: do not refuse only because readiness is `needs_answers` or open prep questions exist.\n"
+            "- For weak or unvalidated slides, write conservative hypothesis copy, mark the slide review_status `needs_review`, and clearly avoid unsupported claims.\n"
+            "- Use careful wording such as `current hypothesis`, `needs validation`, or `initial signal` when facts are not proven.\n"
+            "- Only return status `needs_answers` without slides when there are not enough credible facts to create any useful draft at all.\n"
+            "- Otherwise return status `draft_ready` and include all slides, even when some slides need review.\n\n"
+            "Existing deck edit rules:\n"
+            "- If Existing deck draft JSON is provided, treat Generate Draft as a conservative edit of that deck, not a blank rewrite.\n"
+            "- Preserve slide order, useful headlines, useful supporting notes, speaker notes, and source ids unless the current Data Nexus facts justify a change.\n"
+            "- Prefer small improvements, missing-slide placeholders, and review-status updates over replacing the whole deck voice.\n"
+            "- If only style/layout changed, keep the existing slide copy unchanged.\n\n"
+            "Question rules when status is needs_answers:\n"
+            "- Questions must be specific to the saved Data Nexus facts and the slide they support.\n"
+            "- Every question must include: question_id, point_type=\"prep_question\", question_kind, slide_number, slide_title, accepted_point_type, matched_point_ids, text, and evaluation_criteria.\n\n"
+            "Return a short user-facing summary, then exactly one hidden JSON tag. Do not emit data_nexus_update tags.\n"
+            "Use this tag:\n"
+            "<sales_agent_draft>{\"status\":\"draft_ready|needs_answers\",\"message\":\"short summary\",\"deck_title\":\"\",\"slide_reviews\":[],\"questions\":[],\"warnings\":[],\"slides\":[]}</sales_agent_draft>\n\n"
+            "Slide object example:\n"
+            "{\"number\":4,\"title\":\"Product / Demo\",\"headline\":\"QubitMCP turns a chat request into an auditable deck workflow.\",\"supporting_proof\":[\"Tanya reads Data Nexus facts and approved Skills assets.\",\"The Task node writes missing prep questions and generates an HTML draft.\"],\"speaker_note\":\"Show the buyer the end-to-end workflow from chat input to generated deck artifact.\",\"source_point_ids\":[\"task_20260817_071710_slide_04_product_demo_answer\"],\"review_status\":\"ready_for_review\"}\n\n"
+            "Approved guide excerpt:\n"
+            f"{guide_excerpt or '(unavailable)'}\n\n"
+            "Approved template excerpt:\n"
+            f"{template_excerpt or '(unavailable)'}\n\n"
+            "Task/readiness report JSON:\n"
+            f"{json.dumps(prompt_report, ensure_ascii=False, indent=2)}\n\n"
+            "Existing deck draft JSON:\n"
+            f"{existing_deck_json}\n\n"
+            "Data Nexus bundle JSON:\n"
+            f"{json.dumps(_sales_agent_bundle_for_prompt(bundle), ensure_ascii=False, indent=2)}\n"
+        )
+    tag = "sales_agent_questions" if mode == "write_questions" else "sales_agent_review"
+    mode_instruction = (
+        "Generate the best current prep/refinement questions and choose the next question the user should answer."
+        if mode == "write_questions"
+        else "Review the deterministic readiness result, judge each slide semantically, and correct the task status/questions if the facts justify it."
+    )
+    return (
+        "You are the Sales Pitch Deck Agent for QubitMCP.\n"
+        "Use the approved guide, approved HTML deck template, deterministic readiness report, and Data Nexus facts.\n"
+        f"{mode_instruction}\n\n"
+        "Readiness review rules:\n"
+        "- Treat the deterministic readiness result as candidate source matching, not final proof that the slide is good.\n"
+        "- For review mode, return a slide_reviews item for every template slide with slide_number, status, matched_point_ids, and notes.\n"
+        "- Mark a slide `ready` only when the matched facts directly satisfy the template objective and would create coherent pitch-deck copy.\n"
+        "- Mark a slide `weak` when the sources are related but generic, vague, incomplete, stale, contradictory, or missing an important buyer/investor detail.\n"
+        "- Mark a slide `missing` when no credible Data Nexus answer point supports the slide.\n"
+        "- matched_point_ids must include only source ids that truly support that slide; use [] when the deterministic matches are not actually relevant.\n\n"
+        "Question quality rules:\n"
+        "- Existing open prep questions are listed in the Data Nexus bundle with answer_status `open`.\n"
+        "- If a newer non-question Data Nexus point already answers an open prep question, do not ask that question again; include it in `resolved_questions` with the existing question_id and answer_point_ids.\n"
+        "- resolved_questions may include answer_point_type only when the existing point clearly should be retyped to the prep question's accepted answer type.\n"
+        "- The app will link each resolved answer point to the prep question with `answers_question`.\n"
+        "- Questions must be specific to the saved Data Nexus facts and the slide they support.\n"
+        "- Do not ask generic filler questions when the answer is already present.\n"
+        "- Prefer one concrete question per missing or weak slide; use refinement questions only when the deck is ready but a slide can become sharper.\n"
+        "- Preserve existing question_id values when they still represent the same slide need so Data Nexus updates the old question instead of creating duplicates.\n"
+        "- Every question must include: question_id, point_type=\"prep_question\", question_kind, slide_number, slide_title, accepted_point_type, matched_point_ids, text, and evaluation_criteria.\n"
+        "- Evaluate source relevance yourself. matched_point_ids must refer only to existing Data Nexus point ids that directly help answer or refine that exact question.\n"
+        "- If the deterministic slide matches are weak, generic, stale, or merely adjacent topics, return matched_point_ids: [] so the question is saved without source references.\n"
+        "- If an existing prep question has stale source references, preserve the question_id when appropriate but return the corrected matched_point_ids list, including [] when no source should remain connected.\n"
+        "- evaluation_criteria should say how to judge whether the user's answer is coherent and useful enough to become a Data Nexus answer point.\n\n"
+        "Return a short user-facing summary, then exactly one hidden JSON tag. Do not emit data_nexus_update tags.\n"
+        f"Use this tag:\n<{tag}>{{\"status\":\"needs_answers|ready_to_generate\",\"message\":\"short summary\",\"slide_reviews\":[],\"questions\":[],\"refinement_questions\":[],\"resolved_questions\":[],\"next_question_id\":\"\",\"next_question_text\":\"\"}}</{tag}>\n\n"
+        "Include resolved_questions when existing points answer open prep questions, for example:\n"
+        "\"resolved_questions\":[{\"question_id\":\"task_20260817_071710_slide_08_refine_traction_metric\",\"answer_point_ids\":[\"product_validation_workflow_test\"],\"answer_point_type\":\"traction_metric\"}]\n\n"
+        "For review mode, include slide_reviews in the hidden tag, for example:\n"
+        "\"slide_reviews\":[{\"slide_number\":4,\"status\":\"weak\",\"matched_point_ids\":[\"example_point_id\"],\"notes\":[\"The source describes the product but not the exact demo workflow.\"]}]\n\n"
+        "Approved guide excerpt:\n"
+        f"{guide_excerpt or '(unavailable)'}\n\n"
+        "Approved template excerpt:\n"
+        f"{template_excerpt or '(unavailable)'}\n\n"
+        "Task/readiness report JSON:\n"
+        f"{json.dumps(prompt_report, ensure_ascii=False, indent=2)}\n\n"
+        "Data Nexus bundle JSON:\n"
+        f"{json.dumps(_sales_agent_bundle_for_prompt(bundle), ensure_ascii=False, indent=2)}\n"
+    )
+
+
+def _report_can_use_sales_agent_ai(report: Dict[str, Any]) -> bool:
+    checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+    return bool(
+        checks.get("skills_connected")
+        and checks.get("data_nexus_connected")
+        and checks.get("guide_found")
+        and checks.get("template_found")
+    )
+
+
+def _write_question_actions_to_data_nexus(node_item, report: Dict[str, Any]) -> Dict[str, Any]:
     actions = _question_actions_from_report(report)
+    task_id = str(report.get("task_id") or _task_id_for_item(node_item) or "task").strip()
+    keep_ids = [str(action.get("id") or "").strip() for action in actions if str(action.get("id") or "").strip()]
+    keep_ids.extend(
+        str(resolved.get("question_id") or "").strip()
+        for resolved in report.get("resolved_questions", []) or []
+        if isinstance(resolved, dict) and str(resolved.get("question_id") or "").strip()
+    )
+    keep_ids = list(dict.fromkeys(keep_ids))
+    sync_action = {
+        "op": "sync_task_questions",
+        "task_id": task_id,
+        "keep_ids": keep_ids,
+        "folders": ["prep_questions", "refinement_questions"],
+    }
     write_result = {
         "ok": False,
         "message": "No pending prep questions to write.",
         "question_count": 0,
     }
-    if not actions:
-        report["data_nexus_write"] = write_result
-        _persist_task_report(node_item, report)
-        return report
 
     _, _, data_nexus_node = _connected_task_nodes(node_item)
     if data_nexus_node is None:
@@ -568,29 +1773,268 @@ def write_task_questions_to_data_nexus_from_item(node_item) -> Dict[str, Any]:
         if not callable(handler):
             write_result["message"] = "Data Nexus update helper is unavailable."
         else:
-            ok, message = handler(data_nexus_node, {"actions": actions}, requester="Task")
+            ok, message = handler(data_nexus_node, {"actions": [sync_action, *actions]}, requester="Task")
             already_current = str(message or "").startswith("No Data Nexus changes")
+            active_question_id = ""
+            active_message = ""
+            selector = getattr(data_nexus_spec, "set_active_data_nexus_question_from_item", None)
+            if callable(selector):
+                active_ok, active_message = selector(data_nexus_node, "")
+                if active_ok:
+                    active_bundle, _active_error = _data_nexus_bundle_from_node(data_nexus_node)
+                    active_question_id = str((active_bundle or {}).get("active_question_id") or "").strip()
+            if already_current:
+                message_text = (
+                    "Prep questions already exist in Data Nexus."
+                    if actions
+                    else "No current prep questions; Data Nexus question set is already synced."
+                )
+            else:
+                message_text = str(message or "")
             write_result = {
                 "ok": bool(ok or already_current),
-                "message": "Prep questions already exist in Data Nexus." if already_current else str(message or ""),
+                "message": message_text,
                 "question_count": sum(1 for action in actions if action.get("op") == "upsert_point"),
-                "action_count": len(actions),
+                "action_count": len(actions) + 1,
+                "active_question_id": active_question_id,
+                "active_message": active_message,
             }
     except Exception as exc:
         write_result["message"] = f"Failed to write prep questions to Data Nexus: {exc}"
 
     report["data_nexus_write"] = write_result
+    fingerprint = _current_data_nexus_fingerprint(node_item)
+    if fingerprint:
+        data_nexus = dict(report.get("data_nexus") or {})
+        data_nexus["fingerprint"] = fingerprint
+        report["data_nexus"] = data_nexus
     _persist_task_report(node_item, report)
     return report
+
+
+def _start_sales_agent_ai_task(node_item, report: Dict[str, Any], *, mode: str, on_done=None) -> tuple[bool, str]:
+    mediator_node = _connected_task_mediator_node(node_item)
+    if mediator_node is None:
+        return False, "Connect a Mediator node to the Task mediator input for Sales Agent AI."
+    _, _, data_nexus_node = _connected_task_nodes(node_item)
+    bundle, bundle_error = _data_nexus_bundle_from_node(data_nexus_node)
+    if bundle_error:
+        return False, bundle_error
+    try:
+        from nodes.mediator_agent import spec as mediator_spec
+    except Exception as exc:
+        return False, f"Mediator helper is unavailable: {exc}"
+    runner = getattr(mediator_spec, "run_sales_agent_task_from_item", None)
+    if not callable(runner):
+        return False, "Connected Mediator does not support Sales Agent task prompts yet."
+
+    prompt = _compose_sales_agent_task_prompt(report, bundle, mode=mode)
+    signature = hashlib.sha1(f"sales_agent:{mode}\n{prompt}".encode("utf-8", errors="ignore")).hexdigest()
+
+    def _done(exit_code: int, error_text: str, response_text: str) -> None:
+        final_report = dict(report)
+        if int(exit_code) != 0 or str(error_text or "").strip():
+            message = str(error_text or f"Sales Agent AI exited with code {exit_code}.").strip()
+            if mode == "draft":
+                final_report = _draft_generation_failure(final_report, message)
+            else:
+                final_report["sales_agent_ai"] = {
+                    "ok": False,
+                    "mode": mode,
+                    "message": message,
+                }
+            _persist_task_report(node_item, final_report)
+        else:
+            if mode == "write_questions":
+                final_report = _apply_sales_agent_ai_output(final_report, response_text, mode=mode)
+                final_report = _apply_resolved_question_actions_to_data_nexus(node_item, final_report)
+                final_report = _write_question_actions_to_data_nexus(node_item, final_report)
+            elif mode == "draft":
+                final_report = _apply_sales_agent_draft_output(node_item, final_report, response_text)
+                _persist_task_report(node_item, final_report)
+                generation = final_report.get("generation") if isinstance(final_report.get("generation"), dict) else {}
+                if generation.get("ok") and generation.get("index_path"):
+                    _refresh_connected_html_previews(node_item, str(generation.get("index_path") or ""))
+            else:
+                final_report = _apply_sales_agent_ai_output(final_report, response_text, mode=mode)
+                final_report = _apply_resolved_question_actions_to_data_nexus(node_item, final_report)
+                _persist_task_report(node_item, final_report)
+        if callable(on_done):
+            try:
+                on_done(final_report)
+            except Exception:
+                pass
+        else:
+            widget = getattr(node_item, "_task_widget", None)
+            if widget is not None and hasattr(widget, "_finish_async_report"):
+                try:
+                    widget._finish_async_report(final_report)
+                except Exception:
+                    pass
+
+    scene = _scene_for_item(node_item)
+    started, message = runner(scene, mediator_node, prompt, signature, _done)
+    return bool(started), str(message or "")
+
+
+def run_task_step_with_sales_agent_ai_from_item(node_item, on_done=None) -> Dict[str, Any]:
+    report = run_task_step_from_item(node_item)
+    if not _report_can_use_sales_agent_ai(report):
+        report, reused_open_questions = _apply_open_data_nexus_questions(node_item, report)
+        if reused_open_questions:
+            _persist_task_report(node_item, report)
+        return report
+    if _connected_task_mediator_node(node_item) is None:
+        report, reused_open_questions = _apply_open_data_nexus_questions(node_item, report)
+        if reused_open_questions:
+            _persist_task_report(node_item, report)
+        return report
+    report["sales_agent_ai"] = {
+        "ok": None,
+        "pending": True,
+        "mode": "review",
+        "message": "Sales Agent AI is reviewing current Data Nexus readiness and open prep questions.",
+    }
+    _persist_task_report(node_item, report)
+    started, message = _start_sales_agent_ai_task(node_item, report, mode="review", on_done=on_done)
+    if not started:
+        report["sales_agent_ai"] = {
+            "ok": False,
+            "mode": "review",
+            "message": message,
+        }
+        _persist_task_report(node_item, report)
+    return report
+
+
+def write_task_questions_to_data_nexus_from_item(node_item, *, use_mediator: bool = True, on_done=None) -> Dict[str, Any]:
+    mediator_node = _connected_task_mediator_node(node_item)
+    current_report = _report_from_model(node_item)
+    current_fingerprint = _current_data_nexus_fingerprint(node_item)
+    report_fingerprint = str(((current_report or {}).get("data_nexus") or {}).get("fingerprint") or "").strip()
+    if _report_has_writable_questions(current_report) and current_fingerprint and report_fingerprint == current_fingerprint:
+        return _write_question_actions_to_data_nexus(node_item, current_report)
+
+    report = run_task_step_from_item(node_item)
+    if (
+        use_mediator
+        and _report_can_use_sales_agent_ai(report)
+        and mediator_node is not None
+    ):
+        report["sales_agent_ai"] = {
+            "ok": None,
+            "pending": True,
+            "mode": "write_questions",
+            "message": "Sales Agent AI is reviewing current points before writing prep questions.",
+        }
+        _persist_task_report(node_item, report)
+        started, message = _start_sales_agent_ai_task(node_item, report, mode="write_questions", on_done=on_done)
+        if started:
+            return report
+        report["sales_agent_ai"] = {
+            "ok": False,
+            "mode": "write_questions",
+            "message": message,
+        }
+    report, reused_open_questions = _apply_open_data_nexus_questions(node_item, report)
+    if reused_open_questions:
+        report["data_nexus_write"] = {
+            "ok": True,
+            "message": "Open prep questions already exist in Data Nexus. No new questions were written.",
+            "question_count": 0,
+            "action_count": 0,
+        }
+        _persist_task_report(node_item, report)
+        return report
+    return _write_question_actions_to_data_nexus(node_item, report)
+
+
+def _draft_generation_failure(report: Dict[str, Any], message: str, *, status: str = "failed") -> Dict[str, Any]:
+    updated = dict(report)
+    clean_message = str(message or "Mediator AI draft generation failed.").strip()
+    updated["status"] = status
+    updated["generation"] = {
+        "ok": False,
+        "message": clean_message,
+    }
+    updated["sales_agent_ai"] = {
+        "ok": False,
+        "mode": "draft",
+        "message": clean_message,
+    }
+    updated["questions"] = [
+        {
+            "question_id": "generation_failed",
+            "point_type": "generation",
+            "text": clean_message,
+        }
+    ]
+    return updated
+
+
+def _apply_sales_agent_draft_output(node_item, report: Dict[str, Any], response_text: str) -> Dict[str, Any]:
+    payload, error = _sales_agent_payload_from_response(response_text, mode="draft")
+    if error:
+        return _draft_generation_failure(report, error)
+    payload_status = str(payload.get("status") or "").strip().lower()
+    if payload_status not in {"draft_ready", "ready_to_generate", "needs_answers"} and not isinstance(payload.get("slides"), list):
+        return _draft_generation_failure(
+            report,
+            "Sales Agent draft response did not include usable slide copy.",
+        )
+
+    _, _, data_nexus_node = _connected_task_nodes(node_item)
+    bundle, bundle_error = _data_nexus_bundle_from_node(data_nexus_node)
+    if bundle_error:
+        return _draft_generation_failure(report, bundle_error)
+
+    template = report.get("agent_template") if isinstance(report.get("agent_template"), dict) else {}
+    result = generate_sales_deck_from_ai_draft(
+        str((template or {}).get("path") or ""),
+        bundle,
+        payload,
+        root=str(report.get("skills_root") or "Skills"),
+    )
+    result_data = result.to_dict()
+    updated = _apply_sales_agent_ai_output(dict(report), response_text, mode="draft")
+    updated["generation"] = result_data
+    updated["artifact"] = result_data
+    if result.ok:
+        updated["status"] = "draft_ready"
+        updated["sales_agent_ai"] = {
+            "ok": True,
+            "mode": "draft",
+            "message": str(payload.get("message") or result.message or "Mediator AI generated the deck draft.").strip(),
+            "draft_slide_count": result.slide_count,
+            "warning_count": len(result.warnings),
+        }
+        updated = _index_deck_slides_to_data_nexus(node_item, result.index_path, updated)
+    else:
+        updated["status"] = "failed"
+        updated["questions"] = [
+            {
+                "question_id": "generation_failed",
+                "point_type": "generation",
+                "text": result.message,
+            }
+        ]
+        updated["sales_agent_ai"] = {
+            "ok": False,
+            "mode": "draft",
+            "message": result.message,
+        }
+    return updated
 
 
 def run_task_step_from_item(node_item) -> Dict[str, Any]:
     task_id = _task_id_for_item(node_item)
     _, skills_node, data_nexus_node = _connected_task_nodes(node_item)
+    mediator_node = _connected_task_mediator_node(node_item)
 
     checks = {
         "skills_connected": skills_node is not None,
         "data_nexus_connected": data_nexus_node is not None,
+        "mediator_connected": mediator_node is not None,
         "guide_found": False,
         "template_found": False,
         "points_found": False,
@@ -738,6 +2182,7 @@ def run_task_step_from_item(node_item) -> Dict[str, Any]:
             "point_count": len(points),
             "usable_point_count": usable_points,
             "point_types": point_counts,
+            "fingerprint": _data_nexus_bundle_fingerprint(bundle),
         },
         "checks": checks,
         "readiness": readiness,
@@ -750,58 +2195,90 @@ def run_task_step_from_item(node_item) -> Dict[str, Any]:
     return report
 
 
-def generate_task_draft_from_item(node_item) -> Dict[str, Any]:
+def generate_task_draft_from_item(node_item, on_done=None) -> Dict[str, Any]:
     _set_param_on_item(node_item, TASK_STATUS_PARAM, "generating", notify_scene=False)
     _set_param_on_item(node_item, STATUS_OUTPUT_PORT, "generating", notify_scene=True)
 
+    existing_artifact_path = _param_value_from_model(getattr(node_item, "model", None), TASK_LAST_ARTIFACT_PARAM, "").strip()
     report = run_task_step_from_item(node_item)
-    if str(report.get("status") or "").strip().lower() != "ready_to_generate":
-        report["generation"] = {
-            "ok": False,
-            "message": "Task is not ready to generate. Resolve the setup or answer questions first.",
+    if existing_artifact_path:
+        existing_deck = sales_deck_prompt_context_from_index(existing_artifact_path)
+        if existing_deck.get("ok"):
+            report["existing_deck"] = existing_deck
+    report, _reused_open_questions = _apply_open_data_nexus_questions(node_item, report)
+    if not _report_can_use_sales_agent_ai(report):
+        report = _draft_generation_failure(
+            report,
+            "Connect Skills, Data Nexus, Mediator, and approved Sales Agent guide/template before generating a draft.",
+        )
+        _persist_task_report(node_item, report)
+        return report
+
+    if _connected_task_mediator_node(node_item) is None:
+        report = _draft_generation_failure(
+            report,
+            "Connect a Mediator node to the Task mediator input. Task Generate Draft now uses the Mediator Sales Agent LLM.",
+        )
+        _persist_task_report(node_item, report)
+        return report
+
+    report["status"] = "generating"
+    report["sales_agent_ai"] = {
+        "ok": None,
+        "pending": True,
+        "mode": "draft",
+        "message": "Sales Agent AI is writing the deck draft.",
+    }
+    _persist_task_report(node_item, report)
+    started, message = _start_sales_agent_ai_task(node_item, report, mode="draft", on_done=on_done)
+    if not started:
+        report = _draft_generation_failure(report, message)
+        _persist_task_report(node_item, report)
+    return report
+
+
+def refresh_task_deck_html_from_item(node_item) -> Dict[str, Any]:
+    report = _report_from_model(node_item)
+    if not report:
+        report = {
+            "task_id": _task_id_for_item(node_item),
+            "status": _param_value_from_model(getattr(node_item, "model", None), TASK_STATUS_PARAM, "created"),
         }
+    artifact_path = _artifact_path_from_report(report)
+    if not artifact_path:
+        artifact_path = _param_value_from_model(getattr(node_item, "model", None), TASK_LAST_ARTIFACT_PARAM, "").strip()
+    if not artifact_path:
+        result_data = {
+            "ok": False,
+            "message": "No generated deck artifact is available yet. Generate a draft first.",
+        }
+        report["generation"] = result_data
+        report["artifact"] = result_data
         _persist_task_report(node_item, report)
         return report
 
-    _, _, data_nexus_node = _connected_task_nodes(node_item)
-    bundle, bundle_error = _data_nexus_bundle_from_node(data_nexus_node)
-    if bundle_error:
-        report["status"] = "failed"
-        report["questions"] = [
-            {
-                "question_id": "data_nexus_read",
-                "point_type": "setup",
-                "text": bundle_error,
-            }
-        ]
-        report["generation"] = {"ok": False, "message": bundle_error}
-        _persist_task_report(node_item, report)
-        return report
-
-    template = report.get("agent_template") if isinstance(report.get("agent_template"), dict) else {}
-    result = generate_sales_deck_from_template(
-        str((template or {}).get("path") or ""),
-        bundle,
-        root=str(report.get("skills_root") or "Skills"),
-    )
+    result = restyle_sales_deck_from_index(artifact_path)
     result_data = result.to_dict()
     report["generation"] = result_data
     report["artifact"] = result_data
     if result.ok:
         report["status"] = "draft_ready"
-        report["questions"] = []
-    else:
-        report["status"] = "failed"
-        report["questions"] = [
-            {
-                "question_id": "generation_failed",
-                "point_type": "generation",
-                "text": result.message,
-            }
-        ]
-    _persist_task_report(node_item, report)
-    if result.ok:
+        report["sales_agent_ai"] = {
+            "ok": True,
+            "pending": False,
+            "mode": "restyle",
+            "message": result.message,
+        }
+        _persist_task_report(node_item, report)
         _refresh_connected_html_previews(node_item, result.index_path)
+    else:
+        report["sales_agent_ai"] = {
+            "ok": False,
+            "pending": False,
+            "mode": "restyle",
+            "message": result.message,
+        }
+        _persist_task_report(node_item, report)
     return report
 
 
@@ -818,6 +2295,7 @@ def _format_report(report: Dict[str, Any]) -> str:
         "connections:",
         f"  skills: {'yes' if (report.get('checks') or {}).get('skills_connected') else 'no'}",
         f"  data_nexus: {'yes' if (report.get('checks') or {}).get('data_nexus_connected') else 'no'}",
+        f"  mediator: {'yes' if (report.get('checks') or {}).get('mediator_connected') else 'no'}",
         "",
         "skills:",
         f"  guide: {_asset_line(report.get('guide') or None, version_key='guide_version_id')}",
@@ -853,6 +2331,20 @@ def _format_report(report: Dict[str, Any]) -> str:
                 notes = slide.get("notes") or []
                 for note in notes[:2]:
                     lines.append(f"      - {note}")
+    sales_agent_ai = report.get("sales_agent_ai") if isinstance(report.get("sales_agent_ai"), dict) else {}
+    if sales_agent_ai:
+        lines.extend(
+            [
+                "",
+                "sales_agent_ai:",
+                f"  ok: {sales_agent_ai.get('ok')}",
+                f"  pending: {sales_agent_ai.get('pending', False)}",
+                f"  mode: {sales_agent_ai.get('mode') or ''}",
+                f"  message: {sales_agent_ai.get('message') or ''}",
+            ]
+        )
+        if sales_agent_ai.get("next_question_text"):
+            lines.append(f"  next_question: {sales_agent_ai.get('next_question_text')}")
     generation = _generation_result_from_report(report)
     if generation:
         lines.extend(
@@ -862,6 +2354,7 @@ def _format_report(report: Dict[str, Any]) -> str:
                 f"  ok: {generation.get('ok')}",
                 f"  message: {generation.get('message') or ''}",
                 f"  index: {generation.get('index_path') or ''}",
+                f"  manifest: {generation.get('manifest_path') or ''}",
                 f"  deck_dir: {generation.get('deck_dir') or ''}",
             ]
         )
@@ -876,11 +2369,28 @@ def _format_report(report: Dict[str, Any]) -> str:
     questions = report.get("questions") or []
     if questions:
         lines.extend(["", "next:"])
-        lines.extend(f"  - {question.get('text') or ''}" for question in questions)
+        for idx, question in enumerate(questions):
+            if idx:
+                lines.append("")
+            lines.append(f"  - {question.get('text') or ''}")
     refinement_questions = report.get("refinement_questions") or []
     if refinement_questions:
         lines.extend(["", "refinement_questions:"])
-        lines.extend(f"  - {question.get('text') or ''}" for question in refinement_questions)
+        for idx, question in enumerate(refinement_questions):
+            if idx:
+                lines.append("")
+            lines.append(f"  - {question.get('text') or ''}")
+    data_nexus_answer_links = report.get("data_nexus_answer_links") if isinstance(report.get("data_nexus_answer_links"), dict) else {}
+    if data_nexus_answer_links:
+        lines.extend(
+            [
+                "",
+                "data_nexus_answer_links:",
+                f"  ok: {data_nexus_answer_links.get('ok')}",
+                f"  resolved_questions: {data_nexus_answer_links.get('resolved_question_count', 0)}",
+                f"  message: {data_nexus_answer_links.get('message') or ''}",
+            ]
+        )
     data_nexus_write = report.get("data_nexus_write") if isinstance(report.get("data_nexus_write"), dict) else {}
     if data_nexus_write:
         lines.extend(
@@ -890,6 +2400,21 @@ def _format_report(report: Dict[str, Any]) -> str:
                 f"  ok: {data_nexus_write.get('ok')}",
                 f"  questions: {data_nexus_write.get('question_count', 0)}",
                 f"  message: {data_nexus_write.get('message') or ''}",
+            ]
+        )
+    slide_index = report.get("slide_index") if isinstance(report.get("slide_index"), dict) else {}
+    if slide_index:
+        lines.extend(
+            [
+                "",
+                "slide_index:",
+                f"  ok: {slide_index.get('ok')}",
+                f"  slides: {slide_index.get('slide_count', 0)}",
+                f"  sequence_links: {slide_index.get('sequence_link_count', 0)}",
+                f"  source_links: {slide_index.get('source_link_count', 0)}",
+                f"  folder: {slide_index.get('folder') or ''}",
+                f"  type: {slide_index.get('point_type') or ''}",
+                f"  message: {slide_index.get('message') or ''}",
             ]
         )
     return "\n".join(lines)
@@ -944,7 +2469,7 @@ def _format_report_line_html(line: str) -> str:
         indent, label, value = match.groups()
         return f"{html_lib.escape(indent)}<span class=\"label\">{html_lib.escape(label)}:</span> {_status_span(value)}"
 
-    match = re.match(r"^(\s*)(skills|data_nexus):\s*(yes|no)\s*$", raw, flags=re.IGNORECASE)
+    match = re.match(r"^(\s*)(skills|data_nexus|mediator):\s*(yes|no)\s*$", raw, flags=re.IGNORECASE)
     if match:
         indent, label, value = match.groups()
         return f"{html_lib.escape(indent)}<span class=\"label\">{html_lib.escape(label)}:</span> {_status_span(value)}"
@@ -1001,6 +2526,10 @@ class TaskWidget(QtWidgets.QFrame):
     def __init__(self, node_item=None, parent=None):
         super().__init__(parent)
         self._node_item = node_item
+        try:
+            setattr(node_item, "_task_widget", self)
+        except Exception:
+            pass
         self.setObjectName("TaskWidget")
         self.setStyleSheet(
             """
@@ -1009,8 +2538,23 @@ class TaskWidget(QtWidgets.QFrame):
             QLabel#TaskTitle{font-weight:600;color:#f8fafc;}
             QLabel#TaskSubtle{color:#94a3b8;}
             QTextEdit{background:#0b1018;color:#dbeafe;border:1px solid #334155;border-radius:4px;padding:6px;}
-            QPushButton{background:#1e293b;color:#e5e7eb;border:1px solid #475569;border-radius:4px;padding:4px 8px;}
+            QComboBox{background:#111827;color:#e5e7eb;border:1px solid #475569;border-radius:4px;padding:3px 8px;font-weight:600;}
+            QComboBox:hover{border-color:#94a3b8;background:#1e293b;}
+            QComboBox:disabled{background:#111827;border-color:#334155;color:#64748b;}
+            QComboBox QAbstractItemView{background:#0f1216;color:#e5e7eb;border:1px solid #475569;selection-background-color:#164e63;outline:0;}
+            QPushButton{background:#1e293b;color:#f8fafc;border:1px solid #64748b;border-radius:4px;padding:5px 9px;font-weight:600;}
             QPushButton:hover{background:#334155;}
+            QPushButton#TaskRunButton{background:#1d4ed8;border-color:#60a5fa;color:#eff6ff;}
+            QPushButton#TaskRunButton:hover{background:#2563eb;}
+            QPushButton#TaskGenerateButton{background:#0f766e;border-color:#2dd4bf;color:#ecfeff;}
+            QPushButton#TaskGenerateButton:hover{background:#0d9488;}
+            QPushButton#TaskRefreshHtmlButton{background:#4338ca;border-color:#a5b4fc;color:#eef2ff;}
+            QPushButton#TaskRefreshHtmlButton:hover{background:#4f46e5;}
+            QPushButton#TaskIndexSlidesButton{background:#166534;border-color:#39ff14;color:#f0fdf4;}
+            QPushButton#TaskIndexSlidesButton:hover{background:#15803d;}
+            QPushButton#TaskWriteQuestionsButton{background:#d97706;border-color:#fbbf24;color:#111827;}
+            QPushButton#TaskWriteQuestionsButton:hover{background:#f59e0b;}
+            QPushButton:disabled{background:#111827;border-color:#334155;color:#64748b;}
             """
         )
 
@@ -1021,11 +2565,30 @@ class TaskWidget(QtWidgets.QFrame):
         header = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel("Task")
         title.setObjectName("TaskTitle")
-        self._status = QtWidgets.QLabel("")
-        self._status.setObjectName("TaskSubtle")
-        self._status.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         header.addWidget(title, 0)
-        header.addWidget(self._status, 1)
+        header.addStretch(1)
+        self._status_combo = QtWidgets.QComboBox()
+        self._status_combo.setToolTip("Set the Task status: Draft, Approved, Dismissed, or another workflow state.")
+        self._status_combo.setFixedWidth(148)
+        try:
+            foreground_role = QtCore.Qt.ItemDataRole.ForegroundRole
+        except Exception:
+            foreground_role = QtCore.Qt.ForegroundRole
+        manual_status_colors = {
+            "approved": "#86efac",
+            "dismissed": "#fb7185",
+        }
+        for value, label in TASK_STATUS_CHOICES:
+            self._status_combo.addItem(label, value)
+            color = manual_status_colors.get(value)
+            if color:
+                self._status_combo.setItemData(
+                    self._status_combo.count() - 1,
+                    QtGui.QBrush(QtGui.QColor(color)),
+                    foreground_role,
+                )
+        self._status_combo.currentIndexChanged.connect(self._on_status_combo_changed)
+        header.addWidget(self._status_combo, 0)
         layout.addLayout(header)
 
         self._summary = QtWidgets.QLabel("")
@@ -1043,19 +2606,29 @@ class TaskWidget(QtWidgets.QFrame):
         actions.setSpacing(6)
         self._run_btn = QtWidgets.QPushButton("Run Step")
         self._generate_btn = QtWidgets.QPushButton("Generate Draft")
+        self._refresh_html_btn = QtWidgets.QPushButton("Refresh HTML")
+        self._index_slides_btn = QtWidgets.QPushButton("Index Slides")
         self._write_questions_btn = QtWidgets.QPushButton("Write Questions")
-        self._approve_btn = QtWidgets.QPushButton("Approve")
-        self._dismiss_btn = QtWidgets.QPushButton("Dismiss")
+        self._run_btn.setObjectName("TaskRunButton")
+        self._generate_btn.setObjectName("TaskGenerateButton")
+        self._refresh_html_btn.setObjectName("TaskRefreshHtmlButton")
+        self._index_slides_btn.setObjectName("TaskIndexSlidesButton")
+        self._write_questions_btn.setObjectName("TaskWriteQuestionsButton")
+        self._run_btn.setToolTip("Inspect connected Skills, Data Nexus, and Mediator readiness for this task.")
+        self._generate_btn.setToolTip("Ask the Mediator Sales Agent to generate or update the HTML deck draft, then index the created slides into Data Nexus.")
+        self._refresh_html_btn.setToolTip("Rebuild the current generated deck HTML with the latest deck style without changing slide copy.")
+        self._index_slides_btn.setToolTip("Read the current generated deck HTML and create or update slide points in Data Nexus.")
+        self._write_questions_btn.setToolTip("Write the current prep and refinement questions into Data Nexus without generating a deck.")
         self._run_btn.clicked.connect(self._run_step)
         self._generate_btn.clicked.connect(self._generate_draft)
+        self._refresh_html_btn.clicked.connect(self._refresh_html)
+        self._index_slides_btn.clicked.connect(self._index_slides)
         self._write_questions_btn.clicked.connect(self._write_questions)
-        self._approve_btn.clicked.connect(lambda _=False: self._set_status("approved"))
-        self._dismiss_btn.clicked.connect(lambda _=False: self._set_status("dismissed"))
         actions.addWidget(self._run_btn, 0)
-        actions.addWidget(self._generate_btn, 0)
         actions.addWidget(self._write_questions_btn, 0)
-        actions.addWidget(self._approve_btn, 0)
-        actions.addWidget(self._dismiss_btn, 0)
+        actions.addWidget(self._generate_btn, 0)
+        actions.addWidget(self._refresh_html_btn, 0)
+        actions.addWidget(self._index_slides_btn, 0)
         actions.addStretch(1)
         layout.addLayout(actions)
 
@@ -1065,7 +2638,7 @@ class TaskWidget(QtWidgets.QFrame):
         return QtCore.QSize(TASK_BODY_W, TASK_BODY_H)
 
     def minimumSizeHint(self):
-        return QtCore.QSize(440, 280)
+        return QtCore.QSize(460, 320)
 
     def _refresh_from_state(self) -> None:
         model = getattr(self._node_item, "model", None)
@@ -1081,52 +2654,67 @@ class TaskWidget(QtWidgets.QFrame):
                     report = parsed
             except Exception:
                 report = {}
-        self._status.setText(status)
-        self._generate_btn.setEnabled(status in {"ready_to_generate", "draft_ready"})
+        if report:
+            self._show_report(report)
+            return
+        self._set_status_combo_value(status)
+        self._status_combo.setEnabled(True)
+        self._generate_btn.setEnabled(status in {"needs_answers", "ready_to_generate", "draft_ready", "failed"})
+        has_artifact = bool(_param_value_from_model(model, TASK_LAST_ARTIFACT_PARAM, "").strip())
+        self._refresh_html_btn.setEnabled(has_artifact)
+        self._index_slides_btn.setEnabled(has_artifact)
         self._write_questions_btn.setEnabled(self._has_prep_questions(report))
         self._summary.setText(
             f"guide: {guide_path or 'unresolved'}\n"
             f"template: {template_path or 'unresolved'}"
         )
-        if report:
-            self._report.setHtml(_format_report_html(report))
-        else:
-            self._report.setHtml(_format_report_text_html(f"status: {status}\n\nClick Run Step to inspect connected Skills and Data Nexus."))
+        self._report.setHtml(_format_report_text_html(f"status: {status}\n\nClick Run Step to inspect connected Skills and Data Nexus."))
+
+    def _show_report(self, report: Dict[str, Any]) -> None:
+        status = str((report or {}).get("status") or "unknown")
+        ai = report.get("sales_agent_ai") if isinstance(report, dict) and isinstance(report.get("sales_agent_ai"), dict) else {}
+        pending = bool(ai.get("pending"))
+        artifact_path = _artifact_path_from_report(report) or _param_value_from_model(getattr(self._node_item, "model", None), TASK_LAST_ARTIFACT_PARAM, "").strip()
+        self._set_status_combo_value(status)
+        self._status_combo.setEnabled(not pending)
+        self._run_btn.setEnabled(not pending)
+        self._generate_btn.setEnabled((status in {"needs_answers", "ready_to_generate", "draft_ready", "failed"}) and not pending)
+        self._refresh_html_btn.setEnabled(bool(artifact_path) and not pending)
+        self._index_slides_btn.setEnabled(bool(artifact_path) and not pending)
+        self._write_questions_btn.setEnabled(self._has_prep_questions(report) and not pending)
+        self._summary.setText(
+            f"guide: {str((report.get('guide') or {}).get('path') or 'unresolved')}\n"
+            f"template: {str((report.get('agent_template') or {}).get('path') or 'unresolved')}"
+        )
+        self._report.setHtml(_format_report_html(report))
+
+    def _finish_async_report(self, report: Dict[str, Any]) -> None:
+        if isinstance(report, dict):
+            self._show_report(report)
 
     def _run_step(self) -> None:
-        report = run_task_step_from_item(self._node_item)
-        self._status.setText(str(report.get("status") or "unknown"))
-        self._generate_btn.setEnabled(str(report.get("status") or "").strip().lower() in {"ready_to_generate", "draft_ready"})
-        self._write_questions_btn.setEnabled(self._has_prep_questions(report))
-        self._summary.setText(
-            f"guide: {str((report.get('guide') or {}).get('path') or 'unresolved')}\n"
-            f"template: {str((report.get('agent_template') or {}).get('path') or 'unresolved')}"
-        )
-        self._report.setHtml(_format_report_html(report))
+        report = run_task_step_with_sales_agent_ai_from_item(self._node_item, on_done=self._finish_async_report)
+        self._show_report(report)
 
     def _generate_draft(self) -> None:
-        report = generate_task_draft_from_item(self._node_item)
-        status = str(report.get("status") or "unknown")
-        self._status.setText(status)
-        self._generate_btn.setEnabled(status in {"ready_to_generate", "draft_ready"})
-        self._write_questions_btn.setEnabled(self._has_prep_questions(report))
-        self._summary.setText(
-            f"guide: {str((report.get('guide') or {}).get('path') or 'unresolved')}\n"
-            f"template: {str((report.get('agent_template') or {}).get('path') or 'unresolved')}"
-        )
-        self._report.setHtml(_format_report_html(report))
+        report = generate_task_draft_from_item(self._node_item, on_done=self._finish_async_report)
+        self._show_report(report)
+
+    def _refresh_html(self) -> None:
+        report = refresh_task_deck_html_from_item(self._node_item)
+        self._show_report(report)
+
+    def _index_slides(self) -> None:
+        report = index_task_slides_to_data_nexus_from_item(self._node_item)
+        self._show_report(report)
 
     def _write_questions(self) -> None:
-        report = write_task_questions_to_data_nexus_from_item(self._node_item)
-        status = str(report.get("status") or "unknown")
-        self._status.setText(status)
-        self._generate_btn.setEnabled(status in {"ready_to_generate", "draft_ready"})
-        self._write_questions_btn.setEnabled(self._has_prep_questions(report))
-        self._summary.setText(
-            f"guide: {str((report.get('guide') or {}).get('path') or 'unresolved')}\n"
-            f"template: {str((report.get('agent_template') or {}).get('path') or 'unresolved')}"
+        report = write_task_questions_to_data_nexus_from_item(
+            self._node_item,
+            use_mediator=True,
+            on_done=self._finish_async_report,
         )
-        self._report.setHtml(_format_report_html(report))
+        self._show_report(report)
 
     @staticmethod
     def _has_prep_questions(report: Dict[str, Any]) -> bool:
@@ -1143,9 +2731,37 @@ class TaskWidget(QtWidgets.QFrame):
             for question in questions
         )
 
+    def _set_status_combo_value(self, status: str) -> None:
+        clean = str(status or "").strip().lower() or "created"
+        idx = self._status_combo.findData(clean)
+        if idx < 0:
+            label = clean.replace("_", " ").title()
+            self._status_combo.addItem(label, clean)
+            idx = self._status_combo.findData(clean)
+        self._status_combo.blockSignals(True)
+        try:
+            if idx >= 0:
+                self._status_combo.setCurrentIndex(idx)
+        finally:
+            self._status_combo.blockSignals(False)
+
+    def _on_status_combo_changed(self, _index: int) -> None:
+        value = str(self._status_combo.currentData() or "").strip().lower()
+        if value:
+            self._set_status(value)
+
     def _set_status(self, status: str) -> None:
         clean = str(status or "").strip().lower()
-        if clean not in {"approved", "dismissed"}:
+        valid = {value for value, _label in TASK_STATUS_CHOICES}
+        if clean not in valid:
+            return
+        report = _report_from_model(self._node_item)
+        if report:
+            report = dict(report)
+            report["status"] = clean
+            report["manual_status"] = clean
+            _persist_task_report(self._node_item, report, notify_scene=True)
+            self._show_report(report)
             return
         _set_param_on_item(self._node_item, TASK_STATUS_PARAM, clean, notify_scene=False)
         _set_param_on_item(self._node_item, STATUS_OUTPUT_PORT, clean, notify_scene=True)
@@ -1177,6 +2793,7 @@ def build_ports(node_item) -> None:
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input(SKILLS_INPUT_PORT)
         node_item.ensure_input(DATA_NEXUS_INPUT_PORT)
+        node_item.ensure_input(MEDIATOR_INPUT_PORT)
     if hasattr(node_item, "ensure_output"):
         node_item.ensure_output(STATUS_OUTPUT_PORT)
         node_item.ensure_output(QUESTIONS_OUTPUT_PORT)

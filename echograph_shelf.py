@@ -3009,6 +3009,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._shortcut_node_view = None
 
         try:
+            self._shortcut_node_frame_selected = hotkeys.add_shortcut(
+                self,
+                "node_frame_selected",
+                "Shift+F",
+                self._frame_selected_node_from_hotkey,
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+            self._register_shortcut("node_frame_selected", self._shortcut_node_frame_selected)
+        except Exception:
+            self._shortcut_node_frame_selected = None
+
+        try:
             self._shortcut_node_menu = hotkeys.add_shortcut(
                 self.view,
                 "node_menu",
@@ -3326,6 +3338,43 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             v.fitInView(rect, QtCore.Qt.KeepAspectRatio)
         except Exception:
             pass
+
+    def _frame_selected_node(self) -> bool:
+        sc = getattr(self, "scene", None)
+        v = getattr(self, "view", None)
+        if not sc or not v:
+            return False
+        try:
+            selected = [it for it in sc.selectedItems() if isinstance(it, NodeItem)]
+        except Exception:
+            selected = []
+        if not selected:
+            return False
+
+        item = None
+        try:
+            active = getattr(sc, "_active_node_item", None)
+            if active in selected:
+                item = active
+        except Exception:
+            item = None
+        if item is None:
+            item = selected[0]
+
+        try:
+            rect = item.mapRectToScene(item.boundingRect())
+        except Exception:
+            return False
+        if rect.isNull() or rect.width() <= 0.0 or rect.height() <= 0.0:
+            return False
+
+        try:
+            pad = max(24.0, min(96.0, max(float(rect.width()), float(rect.height())) * 0.04))
+            rect = rect.adjusted(-pad, -pad, pad, pad)
+            v.fitInView(rect, QtCore.Qt.KeepAspectRatio)
+            return True
+        except Exception:
+            return False
 
     def _cycle_view_mode(self) -> None:
         mode = getattr(self, "_view_mode", "2d")
@@ -7620,6 +7669,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         try:
             self._set_view_mode(mode)
             self._auto_save_current_view_mode_preset()
+        except Exception:
+            pass
+
+    def _frame_selected_node_from_hotkey(self) -> None:
+        try:
+            if actions._focus_is_text_input():
+                return
+        except Exception:
+            pass
+        try:
+            self._frame_selected_node()
         except Exception:
             pass
 

@@ -10,6 +10,15 @@ FRONT_MATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.DOTALL)
 SLOT_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 SLIDE_HEADING_RE = re.compile(r"^##\s+Slide\s+\d+", re.IGNORECASE | re.MULTILINE)
 VALID_TEMPLATE_STATUSES = {"draft", "needs_review", "approved", "deprecated", "archived"}
+PACKAGE_REFERENCE_KEYS = (
+    "source_human_template",
+    "conversion_report",
+    "package_files",
+    "required_files",
+    "required_assets",
+    "supporting_files",
+    "asset_files",
+)
 
 
 def _repo_root() -> Path:
@@ -245,7 +254,77 @@ def _validate_task_guide_metadata(metadata: Dict[str, Any]) -> List[str]:
     return warnings
 
 
-def _agent_template_asset(path: Path) -> SkillAsset:
+def _coerce_reference_values(value: Any) -> List[str]:
+    if value is None or value == "" or value == []:
+        return []
+    if isinstance(value, list):
+        raw_values = value
+    elif isinstance(value, tuple):
+        raw_values = list(value)
+    else:
+        raw_values = [value]
+    out: List[str] = []
+    for raw in raw_values:
+        text = str(raw or "").strip().strip("'\"`")
+        if not text:
+            continue
+        if text.startswith("[") and text.endswith("]"):
+            pieces = [piece.strip().strip("'\"`") for piece in text[1:-1].split(",")]
+        elif "," in text and not re.search(r"://", text):
+            pieces = [piece.strip().strip("'\"`") for piece in text.split(",")]
+        else:
+            pieces = [text]
+        for piece in pieces:
+            if piece and piece not in out:
+                out.append(piece)
+    return out
+
+
+def _resolve_package_reference(raw: str, *, asset_path: Path, root_path: Path) -> Path:
+    text = str(raw or "").strip().replace("\\", "/")
+    candidate = Path(text).expanduser()
+    repo_root = _repo_root()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    if text.lower().startswith("skills/"):
+        return (repo_root / candidate).resolve()
+    parent_candidate = (asset_path.parent / candidate).resolve()
+    if parent_candidate.exists():
+        return parent_candidate
+    return (root_path / candidate).resolve()
+
+
+def _package_reference_warnings(metadata: Dict[str, Any], *, asset_path: Path, root_path: Path) -> List[str]:
+    warnings: List[str] = []
+    root = root_path.resolve()
+    checked = 0
+    missing: List[str] = []
+    for key in PACKAGE_REFERENCE_KEYS:
+        for raw in _coerce_reference_values(metadata.get(key)):
+            if re.search(r"://", raw):
+                warnings.append(f"`{key}` uses a URL; package files must be local Skills paths: {raw}")
+                continue
+            try:
+                resolved = _resolve_package_reference(raw, asset_path=asset_path, root_path=root)
+            except Exception as exc:
+                warnings.append(f"`{key}` could not be resolved: {raw} ({exc})")
+                continue
+            if not _is_relative_to(resolved, root):
+                warnings.append(f"`{key}` points outside the Skills library: {raw}")
+                continue
+            checked += 1
+            if not resolved.exists():
+                missing.append(f"{key}: {raw}")
+    if checked:
+        metadata["package_file_count"] = checked
+    if missing:
+        metadata["missing_package_files"] = missing
+        for item in missing:
+            warnings.append(f"Missing package file `{item}`.")
+    return warnings
+
+
+def _agent_template_asset(path: Path, root: Path | None = None) -> SkillAsset:
     try:
         text = _read_text(path)
     except Exception:
@@ -270,6 +349,8 @@ def _agent_template_asset(path: Path) -> SkillAsset:
         warnings.append("Filename is missing `_v_###` version suffix.")
     if version_from_name and metadata.get("template_version_id") != version_from_name:
         warnings.append("Filename version does not match `template_version_id`.")
+    if root is not None:
+        warnings.extend(_package_reference_warnings(metadata, asset_path=path, root_path=root))
     return SkillAsset(
         kind="agent_template",
         path=_display_path(path),
@@ -280,7 +361,7 @@ def _agent_template_asset(path: Path) -> SkillAsset:
     )
 
 
-def _task_guide_asset(path: Path) -> SkillAsset:
+def _task_guide_asset(path: Path, root: Path | None = None) -> SkillAsset:
     try:
         text = _read_text(path)
     except Exception:
@@ -299,6 +380,8 @@ def _task_guide_asset(path: Path) -> SkillAsset:
         warnings.append("Filename is missing `_v_###` version suffix.")
     if version_from_name and metadata.get("guide_version_id") != version_from_name:
         warnings.append("Filename version does not match `guide_version_id`.")
+    if root is not None:
+        warnings.extend(_package_reference_warnings(metadata, asset_path=path, root_path=root))
     return SkillAsset(
         kind="task_guide",
         path=_display_path(path),
@@ -340,8 +423,8 @@ def scan_skills_library(root: str | Path | None = None) -> SkillsLibrarySnapshot
         snapshot.warnings.append(f"Missing agent templates directory: {_display_path(agent_dir)}")
 
     snapshot.human_templates = [_human_template_asset(path) for path in _list_markdown(human_dir)]
-    snapshot.agent_templates = _annotate_agent_versions([_agent_template_asset(path) for path in _list_markdown(agent_dir)])
-    snapshot.task_guides = _annotate_task_guide_versions([_task_guide_asset(path) for path in _list_markdown_many(task_guide_dirs)])
+    snapshot.agent_templates = _annotate_agent_versions([_agent_template_asset(path, base) for path in _list_markdown(agent_dir)])
+    snapshot.task_guides = _annotate_task_guide_versions([_task_guide_asset(path, base) for path in _list_markdown_many(task_guide_dirs)])
     return snapshot
 
 

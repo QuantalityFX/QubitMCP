@@ -17,6 +17,11 @@ H2_HEADING_RE = re.compile(r"(?m)^##\s+")
 SLOT_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 MARKDOWN_CODE_RE = re.compile(r"`([^`]+)`")
+DECK_MANIFEST_RE = re.compile(
+    r"<script\b[^>]*\bid=[\"']deck-manifest[\"'][^>]*>(?P<json>.*?)</script>",
+    re.IGNORECASE | re.DOTALL,
+)
+SUPPORTING_SECTION_LABEL = "Supporting Notes"
 STOP_WORDS = {
     "and",
     "are",
@@ -43,8 +48,19 @@ class SalesTemplateSlide:
     number: int
     title: str
     slide_id: str
+    required: bool = True
+    question: str = ""
+    objective: str = ""
+    audience: str = ""
     accepted_point_types: List[str] = field(default_factory=list)
     slots: List[str] = field(default_factory=list)
+    readiness_criteria: List[str] = field(default_factory=list)
+    fallback_behavior: List[str] = field(default_factory=list)
+    copy_constraints: List[str] = field(default_factory=list)
+    source_point_id_requirements: List[str] = field(default_factory=list)
+    missing_field_behavior: List[str] = field(default_factory=list)
+    source_guidance: List[str] = field(default_factory=list)
+    validation_rules: List[str] = field(default_factory=list)
     body: str = ""
 
 
@@ -55,6 +71,7 @@ class SalesDeckResult:
     deck_dir: str = ""
     index_path: str = ""
     css_path: str = ""
+    manifest_path: str = ""
     template_path: str = ""
     template_family_id: str = ""
     template_version_id: str = ""
@@ -69,6 +86,7 @@ class SalesDeckResult:
             "deck_dir": self.deck_dir,
             "index_path": self.index_path,
             "css_path": self.css_path,
+            "manifest_path": self.manifest_path,
             "template_path": self.template_path,
             "template_family_id": self.template_family_id,
             "template_version_id": self.template_version_id,
@@ -169,6 +187,23 @@ def _normalize_type(value: Any) -> str:
     return _slug(value, fallback="concept")
 
 
+def _truncate_text(value: str, *, limit: int, suffix: str = "...") -> str:
+    text = str(value or "").strip()
+    if limit <= 0 or len(text) <= limit:
+        return text
+    suffix = suffix if len(suffix) < limit else ""
+    cut_limit = max(1, limit - len(suffix))
+    snippet = text[:cut_limit].rstrip()
+    boundary = max(snippet.rfind(" "), snippet.rfind(","), snippet.rfind(";"), snippet.rfind(":"))
+    if boundary >= max(24, int(cut_limit * 0.62)):
+        snippet = snippet[:boundary].rstrip(" ,;:-")
+    else:
+        snippet = snippet.rstrip(" ,;:-")
+    if not snippet:
+        snippet = text[:cut_limit].rstrip(" ,;:-")
+    return f"{snippet}{suffix}"
+
+
 def _clean_markdown_text(value: Any, *, limit: int = 500) -> str:
     text = str(value or "")
     text = re.sub(r"\A---\s*\r?\n.*?\r?\n---\s*", " ", text, flags=re.DOTALL)
@@ -180,7 +215,7 @@ def _clean_markdown_text(value: Any, *, limit: int = 500) -> str:
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     if limit > 0 and len(text) > limit:
-        return text[: max(0, limit - 1)].rstrip() + "."
+        return _truncate_text(text, limit=limit)
     return text
 
 
@@ -192,7 +227,7 @@ def _sentence(value: Any, *, limit: int = 180) -> str:
     if match:
         clean = match.group(1)
     if len(clean) > limit:
-        clean = clean[: max(0, limit - 1)].rstrip() + "."
+        clean = _truncate_text(clean, limit=limit)
     return clean
 
 
@@ -231,6 +266,25 @@ def _parse_list_after(label: str, body: str) -> List[str]:
     return values
 
 
+def _parse_text_after(label: str, body: str) -> str:
+    pattern = rf"(?m)^{re.escape(label.strip())}\s*:\s*(?P<value>.*?)\s*$"
+    match = re.search(pattern, body or "", flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return _clean_markdown_text(match.group("value").strip().strip("`"), limit=500)
+
+
+def _parse_bool_after(label: str, body: str, *, default: bool = False) -> bool:
+    value = _parse_text_after(label, body).strip().lower()
+    if not value:
+        return default
+    if value in {"1", "true", "yes", "y", "required"}:
+        return True
+    if value in {"0", "false", "no", "n", "optional"}:
+        return False
+    return default
+
+
 def _parse_id(body: str, fallback: str) -> str:
     match = re.search(r"(?m)^id:\s*`?(?P<id>[^`\r\n]+)`?\s*$", body or "")
     if not match:
@@ -259,8 +313,19 @@ def parse_sales_agent_template(text: str) -> tuple[Dict[str, Any], str, List[Sal
                 number=number,
                 title=title,
                 slide_id=_parse_id(section, fallback_id),
+                required=_parse_bool_after("required", section, default=True),
+                question=_parse_text_after("question", section),
+                objective=_parse_text_after("objective", section),
+                audience=_parse_text_after("audience", section),
                 accepted_point_types=[_normalize_type(item) for item in _parse_list_after("accepted_point_types", section)],
                 slots=slots,
+                readiness_criteria=_parse_list_after("readiness_criteria", section),
+                fallback_behavior=_parse_list_after("fallback_behavior", section),
+                copy_constraints=_parse_list_after("copy_constraints", section),
+                source_point_id_requirements=_parse_list_after("source_point_id_requirements", section),
+                missing_field_behavior=_parse_list_after("missing_field_behavior", section),
+                source_guidance=_parse_list_after("source_guidance", section),
+                validation_rules=_parse_list_after("validation_rules", section),
                 body=section,
             )
         )
@@ -457,10 +522,19 @@ def _readiness_question_for_slide(
 ) -> Dict[str, Any]:
     hint = QUESTION_HINTS.get(target_point_type) or "the specific claim, evidence, and source the slide should use"
     prefix = f"Slide {slide.number:02d} ({slide.title})"
+    template_question = str(slide.question or "").strip()
     if status == "missing":
-        text = f"What should {prefix} say? Add a `{target_point_type}` answer with {hint}."
+        text = (
+            f"{template_question} Add a `{target_point_type}` answer with {hint}."
+            if template_question
+            else f"What should {prefix} say? Add a `{target_point_type}` answer with {hint}."
+        )
     elif any("No exact accepted point-type match" in note for note in notes):
-        text = f"What `{target_point_type}` answer should support {prefix}? Include {hint}."
+        text = (
+            f"{template_question} Include a `{target_point_type}` answer with {hint}."
+            if template_question
+            else f"What `{target_point_type}` answer should support {prefix}? Include {hint}."
+        )
     else:
         text = f"Can you strengthen the Data Nexus answer for {prefix}? Include {hint}."
     return {
@@ -574,8 +648,10 @@ def analyze_sales_deck_readiness(
                 "slide_id": slide.slide_id,
                 "number": slide.number,
                 "title": slide.title,
+                "required": bool(slide.required),
                 "status": slide_status,
                 "accepted_point_types": list(slide.accepted_point_types),
+                "quality_schema": _slide_quality_schema(slide),
                 "target_point_type": target_point_type,
                 "matched_point_ids": _format_source_ids(selected),
                 "has_exact_type_match": has_exact,
@@ -632,6 +708,23 @@ def _format_source_ids(points: List[Dict[str, Any]]) -> List[str]:
     return out
 
 
+def _slide_quality_schema(slide: SalesTemplateSlide) -> Dict[str, Any]:
+    return {
+        "required": bool(slide.required),
+        "question": slide.question,
+        "objective": slide.objective,
+        "audience": slide.audience,
+        "accepted_point_types": list(slide.accepted_point_types),
+        "readiness_criteria": list(slide.readiness_criteria or slide.validation_rules),
+        "fallback_behavior": list(slide.fallback_behavior or slide.missing_field_behavior),
+        "copy_constraints": list(slide.copy_constraints),
+        "source_point_id_requirements": list(slide.source_point_id_requirements),
+        "missing_field_behavior": list(slide.missing_field_behavior),
+        "source_guidance": list(slide.source_guidance),
+        "validation_rules": list(slide.validation_rules),
+    }
+
+
 def _slide_copy(slide: SalesTemplateSlide, points: List[Dict[str, Any]], has_exact_type: bool) -> Dict[str, Any]:
     source_ids = _format_source_ids(points)
     missing = []
@@ -669,6 +762,7 @@ def _slide_copy(slide: SalesTemplateSlide, points: List[Dict[str, Any]], has_exa
         "missing_fields": missing,
         "review_status": "needs_review" if missing else "ready_for_review",
         "accepted_point_types": list(slide.accepted_point_types),
+        "quality_schema": _slide_quality_schema(slide),
     }
 
 
@@ -699,10 +793,17 @@ def _render_html(
 ) -> str:
     family = str(metadata.get("template_family_id", "") or "")
     version = str(metadata.get("template_version_id", "") or "")
-    review_status = "needs_review" if any(slide["missing_fields"] for slide in slides) else "ready_for_review"
+    review_status = (
+        "needs_review"
+        if any(slide.get("missing_fields") or str(slide.get("review_status") or "").strip().lower() == "needs_review" for slide in slides)
+        else "ready_for_review"
+    )
     manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2).replace("</", "<\\/")
     slide_html = []
+    slide_count = len(slides)
     for slide in slides:
+        number = int(slide.get("number") or 0)
+        title_text = str(slide.get("title") or "").strip()
         missing = slide.get("missing_fields", []) or []
         missing_html = ""
         if missing:
@@ -717,15 +818,18 @@ def _render_html(
                 [
                     f"<section class=\"slide\" id=\"{_esc(slide['slide_id'])}\" data-review-status=\"{_esc(slide['review_status'])}\">",
                     "  <div class=\"slide-meta\">",
-                    f"    <span>Slide {int(slide['number']):02d}</span>",
+                    f"    <span>Slide {number:02d} / {slide_count:02d}</span>",
                     f"    <span>{_esc(slide['review_status'])}</span>",
                     "  </div>",
                     "  <div class=\"slide-main\">",
-                    f"    <p class=\"eyebrow\">{_esc(slide['title'])}</p>",
+                    "    <div class=\"slide-title-row\">",
+                    f"      <span class=\"slide-number-badge\">{number:02d}</span>",
+                    f"      <p class=\"slide-title\">{_esc(title_text)}</p>",
+                    "    </div>",
                     f"    <h2>{_esc(slide['headline'])}</h2>",
                     "  </div>",
                     "  <div class=\"slide-proof\">",
-                    "    <h3>Evidence</h3>",
+                    f"    <h3>{_esc(SUPPORTING_SECTION_LABEL)}</h3>",
                     f"    {_render_proof_items(list(slide.get('supporting_proof', []) or []))}",
                     f"    {missing_html}",
                     "  </div>",
@@ -882,8 +986,39 @@ body {
   min-width: 0;
 }
 
+.slide-title-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 18px;
+}
+
+.slide-number-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  height: 42px;
+  padding: 0 10px;
+  border: 1px solid #256b55;
+  border-radius: 6px;
+  color: #bbf7d0;
+  background: #0f2d24;
+  font-size: 1.05rem;
+  font-weight: 750;
+}
+
+.slide-title {
+  margin: 0;
+  color: var(--accent);
+  font-size: 1.28rem;
+  line-height: 1.2;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
 .slide-main h2 {
-  margin: 14px 0 0;
+  margin: 0;
   max-width: 980px;
   font-size: 3rem;
   line-height: 1.05;
@@ -993,8 +1128,151 @@ body {
     font-size: 2rem;
   }
 
+  .slide-title-row {
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .slide-number-badge {
+    min-width: 42px;
+    height: 36px;
+    font-size: 0.95rem;
+  }
+
+  .slide-title {
+    font-size: 1rem;
+  }
+
   .speaker-note {
     grid-column: 1;
+  }
+}
+
+@page {
+  size: 11in 8.5in;
+  margin: 0;
+}
+
+@media print {
+  html {
+    scroll-snap-type: none;
+  }
+
+  html,
+  body {
+    width: 11in;
+    min-height: 8.5in;
+    margin: 0;
+    background: #111315;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .deck-header {
+    position: relative;
+    top: auto;
+    z-index: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(3.1in, 0.8fr);
+    align-items: center;
+    justify-content: stretch;
+    width: 11in;
+    height: 8.5in;
+    min-height: 8.5in;
+    max-height: 8.5in;
+    gap: 0.45in;
+    padding: 0.78in;
+    overflow: hidden;
+    background: #111315;
+    border-bottom: 0;
+    backdrop-filter: none;
+    break-after: page;
+    page-break-after: always;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .deck-header h1 {
+    font-size: 0.46in;
+    line-height: 1.05;
+  }
+
+  .deck-header .eyebrow {
+    font-size: 0.12in;
+  }
+
+  .deck-header dl {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.14in;
+  }
+
+  .deck-header dl > div {
+    padding: 0.16in;
+    background: #191d22;
+    border: 1px solid #303844;
+    border-radius: 0.08in;
+  }
+
+  .deck-header dt {
+    font-size: 0.09in;
+  }
+
+  .deck-header dd {
+    font-size: 0.14in;
+  }
+
+  .deck {
+    display: block;
+    width: 11in;
+    margin: 0;
+    padding: 0;
+  }
+
+  .slide {
+    width: 11in;
+    height: 8.5in;
+    min-height: 8.5in;
+    max-height: 8.5in;
+    overflow: hidden;
+    break-after: page;
+    page-break-after: always;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    scroll-snap-align: none;
+    grid-template-columns: minmax(0, 1.2fr) minmax(2.9in, 0.8fr);
+    gap: 0.24in 0.32in;
+    padding: 0.48in 0.52in 0.4in;
+    border-bottom: 0;
+  }
+
+  .slide:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  .slide-meta {
+    font-size: 0.68rem;
+  }
+
+  .slide-main h2 {
+    font-size: 2.35rem;
+    line-height: 1.05;
+  }
+
+  .slide-title {
+    font-size: 1.05rem;
+  }
+
+  .slide-proof,
+  .speaker-note {
+    padding: 0.18in;
+  }
+
+  .slide-proof li,
+  .speaker-note p,
+  .empty {
+    line-height: 1.35;
   }
 }
 """
@@ -1009,6 +1287,527 @@ def _unique_deck_dir(output_root: Path, family_id: str, version_id: str, generat
         candidate = base.parent / f"deck_{suffix}"
         suffix += 1
     return candidate
+
+
+def _output_base_for_deck(root_path: Path, output_root: str | Path | None) -> Path:
+    if output_root:
+        output_base = Path(output_root).expanduser()
+        if not output_base.is_absolute():
+            return (root_path / output_base).resolve()
+        return output_base.resolve()
+    return root_path / "generated_decks"
+
+
+def _write_deck_artifact(
+    *,
+    title: str,
+    metadata: Dict[str, Any],
+    slides: List[Dict[str, Any]],
+    point_count: int,
+    point_bundle: Dict[str, Any],
+    resolved_template: Path,
+    family_id: str,
+    version_id: str,
+    output_root: str | Path | None,
+    root_path: Path,
+    generated_by: str,
+    warnings: List[str] | None = None,
+) -> SalesDeckResult:
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    output_base = _output_base_for_deck(root_path, output_root)
+    deck_dir = _unique_deck_dir(output_base, family_id, version_id, generated_at)
+    index_path = deck_dir / "index.html"
+    css_path = deck_dir / "styles.css"
+    manifest_path = deck_dir / "manifest.json"
+    clean_warnings = list(warnings or [])
+    manifest = {
+        "generated_by": generated_by,
+        "generated_at": generated_at,
+        "deck_title": title,
+        "template_path": _display_path(resolved_template),
+        "template_family_id": family_id,
+        "template_version_id": version_id,
+        "point_bundle_version": (point_bundle or {}).get("version", ""),
+        "point_count": int(point_count),
+        "review_status": (
+            "needs_review"
+            if clean_warnings
+            or any(str(slide.get("review_status") or "").strip().lower() == "needs_review" for slide in slides)
+            else "ready_for_review"
+        ),
+        "artifacts": {
+            "deck_dir": str(deck_dir),
+            "index_path": str(index_path),
+            "css_path": str(css_path),
+            "manifest_path": str(manifest_path),
+        },
+        "slides": slides,
+    }
+    html_text = _render_html(
+        title=title,
+        metadata=metadata,
+        slides=slides,
+        point_count=int(point_count),
+        generated_at=generated_at,
+        manifest=manifest,
+    )
+
+    try:
+        deck_dir.mkdir(parents=True, exist_ok=False)
+        index_path.write_text(html_text, encoding="utf-8")
+        css_path.write_text(_render_css(), encoding="utf-8")
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        return SalesDeckResult(False, f"Failed to write Sales Agent deck: {exc}", warnings=clean_warnings)
+
+    source_label = "Mediator AI" if generated_by == "sales_agent_mediator_ai" else "Sales Agent"
+    return SalesDeckResult(
+        True,
+        f"Generated {source_label} HTML deck with {len(slides)} slides.",
+        deck_dir=str(deck_dir),
+        index_path=str(index_path),
+        css_path=str(css_path),
+        manifest_path=str(manifest_path),
+        template_path=_display_path(resolved_template),
+        template_family_id=family_id,
+        template_version_id=version_id,
+        slide_count=len(slides),
+        point_count=int(point_count),
+        warnings=clean_warnings,
+    )
+
+
+def _coerce_slide_text(value: Any, *, limit: int = 240) -> str:
+    text = _clean_markdown_text(str(value or ""), limit=limit)
+    text = re.sub(r"\s+", " ", text).strip()
+    return _truncate_text(text, limit=limit)
+
+
+def _coerce_slide_text_list(value: Any, *, limit: int = 5, item_limit: int = 220) -> List[str]:
+    raw_items = value if isinstance(value, list) else [value]
+    out: List[str] = []
+    for raw in raw_items:
+        if raw is None:
+            continue
+        text = _coerce_slide_text(raw, limit=item_limit)
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _coerce_source_id_list(value: Any, *, limit: int = 12) -> List[str]:
+    raw_items = value if isinstance(value, list) else re.split(r"[,;\n]+", str(value or ""))
+    out: List[str] = []
+    for raw in raw_items:
+        text = str(raw or "").strip().strip("\"'")
+        if text and text not in out:
+            out.append(text[:180])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _strip_html_text(value: str) -> str:
+    text = re.sub(r"(?is)<script\b.*?</script>", " ", str(value or ""))
+    text = re.sub(r"(?is)<style\b.*?</style>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", html_lib.unescape(text)).strip()
+
+
+def _deck_title_from_html(html_text: str) -> str:
+    for pattern in (r"(?is)<h1\b[^>]*>(?P<value>.*?)</h1>", r"(?is)<title\b[^>]*>(?P<value>.*?)</title>"):
+        match = re.search(pattern, str(html_text or ""))
+        if match:
+            title = _coerce_slide_text(_strip_html_text(match.group("value")), limit=140)
+            if title:
+                return title
+    return ""
+
+
+def _path_from_artifact(raw: Any, *, base_dir: Path, default_name: str) -> Path:
+    text = str(raw or "").strip()
+    if not text:
+        return base_dir / default_name
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        return path
+    return (base_dir / path).resolve()
+
+
+def _load_deck_manifest(index_path: str | Path) -> tuple[Path, str, Dict[str, Any], str]:
+    path = Path(index_path).expanduser()
+    if not path.is_absolute():
+        path = path.resolve()
+    if not path.exists() or not path.is_file():
+        return path, "", {}, f"Deck index file does not exist: {path}"
+    try:
+        html_text = _read_text(path)
+    except Exception as exc:
+        return path, "", {}, f"Failed to read deck index: {exc}"
+
+    title = _deck_title_from_html(html_text)
+    manifest: Dict[str, Any] = {}
+    match = DECK_MANIFEST_RE.search(html_text)
+    if match:
+        raw_json = html_lib.unescape(str(match.group("json") or "").strip())
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                manifest = parsed
+        except Exception:
+            manifest = {}
+    if not manifest:
+        manifest_path = path.parent / "manifest.json"
+        if manifest_path.exists():
+            try:
+                parsed = json.loads(_read_text(manifest_path))
+                if isinstance(parsed, dict):
+                    manifest = parsed
+            except Exception:
+                manifest = {}
+    if not manifest:
+        return path, title, {}, "Deck manifest was not found in index.html or manifest.json."
+    if not title:
+        title = _coerce_slide_text(manifest.get("deck_title") or manifest.get("title"), limit=140)
+    return path, title, manifest, ""
+
+
+def _coerce_manifest_slide(raw: Dict[str, Any], *, fallback_number: int) -> Dict[str, Any]:
+    try:
+        number = int(raw.get("number") or raw.get("slide_number") or raw.get("slide") or fallback_number)
+    except Exception:
+        number = fallback_number
+    title = _coerce_slide_text(raw.get("title"), limit=120) or f"Slide {number:02d}"
+    headline = _coerce_slide_text(raw.get("headline") or raw.get("title_line") or raw.get("main_claim"), limit=132)
+    if not headline:
+        headline = f"{title} needs more information"
+    proof = _coerce_slide_text_list(
+        raw.get("supporting_proof")
+        if "supporting_proof" in raw
+        else raw.get("supporting_points")
+        if "supporting_points" in raw
+        else raw.get("proof")
+        if "proof" in raw
+        else raw.get("evidence")
+        if "evidence" in raw
+        else raw.get("bullets"),
+        limit=5,
+        item_limit=230,
+    )
+    if not proof:
+        proof = ["No specific Data Nexus fact was available for this slide yet."]
+    speaker_note = _coerce_slide_text(
+        raw.get("speaker_note") or raw.get("speaker_notes") or raw.get("talk_track") or raw.get("notes"),
+        limit=520,
+    )
+    if not speaker_note:
+        speaker_note = "This slide is included as a draft placeholder and needs a stronger Data Nexus answer before final use."
+    review_status = str(raw.get("review_status") or "ready_for_review").strip().lower().replace(" ", "_")
+    if review_status not in {"ready_for_review", "needs_review"}:
+        review_status = "ready_for_review"
+    missing = _coerce_slide_text_list(raw.get("missing_fields") or [], limit=8, item_limit=260)
+    if missing:
+        review_status = "needs_review"
+    return {
+        "slide_id": _coerce_slide_text(raw.get("slide_id") or raw.get("id"), limit=120) or f"slide_{number:02d}_{_slug(title, 'slide')}",
+        "number": number,
+        "title": title,
+        "headline": headline,
+        "supporting_proof": proof,
+        "speaker_note": speaker_note,
+        "source_point_ids": _coerce_source_id_list(raw.get("source_point_ids") or raw.get("matched_point_ids") or raw.get("source_ids") or []),
+        "missing_fields": missing,
+        "review_status": review_status,
+        "accepted_point_types": _coerce_source_id_list(raw.get("accepted_point_types") or []),
+        "quality_schema": raw.get("quality_schema") if isinstance(raw.get("quality_schema"), dict) else {},
+        "generated_copy_source": str(raw.get("generated_copy_source") or "existing_deck").strip(),
+    }
+
+
+def _manifest_slides(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+    slides = []
+    raw_slides = manifest.get("slides") if isinstance(manifest, dict) else []
+    for idx, raw in enumerate(raw_slides if isinstance(raw_slides, list) else [], start=1):
+        if isinstance(raw, dict):
+            slides.append(_coerce_manifest_slide(raw, fallback_number=idx))
+    slides.sort(key=lambda item: int(item.get("number") or 0))
+    return slides
+
+
+def sales_deck_prompt_context_from_index(index_path: str | Path) -> Dict[str, Any]:
+    path, title, manifest, error = _load_deck_manifest(index_path)
+    if error:
+        return {"ok": False, "index_path": str(path), "message": error}
+    slides = _manifest_slides(manifest)
+    return {
+        "ok": True,
+        "index_path": str(path),
+        "deck_title": title or _coerce_slide_text(manifest.get("deck_title") or "Sales Deck", limit=140),
+        "generated_at": manifest.get("generated_at") or "",
+        "review_status": manifest.get("review_status") or "",
+        "slides": [
+            {
+                "number": slide.get("number"),
+                "title": slide.get("title"),
+                "headline": slide.get("headline"),
+                "supporting_proof": slide.get("supporting_proof") or [],
+                "speaker_note": slide.get("speaker_note"),
+                "source_point_ids": slide.get("source_point_ids") or [],
+                "review_status": slide.get("review_status"),
+            }
+            for slide in slides
+        ],
+    }
+
+
+def restyle_sales_deck_from_index(index_path: str | Path) -> SalesDeckResult:
+    path, title, manifest, error = _load_deck_manifest(index_path)
+    if error:
+        return SalesDeckResult(False, error)
+    slides = _manifest_slides(manifest)
+    if not slides:
+        return SalesDeckResult(False, "Deck manifest does not contain slide data.")
+
+    deck_dir = path.parent
+    artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
+    css_path = _path_from_artifact(artifacts.get("css_path"), base_dir=deck_dir, default_name="styles.css")
+    manifest_path = _path_from_artifact(artifacts.get("manifest_path"), base_dir=deck_dir, default_name="manifest.json")
+    family_id = str(manifest.get("template_family_id") or "").strip()
+    version_id = str(manifest.get("template_version_id") or "").strip()
+    metadata = {
+        "template_family_id": family_id,
+        "template_version_id": version_id,
+    }
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    updated_manifest = dict(manifest)
+    updated_manifest["deck_title"] = title or _coerce_slide_text(manifest.get("deck_title") or "Sales Deck", limit=140)
+    updated_manifest["restyled_at"] = now
+    updated_manifest["supporting_section_label"] = SUPPORTING_SECTION_LABEL
+    updated_manifest["artifacts"] = {
+        "deck_dir": str(deck_dir),
+        "index_path": str(path),
+        "css_path": str(css_path),
+        "manifest_path": str(manifest_path),
+    }
+    updated_manifest["slides"] = slides
+    point_count = int(updated_manifest.get("point_count") or 0)
+    generated_at = str(updated_manifest.get("generated_at") or now)
+    html_text = _render_html(
+        title=updated_manifest["deck_title"],
+        metadata=metadata,
+        slides=slides,
+        point_count=point_count,
+        generated_at=generated_at,
+        manifest=updated_manifest,
+    )
+    try:
+        path.write_text(html_text, encoding="utf-8")
+        css_path.write_text(_render_css(), encoding="utf-8")
+        manifest_path.write_text(json.dumps(updated_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        return SalesDeckResult(False, f"Failed to restyle Sales Agent deck: {exc}")
+    return SalesDeckResult(
+        True,
+        f"Refreshed HTML deck style for {len(slides)} slides.",
+        deck_dir=str(deck_dir),
+        index_path=str(path),
+        css_path=str(css_path),
+        manifest_path=str(manifest_path),
+        template_path=str(updated_manifest.get("template_path") or ""),
+        template_family_id=family_id,
+        template_version_id=version_id,
+        slide_count=len(slides),
+        point_count=point_count,
+    )
+
+
+def _ai_draft_slide_by_number(draft: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
+    raw_slides = draft.get("slides") if isinstance(draft, dict) else []
+    out: Dict[int, Dict[str, Any]] = {}
+    for raw in raw_slides if isinstance(raw_slides, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            number = int(raw.get("number") or raw.get("slide_number") or raw.get("slide") or 0)
+        except Exception:
+            number = 0
+        if number and number not in out:
+            out[number] = raw
+    return out
+
+
+def _coerce_ai_draft_slide(
+    raw: Dict[str, Any],
+    slide: SalesTemplateSlide,
+    *,
+    valid_source_ids: set[str],
+) -> tuple[Dict[str, Any] | None, List[str]]:
+    warnings: List[str] = []
+    headline = _coerce_slide_text(
+        raw.get("headline")
+        or raw.get("title_line")
+        or raw.get("main_claim")
+        or raw.get("claim"),
+        limit=132,
+    )
+    proof = _coerce_slide_text_list(
+        raw.get("supporting_proof")
+        if "supporting_proof" in raw
+        else raw.get("proof")
+        if "proof" in raw
+        else raw.get("evidence")
+        if "evidence" in raw
+        else raw.get("bullets"),
+        limit=5,
+        item_limit=230,
+    )
+    speaker_note = _coerce_slide_text(
+        raw.get("speaker_note")
+        or raw.get("speaker_notes")
+        or raw.get("talk_track")
+        or raw.get("notes"),
+        limit=520,
+    )
+    raw_source_ids = (
+        raw.get("source_point_ids")
+        if "source_point_ids" in raw
+        else raw.get("matched_point_ids")
+        if "matched_point_ids" in raw
+        else raw.get("source_ids")
+        if "source_ids" in raw
+        else []
+    )
+    source_ids = _coerce_source_id_list(raw_source_ids)
+    if valid_source_ids:
+        unknown = [item for item in source_ids if item not in valid_source_ids]
+        source_ids = [item for item in source_ids if item in valid_source_ids]
+        if unknown:
+            warnings.append(f"Slide {slide.number:02d}: ignored unknown source ids: {', '.join(unknown[:4])}.")
+
+    missing = []
+    if not headline:
+        missing.append("Mediator AI draft did not include a headline.")
+    if not proof:
+        missing.append("Mediator AI draft did not include supporting proof bullets.")
+    if not speaker_note:
+        missing.append("Mediator AI draft did not include a speaker note.")
+    if missing:
+        warnings.extend(f"Slide {slide.number:02d}: {item}" for item in missing)
+    if not headline:
+        headline = f"{slide.title} needs more information"
+    if not proof:
+        proof = ["No specific Data Nexus fact was available for this slide yet."]
+    if not speaker_note:
+        speaker_note = "This slide is included as a draft placeholder and needs a stronger Data Nexus answer before final use."
+
+    review_status = str(raw.get("review_status") or "ready_for_review").strip().lower().replace(" ", "_")
+    if review_status not in {"ready_for_review", "needs_review"}:
+        review_status = "ready_for_review"
+    if missing:
+        review_status = "needs_review"
+    output = {
+        "slide_id": slide.slide_id,
+        "number": slide.number,
+        "title": _coerce_slide_text(raw.get("title") or slide.title, limit=120) or slide.title,
+        "headline": headline,
+        "supporting_proof": proof,
+        "speaker_note": speaker_note,
+        "source_point_ids": source_ids,
+        "missing_fields": missing,
+        "review_status": review_status,
+        "accepted_point_types": list(slide.accepted_point_types),
+        "quality_schema": _slide_quality_schema(slide),
+        "generated_copy_source": "mediator_ai",
+    }
+    return output, warnings
+
+
+def generate_sales_deck_from_ai_draft(
+    template_path: str | Path | None,
+    point_bundle: Dict[str, Any],
+    draft: Dict[str, Any],
+    *,
+    root: str | Path | None = None,
+    output_root: str | Path | None = None,
+) -> SalesDeckResult:
+    root_path = _library_root(root)
+    if template_path:
+        try:
+            resolved_template = resolve_library_path(str(template_path), root=root_path)
+        except Exception as exc:
+            return SalesDeckResult(False, str(exc))
+    else:
+        resolved_template, message = resolve_latest_approved_sales_agent_template(root=root_path)
+        if resolved_template is None:
+            return SalesDeckResult(False, message)
+
+    try:
+        template_text = _read_text(resolved_template)
+    except Exception as exc:
+        return SalesDeckResult(False, f"Failed to read agent template: {exc}")
+
+    metadata, template_body, template_slides = parse_sales_agent_template(template_text)
+    status = str(metadata.get("status", "") or "").strip().lower()
+    target_agent = str(metadata.get("target_agent", "") or "").strip().lower()
+    artifact_kind = str(metadata.get("artifact_kind", "") or "").strip().lower()
+    family_id = str(metadata.get("template_family_id", "") or resolved_template.stem).strip()
+    version_id = str(metadata.get("template_version_id", "") or "").strip()
+
+    if status != "approved":
+        return SalesDeckResult(False, "Approve the agent template before generating a Sales Agent deck.")
+    if target_agent != "sales_agent":
+        return SalesDeckResult(False, "Selected template is not a `sales_agent` template.")
+    if artifact_kind != "html_deck":
+        return SalesDeckResult(False, "Selected template does not generate `html_deck` artifacts.")
+    if not template_slides:
+        return SalesDeckResult(False, "Selected template has no `## Slide NN: ...` sections.")
+
+    points = _usable_sales_points(point_bundle)
+    if not isinstance(draft, dict):
+        return SalesDeckResult(False, "Mediator AI draft payload was not a JSON object.")
+
+    valid_source_ids = {_point_id(point) for point in points if _point_id(point)}
+    raw_by_number = _ai_draft_slide_by_number(draft)
+    slide_outputs: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    for slide in template_slides:
+        raw_slide = raw_by_number.get(slide.number)
+        if not raw_slide:
+            warnings.append(f"Slide {slide.number:02d}: Mediator AI draft omitted this slide.")
+            raw_slide = {
+                "number": slide.number,
+                "title": slide.title,
+                "headline": f"{slide.title} needs more information",
+                "supporting_proof": ["No specific Data Nexus fact was available for this slide yet."],
+                "speaker_note": "This slide is included as a draft placeholder and needs a stronger Data Nexus answer before final use.",
+                "source_point_ids": [],
+                "review_status": "needs_review",
+            }
+        output, slide_warnings = _coerce_ai_draft_slide(raw_slide, slide, valid_source_ids=valid_source_ids)
+        warnings.extend(slide_warnings)
+        if output is not None:
+            slide_outputs.append(output)
+
+    if len(slide_outputs) != len(template_slides):
+        return SalesDeckResult(False, "Mediator AI draft was incomplete; no deck was written.", warnings=warnings)
+
+    title = _coerce_slide_text(draft.get("deck_title") or draft.get("title"), limit=140) or _deck_title(metadata, template_body, points)
+    return _write_deck_artifact(
+        title=title,
+        metadata=metadata,
+        slides=slide_outputs,
+        point_count=len(points),
+        point_bundle=point_bundle,
+        resolved_template=resolved_template,
+        family_id=family_id,
+        version_id=version_id,
+        output_root=output_root,
+        root_path=root_path,
+        generated_by="sales_agent_mediator_ai",
+        warnings=warnings,
+    )
 
 
 def generate_sales_deck_from_template(
@@ -1065,26 +1864,6 @@ def generate_sales_deck_from_template(
         slide_outputs.append(output)
 
     title = _deck_title(metadata, template_body, points)
-    manifest = {
-        "generated_by": "sales_agent",
-        "generated_at": generated_at,
-        "template_path": _display_path(resolved_template),
-        "template_family_id": family_id,
-        "template_version_id": version_id,
-        "point_bundle_version": (point_bundle or {}).get("version", ""),
-        "point_count": len(points),
-        "review_status": "needs_review" if warnings else "ready_for_review",
-        "slides": slide_outputs,
-    }
-    html_text = _render_html(
-        title=title,
-        metadata=metadata,
-        slides=slide_outputs,
-        point_count=len(points),
-        generated_at=generated_at,
-        manifest=manifest,
-    )
-
     if output_root:
         output_base = Path(output_root).expanduser()
         if not output_base.is_absolute():
@@ -1096,11 +1875,39 @@ def generate_sales_deck_from_template(
     deck_dir = _unique_deck_dir(output_base, family_id, version_id, generated_at)
     index_path = deck_dir / "index.html"
     css_path = deck_dir / "styles.css"
+    manifest_path = deck_dir / "manifest.json"
+    manifest = {
+        "generated_by": "sales_agent",
+        "generated_at": generated_at,
+        "deck_title": title,
+        "template_path": _display_path(resolved_template),
+        "template_family_id": family_id,
+        "template_version_id": version_id,
+        "point_bundle_version": (point_bundle or {}).get("version", ""),
+        "point_count": len(points),
+        "review_status": "needs_review" if warnings else "ready_for_review",
+        "artifacts": {
+            "deck_dir": str(deck_dir),
+            "index_path": str(index_path),
+            "css_path": str(css_path),
+            "manifest_path": str(manifest_path),
+        },
+        "slides": slide_outputs,
+    }
+    html_text = _render_html(
+        title=title,
+        metadata=metadata,
+        slides=slide_outputs,
+        point_count=len(points),
+        generated_at=generated_at,
+        manifest=manifest,
+    )
 
     try:
         deck_dir.mkdir(parents=True, exist_ok=False)
         index_path.write_text(html_text, encoding="utf-8")
         css_path.write_text(_render_css(), encoding="utf-8")
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except Exception as exc:
         return SalesDeckResult(False, f"Failed to write Sales Agent deck: {exc}", warnings=warnings)
 
@@ -1110,6 +1917,7 @@ def generate_sales_deck_from_template(
         deck_dir=str(deck_dir),
         index_path=str(index_path),
         css_path=str(css_path),
+        manifest_path=str(manifest_path),
         template_path=_display_path(resolved_template),
         template_family_id=family_id,
         template_version_id=version_id,

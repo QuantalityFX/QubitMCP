@@ -1,0 +1,261 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Image-GS Splat Node | QubitMCP Docs</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <img class="brand-logo" src="../icons/QubitMCP_Icon_s.png" alt="QubitMCP icon" />
+          <div class="brand-title">Image-GS Splat</div>
+          <div class="brand-sub">Node reference</div>
+          <a class="back-link" href="index.html#nodes">&larr; Main docs</a>
+          <a class="back-link" href="nodes.html?node=image-gs-splat">&larr; Node catalog</a>
+        </div>
+        <nav class="node-nav" aria-label="Node list">
+          <a href="nodes.html?node=note"><img src="../icons/Electric_Pen_Icon.png" alt="" />note</a>
+          <a href="nodes.html?node=node"><img src="../icons/TabIcon.png" alt="" />node</a>
+          <a href="nodes.html?node=append"><img src="../icons/append_icon.png" alt="" />append</a>
+          <a href="nodes.html?node=switch"><img src="../icons/Switch_Icon.png" alt="" />switch</a>
+          <a href="nodes.html?node=gantt-chart"><img src="../icons/Calendar_Icon.png" alt="" />gantt_chart</a>
+          <a href="nodes.html?node=python"><img src="../icons/Python_Icon.png" alt="" />python</a>
+          <a href="nodes.html?node=output"><img src="../icons/Out_Node_Icon.png" alt="" />output</a>
+          <a href="nodes.html?node=local-server"><img src="../icons/Server_Icon.png" alt="" />local_server</a>
+          <a href="nodes.html?node=llm-prompt"><img src="../icons/LLM_Icon.png" alt="" />llm_prompt</a>
+          <a href="nodes.html?node=chatbot"><img src="../icons/Chatbot_Icon.png" alt="" />chatbot</a>
+          <a href="nodes.html?node=database"><img src="../icons/Database_Icon.png" alt="" />database</a>
+          <a href="nodes.html?node=data-nexus"><img src="../icons/DataNexus_Icon.png" alt="" />data_nexus</a>
+          <a href="nodes.html?node=skills"><img src="../icons/skills_Icon_s.png" alt="" />skills</a>
+          <a href="nodes.html?node=task"><img src="../icons/Tasks_Icon_s.png" alt="" />task</a>
+          <a href="nodes.html?node=librarian"><img src="../icons/librarian_search_Icon.png" alt="" />librarian</a>
+          <a href="nodes.html?node=voice-actor"><img src="../icons/TanyaAI_Icon.png" alt="" />voice_actor</a>
+          <a href="nodes.html?node=audio-capture"><img src="../icons/AudioCapture_Icon.png" alt="" />audio_capture</a>
+          <a href="nodes.html?node=mediator-agent"><img src="../icons/Mediator_Icon_1_s.png" alt="" />mediator_agent</a>
+          <a href="nodes.html?node=codex-sandbox"><img src="../icons/Sandbox_Icon.png" alt="" />codex_sandbox</a>
+          <a href="nodes.html?node=qubit-deck-controller"><img src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="" />qubit_deck_controller</a>
+          <a href="nodes.html?node=keyboard-sequence"><img src="../icons/KeyboardActionRunner_Icon_s.png.png" alt="" />keyboard_sequence</a>
+          <a href="nodes.html?node=serial-com"><img src="../icons/SerialCom_Icon_s.png" alt="" />serial_com</a>
+          <a href="nodes.html?node=import"><img src="../icons/Import_File_Icon.png" alt="" />import</a>
+          <a href="nodes.html?node=fbx-import"><img src="../icons/FBX_Icon.png" alt="" />fbx_import</a>
+          <a href="nodes.html?node=genx-video-mocap"><img src="../icons/Gen-X_Icon_s.png" alt="" />genx_video_mocap</a>
+          <a href="nodes.html?node=mocap-import"><img src="../icons/Gen-X_Icon_s.png" alt="" />mocap_import</a>
+          <a href="nodes.html?node=anim-retarget"><img src="../icons/anim_retarget_Icon_s.png" alt="" />anim_retarget</a>
+          <a href="nodes.html?node=camera"><img src="../icons/Camera_icon.png" alt="" />camera</a>
+          <a href="nodes.html?node=light"><img src="../icons/LightSource_Icon_s.png" alt="" />light</a>
+          <a href="nodes.html?node=instance"><img src="../icons/instance_icon.png" alt="" />instance</a>
+          <a href="nodes.html?node=copy-to-points"><img src="../icons/instance_icon.png" alt="" />copy_to_points</a>
+          <a href="nodes.html?node=primitive"><img src="../icons/Primitive_Icon.png" alt="" />primitive</a>
+          <a href="nodes.html?node=curve"><img src="../icons/StreightCurve_Icon.png" alt="" />curve</a>
+          <a href="nodes.html?node=modeler"><img src="../icons/ObjectSelect_Icon.png" alt="" />modeler</a>
+          <a href="nodes.html?node=transforms"><img src="../icons/TranformNode_Icon.png" alt="" />transforms</a>
+          <a href="nodes.html?node=ply-sequence"><img src="../icons/PLT_Icon.png" alt="" />ply_sequence</a>
+          <a class="active" href="image_gs_splat.html"><img src="../icons/PixelsToSplat_Icon.png" alt="" />image_gs_splat</a>
+          <a href="nodes.html?node=scene"><img src="../icons/Scene_Icon.png" alt="" />scene</a>
+          <a href="nodes.html?node=export-fbx"><img src="../icons/FBX_Icon.png" alt="" />export_fbx</a>
+          <a href="nodes.html?node=export-fbx-animation"><img src="../icons/FBX_Icon.png" alt="" />export_fbx_animation</a>
+          <a href="nodes.html?node=export-obj"><img src="../icons/OBJ_Icon.png" alt="" />export_obj</a>
+          <a href="nodes.html?node=uv-unwrap"><img src="../icons/UvUnwrapNode_Icon.png" alt="" />uv_unwrap</a>
+          <a href="nodes.html?node=normals"><img src="../icons/UvUnwrapNode_Icon.png" alt="" />normals</a>
+          <a href="nodes.html?node=texture"><img src="../icons/TextureNode_Icon.png" alt="" />texture</a>
+          <a href="nodes.html?node=texture-pro"><img src="../icons/TextureNode_Icon.png" alt="" />texture_pro</a>
+          <a href="nodes.html?node=texture-layer"><img src="../icons/layer_Texture_Icon.png" alt="" />texture_layer</a>
+          <a href="nodes.html?node=material"><img src="../icons/MaterialGenerator_Icon_S.png" alt="" />material</a>
+          <a href="nodes.html?node=mask"><img src="../icons/PaintBrush_Off_Icon.png" alt="" />mask</a>
+          <a href="nodes.html?node=split-volume"><img src="../icons/volume_split_icon.png" alt="" />split_volume / volume_selector</a>
+          <a href="nodes.html?node=fx"><img src="../icons/FX_node_icon.png" alt="" />fx</a>
+          <a href="nodes.html?node=wire"><img src="../icons/StreightArrow_Icon.png" alt="" />wire</a>
+          <a href="nodes.html?node=groom-guides"><img src="../icons/GroomGuides_Icon_1.png" alt="" />groom_guides</a>
+          <a href="nodes.html?node=groom-deform"><img src="../icons/GroomGuides_Icon_1.png" alt="" />groom_deform</a>
+          <a href="nodes.html?node=groom-guide-pose"><img src="../icons/GroomGuides_Icon_1.png" alt="" />groom_guide_pose</a>
+          <a href="nodes.html?node=groom-guide-sim"><img src="../icons/GroomGuides_Icon_1.png" alt="" />groom_guide_sim</a>
+          <a href="nodes.html?node=groom-guide-tube"><img src="../icons/GroomGuides_Icon_1.png" alt="" />groom_guide_tube</a>
+          <a href="nodes.html?node=skinned-volume-mesh"><img src="../icons/volume_split_icon.png" alt="" />skinned_volume_mesh</a>
+          <a href="nodes.html?node=skinned-splat-proxy"><img src="../icons/PointID_Icon.png" alt="" />skinned_splat_proxy</a>
+          <a href="nodes.html?node=html-preview"><img src="../icons/HTML_Preview.png" alt="" />html_preview</a>
+          <a href="nodes.html?node=image-collection"><img src="../icons/PhotoCollection.png" alt="" />image_collection</a>
+          <a href="nodes.html?node=video-player"><img src="../icons/ReelVideo_Icon.png" alt="" />video_player</a>
+          <a href="nodes.html?node=render"><img src="../icons/RenderNode_Icon.png" alt="" />render</a>
+          <a href="nodes.html?node=post-process"><img src="../icons/FX_node_icon.png" alt="" />post_process</a>
+          <a href="nodes.html?node=sequence-to-mp4"><img src="../icons/SequenceToVideo_Icon2_s.png" alt="" />sequence_to_mp4</a>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <header class="hero">
+          <div class="eyebrow">Node Reference</div>
+          <h1><img class="inline-icon" src="../icons/PixelsToSplat_Icon.png" alt="" /> Image-GS Splat Node</h1>
+          <p>
+            <code>image_gs_splat</code> converts one source image into a viewport-ready PLY Gaussian splat that can be viewed, transformed, layered, connected into <code>scene</code>, and processed alongside other splat assets.
+          </p>
+          <div class="hero-actions">
+            <a class="button" href="nodes.html?node=image-gs-splat">Back to Catalog</a>
+            <a class="button ghost" href="index.html#nodes">Main Docs</a>
+          </div>
+        </header>
+
+        <section class="section">
+          <h2>What It Creates</h2>
+          <p>
+            Exact Pixel mode writes a deterministic front-facing splat sheet with one Gaussian per visible source pixel. Image-GS mode uses the optional Image-GS runtime to fit a smaller optimized set of Gaussian primitives, then converts the checkpoint into the same PLY path.
+          </p>
+          <p>
+            This is not multi-view photogrammetry or a complete hidden-surface 3D scan. With one image, the node creates an image-driven splat surface or field rather than a complete object with a reliable backside.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>Generate Flow</h2>
+          <div class="grid two">
+            <div class="card">
+              <h3>What Generate Does</h3>
+              <ol class="steps">
+                <li>Reads a local image path or HTTP image URL from the node.</li>
+                <li>In <strong>Exact Pixel</strong> mode, stages the source as RGBA PNG and writes one front-facing splat per visible pixel.</li>
+                <li>In <strong>Image-GS</strong> mode, stages the source as an 8-bit RGB PNG so Image-GS receives a predictable image format.</li>
+                <li>When <strong>Auto HQ</strong> is enabled in Image-GS mode, analyzes source resolution/detail and chooses quality-focused settings.</li>
+                <li>Runs Image-GS from <code>%QUBITMCP_HOME%\third_party\image-gs</code> only when Image-GS mode is selected.</li>
+                <li>Converts the exact image or latest checkpoint into a PLY Gaussian splat stored under <code>logs\image_gs_splat</code>.</li>
+                <li>Writes QC data and updates the node output so <strong>View</strong> or a connected <code>scene</code> node can display the splat.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>Setup and Debug</h3>
+              <ul class="bullet">
+                <li>Exact Pixel mode does not require the optional Image-GS checkout.</li>
+                <li>Use <code>setup.bat</code>, accept the first-use setup prompt, or click <strong>Setup Image-GS</strong> only when Image-GS mode is needed.</li>
+                <li>Generated files are written under <code>logs\image_gs_splat</code>.</li>
+                <li>While generation is running, a bottom-row <strong>Stop</strong> button appears to interrupt the active converter or Image-GS process.</li>
+                <li>The debug icon opens an Image-GS report with dependency status, command line, generated paths, QC status, exit code, and captured stdout/stderr.</li>
+                <li>QC is a validation estimate; visual review in the viewport is still the final check.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Main Parameters</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Parameter</th>
+                  <th>Default</th>
+                  <th>What It Controls</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>image_url</code> / Image</td>
+                  <td>empty</td>
+                  <td>Local image path or HTTP/HTTPS image URL. The browse button selects a local image. This value is mirrored to <code>source</code> for compatibility.</td>
+                </tr>
+                <tr>
+                  <td><code>generation_mode</code> / Mode</td>
+                  <td><code>exact_pixel</code></td>
+                  <td>Selects deterministic Exact Pixel export or the optional Image-GS optimizer path.</td>
+                </tr>
+                <tr>
+                  <td><code>auto_quality</code> / Auto HQ</td>
+                  <td><code>1</code></td>
+                  <td>Image-GS mode only. Automatically chooses high-quality settings from source image size/detail and keeps progressive error-guided optimization enabled.</td>
+                </tr>
+                <tr>
+                  <td><code>num_gaussians</code> / Splats</td>
+                  <td><code>2000</code></td>
+                  <td>Number of Gaussian primitives Image-GS optimizes. Higher values can capture more detail but increase runtime, memory use, and output size.</td>
+                </tr>
+                <tr>
+                  <td><code>max_steps</code> / Steps</td>
+                  <td><code>800</code></td>
+                  <td>Optimization iterations. Higher values usually improve reconstruction quality but take longer.</td>
+                </tr>
+                <tr>
+                  <td><code>render_height</code> / Height</td>
+                  <td><code>768</code></td>
+                  <td>Training/render height passed to Image-GS. Larger values preserve more image detail but increase VRAM and runtime cost.</td>
+                </tr>
+                <tr>
+                  <td><code>init_mode</code> / Init</td>
+                  <td><code>gradient</code></td>
+                  <td>Initial placement strategy for splats. <code>gradient</code> follows image detail/edges, <code>saliency</code> favors visually important regions, and <code>random</code> distributes splats randomly.</td>
+                </tr>
+                <tr>
+                  <td><code>sheet_scale</code> / Sheet</td>
+                  <td><code>2.0</code></td>
+                  <td>Scale used when converting the source image or 2D Image-GS checkpoint into a viewport splat sheet.</td>
+                </tr>
+                <tr>
+                  <td><code>radius_scale</code> / Radius</td>
+                  <td><code>1.0</code></td>
+                  <td>Multiplier applied to exact pixel footprints or checkpoint splat radii.</td>
+                </tr>
+                <tr>
+                  <td><code>alpha</code> / Alpha</td>
+                  <td><code>0.92</code></td>
+                  <td>Opacity value assigned during PLY conversion. Lower values make the generated splat sheet more transparent.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Generated Outputs</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Parameter</th>
+                  <th>Purpose</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>path</code></td>
+                  <td>Final generated PLY path after a successful run. This is the path consumed by scene/import-style viewport loading.</td>
+                </tr>
+                <tr>
+                  <td><code>source_image</code></td>
+                  <td>Local staged PNG used as generation input. Exact Pixel preserves RGBA; Image-GS uses 8-bit RGB.</td>
+                </tr>
+                <tr>
+                  <td><code>splat_ply</code></td>
+                  <td>Generated PLY splat path written after checkpoint conversion.</td>
+                </tr>
+                <tr>
+                  <td><code>checkpoint</code></td>
+                  <td>Latest Image-GS checkpoint selected for conversion.</td>
+                </tr>
+                <tr>
+                  <td><code>preview_image</code></td>
+                  <td>Preview image shown on the node when available.</td>
+                </tr>
+                <tr>
+                  <td><code>render_image</code></td>
+                  <td>Latest rendered Image-GS reconstruction used for QC comparison when available.</td>
+                </tr>
+                <tr>
+                  <td><code>manifest</code></td>
+                  <td>JSON manifest recording the source image, checkpoint, generated PLY, conversion settings, automatic settings, and QC report.</td>
+                </tr>
+                <tr>
+                  <td><code>auto_quality_report</code></td>
+                  <td>JSON details for Auto HQ decisions, including detected source detail, selected density, progressive optimization strategy, and loss settings.</td>
+                </tr>
+                <tr>
+                  <td><code>qc_report</code></td>
+                  <td>QC status, splat density, export cap status, source-vs-render similarity, PSNR-style score, and edge/detail retention when available.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
+

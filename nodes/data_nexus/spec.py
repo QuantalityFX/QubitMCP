@@ -27,6 +27,12 @@ DATA_NEXUS_HIDDEN_PARAM_KEY = "__ui_hidden_params"
 DATA_NEXUS_OUTPUT_PARAM = "nexus"
 DATA_NEXUS_GRAPH_PARAM = "__data_nexus_graph_json"
 DATA_NEXUS_VIEW_ZOOM_PARAM = "__data_nexus_view_zoom"
+DATA_NEXUS_SPLITTER_SIZES_PARAM = "__data_nexus_splitter_sizes"
+DATA_NEXUS_SHOW_NEEDS_STRONGER_EDGES_PARAM = "__data_nexus_show_needs_stronger_answer_edges"
+DATA_NEXUS_SHOW_REFINES_EDGES_PARAM = "__data_nexus_show_refines_answer_edges"
+DATA_NEXUS_ACTIVE_QUESTION_PARAM = "__data_nexus_active_question_id"
+DATA_NEXUS_LINK_PULL_ENABLED_PARAM = "__data_nexus_link_pull_enabled"
+DATA_NEXUS_LINK_MAX_STRETCH_PARAM = "__data_nexus_link_max_stretch"
 DATA_NEXUS_SIDECAR_PARAM = "__data_nexus_sidecar"
 DATA_NEXUS_VAULT_PARAM = "__data_nexus_vault"
 DATA_NEXUS_STORAGE_MODE_PARAM = "__data_nexus_storage_mode"
@@ -39,8 +45,13 @@ DATA_NEXUS_WORLD_MAX = 17.0
 DATA_NEXUS_REPULSION_GRID_DISTANCE = 0.18
 DATA_NEXUS_LINK_MIN_GRID_DISTANCE = 0.22
 DATA_NEXUS_LINK_MAX_GRID_DISTANCE = 0.48
+DATA_NEXUS_LINK_STRETCH_MIN = 0.35
+DATA_NEXUS_LINK_STRETCH_MAX = 4.0
+DATA_NEXUS_LINK_STRETCH_DEFAULT = 1.25
 DATA_NEXUS_LABEL_MIN_ZOOM = 0.55
 DATA_NEXUS_GRID_BASE_PX = 360.0
+DATA_NEXUS_QUESTION_REFERENCE_EDGE_LABELS = {"needs_stronger_answer", "refines_answer"}
+DATA_NEXUS_ANSWER_EDGE_LABEL = "answers_question"
 POINT_ID_RE = re.compile(r"^Point ID:\s*`?(?P<id>[^`\r\n]+)`?\s*$", re.IGNORECASE | re.MULTILINE)
 FRONT_MATTER_RE = re.compile(r"\A---\s*\r?\n(?P<front>.*?)\r?\n---\s*(?:\r?\n|\Z)", re.DOTALL)
 AUTO_SUMMARY_RE = re.compile(r"^Contains knowledge for .+\.$", re.IGNORECASE)
@@ -168,6 +179,41 @@ def _clean_inline_text(value: Any, *, limit: int = 500) -> str:
     return text[:limit].strip()
 
 
+def _coerce_string_list(value: Any, *, limit: int = 120) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                value = parsed
+            else:
+                value = re.split(r"[,;\n]+", text.strip("[]"))
+        else:
+            value = re.split(r"[,;\n]+", text)
+    elif not isinstance(value, (list, tuple, set)):
+        value = [value]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip().strip("\"'")
+        if not text:
+            continue
+        text = _clean_inline_text(text, limit=limit)
+        key = text.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
 def _normalize_point_type(value: Any, fallback: str = "concept") -> str:
     return _sanitize_folder_name(str(value or "").strip().lower(), fallback=fallback)
 
@@ -178,6 +224,87 @@ def _is_question_point(entry: dict[str, Any]) -> bool:
         return True
     folder = _entry_folder(entry).lower()
     return folder in {"prep_questions", "refinement_questions"}
+
+
+def _is_slide_point(entry: dict[str, Any]) -> bool:
+    point_type = _normalize_point_type(entry.get("type", ""), fallback="")
+    if point_type == "slide":
+        return True
+    return _entry_folder(entry).lower() == "slides"
+
+
+def _edge_label(edge: dict[str, Any]) -> str:
+    return str((edge or {}).get("label", "") or "").strip().lower()
+
+
+def _is_question_reference_edge(edge: dict[str, Any]) -> bool:
+    return _edge_label(edge) in DATA_NEXUS_QUESTION_REFERENCE_EDGE_LABELS
+
+
+def _expected_answer_point_type(entry: dict[str, Any]) -> str:
+    note = str((entry or {}).get("note", "") or "")
+    match = re.search(
+        r"^Expected answer point type:\s*`?(?P<type>[^`\r\n]+)`?\s*$",
+        note,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if match:
+        return _normalize_point_type(match.group("type"), fallback="")
+    return ""
+
+
+def _question_text_from_entry(entry: dict[str, Any]) -> str:
+    note = str((entry or {}).get("note", "") or "").replace("\r\n", "\n").replace("\r", "\n")
+    match = re.search(r"^Question:\s*\n(?P<text>.*?)(?:\n\s*\n|$)", note, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+    if match:
+        return _clean_inline_text(match.group("text"), limit=500)
+    clean_note = _clean_inline_text(note, limit=500)
+    if clean_note.endswith("?"):
+        return clean_note
+    return _clean_inline_text((entry or {}).get("summary", ""), limit=500)
+
+
+def _question_source_point_ids(entry: dict[str, Any]) -> list[str]:
+    return _coerce_string_list(
+        (entry or {}).get("source_point_ids")
+        or (entry or {}).get("matched_point_ids")
+        or (entry or {}).get("source_ids")
+    )
+
+
+def _question_kind(entry: dict[str, Any]) -> str:
+    point_type = _normalize_point_type((entry or {}).get("type", ""), fallback="")
+    if point_type == "refinement_question":
+        return "refinement"
+    note = str((entry or {}).get("note", "") or "")
+    match = re.search(
+        r"^Question kind:\s*(?P<kind>[^\r\n]+)\s*$",
+        note,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if match:
+        return _sanitize_folder_name(match.group("kind"), fallback="").lower()
+    if _entry_folder(entry).lower() == "refinement_questions":
+        return "refinement"
+    return ""
+
+
+def _question_reference_edge_label(entry: dict[str, Any]) -> str:
+    if _question_kind(entry) == "refinement":
+        return "refines_answer"
+    return "needs_stronger_answer"
+
+
+def _question_display_color(entry: dict[str, Any]) -> str:
+    if _question_reference_edge_label(entry) == "refines_answer":
+        return "#facc15"
+    return "#f97316"
+
+
+def _answer_label_for_question(entry: dict[str, Any]) -> str:
+    label = str((entry or {}).get("title", "") or (entry or {}).get("label", "") or (entry or {}).get("id", "") or "Question").strip()
+    label = re.sub(r"\s+(?:Prep|Refinement)\s+Question\s*$", "", label, flags=re.IGNORECASE).strip()
+    return (label or "Data Nexus")[:92].rstrip() + " Answer"
 
 
 def _derive_summary(value: Any, fallback_title: str = "") -> str:
@@ -196,6 +323,10 @@ def _is_auto_summary(value: Any) -> bool:
 
 def _yaml_scalar(value: Any) -> str:
     return json.dumps(_clean_inline_text(value, limit=500), ensure_ascii=False)
+
+
+def _yaml_string_list(value: Any) -> str:
+    return json.dumps(_coerce_string_list(value), ensure_ascii=False)
 
 
 def _parse_front_matter(text: str) -> tuple[dict[str, str], str]:
@@ -309,6 +440,50 @@ def _set_param_value(node_item, name: str, value: str, *, emit: bool = True) -> 
             pass
 
 
+def _param_bool_from_model(model, name: str, default: bool = False) -> bool:
+    raw = _param_value_from_model(model, name, None)
+    if raw is None:
+        return bool(default)
+    text = str(raw or "").strip().lower()
+    if not text:
+        return bool(default)
+    return text not in {"0", "false", "no", "off", "hidden", "hide"}
+
+
+def _coerce_link_max_stretch(value: Any, default: float = DATA_NEXUS_LINK_STRETCH_DEFAULT) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        out = default
+    if not math.isfinite(out):
+        out = default
+    return max(DATA_NEXUS_LINK_STRETCH_MIN, min(DATA_NEXUS_LINK_STRETCH_MAX, out))
+
+
+def _param_link_max_stretch_from_model(model) -> float:
+    raw = _param_value_from_model(model, DATA_NEXUS_LINK_MAX_STRETCH_PARAM, "")
+    if not str(raw or "").strip():
+        return DATA_NEXUS_LINK_STRETCH_DEFAULT
+    return _coerce_link_max_stretch(raw)
+
+
+def _splitter_sizes_from_model(model) -> list[int]:
+    raw = _param_value_from_model(model, DATA_NEXUS_SPLITTER_SIZES_PARAM, "")
+    parts = [part.strip() for part in str(raw or "").split(",") if part.strip()]
+    if len(parts) != 3:
+        return []
+    sizes: list[int] = []
+    for part in parts:
+        try:
+            size = int(round(float(part)))
+        except Exception:
+            return []
+        if size <= 0:
+            return []
+        sizes.append(max(60, size))
+    return sizes if sum(sizes) > 0 else []
+
+
 def _ensure_param(node_item, name: str, default: str = "") -> None:
     model = getattr(node_item, "model", None)
     if model is None:
@@ -329,6 +504,12 @@ def _ensure_hidden_params(node_item) -> None:
             DATA_NEXUS_OUTPUT_PARAM.lower(),
             DATA_NEXUS_GRAPH_PARAM.lower(),
             DATA_NEXUS_VIEW_ZOOM_PARAM.lower(),
+            DATA_NEXUS_SPLITTER_SIZES_PARAM.lower(),
+            DATA_NEXUS_SHOW_NEEDS_STRONGER_EDGES_PARAM.lower(),
+            DATA_NEXUS_SHOW_REFINES_EDGES_PARAM.lower(),
+            DATA_NEXUS_ACTIVE_QUESTION_PARAM.lower(),
+            DATA_NEXUS_LINK_PULL_ENABLED_PARAM.lower(),
+            DATA_NEXUS_LINK_MAX_STRETCH_PARAM.lower(),
             DATA_NEXUS_SIDECAR_PARAM.lower(),
             DATA_NEXUS_VAULT_PARAM.lower(),
             DATA_NEXUS_STORAGE_MODE_PARAM.lower(),
@@ -394,6 +575,7 @@ def _coerce_graph(data: Any) -> dict[str, Any]:
             point_type = _normalize_point_type(entry.get("type", "concept"))
             summary = _clean_inline_text(entry.get("summary", ""), limit=500) or _derive_summary(note, title)
             folder = _entry_folder(entry)
+            source_point_ids = _question_source_point_ids(entry)
             if folder and folder.lower() not in folder_seen:
                 folder_seen.add(folder.lower())
                 folders.append(folder)
@@ -421,6 +603,8 @@ def _coerce_graph(data: Any) -> dict[str, Any]:
             }
             if folder:
                 node["folder"] = folder
+            if source_point_ids:
+                node["source_point_ids"] = source_point_ids
             nodes.append(node)
     if not nodes:
         return {
@@ -612,6 +796,15 @@ def _point_folder_from_markdown(text: str) -> str:
     return _sanitize_point_folder(metadata.get("folder", ""))
 
 
+def _point_source_ids_from_markdown(text: str) -> list[str]:
+    metadata = _point_metadata_from_markdown(text)
+    return _coerce_string_list(
+        metadata.get("source_point_ids")
+        or metadata.get("matched_point_ids")
+        or metadata.get("source_ids")
+    )
+
+
 def _point_markdown(entry: dict[str, Any]) -> str:
     point_id = str(entry.get("id", "") or "").strip()
     label = str(entry.get("title", "") or entry.get("label", "") or point_id or "Point").strip()
@@ -630,6 +823,9 @@ def _point_markdown(entry: dict[str, Any]) -> str:
     ]
     if folder:
         body.append(f"folder: {_yaml_scalar(folder)}")
+    source_point_ids = _question_source_point_ids(entry)
+    if source_point_ids:
+        body.append(f"source_point_ids: {_yaml_string_list(source_point_ids)}")
     body.extend(["---", "", f"# {label}"])
     if note:
         body.extend(["", note])
@@ -725,6 +921,7 @@ def _graph_from_vault_files(vault: Path, base_graph: dict[str, Any] | None = Non
         if folder:
             folders.add(folder)
         file_name = _join_point_file(folder, path.name)
+        source_point_ids = _point_source_ids_from_markdown(text) or _question_source_point_ids(base_entry)
         node = {
             "id": point_id,
             "label": label,
@@ -739,6 +936,8 @@ def _graph_from_vault_files(vault: Path, base_graph: dict[str, Any] | None = Non
         }
         if folder:
             node["folder"] = folder
+        if source_point_ids:
+            node["source_point_ids"] = source_point_ids
         nodes.append(node)
     return _coerce_graph(
         {
@@ -1106,6 +1305,7 @@ def _summary_for_graph(graph: dict[str, Any], *, vault_path: str = "") -> str:
     nodes = clean.get("nodes", []) or []
     edges = clean.get("edges", []) or []
     by_id = {entry.get("id"): entry for entry in nodes if isinstance(entry, dict)}
+    active_question_id = str(graph.get("active_question_id", "") or "").strip()
     lines = [
         f"Data Nexus: {len(nodes)} points, {len(edges)} links.",
         "Mediator Planner context: read this graph as a connected project memory map.",
@@ -1124,6 +1324,28 @@ def _summary_for_graph(graph: dict[str, Any], *, vault_path: str = "") -> str:
             lines.append(f"- {label}{type_text}" + (f": {body}" if body else ""))
         if len(nodes) > 30:
             lines.append(f"- ... {len(nodes) - 30} more points")
+    prep_questions = [entry for entry in nodes if isinstance(entry, dict) and _is_question_point(entry)]
+    if prep_questions:
+        lines.append("Prep Questions:")
+        for entry in prep_questions[:20]:
+            label = str(entry.get("title", "") or entry.get("label", "") or entry.get("id", "") or "Question").strip()
+            point_id = str(entry.get("id", "") or "").strip()
+            expected_type = _expected_answer_point_type(entry)
+            question_text = _question_text_from_entry(entry)
+            expected = f" expects `{expected_type}`" if expected_type else ""
+            identity = f" [id: {point_id}]" if point_id else ""
+            answered = _find_answer_for_question(nodes, edges, point_id) if point_id else None
+            status = "answered" if answered is not None else "open"
+            if active_question_id and point_id == active_question_id:
+                status = f"ACTIVE, {status}"
+            source_ids = ", ".join(_question_source_point_ids(entry)[:8])
+            source_text = f" sources: {source_ids}" if source_ids else ""
+            lines.append(
+                f"- {label}{identity} [{status}]{expected}{source_text}"
+                + (f": {question_text}" if question_text else "")
+            )
+        if len(prep_questions) > 20:
+            lines.append(f"- ... {len(prep_questions) - 20} more prep questions")
     if edges:
         lines.append("Links:")
         for edge in edges[:40]:
@@ -1267,6 +1489,8 @@ def _normalized_action_op(action: dict[str, Any]) -> str:
         return "upsert_point"
     if op in {"append", "append_point_note", "note"}:
         return "append_note"
+    if op in {"answer", "answer_question", "answer_prep_question", "resolve_question", "satisfy_question"}:
+        return "answer_question"
     if op in {"delete", "remove", "forget", "delete_node", "remove_point"}:
         return "delete_point"
     if op in {"connect", "add_link", "link_points"}:
@@ -1275,6 +1499,8 @@ def _normalized_action_op(action: dict[str, Any]) -> str:
         return "unlink"
     if op in {"prune", "prune_points", "keep_only", "keep_only_points", "delete_unrelated"}:
         return "prune_points"
+    if op in {"sync_task_questions", "replace_task_questions", "sync_prep_questions"}:
+        return "sync_task_questions"
     if op in {"delete_all", "delete_all_points", "remove_all", "remove_all_points", "clear_all", "clear_graph", "clear_points"}:
         return "delete_all_points"
     return op
@@ -1520,6 +1746,91 @@ def _resolve_or_create_point(nodes: list[dict[str, Any]], ref: str, *, create_mi
     return entry
 
 
+def _find_question_point(nodes: list[dict[str, Any]], ref: str) -> dict[str, Any] | None:
+    questions = [entry for entry in nodes if isinstance(entry, dict) and _is_question_point(entry)]
+    entry = _find_point(questions, ref)
+    if entry is None:
+        entry = _find_point_for_query(questions, ref)
+    return entry
+
+
+def _find_answer_for_question(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    question_id: str,
+) -> dict[str, Any] | None:
+    by_id = {str(entry.get("id", "") or ""): entry for entry in nodes if isinstance(entry, dict)}
+    for edge in edges:
+        if _edge_label(edge) != DATA_NEXUS_ANSWER_EDGE_LABEL:
+            continue
+        if str(edge.get("target", "") or "") != question_id:
+            continue
+        source_id = str(edge.get("source", "") or "")
+        entry = by_id.get(source_id)
+        if entry is not None and not _is_question_point(entry):
+            return entry
+    return None
+
+
+def _next_open_question_id(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    exclude: set[str] | None = None,
+) -> str:
+    skipped = {str(item or "").strip() for item in (exclude or set()) if str(item or "").strip()}
+    for entry in nodes:
+        if not isinstance(entry, dict) or not _is_question_point(entry):
+            continue
+        point_id = str(entry.get("id", "") or "").strip()
+        if not point_id or point_id in skipped:
+            continue
+        if _find_answer_for_question(nodes, edges, point_id) is None:
+            return point_id
+    return ""
+
+
+def _set_active_question_on_item(node_item, question_id: str) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    _set_param_value_on_model(model, DATA_NEXUS_ACTIVE_QUESTION_PARAM, str(question_id or "").strip())
+    _ensure_hidden_params(node_item)
+
+
+def set_active_data_nexus_question_from_item(node_item, question_id: str = "") -> tuple[bool, str]:
+    graph = _load_graph_for_node(node_item)
+    nodes = [dict(entry) for entry in graph.get("nodes", []) or []]
+    edges = [dict(edge) for edge in graph.get("edges", []) or []]
+    clean_question_id = str(question_id or "").strip()
+    if not clean_question_id:
+        clean_question_id = _next_open_question_id(nodes, edges)
+    if clean_question_id and _find_question_point(nodes, clean_question_id) is None:
+        return False, f"Prep question not found: {clean_question_id}"
+    _set_active_question_on_item(node_item, clean_question_id)
+    _emit_node_params_changed(node_item)
+    if clean_question_id:
+        return True, f"Active prep question set to `{clean_question_id}`."
+    return True, "No open prep question is active."
+
+
+def _ensure_edge(
+    edges: list[dict[str, Any]],
+    source_id: str,
+    target_id: str,
+    label: str,
+) -> bool:
+    clean_label = str(label or "").strip()[:120]
+    for edge in edges:
+        if str(edge.get("source", "") or "") == source_id and str(edge.get("target", "") or "") == target_id:
+            if clean_label and str(edge.get("label", "") or "") != clean_label:
+                edge["label"] = clean_label
+                return True
+            return False
+    edges.append({"source": source_id, "target": target_id, "label": clean_label})
+    return True
+
+
 def _arrange_graph_wide_angles(graph: dict[str, Any]) -> dict[str, Any]:
     clean = _coerce_graph(graph)
     nodes = [dict(entry) for entry in clean.get("nodes", []) or [] if isinstance(entry, dict)]
@@ -1696,6 +2007,110 @@ def _arrange_graph_wide_angles(graph: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _arrange_graph_question_clusters(graph: dict[str, Any]) -> dict[str, Any]:
+    clean = _coerce_graph(graph)
+    nodes = [dict(entry) for entry in clean.get("nodes", []) or [] if isinstance(entry, dict)]
+    edges = [dict(edge) for edge in clean.get("edges", []) or [] if isinstance(edge, dict)]
+    if len(nodes) < 2:
+        clean["nodes"] = nodes
+        clean["edges"] = edges
+        return clean
+
+    by_id = {str(entry.get("id", "") or ""): entry for entry in nodes if str(entry.get("id", "") or "")}
+    adjacency: dict[str, set[str]] = {point_id: set() for point_id in by_id}
+    for edge in edges:
+        source_id = str(edge.get("source", "") or "")
+        target_id = str(edge.get("target", "") or "")
+        if source_id in adjacency and target_id in adjacency and source_id != target_id:
+            adjacency[source_id].add(target_id)
+            adjacency[target_id].add(source_id)
+
+    def sort_key(point_id: str) -> tuple[str, str]:
+        entry = by_id.get(point_id, {})
+        label = str(entry.get("label", "") or point_id).strip().lower()
+        return label, point_id.lower()
+
+    question_ids = sorted(
+        [point_id for point_id, entry in by_id.items() if _is_question_point(entry)],
+        key=sort_key,
+    )
+    slide_ids = sorted(
+        [
+            point_id
+            for point_id, entry in by_id.items()
+            if not _is_question_point(entry) and _is_slide_point(entry)
+        ],
+        key=sort_key,
+    )
+    other_ids = sorted(
+        [
+            point_id
+            for point_id, entry in by_id.items()
+            if not _is_question_point(entry) and not _is_slide_point(entry)
+        ],
+        key=sort_key,
+    )
+    groups = [ids for ids in (question_ids, slide_ids, other_ids) if ids]
+    if not groups:
+        clean["nodes"] = nodes
+        clean["edges"] = edges
+        return clean
+
+    spacing = max(DATA_NEXUS_REPULSION_GRID_DISTANCE * 1.35, 0.24)
+    golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+
+    def clamp(value: float) -> float:
+        return max(DATA_NEXUS_WORLD_MIN, min(DATA_NEXUS_WORLD_MAX, float(value)))
+
+    def group_extent(count: int) -> float:
+        if count <= 1:
+            return 0.26
+        return max(0.32, spacing * (math.sqrt(float(count - 1)) + 0.45))
+
+    center_by_group = {
+        "questions": (-0.62, -0.48),
+        "slides": (1.58, -0.48),
+        "regular": (0.5, 1.1),
+    }
+    group_specs = [
+        ("questions", question_ids),
+        ("slides", slide_ids),
+        ("regular", other_ids),
+    ]
+    groups = [(name, ids) for name, ids in group_specs if ids]
+    if len(groups) == 1:
+        center_by_group[groups[0][0]] = (0.5, 0.5)
+
+    for group_name, ids in groups:
+        center_x, center_y = center_by_group.get(group_name, (0.5, 0.5))
+        group_set = set(ids)
+        ordered = sorted(
+            ids,
+            key=lambda point_id: (
+                -len(adjacency.get(point_id, set()) & group_set),
+                sort_key(point_id),
+            ),
+        )
+        for index, point_id in enumerate(ordered):
+            entry = by_id.get(point_id)
+            if entry is None:
+                continue
+            if index == 0:
+                x = center_x
+                y = center_y
+            else:
+                radius = spacing * math.sqrt(float(index))
+                angle = golden_angle * float(index)
+                x = center_x + math.cos(angle) * radius
+                y = center_y + math.sin(angle) * radius
+            entry["x"] = clamp(x)
+            entry["y"] = clamp(y)
+
+    clean["nodes"] = nodes
+    clean["edges"] = edges
+    return clean
+
+
 def _prune_keep_filters(action: dict[str, Any]) -> tuple[set[str], set[str], list[str]]:
     keep_refs = {
         str(value or "").strip().lower()
@@ -1798,6 +2213,66 @@ def preview_data_nexus_deletions_from_item(node_item, payload: Any) -> list[dict
     return previews
 
 
+def _edge_dst_port_name(edge) -> str:
+    for attr in ("dst_port_name", "dst_label", "dst_name"):
+        if hasattr(edge, attr):
+            value = str(getattr(edge, attr) or "").strip().lower()
+            if value:
+                return value
+    return ""
+
+
+def _refresh_connected_task_nodes(node_item, *, requester: str = "") -> int:
+    if str(requester or "").strip().lower() == "task":
+        return 0
+    scene = None
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    if scene is None:
+        return 0
+    try:
+        from nodes.task import spec as task_spec
+    except Exception:
+        return 0
+    runner = getattr(task_spec, "run_task_step_from_item", None)
+    if not callable(runner):
+        return 0
+    task_kinds = set(getattr(task_spec, "TASK_NODE_KINDS", {"task", "agent_task", "task_node", "workflow_task"}))
+    data_port = str(getattr(task_spec, "DATA_NEXUS_INPUT_PORT", "data_nexus") or "data_nexus").strip().lower()
+    try:
+        edges = list(getattr(scene, "_edges", []) or [])
+    except Exception:
+        edges = []
+    refreshed = 0
+    seen: set[int] = set()
+    for edge in edges:
+        if getattr(edge, "src", None) is not node_item:
+            continue
+        dst = getattr(edge, "dst", None)
+        if dst is None or id(dst) in seen:
+            continue
+        if _kind_of_item(dst) not in task_kinds:
+            continue
+        dst_port = _edge_dst_port_name(edge)
+        if dst_port and dst_port != data_port:
+            continue
+        try:
+            runner(dst)
+            refreshed += 1
+            seen.add(id(dst))
+        except Exception:
+            continue
+        widget = getattr(dst, "_task_widget", None)
+        if widget is not None and hasattr(widget, "_refresh_from_state"):
+            try:
+                widget._refresh_from_state()
+            except Exception:
+                pass
+    return refreshed
+
+
 def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str = "Mediator") -> tuple[bool, str]:
     actions = _coerce_update_actions(payload)
     if not actions:
@@ -1813,10 +2288,196 @@ def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str
         "deleted": 0,
         "linked": 0,
         "unlinked": 0,
+        "answered": 0,
     }
+    answered_question_ids: set[str] = set()
+    deleted_question_ids: set[str] = set()
+    new_point_ids: set[str] = set()
 
     for action in actions:
         op = _normalized_action_op(action)
+
+        if op == "sync_task_questions":
+            task_id = _sanitize_folder_name(_action_text(action, "task_id", "task", "owner"), fallback="")
+            if not task_id:
+                continue
+            keep_ids = {
+                _sanitize_folder_name(value, fallback="")
+                for value in _action_list(action, "keep_ids", "question_ids", "ids")
+                if str(value or "").strip()
+            }
+            keep_ids = {value for value in keep_ids if value}
+            folders = {
+                _sanitize_point_folder(value).lower()
+                for value in _action_list(action, "folders", "folder")
+                if str(value or "").strip()
+            } or {"prep_questions", "refinement_questions"}
+            prefix = f"{task_id}_"
+            remaining: list[dict[str, Any]] = []
+            stale_ids: set[str] = set()
+            for entry in nodes:
+                if not isinstance(entry, dict):
+                    continue
+                point_id = str(entry.get("id", "") or "").strip()
+                folder = _entry_folder(entry).lower()
+                is_owned_question = (
+                    point_id.startswith(prefix)
+                    and point_id not in keep_ids
+                    and folder in folders
+                    and _is_question_point(entry)
+                )
+                if not is_owned_question:
+                    remaining.append(entry)
+                    continue
+                _unlink_vault_note_for_entry(node_item, entry)
+                stale_ids.add(point_id)
+            if stale_ids:
+                nodes = remaining
+                edges = [
+                    edge
+                    for edge in edges
+                    if edge.get("source") not in stale_ids and edge.get("target") not in stale_ids
+                ]
+                deleted_question_ids.update(stale_ids)
+                counts["deleted"] += len(stale_ids)
+                changed = True
+            continue
+
+        if op == "answer_question":
+            question_ref = _action_text(
+                action,
+                "question",
+                "question_id",
+                "question_label",
+                "prep_question",
+                "target",
+                "to",
+            )
+            explicit_answer_text = _action_text(action, "answer", "response", "note", "description", "comment", "text", "content")
+            answer_point_ref = _action_text(
+                action,
+                "answer_point_id",
+                "existing_answer_point_id",
+                "answer_point",
+                "answer_ref",
+                "existing_point_id",
+                "source_point_id",
+            )
+            if not question_ref:
+                continue
+            question = _find_question_point(nodes, question_ref)
+            if question is None:
+                continue
+            question_id = str(question.get("id", "") or "").strip()
+            if not question_id:
+                continue
+
+            entry = None
+            if answer_point_ref:
+                entry = _find_point(nodes, answer_point_ref) or _find_point_for_query(nodes, answer_point_ref)
+                if entry is not None and _is_question_point(entry):
+                    entry = None
+            answer_text = explicit_answer_text
+            if not answer_text and entry is not None:
+                answer_text = (
+                    str(entry.get("note", "") or "").strip()
+                    or str(entry.get("summary", "") or "").strip()
+                    or str(entry.get("title", "") or entry.get("label", "") or "").strip()
+                )
+            if entry is None and not answer_text:
+                continue
+
+            explicit_answer_label = _action_text(action, "answer_label", "label", "title", "name")
+            answer_label = (
+                explicit_answer_label
+                or str((entry or {}).get("title", "") or (entry or {}).get("label", "") or "").strip()
+                or _answer_label_for_question(question)
+            )
+            question_label = str(question.get("title", "") or question.get("label", "") or "").strip().lower()
+            if question_label and answer_label.strip().lower() == question_label:
+                answer_label = _answer_label_for_question(question)
+            answer_id = _action_text(action, "answer_id", "id", "point_id")
+            answer_type = _action_text(action, "type", "point_type", "kind", "answer_type")
+            if not answer_type:
+                answer_type = str((entry or {}).get("type", "") or "").strip() or _expected_answer_point_type(question) or "prep_answer"
+            summary = _action_text(action, "summary")
+            folder_text = _action_text(action, "folder", "vault_folder", "group")
+            folder = _sanitize_point_folder(folder_text) if folder_text else _entry_folder(entry or {}) or "answers"
+
+            entry = entry or (_find_point(nodes, answer_id) if answer_id else None)
+            if entry is not None and _is_question_point(entry):
+                entry = None
+            entry = entry or _find_answer_for_question(nodes, edges, question_id)
+            candidate = _find_point(nodes, answer_label) if explicit_answer_label else None
+            if candidate is not None and not _is_question_point(candidate):
+                entry = entry or candidate
+            was_new = False
+            if entry is None:
+                entry = _new_point(
+                    answer_label,
+                    nodes,
+                    note=answer_text,
+                    point_id=answer_id or f"{question_id}_answer",
+                    point_type=answer_type,
+                    summary=summary,
+                    folder=folder,
+                )
+                nodes.append(entry)
+                entry_id = str(entry.get("id", "") or "").strip()
+                if entry_id:
+                    new_point_ids.add(entry_id)
+                was_new = True
+                counts["added"] += 1
+                changed = True
+
+            if answer_label and (was_new or explicit_answer_label) and str(entry.get("label", "") or "") != answer_label:
+                entry["label"] = answer_label[:120]
+                entry["title"] = answer_label[:120]
+                entry["file"] = _join_point_file(_entry_folder(entry), answer_label)
+                if not was_new:
+                    counts["updated"] += 1
+                changed = True
+            normalized_type = _normalize_point_type(answer_type, fallback="prep_answer")
+            if (was_new or _action_text(action, "type", "point_type", "kind", "answer_type")) and str(entry.get("type", "") or "") != normalized_type:
+                entry["type"] = normalized_type
+                if not was_new:
+                    counts["updated"] += 1
+                changed = True
+            if folder_text and folder and _entry_folder(entry) != folder:
+                _set_point_folder(entry, folder)
+                if not was_new:
+                    counts["updated"] += 1
+                changed = True
+            clean_summary = _clean_inline_text(summary, limit=500) if summary else ""
+            if clean_summary and str(entry.get("summary", "") or "") != clean_summary:
+                entry["summary"] = clean_summary
+                if not was_new:
+                    counts["updated"] += 1
+                changed = True
+
+            old_note = str(entry.get("note", "") or "")
+            mode = _action_text(action, "note_mode", "mode").lower()
+            should_write_note = bool(explicit_answer_text or was_new or not old_note.strip())
+            new_note = _append_note(old_note, answer_text) if mode in {"append", "add", "additive"} else answer_text[:5000]
+            if should_write_note and new_note != old_note:
+                entry["note"] = new_note
+                if not str(entry.get("summary", "") or "").strip() or _is_auto_summary(entry.get("summary", "")):
+                    entry["summary"] = _derive_summary(
+                        new_note,
+                        str(entry.get("title", "") or entry.get("label", "") or ""),
+                    )
+                if not was_new:
+                    counts["updated"] += 1
+                changed = True
+
+            answer_point_id = str(entry.get("id", "") or "").strip()
+            if answer_point_id and _ensure_edge(edges, answer_point_id, question_id, DATA_NEXUS_ANSWER_EDGE_LABEL):
+                counts["linked"] += 1
+                changed = True
+            if question_id:
+                answered_question_ids.add(question_id)
+            counts["answered"] += 1
+            continue
 
         if op in {"upsert_point", "append_note"}:
             label = _action_text(action, "label", "name", "title")
@@ -1829,6 +2490,14 @@ def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str
             note = _action_text(action, "note", "description", "comment", "text", "memory", "content")
             folder_text = _action_text(action, "folder", "vault_folder", "group")
             folder = _sanitize_point_folder(folder_text)
+            has_source_refs = any(key in action for key in ("source_point_ids", "matched_point_ids", "source_ids"))
+            source_point_ids = _coerce_string_list(
+                action.get("source_point_ids")
+                if "source_point_ids" in action
+                else action.get("matched_point_ids")
+                if "matched_point_ids" in action
+                else action.get("source_ids")
+            )
             if not note and summary:
                 # Backward compatibility: older planner payloads used `summary` as note text.
                 note = summary
@@ -1846,6 +2515,9 @@ def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str
                     folder=folder,
                 )
                 nodes.append(entry)
+                entry_id = str(entry.get("id", "") or "").strip()
+                if entry_id:
+                    new_point_ids.add(entry_id)
                 was_new = True
                 counts["added"] += 1
                 changed = True
@@ -1893,6 +2565,50 @@ def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str
                     if not was_new:
                         counts["updated"] += 1
                     changed = True
+            if has_source_refs:
+                existing_source_ids = _question_source_point_ids(entry)
+                if existing_source_ids != source_point_ids:
+                    if source_point_ids:
+                        entry["source_point_ids"] = source_point_ids
+                    else:
+                        entry.pop("source_point_ids", None)
+                    if not was_new:
+                        counts["updated"] += 1
+                    changed = True
+
+                entry_id = str(entry.get("id", "") or "").strip()
+                if entry_id:
+                    explicit_link_label = _action_text(action, "source_edge_label", "reference_label")
+                    link_label = explicit_link_label or (
+                        _question_reference_edge_label(entry) if _is_question_point(entry) else "uses_source"
+                    )
+                    clean_link_label = str(link_label or "").strip().lower()
+                    if _action_bool(action, "replace_source_edges", False):
+                        before_count = len(edges)
+
+                        def should_remove_source_edge(edge: dict[str, Any]) -> bool:
+                            if str(edge.get("source", "") or "") != entry_id:
+                                return False
+                            if explicit_link_label:
+                                return _edge_label(edge) == clean_link_label
+                            if _is_question_point(entry):
+                                return _is_question_reference_edge(edge)
+                            return bool(clean_link_label and _edge_label(edge) == clean_link_label)
+
+                        edges = [edge for edge in edges if not should_remove_source_edge(edge)]
+                        removed_count = before_count - len(edges)
+                        if removed_count:
+                            counts["unlinked"] += removed_count
+                            changed = True
+                    if source_point_ids and _action_bool(action, "create_source_edges", False):
+                        for source_ref in source_point_ids:
+                            source_entry = _find_point(nodes, source_ref) or _find_point_for_query(nodes, source_ref)
+                            source_id = str((source_entry or {}).get("id", "") or "").strip()
+                            if not source_id or source_id == entry_id:
+                                continue
+                            if _ensure_edge(edges, entry_id, source_id, link_label):
+                                counts["linked"] += 1
+                                changed = True
             continue
 
         if op == "delete_point":
@@ -1956,8 +2672,19 @@ def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str
             if not source_ref or not target_ref:
                 continue
             create_missing = _action_bool(action, "create_missing", op == "link")
+            before_point_ids = {str(entry.get("id", "") or "").strip() for entry in nodes if isinstance(entry, dict)}
             source = _resolve_or_create_point(nodes, source_ref, create_missing=create_missing)
             target = _resolve_or_create_point(nodes, target_ref, create_missing=create_missing)
+            created_link_point_ids = {
+                str((entry or {}).get("id", "") or "").strip()
+                for entry in (source, target)
+                if str((entry or {}).get("id", "") or "").strip()
+                and str((entry or {}).get("id", "") or "").strip() not in before_point_ids
+            }
+            if created_link_point_ids:
+                new_point_ids.update(created_link_point_ids)
+                counts["added"] += len(created_link_point_ids)
+                changed = True
             if source is None or target is None or source.get("id") == target.get("id"):
                 continue
             source_id = str(source.get("id", "") or "")
@@ -1996,17 +2723,45 @@ def apply_data_nexus_update_from_item(node_item, payload: Any, *, requester: str
             "folders": _graph_folder_values(graph),
         }
     )
+    active_question_id = _param_value_from_model(
+        getattr(node_item, "model", None),
+        DATA_NEXUS_ACTIVE_QUESTION_PARAM,
+        "",
+    ).strip()
+    if active_question_id and active_question_id in (answered_question_ids | deleted_question_ids):
+        _set_active_question_on_item(
+            node_item,
+            _next_open_question_id(
+                list(next_graph.get("nodes", []) or []),
+                list(next_graph.get("edges", []) or []),
+                exclude=answered_question_ids,
+            ),
+        )
     status_parts = [f"{value} {name}" for name, value in counts.items() if value]
     status = f"Updated by {requester}: " + ", ".join(status_parts) + "."
     widget = getattr(node_item, "_data_nexus_widget", None)
     if widget is not None and hasattr(widget, "_apply_external_graph"):
         try:
-            widget._apply_external_graph(next_graph, status)
+            widget._apply_external_graph(
+                next_graph,
+                status,
+                highlight_point_ids=sorted(new_point_ids) if new_point_ids else None,
+            )
+            refreshed = _refresh_connected_task_nodes(node_item, requester=requester)
+            if refreshed:
+                status = f"{status} Refreshed {refreshed} connected task(s)."
+                try:
+                    widget._set_status(status)
+                except Exception:
+                    pass
             return True, status
         except Exception:
             pass
     ok = _sync_model_from_graph(node_item, next_graph, write_sidecar=True)
     _emit_node_params_changed(node_item)
+    refreshed = _refresh_connected_task_nodes(node_item, requester=requester)
+    if refreshed:
+        status = f"{status} Refreshed {refreshed} connected task(s)."
     if not ok:
         return True, f"{status} Save the workflow to create/update vault files."
     return True, status
@@ -2034,6 +2789,10 @@ def data_nexus_context_from_item(node_item) -> str:
     graph = _load_graph_for_node(node_item)
     model = getattr(node_item, "model", None)
     vault_path = _param_value_from_model(model, DATA_NEXUS_VAULT_PARAM, "")
+    active_question_id = _param_value_from_model(model, DATA_NEXUS_ACTIVE_QUESTION_PARAM, "")
+    if active_question_id:
+        graph = dict(graph)
+        graph["active_question_id"] = active_question_id
     return _summary_for_graph(graph, vault_path=vault_path)
 
 
@@ -2041,6 +2800,7 @@ def data_nexus_point_bundle_from_item(node_item) -> dict[str, Any]:
     graph = _graph_with_point_files(_load_graph_for_node(node_item))
     model = getattr(node_item, "model", None)
     vault_path = _param_value_from_model(model, DATA_NEXUS_VAULT_PARAM, "")
+    active_question_id = _param_value_from_model(model, DATA_NEXUS_ACTIVE_QUESTION_PARAM, "")
     nodes = [dict(entry) for entry in graph.get("nodes", []) or [] if isinstance(entry, dict)]
     edges = [dict(edge) for edge in graph.get("edges", []) or [] if isinstance(edge, dict)]
     links_by_point: dict[str, list[dict[str, str]]] = {}
@@ -2060,21 +2820,31 @@ def data_nexus_point_bundle_from_item(node_item) -> dict[str, Any]:
     for entry in nodes:
         title = str(entry.get("title", "") or entry.get("label", "") or entry.get("id", "") or "Point").strip()
         content = str(entry.get("note", "") or "").strip()
+        point_id = str(entry.get("id", "") or "").strip()
+        is_question = _is_question_point(entry)
+        answer_entry = _find_answer_for_question(nodes, edges, point_id) if is_question and point_id else None
         points.append(
             {
-                "id": str(entry.get("id", "") or "").strip(),
+                "id": point_id,
                 "type": _normalize_point_type(entry.get("type", "concept")),
                 "title": title,
                 "summary": str(entry.get("summary", "") or "").strip() or _derive_summary(content, title),
                 "content": content,
                 "folder": _entry_folder(entry),
                 "file": _point_file_name(entry),
-                "links": links_by_point.get(str(entry.get("id", "") or "").strip(), []),
+                "source_point_ids": _question_source_point_ids(entry),
+                "is_question": is_question,
+                "question_text": _question_text_from_entry(entry) if is_question else "",
+                "expected_answer_point_type": _expected_answer_point_type(entry) if is_question else "",
+                "answer_status": "answered" if answer_entry is not None else "open" if is_question else "",
+                "is_active_question": bool(active_question_id and point_id == active_question_id),
+                "links": links_by_point.get(point_id, []),
             }
         )
     return {
         "version": 2,
         "vault": vault_path,
+        "active_question_id": active_question_id,
         "points": points,
         "edges": edges,
     }
@@ -2100,6 +2870,11 @@ class DataNexusCanvas(QtWidgets.QWidget):
         self._pan_button = ""
         self._link_target_mode = False
         self._hover_id = ""
+        self._show_needs_stronger_answer_edges = False
+        self._show_refines_answer_edges = False
+        self._link_pull_enabled = False
+        self._link_max_stretch = DATA_NEXUS_LINK_STRETCH_DEFAULT
+        self._review_highlight_point_ids: set[str] = set()
         self._drag_offset = QtCore.QPointF(0.0, 0.0)
         self._pan_start = QtCore.QPointF(0.0, 0.0)
         self._pan_start_center = QtCore.QPointF(0.5, 0.5)
@@ -2108,6 +2883,25 @@ class DataNexusCanvas(QtWidgets.QWidget):
         self.setMinimumSize(320, 190)
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
+
+    def set_review_highlight_points(
+        self,
+        point_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> None:
+        clean_ids = {
+            str(point_id or "").strip()
+            for point_id in (point_ids or [])
+            if str(point_id or "").strip()
+        }
+        graph_ids = {str(entry.get("id", "") or "").strip() for entry in self._graph.get("nodes", []) or []}
+        clean_ids = {point_id for point_id in clean_ids if point_id in graph_ids}
+        self._review_highlight_point_ids = clean_ids
+        self.update()
+
+    def _active_review_highlight_ids(self) -> set[str]:
+        if not self._review_highlight_point_ids:
+            return set()
+        return set(self._review_highlight_point_ids)
 
     def set_link_target_mode(self, active: bool) -> None:
         self._link_target_mode = bool(active)
@@ -2119,9 +2913,174 @@ class DataNexusCanvas(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def set_question_edge_visibility(self, *, needs_stronger: bool, refines: bool) -> None:
+        next_needs = bool(needs_stronger)
+        next_refines = bool(refines)
+        if (
+            self._show_needs_stronger_answer_edges == next_needs
+            and self._show_refines_answer_edges == next_refines
+        ):
+            return
+        self._show_needs_stronger_answer_edges = next_needs
+        self._show_refines_answer_edges = next_refines
+        self.update()
+
+    def set_link_pull_settings(self, *, enabled: bool, max_stretch: float) -> None:
+        next_enabled = bool(enabled)
+        next_stretch = _coerce_link_max_stretch(max_stretch)
+        if self._link_pull_enabled == next_enabled and abs(self._link_max_stretch - next_stretch) < 0.001:
+            return
+        self._link_pull_enabled = next_enabled
+        self._link_max_stretch = next_stretch
+
+    def _should_draw_edge(self, edge: dict[str, Any]) -> bool:
+        label = _edge_label(edge)
+        if label == "needs_stronger_answer":
+            return self._show_needs_stronger_answer_edges
+        if label == "refines_answer":
+            return self._show_refines_answer_edges
+        return True
+
+    @staticmethod
+    def _point_edge_color(entry: dict[str, Any]) -> QtGui.QColor:
+        if _is_question_point(entry):
+            return QtGui.QColor(_question_display_color(entry))
+        if _is_slide_point(entry):
+            return QtGui.QColor("#39ff14")
+        return QtGui.QColor("#14b8a6")
+
+    def _edge_width(self, edge: dict[str, Any], *, glow: bool = False) -> float:
+        label = _edge_label(edge)
+        width = self._content_pen_width(1.8)
+        if label == "needs_stronger_answer":
+            width = self._content_pen_width(1.05)
+        elif label == "refines_answer":
+            width = self._content_pen_width(1.05)
+        elif label == DATA_NEXUS_ANSWER_EDGE_LABEL:
+            width = self._content_pen_width(2.0)
+        if glow:
+            width = max(width + self._content_pen_width(3.2), width * 3.2)
+        return width
+
+    def _edge_alpha(self, edge: dict[str, Any], *, glow: bool = False) -> int:
+        if glow:
+            return 46 if _is_question_reference_edge(edge) else 62
+        if _is_question_reference_edge(edge):
+            return 132
+        if _edge_label(edge) == DATA_NEXUS_ANSWER_EDGE_LABEL:
+            return 230
+        return 225
+
+    def _edge_brush(
+        self,
+        src: dict[str, Any],
+        dst: dict[str, Any],
+        start: QtCore.QPointF,
+        end: QtCore.QPointF,
+        *,
+        alpha: int,
+    ) -> QtGui.QBrush:
+        src_color = self._point_edge_color(src)
+        dst_color = self._point_edge_color(dst)
+        src_color.setAlpha(alpha)
+        dst_color.setAlpha(alpha)
+        src_kind = "question" if _is_question_point(src) else "slide" if _is_slide_point(src) else "point"
+        dst_kind = "question" if _is_question_point(dst) else "slide" if _is_slide_point(dst) else "point"
+        if src_kind == dst_kind:
+            return QtGui.QBrush(src_color)
+        gradient = QtGui.QLinearGradient(start, end)
+        gradient.setColorAt(0.0, src_color)
+        gradient.setColorAt(1.0, dst_color)
+        return QtGui.QBrush(gradient)
+
+    def _edge_pen(
+        self,
+        edge: dict[str, Any],
+        src: dict[str, Any],
+        dst: dict[str, Any],
+        start: QtCore.QPointF,
+        end: QtCore.QPointF,
+        *,
+        glow: bool = False,
+    ) -> QtGui.QPen:
+        width = self._edge_width(edge, glow=glow)
+        alpha = self._edge_alpha(edge, glow=glow)
+        brush = self._edge_brush(src, dst, start, end, alpha=alpha)
+        try:
+            pen = QtGui.QPen(brush, width)
+        except Exception:
+            color = self._point_edge_color(src)
+            color.setAlpha(alpha)
+            pen = QtGui.QPen(color, width)
+        try:
+            pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        except Exception:
+            try:
+                pen.setCapStyle(QtCore.Qt.RoundCap)
+            except Exception:
+                pass
+        return pen
+
+    def _metadata_question_edges(self, nodes: dict[str, dict[str, Any]]):
+        for entry in nodes.values():
+            if not isinstance(entry, dict) or not _is_question_point(entry):
+                continue
+            question_id = str(entry.get("id", "") or "").strip()
+            if not question_id:
+                continue
+            label = _question_reference_edge_label(entry)
+            for source_id in _question_source_point_ids(entry):
+                source_id = str(source_id or "").strip()
+                if not source_id or source_id == question_id or source_id not in nodes:
+                    continue
+                yield {"source": question_id, "target": source_id, "label": label}
+
+    def question_reference_edge_counts(self) -> dict[str, int]:
+        nodes = {str(entry.get("id", "") or ""): entry for entry in self._graph.get("nodes", []) or []}
+        counts = {"needs_stronger_answer": 0, "refines_answer": 0}
+        seen: set[tuple[str, str, str]] = set()
+        edges = list(self._graph.get("edges", []) or [])
+        edges.extend(self._metadata_question_edges(nodes))
+        for edge in edges:
+            label = _edge_label(edge)
+            if label not in counts:
+                continue
+            source = str(edge.get("source", "") or "")
+            target = str(edge.get("target", "") or "")
+            if not source or not target or source not in nodes or target not in nodes:
+                continue
+            key = (source, target, label)
+            if key in seen:
+                continue
+            seen.add(key)
+            counts[label] += 1
+        return counts
+
+    def _draw_edge_line(
+        self,
+        painter: QtGui.QPainter,
+        nodes: dict[str, dict[str, Any]],
+        edge: dict[str, Any],
+    ) -> bool:
+        if not self._should_draw_edge(edge):
+            return False
+        src = nodes.get(edge.get("source"))
+        dst = nodes.get(edge.get("target"))
+        if not src or not dst:
+            return False
+        a = self._to_screen(src.get("x", 0.5), src.get("y", 0.5))
+        b = self._to_screen(dst.get("x", 0.5), dst.get("y", 0.5))
+        painter.setPen(self._edge_pen(edge, src, dst, a, b, glow=True))
+        painter.drawLine(a, b)
+        painter.setPen(self._edge_pen(edge, src, dst, a, b))
+        painter.drawLine(a, b)
+        return True
+
     def set_graph(self, graph: dict[str, Any]) -> None:
         self._graph = _coerce_graph(graph)
-        ids = {entry.get("id") for entry in self._graph.get("nodes", [])}
+        ids = {str(entry.get("id", "") or "").strip() for entry in self._graph.get("nodes", [])}
+        if self._review_highlight_point_ids:
+            self._review_highlight_point_ids = {point_id for point_id in self._review_highlight_point_ids if point_id in ids}
         if self._selected_id not in ids:
             self._selected_id = ""
             self._dragging = False
@@ -2135,7 +3094,9 @@ class DataNexusCanvas(QtWidgets.QWidget):
 
     def replace_graph(self, graph: dict[str, Any]) -> None:
         self._graph = _coerce_graph(graph)
-        ids = {entry.get("id") for entry in self._graph.get("nodes", [])}
+        ids = {str(entry.get("id", "") or "").strip() for entry in self._graph.get("nodes", [])}
+        if self._review_highlight_point_ids:
+            self._review_highlight_point_ids = {point_id for point_id in self._review_highlight_point_ids if point_id in ids}
         if self._selected_id not in ids:
             self._selected_id = ""
             self._dragging = False
@@ -2267,12 +3228,20 @@ class DataNexusCanvas(QtWidgets.QWidget):
     def _hit_node(self, point: QtCore.QPointF) -> str:
         best = ""
         best_dist = 999999.0
-        hit_radius = max(9.0, self._point_radius(selected=False) + 7.0)
         for entry in self._graph.get("nodes", []) or []:
             center = self._to_screen(entry.get("x", 0.5), entry.get("y", 0.5))
             dx = center.x() - point.x()
             dy = center.y() - point.y()
             dist = math.sqrt(dx * dx + dy * dy)
+            hit_radius = max(
+                9.0,
+                self._point_radius(
+                    selected=False,
+                    is_question=_is_question_point(entry),
+                    is_slide=_is_slide_point(entry),
+                )
+                + 7.0,
+            )
             if dist < best_dist and dist <= hit_radius:
                 best = str(entry.get("id", "") or "")
                 best_dist = dist
@@ -2313,14 +3282,15 @@ class DataNexusCanvas(QtWidgets.QWidget):
         return DataNexusCanvas._clamp_world_coord(value)
 
     def _apply_link_elasticity(self, anchor_id: str = "", *, passes: int = 4, strength: float = 0.55) -> None:
+        if not self._link_pull_enabled:
+            return
         nodes = [entry for entry in self._graph.get("nodes", []) or [] if isinstance(entry, dict)]
         edges = [edge for edge in self._graph.get("edges", []) or [] if isinstance(edge, dict)]
         if len(nodes) < 2 or not edges:
             return
         by_id = {str(entry.get("id", "") or ""): entry for entry in nodes}
         anchor = str(anchor_id or "")
-        min_dist = DATA_NEXUS_LINK_MIN_GRID_DISTANCE
-        max_dist = max(min_dist + 0.01, DATA_NEXUS_LINK_MAX_GRID_DISTANCE)
+        max_dist = _coerce_link_max_stretch(self._link_max_stretch)
         stiffness = max(0.05, min(1.0, float(strength)))
         changed = False
 
@@ -2346,17 +3316,10 @@ class DataNexusCanvas(QtWidgets.QWidget):
                     dy = math.sin(angle) * 0.0001
                     dist = 0.0001
 
-                if dist > max_dist:
-                    correction = (dist - max_dist) * stiffness
-                    direction_a = 1.0
-                    direction_b = -1.0
-                elif dist < min_dist:
-                    correction = (min_dist - dist) * stiffness
-                    direction_a = -1.0
-                    direction_b = 1.0
-                else:
+                if dist <= max_dist:
                     continue
 
+                correction = (dist - max_dist) * stiffness
                 nx = dx / dist
                 ny = dy / dist
                 move_a = 0.5
@@ -2369,15 +3332,15 @@ class DataNexusCanvas(QtWidgets.QWidget):
                     move_b = 0.0
 
                 if move_a:
-                    next_ax = self._clamp_world_coord(ax + nx * correction * move_a * direction_a)
-                    next_ay = self._clamp_world_coord(ay + ny * correction * move_a * direction_a)
+                    next_ax = self._clamp_world_coord(ax + nx * correction * move_a)
+                    next_ay = self._clamp_world_coord(ay + ny * correction * move_a)
                     if abs(next_ax - ax) > 0.0001 or abs(next_ay - ay) > 0.0001:
                         a["x"] = next_ax
                         a["y"] = next_ay
                         changed = True
                 if move_b:
-                    next_bx = self._clamp_world_coord(bx + nx * correction * move_b * direction_b)
-                    next_by = self._clamp_world_coord(by + ny * correction * move_b * direction_b)
+                    next_bx = self._clamp_world_coord(bx - nx * correction * move_b)
+                    next_by = self._clamp_world_coord(by - ny * correction * move_b)
                     if abs(next_bx - bx) > 0.0001 or abs(next_by - by) > 0.0001:
                         b["x"] = next_bx
                         b["y"] = next_by
@@ -2444,9 +3407,72 @@ class DataNexusCanvas(QtWidgets.QWidget):
         if changed:
             self._graph["nodes"] = nodes
 
-    def _point_radius(self, *, selected: bool) -> float:
-        base = 8.5 if selected else 7.5
+    def _point_radius(self, *, selected: bool, is_question: bool = False, is_slide: bool = False) -> float:
+        if is_question:
+            base = 7.2 if selected else 5.6
+        elif is_slide:
+            base = 15.8 if selected else 13.8
+        else:
+            base = 12.4 if selected else 10.8
         return max(1.6, min(32.0, base * max(DATA_NEXUS_MIN_ZOOM, min(DATA_NEXUS_MAX_ZOOM, float(self._zoom or 1.0)))))
+
+    def _point_glow_radius(
+        self,
+        radius: float,
+        *,
+        selected: bool,
+        hovered: bool,
+        is_question: bool = False,
+        is_slide: bool = False,
+    ) -> float:
+        if is_question:
+            multiplier = 2.35 if selected or hovered else 1.9
+        elif is_slide:
+            multiplier = 3.0 if selected or hovered else 2.55
+        else:
+            multiplier = 2.65 if selected or hovered else 2.18
+        return max(radius + 3.0, radius * multiplier)
+
+    def _draw_review_highlight_ring(
+        self,
+        painter: QtGui.QPainter,
+        center: QtCore.QPointF,
+        radius: float,
+        *,
+        selected: bool = False,
+        hovered: bool = False,
+    ) -> None:
+        ring_radius = radius + self._content_pen_width(6.0)
+        glow_radius = ring_radius + self._content_pen_width(9.0)
+        glow = QtGui.QRadialGradient(center, glow_radius)
+        clear = QtGui.QColor("#ffffff")
+        clear.setAlpha(0)
+        soft = QtGui.QColor("#ffffff")
+        soft.setAlpha(116 if selected or hovered else 86)
+        bright = QtGui.QColor("#ffffff")
+        bright.setAlpha(170 if selected or hovered else 132)
+        inner_stop = max(0.0, min(0.95, (ring_radius - self._content_pen_width(3.0)) / max(1.0, glow_radius)))
+        ring_stop = max(inner_stop, min(0.98, ring_radius / max(1.0, glow_radius)))
+        glow.setColorAt(0.0, clear)
+        glow.setColorAt(inner_stop, clear)
+        glow.setColorAt(ring_stop, soft)
+        glow.setColorAt(1.0, clear)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QBrush(glow))
+        painter.drawEllipse(center, glow_radius, glow_radius)
+
+        painter.setBrush(QtCore.Qt.NoBrush)
+        pen = QtGui.QPen(bright, self._content_pen_width(2.2))
+        pen.setCosmetic(False)
+        try:
+            pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        except Exception:
+            try:
+                pen.setCapStyle(QtCore.Qt.RoundCap)
+            except Exception:
+                pass
+        painter.setPen(pen)
+        painter.drawEllipse(center, ring_radius, ring_radius)
 
     def _content_pen_width(self, base: float) -> float:
         return max(0.35, min(6.0, float(base) * max(DATA_NEXUS_MIN_ZOOM, min(DATA_NEXUS_MAX_ZOOM, float(self._zoom or 1.0)))))
@@ -2486,22 +3512,33 @@ class DataNexusCanvas(QtWidgets.QWidget):
         count_x = int(round((end_x - start_x) / step)) + 1
         count_y = int(round((end_y - start_y) / step)) + 1
 
+        def grid_pen(*, axis: bool, major: bool) -> QtGui.QPen:
+            if axis:
+                color = QtGui.QColor("#2a3444")
+                color.setAlpha(118)
+                width = 1.05
+            elif major:
+                color = QtGui.QColor("#202b39")
+                color.setAlpha(92)
+                width = 0.72
+            else:
+                color = QtGui.QColor("#182231")
+                color.setAlpha(66)
+                width = 0.48
+            return QtGui.QPen(color, width)
+
         for idx in range(max(0, min(count_x, 500))):
             value = start_x + (idx * step)
             major = abs(value - round(value)) < 0.001
             axis = abs(value) < 0.001
-            color = QtGui.QColor("#3b475c" if axis else ("#263244" if major else "#1a2432"))
-            width = 1.5 if axis else (1.05 if major else 0.7)
-            painter.setPen(QtGui.QPen(color, width))
+            painter.setPen(grid_pen(axis=axis, major=major))
             painter.drawLine(self._to_screen(value, top), self._to_screen(value, bottom))
 
         for idx in range(max(0, min(count_y, 500))):
             value = start_y + (idx * step)
             major = abs(value - round(value)) < 0.001
             axis = abs(value) < 0.001
-            color = QtGui.QColor("#3b475c" if axis else ("#263244" if major else "#1a2432"))
-            width = 1.5 if axis else (1.05 if major else 0.7)
-            painter.setPen(QtGui.QPen(color, width))
+            painter.setPen(grid_pen(axis=axis, major=major))
             painter.drawLine(self._to_screen(left, value), self._to_screen(right, value))
 
     @staticmethod
@@ -2576,15 +3613,25 @@ class DataNexusCanvas(QtWidgets.QWidget):
         painter.setClipRect(plot.adjusted(1.0, 1.0, -1.0, -1.0))
         self._draw_world_grid(painter, plot)
         nodes = {entry.get("id"): entry for entry in self._graph.get("nodes", []) or []}
+        drawn_question_refs: set[tuple[str, str, str]] = set()
         for edge in self._graph.get("edges", []) or []:
-            src = nodes.get(edge.get("source"))
-            dst = nodes.get(edge.get("target"))
-            if not src or not dst:
+            if self._draw_edge_line(painter, nodes, edge) and _is_question_reference_edge(edge):
+                drawn_question_refs.add(
+                    (
+                        str(edge.get("source", "") or ""),
+                        str(edge.get("target", "") or ""),
+                        _edge_label(edge),
+                    )
+                )
+        for edge in self._metadata_question_edges(nodes):
+            key = (
+                str(edge.get("source", "") or ""),
+                str(edge.get("target", "") or ""),
+                _edge_label(edge),
+            )
+            if key in drawn_question_refs:
                 continue
-            a = self._to_screen(src.get("x", 0.5), src.get("y", 0.5))
-            b = self._to_screen(dst.get("x", 0.5), dst.get("y", 0.5))
-            painter.setPen(QtGui.QPen(QtGui.QColor("#3b82f6"), self._content_pen_width(1.8)))
-            painter.drawLine(a, b)
+            self._draw_edge_line(painter, nodes, edge)
 
         draw_labels = self._should_draw_point_labels()
         if draw_labels:
@@ -2594,27 +3641,48 @@ class DataNexusCanvas(QtWidgets.QWidget):
             except Exception:
                 font.setPointSize(max(6, int(round(self._label_font_size(max(7, font.pointSize()))))))
             painter.setFont(font)
+        review_highlight_ids = self._active_review_highlight_ids()
         for entry in self._graph.get("nodes", []) or []:
             point_id = str(entry.get("id", "") or "")
             center = self._to_screen(entry.get("x", 0.5), entry.get("y", 0.5))
             selected = point_id == self._selected_id
             hovered = point_id == self._hover_id
             is_question = _is_question_point(entry)
-            radius = self._point_radius(selected=selected)
-            glow_radius = radius * (2.8 if selected or hovered else 2.25)
+            is_slide = _is_slide_point(entry)
+            radius = self._point_radius(selected=selected, is_question=is_question, is_slide=is_slide)
+            glow_radius = self._point_glow_radius(
+                radius,
+                selected=selected,
+                hovered=hovered,
+                is_question=is_question,
+                is_slide=is_slide,
+            )
             glow = QtGui.QRadialGradient(center, glow_radius)
             if is_question:
-                outer = QtGui.QColor("#f59e0b" if selected or hovered else "#facc15")
-                mid = QtGui.QColor("#fbbf24" if selected or hovered else "#eab308")
-                inner = QtGui.QColor("#fef3c7" if selected or hovered else "#fde68a")
+                is_refine_question = _question_reference_edge_label(entry) == "refines_answer"
+                if is_refine_question:
+                    outer = QtGui.QColor("#fde047" if selected or hovered else "#facc15")
+                    mid = QtGui.QColor("#fef08a" if selected or hovered else "#eab308")
+                    inner = QtGui.QColor("#fef9c3" if selected or hovered else "#fde68a")
+                    label_color = QtGui.QColor("#fef3c7" if selected else "#facc15")
+                else:
+                    outer = QtGui.QColor("#fb923c" if selected or hovered else "#f97316")
+                    mid = QtGui.QColor("#fdba74" if selected or hovered else "#ea580c")
+                    inner = QtGui.QColor("#ffedd5" if selected or hovered else "#fed7aa")
+                    label_color = QtGui.QColor("#ffedd5" if selected else "#fb923c")
                 core = QtGui.QColor("#fff7ed")
-                label_color = QtGui.QColor("#fef3c7" if selected else "#facc15")
+            elif is_slide:
+                outer = QtGui.QColor("#7cff00" if selected or hovered else "#39ff14")
+                mid = QtGui.QColor("#a3ff12" if selected or hovered else "#65ff32")
+                inner = QtGui.QColor("#dcff8f" if selected or hovered else "#baff6b")
+                core = QtGui.QColor("#f7ffe8")
+                label_color = QtGui.QColor("#dcff8f" if selected else "#39ff14")
             else:
-                outer = QtGui.QColor("#67e8f9" if selected or hovered else "#60a5fa")
-                mid = QtGui.QColor("#67e8f9" if selected or hovered else "#93c5fd")
-                inner = QtGui.QColor("#cffafe" if selected or hovered else "#dbeafe")
-                core = QtGui.QColor("#ffffff")
-                label_color = QtGui.QColor("#dbeafe" if selected else "#cbd5e1")
+                outer = QtGui.QColor("#2dd4bf" if selected or hovered else "#0891b2")
+                mid = QtGui.QColor("#5eead4" if selected or hovered else "#14b8a6")
+                inner = QtGui.QColor("#ccfbf1" if selected or hovered else "#a7f3d0")
+                core = QtGui.QColor("#ecfeff" if selected or hovered else "#d1fae5")
+                label_color = QtGui.QColor("#ccfbf1" if selected else "#99f6e4")
             outer.setAlpha(0)
             mid.setAlpha(112 if selected or hovered else 76)
             glow.setColorAt(0.0, QtGui.QColor("#ffffff"))
@@ -2629,6 +3697,14 @@ class DataNexusCanvas(QtWidgets.QWidget):
             painter.setBrush(core)
             core_radius = max(1.2, radius * 0.34)
             painter.drawEllipse(center, core_radius, core_radius)
+            if point_id in review_highlight_ids:
+                self._draw_review_highlight_ring(
+                    painter,
+                    center,
+                    radius,
+                    selected=selected,
+                    hovered=hovered,
+                )
             if not draw_labels and not hovered:
                 continue
             label = str(entry.get("label", "") or point_id).strip()
@@ -2705,7 +3781,7 @@ class DataNexusCanvas(QtWidgets.QWidget):
                 node["x"] = x
                 node["y"] = y
                 self._apply_repulsion(self._selected_id, passes=1, strength=0.55)
-                self._apply_link_elasticity(self._selected_id, passes=10, strength=0.85)
+                self._apply_link_elasticity(self._selected_id, passes=4, strength=0.35)
                 self._drag_moved = True
                 self.graphChanged.emit()
                 self.update()
@@ -2735,7 +3811,7 @@ class DataNexusCanvas(QtWidgets.QWidget):
             self._dragging = False
             if self._drag_moved:
                 self._apply_repulsion(self._selected_id, passes=2, strength=0.45)
-                self._apply_link_elasticity(self._selected_id, passes=16, strength=0.75)
+                self._apply_link_elasticity(self._selected_id, passes=4, strength=0.25)
                 self.graphChanged.emit()
                 self.update()
             self._drag_moved = False
@@ -2933,7 +4009,12 @@ class DataNexusWidget(QtWidgets.QWidget):
             "QTreeWidget::item:hover{background:#1f2937;}"
             "QToolButton,QPushButton{background:#1f2937;color:#e5e7eb;border:1px solid #334155;border-radius:4px;padding:4px 8px;}"
             "QToolButton:hover,QPushButton:hover{background:#273548;}"
+            "QCheckBox{color:#cbd5e1;spacing:4px;}"
+            "QCheckBox:disabled{color:#64748b;}"
             "QLabel{color:#cbd5e1;}"
+            "QSplitter::handle{background:#1f2937;border:1px solid #334155;border-radius:2px;}"
+            "QSplitter::handle:horizontal{width:7px;margin:0 1px;}"
+            "QSplitter::handle:hover{background:#475569;}"
         )
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -2946,8 +4027,9 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._add_btn = self._make_tool_button("Add point", "SP_FileDialogNewFolder")
         self._add_folder_btn = self._make_tool_button("Create folder", "SP_DirIcon")
         self._link_btn = self._make_tool_button("Link selected point", "SP_ArrowRight")
-        self._delete_btn = self._make_tool_button("Delete selected point", "SP_TrashIcon")
+        self._delete_btn = self._make_tool_button("Delete selected point (asks first)", "SP_TrashIcon")
         self._layout_btn = self._make_tool_button("Arrange linked points", "SP_BrowserReload")
+        self._cluster_btn = self._make_tool_button("Cluster questions, slides, and regular points apart", "SP_FileDialogDetailedView")
         self._zoom_out_btn = self._make_text_tool_button("-", "Zoom out")
         self._zoom_reset_btn = self._make_text_tool_button("1:1", "Reset zoom")
         self._zoom_in_btn = self._make_text_tool_button("+", "Zoom in")
@@ -2956,12 +4038,39 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._merge_vault_btn = self._make_tool_button("Merge another Data Nexus vault into this one", "SP_FileDialogNewFolder")
         self._reload_btn = self._make_tool_button("Reload graph from vault files", "SP_DialogResetButton")
         self._open_btn = self._make_tool_button("Open Data Nexus folder", "SP_DirOpenIcon")
+        self._show_needs_edges = QtWidgets.QCheckBox("Needs?")
+        self._show_needs_edges.setToolTip("Show source-point lines for questions that need stronger answers")
+        self._show_refines_edges = QtWidgets.QCheckBox("Refine?")
+        self._show_refines_edges.setToolTip("Show source-point lines for refinement questions")
+        self._link_pull_toggle = QtWidgets.QCheckBox("Pull")
+        self._link_pull_toggle.setToolTip("Pull connected points only after a link stretches past the max length")
+        try:
+            slider_orientation = QtCore.Qt.Orientation.Horizontal
+        except Exception:
+            slider_orientation = QtCore.Qt.Horizontal
+        self._link_stretch_slider = QtWidgets.QSlider(slider_orientation)
+        self._link_stretch_slider.setRange(
+            int(round(DATA_NEXUS_LINK_STRETCH_MIN * 100.0)),
+            int(round(DATA_NEXUS_LINK_STRETCH_MAX * 100.0)),
+        )
+        self._link_stretch_slider.setSingleStep(5)
+        self._link_stretch_slider.setPageStep(25)
+        self._link_stretch_slider.setFixedWidth(96)
+        self._link_stretch_slider.setToolTip("Max link stretch before pull starts")
+        self._link_stretch_value = QtWidgets.QLabel("")
+        self._link_stretch_value.setFixedWidth(34)
+        self._link_stretch_value.setToolTip("Max link stretch before pull starts")
+        try:
+            self._link_stretch_value.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        except Exception:
+            self._link_stretch_value.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         for btn in (
             self._add_btn,
             self._add_folder_btn,
             self._link_btn,
             self._delete_btn,
             self._layout_btn,
+            self._cluster_btn,
             self._zoom_out_btn,
             self._zoom_reset_btn,
             self._zoom_in_btn,
@@ -2972,15 +4081,26 @@ class DataNexusWidget(QtWidgets.QWidget):
             self._open_btn,
         ):
             toolbar.addWidget(btn, 0)
+        toolbar.addWidget(self._show_needs_edges, 0)
+        toolbar.addWidget(self._show_refines_edges, 0)
+        toolbar.addWidget(self._link_pull_toggle, 0)
+        toolbar.addWidget(self._link_stretch_slider, 0)
+        toolbar.addWidget(self._link_stretch_value, 0)
         toolbar.addStretch(1)
         layout.addLayout(toolbar)
 
-        body_row = QtWidgets.QHBoxLayout()
-        body_row.setContentsMargins(0, 0, 0, 0)
-        body_row.setSpacing(8)
+        model = getattr(node_item, "model", None)
+        try:
+            splitter_orientation = QtCore.Qt.Orientation.Horizontal
+        except Exception:
+            splitter_orientation = QtCore.Qt.Horizontal
+        self._body_splitter = QtWidgets.QSplitter(splitter_orientation)
+        self._body_splitter.setHandleWidth(7)
+        self._body_splitter.setChildrenCollapsible(False)
 
         point_panel = QtWidgets.QWidget()
-        point_panel.setFixedWidth(190)
+        point_panel.setMinimumWidth(150)
+        point_panel.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         point_panel_layout = QtWidgets.QVBoxLayout(point_panel)
         point_panel_layout.setContentsMargins(0, 0, 0, 0)
         point_panel_layout.setSpacing(5)
@@ -3000,14 +4120,15 @@ class DataNexusWidget(QtWidgets.QWidget):
         point_panel_layout.addLayout(point_header)
         point_panel_layout.addWidget(self._point_filter)
         point_panel_layout.addWidget(self._point_list, 1)
-        body_row.addWidget(point_panel, 0)
+        self._body_splitter.addWidget(point_panel)
 
         self._canvas = DataNexusCanvas()
-        body_row.addWidget(self._canvas, 1)
+        self._canvas.setMinimumWidth(260)
+        self._body_splitter.addWidget(self._canvas)
 
         inspector = QtWidgets.QWidget()
-        inspector.setFixedWidth(180)
-        inspector.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
+        inspector.setMinimumWidth(180)
+        inspector.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         inspector_layout = QtWidgets.QVBoxLayout(inspector)
         inspector_layout.setContentsMargins(0, 0, 0, 0)
         inspector_layout.setSpacing(5)
@@ -3024,18 +4145,44 @@ class DataNexusWidget(QtWidgets.QWidget):
         inspector_layout.addWidget(self._label_edit)
         inspector_layout.addWidget(self._status)
         inspector_layout.addWidget(self._note_edit, 1)
-        body_row.addWidget(inspector, 0)
-        layout.addLayout(body_row, 1)
+        self._body_splitter.addWidget(inspector)
+        self._body_splitter.setStretchFactor(0, 0)
+        self._body_splitter.setStretchFactor(1, 1)
+        self._body_splitter.setStretchFactor(2, 0)
+        saved_splitter_sizes = _splitter_sizes_from_model(model)
+        self._body_splitter.setSizes(saved_splitter_sizes or [210, 410, 240])
+        layout.addWidget(self._body_splitter, 1)
 
         self._canvas.set_graph(_load_graph_for_node(node_item))
+        self._show_needs_edges.setChecked(
+            _param_bool_from_model(model, DATA_NEXUS_SHOW_NEEDS_STRONGER_EDGES_PARAM, False)
+        )
+        self._show_refines_edges.setChecked(
+            _param_bool_from_model(model, DATA_NEXUS_SHOW_REFINES_EDGES_PARAM, False)
+        )
+        link_pull_enabled = _param_bool_from_model(model, DATA_NEXUS_LINK_PULL_ENABLED_PARAM, False)
+        link_max_stretch = _param_link_max_stretch_from_model(model)
+        self._link_pull_toggle.setChecked(link_pull_enabled)
+        self._link_stretch_slider.setValue(int(round(link_max_stretch * 100.0)))
+        self._set_link_stretch_label(link_max_stretch)
+        self._canvas.set_question_edge_visibility(
+            needs_stronger=self._show_needs_edges.isChecked(),
+            refines=self._show_refines_edges.isChecked(),
+        )
+        self._refresh_question_edge_controls()
+        self._canvas.set_link_pull_settings(
+            enabled=self._link_pull_toggle.isChecked(),
+            max_stretch=link_max_stretch,
+        )
         saved_zoom = _coerce_zoom(
-            _param_value_from_model(getattr(node_item, "model", None), DATA_NEXUS_VIEW_ZOOM_PARAM, "1.0")
+            _param_value_from_model(model, DATA_NEXUS_VIEW_ZOOM_PARAM, "1.0")
         )
         self._canvas.set_zoom(saved_zoom)
         self._canvas.graphChanged.connect(self._on_graph_changed)
         self._canvas.selectionChanged.connect(self._on_selection_changed)
         self._canvas.linkTargetChosen.connect(self._on_link_target_chosen)
         self._canvas.zoomChanged.connect(self._on_zoom_changed)
+        self._body_splitter.splitterMoved.connect(self._on_body_splitter_moved)
         self._point_filter.textChanged.connect(self._on_point_filter_changed)
         self._point_list.currentItemChanged.connect(self._on_point_list_current_item_changed)
         self._point_list.folderDropRequested.connect(self._move_point_to_folder)
@@ -3046,6 +4193,7 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._link_btn.clicked.connect(self._begin_link)
         self._delete_btn.clicked.connect(self._delete_selected)
         self._layout_btn.clicked.connect(self._arrange_points)
+        self._cluster_btn.clicked.connect(self._cluster_points)
         self._zoom_out_btn.clicked.connect(self._zoom_out)
         self._zoom_reset_btn.clicked.connect(self._zoom_reset)
         self._zoom_in_btn.clicked.connect(self._zoom_in)
@@ -3054,6 +4202,10 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._merge_vault_btn.clicked.connect(self._merge_vault_folder)
         self._reload_btn.clicked.connect(self._reload_from_vault)
         self._open_btn.clicked.connect(self._open_folder)
+        self._show_needs_edges.toggled.connect(self._on_question_edge_visibility_changed)
+        self._show_refines_edges.toggled.connect(self._on_question_edge_visibility_changed)
+        self._link_pull_toggle.toggled.connect(self._on_link_pull_settings_changed)
+        self._link_stretch_slider.valueChanged.connect(self._on_link_pull_settings_changed)
         self._sync_storage(write_sidecar=True)
         self._refresh_point_list()
         self._on_selection_changed(self._canvas.selected_id())
@@ -3244,7 +4396,12 @@ class DataNexusWidget(QtWidgets.QWidget):
                     pass
                 if _is_question_point(entry):
                     try:
-                        item.setForeground(0, QtGui.QBrush(QtGui.QColor("#facc15")))
+                        item.setForeground(0, QtGui.QBrush(QtGui.QColor(_question_display_color(entry))))
+                    except Exception:
+                        pass
+                elif _is_slide_point(entry):
+                    try:
+                        item.setForeground(0, QtGui.QBrush(QtGui.QColor("#39ff14")))
                     except Exception:
                         pass
                 try:
@@ -3265,6 +4422,7 @@ class DataNexusWidget(QtWidgets.QWidget):
             self._point_count.setText(count_text)
         finally:
             self._syncing_point_list = False
+        self._refresh_question_edge_controls()
 
     def _sync_point_list_selection(self, point_id: str) -> None:
         role = self._item_user_role()
@@ -3310,6 +4468,42 @@ class DataNexusWidget(QtWidgets.QWidget):
     def _set_status(self, text: str) -> None:
         self._status.setText(text or "")
 
+    def _refresh_question_edge_controls(self) -> None:
+        counts = self._canvas.question_reference_edge_counts()
+        needs_count = int(counts.get("needs_stronger_answer", 0) or 0)
+        refines_count = int(counts.get("refines_answer", 0) or 0)
+        model = getattr(self._node_item, "model", None)
+        wants_needs = _param_bool_from_model(model, DATA_NEXUS_SHOW_NEEDS_STRONGER_EDGES_PARAM, False)
+        wants_refines = _param_bool_from_model(model, DATA_NEXUS_SHOW_REFINES_EDGES_PARAM, False)
+        show_needs = wants_needs and needs_count > 0
+        show_refines = wants_refines and refines_count > 0
+
+        self._show_needs_edges.blockSignals(True)
+        self._show_refines_edges.blockSignals(True)
+        try:
+            self._show_needs_edges.setEnabled(needs_count > 0)
+            self._show_refines_edges.setEnabled(refines_count > 0)
+            self._show_needs_edges.setChecked(show_needs)
+            self._show_refines_edges.setChecked(show_refines)
+        finally:
+            self._show_needs_edges.blockSignals(False)
+            self._show_refines_edges.blockSignals(False)
+
+        if needs_count > 0:
+            self._show_needs_edges.setToolTip(
+                f"Show/hide {needs_count} source-point line(s) for questions that need stronger answers"
+            )
+        else:
+            self._show_needs_edges.setToolTip("No source-point lines for needs-answer questions exist in this graph")
+        if refines_count > 0:
+            self._show_refines_edges.setToolTip(
+                f"Show/hide {refines_count} source-point line(s) for refinement questions"
+            )
+        else:
+            self._show_refines_edges.setToolTip("No source-point lines for refinement questions exist in this graph")
+
+        self._canvas.set_question_edge_visibility(needs_stronger=show_needs, refines=show_refines)
+
     def _sync_storage(self, *, write_sidecar: bool = False) -> None:
         ok = _sync_model_from_graph(self._node_item, self._canvas.graph(), write_sidecar=write_sidecar)
         model = getattr(self._node_item, "model", None)
@@ -3332,11 +4526,20 @@ class DataNexusWidget(QtWidgets.QWidget):
             else:
                 self._set_status("Could not write nexus sidecar.")
 
-    def _apply_external_graph(self, graph: dict[str, Any], status: str = "") -> None:
+    def _apply_external_graph(
+        self,
+        graph: dict[str, Any],
+        status: str = "",
+        *,
+        highlight_point_ids: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> None:
         self._link_source_id = ""
         self._canvas.set_link_target_mode(False)
         self._canvas.set_graph(graph)
+        if highlight_point_ids is not None:
+            self._canvas.set_review_highlight_points(highlight_point_ids)
         self._refresh_point_list()
+        self._refresh_question_edge_controls()
         self._sync_storage(write_sidecar=True)
         self._set_status(status or "Updated by Mediator.")
 
@@ -3390,6 +4593,55 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._zoom_out_btn.setEnabled(zoom_value > DATA_NEXUS_MIN_ZOOM + 0.001)
         self._zoom_in_btn.setEnabled(zoom_value < DATA_NEXUS_MAX_ZOOM - 0.001)
         self._set_status(f"Zoom {int(round(zoom_value * 100.0))}%")
+
+    def _on_body_splitter_moved(self, _pos: int, _index: int) -> None:
+        try:
+            sizes = [int(size) for size in self._body_splitter.sizes()]
+        except Exception:
+            sizes = []
+        if len(sizes) != 3 or sum(sizes) <= 0:
+            return
+        model = getattr(self._node_item, "model", None)
+        _set_param_value_on_model(model, DATA_NEXUS_SPLITTER_SIZES_PARAM, ",".join(str(max(1, size)) for size in sizes))
+        _ensure_hidden_params(self._node_item)
+        _emit_node_params_changed(self._node_item)
+
+    def _on_question_edge_visibility_changed(self, _checked: bool = False) -> None:
+        show_needs = bool(self._show_needs_edges.isChecked())
+        show_refines = bool(self._show_refines_edges.isChecked())
+        model = getattr(self._node_item, "model", None)
+        _set_param_value_on_model(model, DATA_NEXUS_SHOW_NEEDS_STRONGER_EDGES_PARAM, "1" if show_needs else "0")
+        _set_param_value_on_model(model, DATA_NEXUS_SHOW_REFINES_EDGES_PARAM, "1" if show_refines else "0")
+        _ensure_hidden_params(self._node_item)
+        self._canvas.set_question_edge_visibility(needs_stronger=show_needs, refines=show_refines)
+        _emit_node_params_changed(self._node_item)
+        states = []
+        states.append("needs on" if show_needs else "needs off")
+        states.append("refine on" if show_refines else "refine off")
+        self._set_status(", ".join(states) + ".")
+
+    def _link_stretch_from_slider(self) -> float:
+        try:
+            raw = float(self._link_stretch_slider.value()) / 100.0
+        except Exception:
+            raw = DATA_NEXUS_LINK_STRETCH_DEFAULT
+        return _coerce_link_max_stretch(raw)
+
+    def _set_link_stretch_label(self, value: float) -> None:
+        self._link_stretch_value.setText(f"{_coerce_link_max_stretch(value):.2f}")
+
+    def _on_link_pull_settings_changed(self, _value: Any = None) -> None:
+        enabled = bool(self._link_pull_toggle.isChecked())
+        max_stretch = self._link_stretch_from_slider()
+        self._set_link_stretch_label(max_stretch)
+        model = getattr(self._node_item, "model", None)
+        _set_param_value_on_model(model, DATA_NEXUS_LINK_PULL_ENABLED_PARAM, "1" if enabled else "0")
+        _set_param_value_on_model(model, DATA_NEXUS_LINK_MAX_STRETCH_PARAM, f"{max_stretch:.2f}")
+        _ensure_hidden_params(self._node_item)
+        self._canvas.set_link_pull_settings(enabled=enabled, max_stretch=max_stretch)
+        _emit_node_params_changed(self._node_item)
+        state = "on" if enabled else "off"
+        self._set_status(f"Link pull {state}, max stretch {max_stretch:.2f}.")
 
     def _zoom_in(self) -> None:
         self._canvas.zoom_by(1.18)
@@ -3527,6 +4779,7 @@ class DataNexusWidget(QtWidgets.QWidget):
             folders.add(folder)
             graph["folders"] = sorted(folders, key=lambda item: item.lower())
         self._canvas.set_graph(graph)
+        self._canvas.set_review_highlight_points([point_id])
         self._canvas.select_id(point_id)
         self._refresh_point_list()
         self._on_graph_changed()
@@ -3570,10 +4823,33 @@ class DataNexusWidget(QtWidgets.QWidget):
         if not selected:
             return
         deleted_node = self._selected_node()
+        label = _clean_inline_text(
+            (deleted_node or {}).get("label") or (deleted_node or {}).get("title") or selected,
+            limit=120,
+        )
+        graph = self._canvas.graph()
+        linked_count = sum(
+            1
+            for edge in graph.get("edges", []) or []
+            if edge.get("source") == selected or edge.get("target") == selected
+        )
+        detail = f"Point: {label}\nID: {selected}"
+        if linked_count:
+            detail += f"\n\nThis will also remove {linked_count} connected link(s)."
+        parent = _dialog_parent_for_node(self._node_item) or self.window() or self
+        confirm = QtWidgets.QMessageBox.question(
+            parent,
+            "Delete Data Nexus Point",
+            f"Delete this Data Nexus point?\n\n{detail}",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Cancel,
+        )
+        if confirm != QtWidgets.QMessageBox.Yes:
+            self._set_status("Delete canceled.")
+            return
         self._link_source_id = ""
         self._canvas.set_link_target_mode(False)
         _unlink_vault_note_for_entry(self._node_item, deleted_node)
-        graph = self._canvas.graph()
         graph["nodes"] = [entry for entry in graph.get("nodes", []) or [] if entry.get("id") != selected]
         graph["edges"] = [
             edge
@@ -3591,6 +4867,31 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._canvas.set_graph(graph)
         self._on_graph_changed()
         self._set_status("Arranged linked points.")
+
+    def _cluster_points(self) -> None:
+        self._link_source_id = ""
+        self._canvas.set_link_target_mode(False)
+        graph = _arrange_graph_question_clusters(self._canvas.graph())
+        self._canvas.set_graph(graph)
+        self._on_graph_changed()
+        nodes = graph.get("nodes", []) or []
+        question_count = sum(1 for entry in nodes if isinstance(entry, dict) and _is_question_point(entry))
+        slide_count = sum(
+            1
+            for entry in nodes
+            if isinstance(entry, dict) and not _is_question_point(entry) and _is_slide_point(entry)
+        )
+        other_count = sum(
+            1
+            for entry in nodes
+            if isinstance(entry, dict) and not _is_question_point(entry) and not _is_slide_point(entry)
+        )
+        if question_count or slide_count:
+            self._set_status(
+                f"Clustered {question_count} question point(s), {slide_count} slide point(s), and {other_count} regular point(s)."
+            )
+        else:
+            self._set_status("Clustered points by type.")
 
     def _save_now(self) -> None:
         self._sync_storage(write_sidecar=True)
@@ -3718,6 +5019,12 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, DATA_NEXUS_OUTPUT_PARAM, "Data Nexus output")
     _ensure_param(node_item, DATA_NEXUS_GRAPH_PARAM, _graph_to_json_text(_default_graph()))
     _ensure_param(node_item, DATA_NEXUS_VIEW_ZOOM_PARAM, "1.0000")
+    _ensure_param(node_item, DATA_NEXUS_SPLITTER_SIZES_PARAM, "")
+    _ensure_param(node_item, DATA_NEXUS_SHOW_NEEDS_STRONGER_EDGES_PARAM, "0")
+    _ensure_param(node_item, DATA_NEXUS_SHOW_REFINES_EDGES_PARAM, "0")
+    _ensure_param(node_item, DATA_NEXUS_ACTIVE_QUESTION_PARAM, "")
+    _ensure_param(node_item, DATA_NEXUS_LINK_PULL_ENABLED_PARAM, "0")
+    _ensure_param(node_item, DATA_NEXUS_LINK_MAX_STRETCH_PARAM, f"{DATA_NEXUS_LINK_STRETCH_DEFAULT:.2f}")
     _ensure_param(node_item, DATA_NEXUS_SIDECAR_PARAM, "")
     _ensure_param(node_item, DATA_NEXUS_VAULT_PARAM, "")
     _ensure_param(node_item, DATA_NEXUS_STORAGE_MODE_PARAM, "workflow")

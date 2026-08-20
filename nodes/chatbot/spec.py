@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import threading
@@ -23,6 +24,7 @@ CHATBOT_NODE_KINDS = {CHATBOT_NODE_KIND, *CHATBOT_NODE_ALIASES}
 VOICE_ACTOR_NODE_KINDS = {"voice_actor", "voice actor", "voiceactor"}
 VOICE_INPUT_PORT = "voice_input"
 MEDIATOR_INPUT_PORT = "mediator_input"
+CHATBOT_PROMPT_SESSION_TOKEN_PARAM = "__chatbot_prompt_session_token"
 
 DB_NAME = "my_database"
 COLLECTION = "EchoGragh"
@@ -95,6 +97,74 @@ def _param_value_from_node(node_item, name: str) -> str:
         if (p.get("name") or "").strip().lower() == key:
             return p.get("value") or ""
     return ""
+
+
+def _ensure_hidden_params(model, names) -> None:
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    hidden_key = "__ui_hidden_params"
+    hidden_entry = None
+    for entry in params:
+        if (entry.get("name") or "").strip().lower() == hidden_key:
+            hidden_entry = entry
+            break
+    if hidden_entry is None:
+        hidden_entry = {"name": hidden_key, "value": ""}
+        params.append(hidden_entry)
+    hidden = {
+        part.strip().lower()
+        for part in str(hidden_entry.get("value", "") or "").split(",")
+        if part.strip()
+    }
+    for name in names or []:
+        key = str(name or "").strip().lower()
+        if key:
+            hidden.add(key)
+    hidden_entry["value"] = ",".join(sorted(hidden))
+    model.params = params
+
+
+def _set_hidden_param_on_node(node_item, name: str, value: str) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    key = (name or "").strip().lower()
+    clean_value = str(value or "")
+    found = False
+    changed = False
+    for entry in params:
+        if (entry.get("name") or "").strip().lower() != key:
+            continue
+        found = True
+        if str(entry.get("value", "") or "") != clean_value:
+            entry["value"] = clean_value
+            changed = True
+        break
+    if not found:
+        params.append({"name": name, "value": clean_value})
+        changed = True
+    model.params = params
+    _ensure_hidden_params(model, [name])
+    if not changed:
+        return
+    scene = node_item.scene() if hasattr(node_item, "scene") else None
+    if scene is None:
+        return
+    try:
+        scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
+    except Exception:
+        pass
+
+
+def _new_prompt_session_token(prompt_text: str) -> str:
+    try:
+        stamp = str(int(QtCore.QDateTime.currentMSecsSinceEpoch()))
+    except Exception:
+        stamp = "0"
+    digest = hashlib.sha1(str(prompt_text or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return f"{stamp}-{digest}"
 
 
 def _text_from_input(scene, node_item, port_name: str) -> str:
@@ -227,8 +297,14 @@ _DATA_NEXUS_UPDATE_RE = re.compile(
     r"<data_nexus_update\b[^>]*>.*?</data_nexus_update>",
     re.IGNORECASE | re.DOTALL,
 )
+_DATA_NEXUS_CLAIMED_WRITE_RE = re.compile(
+    r"\b(?:i(?:'ve| have)?|we(?:'ve| have)?|sure[,!\s]*)\s*(?:added|created|saved|remembered|updated|made|tracked|deleted|removed)\b.{0,180}\b(?:data\s+nexus|nexus|point|points|note|memory|graph)\b"
+    r"|"
+    r"\b(?:added|created|saved|remembered|updated|tracked|deleted|removed)\b.{0,120}\b(?:to|in|from)\s+(?:the\s+)?(?:data\s+nexus|nexus|vault|graph)\b",
+    re.IGNORECASE | re.DOTALL,
+)
 _DATA_NEXUS_REQUEST_RE = re.compile(
-    r"\b(data\s*nexus|nexus|vault|graph|points?|notes?|memory|mediator[\s_-]+planner|judge)\b",
+    r"\b(data\s*nexus|nexus|vault|graph|points?|notes?|memory|mediator[\s_-]+planner|judge|prep[\s_]*questions?|task[\s_]*questions?|sales[\s_]*questions?)\b",
     re.IGNORECASE,
 )
 _DATA_NEXUS_READ_INTENT_RE = re.compile(
@@ -236,7 +312,7 @@ _DATA_NEXUS_READ_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 _DATA_NEXUS_WRITE_INTENT_RE = re.compile(
-    r"\b(add|create|make|save|remember|track|capture|log|update|change|delete|remove|forget|prune|clear|wipe|connect|link|relate|associate|join)\b",
+    r"\b(add|create|make|save|remember|track|capture|log|update|change|answer|respond|resolve|satisfy|delete|remove|forget|prune|clear|wipe|connect|link|relate|associate|join)\b",
     re.IGNORECASE,
 )
 _DATA_NEXUS_POINT_REF_RE = re.compile(
@@ -326,9 +402,24 @@ def _display_response_text(response_text: str) -> str:
     return text
 
 
+def _claims_data_nexus_write_without_update(text: str) -> bool:
+    clean = str(text or "").strip()
+    return bool(clean and not _DATA_NEXUS_UPDATE_RE.search(clean) and _DATA_NEXUS_CLAIMED_WRITE_RE.search(clean))
+
+
 def _mediator_handled_display_text(response_text: str, raw_response_text: str, user_prompt: str, mediator_handled: bool) -> str:
     text = str(response_text or "").strip()
     raw_text = str(raw_response_text or response_text or "").strip()
+    if mediator_handled and _claims_data_nexus_write_without_update(raw_text):
+        if _looks_like_data_nexus_write_request(user_prompt):
+            return "Data Nexus update sent to Mediator."
+        return "No Data Nexus change was applied because Tanya did not send a valid update request."
+    if (
+        mediator_handled
+        and _looks_like_data_nexus_write_request(user_prompt)
+        and not _DATA_NEXUS_UPDATE_RE.search(raw_text)
+    ):
+        return "Mediator Planner is reviewing the Data Nexus update."
     if (
         mediator_handled
         and _looks_like_data_nexus_write_request(user_prompt)
@@ -353,11 +444,12 @@ def _dispatch_mediator_output(scene, node_item, raw_response_text: str, user_pro
     mediator_node = _connected_mediator_node(scene, node_item)
     if mediator_node is None:
         return False
+    session_token = _param_value_from_node(node_item, CHATBOT_PROMPT_SESSION_TOKEN_PARAM)
     try:
         from nodes.mediator_agent import spec as mediator_spec
         handler = getattr(mediator_spec, "handle_chatbot_model_output_from_item", None)
         if callable(handler):
-            return bool(handler(scene, mediator_node, raw_response_text, user_prompt, history_context))
+            return bool(handler(scene, mediator_node, raw_response_text, user_prompt, history_context, session_token=session_token))
     except Exception:
         return False
     return False
@@ -370,6 +462,20 @@ def _mediator_data_nexus_read_response(scene, node_item, user_prompt: str) -> st
     try:
         from nodes.mediator_agent import spec as mediator_spec
         helper = getattr(mediator_spec, "data_nexus_read_response_from_item", None)
+        if callable(helper):
+            return str(helper(scene, mediator_node, user_prompt) or "").strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def _mediator_sales_agent_continue_response(scene, node_item, user_prompt: str) -> str:
+    mediator_node = _connected_mediator_node(scene, node_item)
+    if mediator_node is None:
+        return ""
+    try:
+        from nodes.mediator_agent import spec as mediator_spec
+        helper = getattr(mediator_spec, "sales_agent_continue_response_from_item", None)
         if callable(helper):
             return str(helper(scene, mediator_node, user_prompt) or "").strip()
     except Exception:
@@ -907,6 +1013,8 @@ class ChatbotWidget(QtWidgets.QWidget):
         raw_response_text: str,
         user_prompt: str,
         history_context: str,
+        *,
+        skip_mediator_dispatch: bool = False,
     ):
         self._set_sending(False)
         pending = (self._pending_voice_prompt or "").strip()
@@ -918,11 +1026,11 @@ class ChatbotWidget(QtWidgets.QWidget):
         mediator_handled = False
         try:
             scene = self._ensure_scene()
-            skip_mediator_dispatch = (
+            skip_dispatch = bool(skip_mediator_dispatch) or (
                 _looks_like_data_nexus_read_request(user_prompt)
                 and _is_data_nexus_read_response(raw_response_text or response_text)
             )
-            if scene is not None and (raw_response_text or response_text) and not skip_mediator_dispatch:
+            if scene is not None and (raw_response_text or response_text) and not skip_dispatch:
                 mediator_handled = _dispatch_mediator_output(
                     scene,
                     self._node_item,
@@ -967,6 +1075,7 @@ class ChatbotWidget(QtWidgets.QWidget):
             if from_voice:
                 self._pending_voice_prompt = prompt_text
             return
+        _set_hidden_param_on_node(self._node_item, CHATBOT_PROMPT_SESSION_TOKEN_PARAM, _new_prompt_session_token(prompt_text))
         if from_voice:
             self._input.setText(prompt_text)
 
@@ -984,6 +1093,31 @@ class ChatbotWidget(QtWidgets.QWidget):
             return
 
         mediator_node = _connected_mediator_node(scene, node_item)
+        direct_response = _mediator_sales_agent_continue_response(scene, node_item, prompt_text)
+        if direct_response:
+            try:
+                gpt_spec._write_to_mongo(
+                    db_cfg,
+                    prompt_text,
+                    direct_response,
+                    {"source": "mediator_sales_agent_continue"},
+                    "mediator_sales_agent_continue",
+                    0.0,
+                )
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(self, "Chatbot", f"Failed to write Sales Agent response to history: {exc}")
+                return
+            self._finish_send(
+                True,
+                "",
+                direct_response,
+                direct_response,
+                prompt_text,
+                "",
+                skip_mediator_dispatch=True,
+            )
+            return
+
         direct_response = _mediator_data_nexus_read_response(scene, node_item, prompt_text)
         if direct_response:
             try:

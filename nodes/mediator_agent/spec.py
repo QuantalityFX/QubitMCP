@@ -34,6 +34,7 @@ MEDIGATOR_PROMPT_PROFILE_PARAM = "__prompt_profile"
 MEDIGATOR_OUTPUT_TOKEN_PARAM = "__medigator_output_token"
 MEDIGATOR_SPEECH_TEXT_PARAM = "__medigator_speech_text"
 MEDIGATOR_SPEECH_TOKEN_PARAM = "__medigator_speech_token"
+MEDIGATOR_SPEECH_SESSION_TOKEN_PARAM = "__medigator_speech_session_token"
 MEDIGATOR_DEFAULT_PROMPT_PROFILE = "default_mediator"
 MEDIGATOR_DEFAULT_SYSTEM_PROMPT = (
     # Fallback used only when prompt profile files are missing or empty.
@@ -91,6 +92,7 @@ SECURITY_GUARD_PROMPT_PROFILE = "security_guard"
 SECURITY_GUARD_POPUP_NAME = "Security Guard popup"
 TANYA_PROMPT_PROFILE = "assistant_tanya"
 TEACHER_AGENT_PROMPT_PROFILE = "teacher_agent"
+SALES_AGENT_PROMPT_PROFILE = "sales_agent"
 TRANSLATOR_PROMPT_PROFILE = "translator"
 MEDIATOR_PLANNER_PROMPT_PROFILE = "mediator_planner"
 JAPANESE_READER_PROMPT_PROFILE = "japanese_reader"
@@ -102,6 +104,10 @@ MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "teacher_agent": TEACHER_AGENT_PROMPT_PROFILE,
     "template_teacher": TEACHER_AGENT_PROMPT_PROFILE,
     "template_compiler": TEACHER_AGENT_PROMPT_PROFILE,
+    "sales": SALES_AGENT_PROMPT_PROFILE,
+    "sales_agent": SALES_AGENT_PROMPT_PROFILE,
+    "pitch_deck_sales_agent": SALES_AGENT_PROMPT_PROFILE,
+    "sales_pitch_deck_agent": SALES_AGENT_PROMPT_PROFILE,
     "translator_agent": TRANSLATOR_PROMPT_PROFILE,
     "translation_agent": TRANSLATOR_PROMPT_PROFILE,
     "japanese_agent": JAPANESE_READER_PROMPT_PROFILE,
@@ -153,6 +159,7 @@ MEDIGATOR_CODEX_RESPONSE_SOURCES = {
     "manual",
     "data_nexus_planning",
     "teacher_agent",
+    "sales_agent",
     "security_request",
     "security_approval",
 }
@@ -172,6 +179,10 @@ SECURITY_APPROVAL_RE = re.compile(
 )
 DATA_NEXUS_UPDATE_RE = re.compile(
     r"<data_nexus_update\b[^>]*>(?P<payload>.*?)</data_nexus_update>",
+    re.IGNORECASE | re.DOTALL,
+)
+SALES_AGENT_TASK_RE = re.compile(
+    r"<sales_agent_(?:review|questions|draft)\b[^>]*>.*?</sales_agent_(?:review|questions|draft)>",
     re.IGNORECASE | re.DOTALL,
 )
 GENERIC_PERMISSION_RESPONSE_RE = re.compile(
@@ -981,13 +992,14 @@ def _set_node_info(node_item, text: str) -> None:
         pass
 
 
-def _publish_mediator_speech_text(node_item, text: str) -> None:
+def _publish_mediator_speech_text(node_item, text: str, *, session_token: str = "") -> None:
     model = getattr(node_item, "model", None)
     if model is None:
         return
     value = str(text or "").strip()
     if not value:
         return
+    clean_session_token = str(session_token or "").strip()
     params = list(getattr(model, "params", None) or [])
     stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
     digest = hashlib.sha1(value.encode("utf-8", errors="ignore")).hexdigest()[:12]
@@ -995,6 +1007,10 @@ def _publish_mediator_speech_text(node_item, text: str) -> None:
     wanted = {
         MEDIGATOR_SPEECH_TEXT_PARAM.strip().lower(): (MEDIGATOR_SPEECH_TEXT_PARAM, value),
         MEDIGATOR_SPEECH_TOKEN_PARAM.strip().lower(): (MEDIGATOR_SPEECH_TOKEN_PARAM, token_value),
+        MEDIGATOR_SPEECH_SESSION_TOKEN_PARAM.strip().lower(): (
+            MEDIGATOR_SPEECH_SESSION_TOKEN_PARAM,
+            clean_session_token or token_value,
+        ),
     }
     found: set[str] = set()
     changed = False
@@ -1013,7 +1029,10 @@ def _publish_mediator_speech_text(node_item, text: str) -> None:
         params.append({"name": name, "value": next_value})
         changed = True
     model.params = params
-    if _ensure_hidden_params(model, [MEDIGATOR_SPEECH_TEXT_PARAM, MEDIGATOR_SPEECH_TOKEN_PARAM]):
+    if _ensure_hidden_params(
+        model,
+        [MEDIGATOR_SPEECH_TEXT_PARAM, MEDIGATOR_SPEECH_TOKEN_PARAM, MEDIGATOR_SPEECH_SESSION_TOKEN_PARAM],
+    ):
         changed = True
     if not changed:
         return
@@ -1127,8 +1146,17 @@ def _data_nexus_update_payloads(text: str) -> list[str]:
     ]
 
 
+def _claims_data_nexus_write_without_update(text: str) -> bool:
+    clean = str(text or "").strip()
+    return bool(clean and not _data_nexus_update_payloads(clean) and DATA_NEXUS_CLAIMED_WRITE_RE.search(clean))
+
+
 def _strip_data_nexus_update_tags(text: str) -> str:
     return DATA_NEXUS_UPDATE_RE.sub("", str(text or "")).strip()
+
+
+def _strip_sales_agent_task_tags(text: str) -> str:
+    return SALES_AGENT_TASK_RE.sub("", str(text or "")).strip()
 
 
 def _data_nexus_action_op(action: dict) -> str:
@@ -1138,6 +1166,31 @@ def _data_nexus_action_op(action: dict) -> str:
         or action.get("action")
         or ""
     ).strip().lower().replace("-", "_")
+
+
+def _data_nexus_payloads_have_op(payloads: list[str], ops: set[str]) -> bool:
+    wanted = {str(op or "").strip().lower().replace("-", "_") for op in (ops or set())}
+    if not wanted:
+        return False
+    for payload in payloads:
+        try:
+            data = json.loads(str(payload or ""))
+        except Exception:
+            continue
+        if isinstance(data, list):
+            actions = [item for item in data if isinstance(item, dict)]
+        elif isinstance(data, dict):
+            raw_actions = data.get("actions")
+            if isinstance(raw_actions, list):
+                actions = [item for item in raw_actions if isinstance(item, dict)]
+            else:
+                actions = [data]
+        else:
+            actions = []
+        for action in actions:
+            if _data_nexus_action_op(action) in wanted:
+                return True
+    return False
 
 
 def _data_nexus_update_payload_with_note_replace(payload: str) -> str:
@@ -1237,9 +1290,15 @@ def _is_qdeck_security_tool(value: str) -> bool:
 
 
 DATA_NEXUS_INTENT_RE = re.compile(
-    r"\b(data\s+nexus|nexus|vault|graph|point|points|memory\s+map|project\s+memory|mediator[\s_-]+planner|judge)\b"
+    r"\b(data\s+nexus|nexus|vault|graph|point|points|prep[\s_]*question|prep[\s_]*questions|task[\s_]*question|task[\s_]*questions|sales[\s_]*question|sales[\s_]*questions|memory\s+map|project\s+memory|mediator[\s_-]+planner|judge)\b"
     r"|"
-    r"\b(add|create|make|save|remember|track|update|delete|forget|connect|link)\b.{0,80}\b(point|note|memory|nexus|graph|vault)\b",
+    r"\b(add|create|make|save|remember|track|update|answer|respond|resolve|satisfy|delete|forget|connect|link)\b.{0,80}\b(point|note|memory|nexus|graph|vault|prep[\s_]*question|task[\s_]*question|sales[\s_]*question)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+DATA_NEXUS_CLAIMED_WRITE_RE = re.compile(
+    r"\b(?:i(?:'ve| have)?|we(?:'ve| have)?|sure[,!\s]*)\s*(?:added|created|saved|remembered|updated|made|tracked|deleted|removed)\b.{0,180}\b(?:data\s+nexus|nexus|point|points|note|memory|graph)\b"
+    r"|"
+    r"\b(?:added|created|saved|remembered|updated|tracked|deleted|removed)\b.{0,120}\b(?:to|in|from)\s+(?:the\s+)?(?:data\s+nexus|nexus|vault|graph)\b",
     re.IGNORECASE | re.DOTALL,
 )
 QDECK_INTENT_RE = re.compile(
@@ -1342,6 +1401,20 @@ DATA_NEXUS_LINK_PATTERNS = [
     ),
     re.compile(
         r"\b(?:connect|link|relate|associate|join)\s+(?:the\s+)?(?:data\s+nexus\s+|nexus\s+)?(?:points?\s+)?(?:called\s+|named\s+|titled\s+)?(?P<source>.+?)\s+(?:to|with|and)\s+(?:the\s+)?(?:data\s+nexus\s+|nexus\s+)?(?:points?\s+)?(?:called\s+|named\s+|titled\s+)?(?P<target>.+?)(?:\s+(?:as|label(?:ed)?|relationship|relation)\s+(?P<label>.+?))?(?:\s+(?:in|on)\s+(?:the\s+)?(?:data\s+nexus|nexus|graph)|[.!?;]|$)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+]
+DATA_NEXUS_ANSWER_QUESTION_PATTERNS = [
+    re.compile(
+        r"\b(?:answer|respond\s+to|resolve|satisfy)\s+(?:the\s+)?(?:data\s+nexus\s+|nexus\s+)?(?:prep[\s_]+|task[\s_]+|sales[\s_]+)?question\s+(?:called\s+|named\s+|titled\s+|id\s+)?[\"']?(?P<question>.+?)[\"']?\s*(?:\bwith\b|\bas\b|:|-)\s+(?P<answer>.+)$",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\b(?:for|to)\s+(?:the\s+)?(?P<question>(?:slide\s+\d+|[^:.;!?]{3,120})(?:\s+(?:prep|refinement|task|sales))?\s+question)\s*[:,-]\s*(?P<answer>.+)$",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"(?P<answer>.+?)\s+\b(?:answers|resolves|satisfies)\s+(?:the\s+)?(?P<question>.+?(?:prep|refinement|task|sales)?\s+question)(?:[.!?;]|$)",
         re.IGNORECASE | re.DOTALL,
     ),
 ]
@@ -1559,6 +1632,107 @@ def data_nexus_read_response_from_item(scene, node_item, user_input: str) -> str
         return ""
 
 
+SALES_AGENT_CONTINUE_RE = re.compile(
+    r"\b(?:continue|resume|keep\s+going|next\s+question|work(?:ing)?\s+on|keep\s+working\s+on)\b.{0,120}\b(?:sales\s+agent|pitch\s+deck|sales\s+deck|presentation|pitch)\b"
+    r"|"
+    r"\b(?:sales\s+agent|pitch\s+deck|sales\s+deck|presentation|pitch)\b.{0,120}\b(?:continue|resume|keep\s+going|next\s+question|work(?:ing)?\s+on)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _looks_like_sales_agent_continue_request(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if re.search(r"\b(save|add|create|remember|update|answer|respond|resolve|satisfy|delete|remove|forget|prune|clear|connect|link)\b", raw, re.IGNORECASE):
+        return False
+    return bool(SALES_AGENT_CONTINUE_RE.search(raw))
+
+
+def _question_display_text(point: dict[str, Any]) -> str:
+    text = str(point.get("question_text") or point.get("content") or point.get("summary") or "").strip()
+    if text:
+        return text
+    return str(point.get("title") or point.get("id") or "Sales Agent prep question").strip()
+
+
+def sales_agent_continue_response_from_item(scene, node_item, user_input: str) -> str:
+    if not _looks_like_sales_agent_continue_request(user_input):
+        return ""
+    nexus_item = _connected_data_nexus_item(scene, node_item)
+    if nexus_item is None:
+        return ""
+    try:
+        from nodes.data_nexus import spec as data_nexus_spec
+        bundle_helper = getattr(data_nexus_spec, "normalized_data_nexus_points_from_item", None)
+        set_active = getattr(data_nexus_spec, "set_active_data_nexus_question_from_item", None)
+        if not callable(bundle_helper):
+            return ""
+        bundle = bundle_helper(nexus_item)
+        points = [point for point in (bundle.get("points") or []) if isinstance(point, dict)]
+        open_questions = [
+            point
+            for point in points
+            if bool(point.get("is_question")) and str(point.get("answer_status") or "").strip().lower() == "open"
+        ]
+        if not open_questions:
+            message = "I checked Data Nexus just now. There are no open Sales Agent prep questions."
+            _set_node_info(node_item, f"Sales Agent route: {message}")
+            return message
+        active_id = str(bundle.get("active_question_id") or "").strip()
+        active_question = next(
+            (
+                point
+                for point in open_questions
+                if active_id and str(point.get("id") or "").strip() == active_id
+            ),
+            None,
+        )
+        if active_question is None:
+            if callable(set_active):
+                try:
+                    set_active(nexus_item, "")
+                    bundle = bundle_helper(nexus_item)
+                    points = [point for point in (bundle.get("points") or []) if isinstance(point, dict)]
+                    open_questions = [
+                        point
+                        for point in points
+                        if bool(point.get("is_question")) and str(point.get("answer_status") or "").strip().lower() == "open"
+                    ]
+                    active_id = str(bundle.get("active_question_id") or "").strip()
+                except Exception:
+                    active_id = ""
+            active_question = next(
+                (
+                    point
+                    for point in open_questions
+                    if active_id and str(point.get("id") or "").strip() == active_id
+                ),
+                open_questions[0],
+            )
+        question_id = str(active_question.get("id") or "").strip()
+        title = str(active_question.get("title") or "Sales Agent Prep Question").strip()
+        expected = str(active_question.get("expected_answer_point_type") or "").strip()
+        question = _question_display_text(active_question)
+        lines = [
+            "I checked the connected Data Nexus just now.",
+            "",
+            f"{title}:",
+            question,
+        ]
+        if expected:
+            lines.extend(["", f"Expected answer type: `{expected}`"])
+        if question_id:
+            lines.extend(["", f"Question id: `{question_id}`"])
+        lines.append("")
+        lines.append("Answer this normally, or start with `save this as the answer to the active prep question:` if you want me to store it immediately.")
+        message = "\n".join(lines).strip()
+        _set_node_info(node_item, f"Sales Agent route: active question\n\n{message}")
+        return message
+    except Exception:
+        return ""
+
+
 def _looks_like_data_nexus_note_replace_request(text: str) -> bool:
     raw = str(text or "").strip()
     if not raw or not _looks_like_data_nexus_request(raw):
@@ -1581,7 +1755,7 @@ def _looks_like_data_nexus_write_request(text: str) -> bool:
         return False
     return bool(
         re.search(
-            r"\b(add|create|make|save|remember|track|capture|log|update|change|delete|remove|forget|prune|clear|wipe|connect|link|relate|associate|join)\b",
+            r"\b(add|create|make|save|remember|track|capture|log|update|change|answer|respond|resolve|satisfy|delete|remove|forget|prune|clear|wipe|connect|link|relate|associate|join)\b",
             raw,
             re.IGNORECASE,
         )
@@ -1652,6 +1826,30 @@ def _data_nexus_link_fallback_payload(user_request: str) -> str:
         }
         if label:
             action["label"] = label[:120]
+        return json.dumps({"actions": [action]}, separators=(",", ":"))
+    return ""
+
+
+def _data_nexus_answer_question_fallback_payload(user_request: str) -> str:
+    text = str(user_request or "").strip()
+    if not text or not _looks_like_data_nexus_request(text):
+        return ""
+    if not re.search(r"\b(answer|answers|respond|resolve|resolves|satisfy|satisfies)\b", text, re.IGNORECASE):
+        return ""
+    for pattern in DATA_NEXUS_ANSWER_QUESTION_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        question = _clean_data_nexus_ref(match.group("question"))
+        answer = str(match.group("answer") or "").strip()
+        answer = re.sub(r"\s+", " ", answer).strip(" .,:;\"'")
+        if not question or len(answer) < 8:
+            continue
+        action = {
+            "op": "answer_question",
+            "question": question,
+            "answer": answer[:1800],
+        }
         return json.dumps({"actions": [action]}, separators=(",", ":"))
     return ""
 
@@ -1927,6 +2125,9 @@ def _data_nexus_fallback_update_payload(user_request: str, history_context: str 
     delete_point_payload = _data_nexus_delete_point_fallback_payload(text)
     if delete_point_payload:
         return delete_point_payload
+    answer_payload = _data_nexus_answer_question_fallback_payload(text)
+    if answer_payload:
+        return answer_payload
     link_payload = _data_nexus_link_fallback_payload(text)
     if link_payload:
         return link_payload
@@ -2008,10 +2209,15 @@ def _compose_data_nexus_planning_prompt(
         "Data Nexus planning handoff:\n"
         "- You are planning a graph edit for the connected Data Nexus.\n"
         "- Think semantically from the user's request, current graph, and conversation history.\n"
-        "- Return a short user-facing answer followed by exactly one hidden <data_nexus_update> tag when a graph change is requested, including add/create/save/update/delete/connect/link requests.\n"
+        "- Return a short user-facing answer followed by exactly one hidden <data_nexus_update> tag when a graph change is requested, including add/create/save/update/answer/delete/connect/link requests.\n"
+        "- Never claim a Data Nexus point/note/link was added, saved, updated, or deleted unless the same response includes the required hidden data_nexus_update tag.\n"
         "- Do not output Qubit Deck JSON or security_request tags.\n"
-        "- Supported actions: upsert_point, append_note, delete_point, delete_all_points, prune_points, link, unlink.\n"
+        "- Supported actions: upsert_point, append_note, answer_question, delete_point, delete_all_points, prune_points, link, unlink.\n"
         "- For cleanup/edit/rewrite/remove-text requests against point descriptions, notes, or comments, preserve the existing id/label and include \"note_mode\":\"replace\" on every note update. Do not append the cleaned text.\n"
+        "- Treat Data Nexus `prep_question` points as task questions, not answer facts. When the user answers one, prefer an `answer_question` action with `question` and `answer`; the app will create/update a normal answer point and link answer -> question with `answers_question`.\n"
+        "- If a prep question is marked ACTIVE and the latest user request looks like an answer, use that active question id; the user does not need to repeat the id.\n"
+        "- If the user asks to activate, continue, resume, or work with the Sales Agent/pitch deck/presentation and open prep questions exist, ask exactly one open prep question, preferring the ACTIVE one.\n"
+        "- If creating answer points directly, use the prep question's expected answer point type when available and link the answer point to the question with label `answers_question`.\n"
         "- For delete/remove/forget/prune/clear requests, emit the destructive action; the app will show the deletion approval popup before applying it.\n"
         "- For 'remove all points' or 'clear the nexus', use {\"op\":\"delete_all_points\"}.\n"
         "- For connect/link requests, prefer existing point ids or labels and set create_missing=false unless the user clearly asked to create missing points.\n"
@@ -2077,7 +2283,12 @@ def chatbot_agent_context_from_item(scene, node_item) -> str:
         parts.append(
             "Data Nexus access route:\n"
             "- Read-only Data Nexus requests should be answered from the Data Nexus context when possible. Do not emit a data_nexus_update tag for read/show/fetch/what-does-this-point-say requests.\n"
-            "- Data Nexus write requests to add, create, save, update, delete, connect, or link graph, point, note, vault, memory, Mediator Planner, and nexus changes are handled with a hidden data_nexus_update tag.\n"
+            "- Data Nexus write requests to add, create, save, update, answer, delete, connect, or link graph, point, note, vault, memory, Mediator Planner, task question, prep question, and nexus changes are handled with a hidden data_nexus_update tag.\n"
+            "- Treat `prep_question` points as task questions, not answer facts. When the user answers one, emit an `answer_question` action with `question` and `answer`; the app will create/update a normal answer point and link answer -> question with `answers_question`.\n"
+            "- Never claim a Data Nexus point/note/link was added, saved, updated, or deleted unless your same response includes the required hidden data_nexus_update tag.\n"
+            "- If a prep question is marked ACTIVE and the user appears to answer it, use the active question id; the user does not need to repeat the id.\n"
+            "- If the user asks to activate, continue, resume, or work with the Sales Agent/pitch deck/presentation and open prep questions exist, ask exactly one open prep question, preferring the ACTIVE one.\n"
+            "- If creating answer points directly, use the prep question's expected answer point type when available and link the answer point to the question with label `answers_question`.\n"
             "- For delete/remove/forget/prune point requests, emit the tag and let the app show the Data Nexus deletion approval popup.\n"
             "- Do not emit security_request for Data Nexus requests.\n"
             "- Do not output Qubit Deck command JSON for Data Nexus requests.\n"
@@ -2101,7 +2312,15 @@ def chatbot_agent_context_from_item(scene, node_item) -> str:
     return "\n\n".join(part for part in parts if str(part or "").strip()).strip()
 
 
-def handle_chatbot_model_output_from_item(scene, node_item, output: str, user_input: str, history_context: str = "") -> bool:
+def handle_chatbot_model_output_from_item(
+    scene,
+    node_item,
+    output: str,
+    user_input: str,
+    history_context: str = "",
+    *,
+    session_token: str = "",
+) -> bool:
     """Let a connected Mediator handle Chatbot LLM output tags/popups on the UI thread."""
     widget = _mediator_widget_from_item(node_item)
     if widget is None:
@@ -2110,7 +2329,7 @@ def handle_chatbot_model_output_from_item(scene, node_item, output: str, user_in
     if not callable(handler):
         return False
     try:
-        return bool(handler(output, user_input, history_context))
+        return bool(handler(output, user_input, history_context, session_token=session_token))
     except Exception:
         return False
 
@@ -2193,6 +2412,82 @@ def run_teacher_agent_conversion_from_item(
                 pass
         return False, f"Failed to start Teacher Agent through Mediator: {exc}"
     return True, "Teacher Agent conversion sent to Mediator AI."
+
+
+def run_sales_agent_task_from_item(
+    scene,
+    node_item,
+    prompt: str,
+    signature: str,
+    on_done=None,
+) -> tuple[bool, str]:
+    """Run a Sales Agent task prompt through a connected Mediator widget."""
+    widget = _mediator_widget_from_item(node_item)
+    if widget is None:
+        return False, "Connected Mediator node is not initialized."
+    runner = getattr(widget, "_run_codex_prompt", None)
+    if not callable(runner):
+        return False, "Connected Mediator node cannot run AI prompts."
+
+    clean_prompt = str(prompt or "").strip()
+    if not clean_prompt:
+        return False, "Sales Agent prompt is empty."
+    clean_signature = str(signature or "").strip() or _security_signature("sales_agent", clean_prompt)
+
+    callback_ref = None
+    if callable(on_done):
+        def _done(exit_code: int, error_text: str, response_text: str, done_signature: str, source: str) -> None:
+            if str(source or "").strip().lower() != "sales_agent":
+                return
+            if str(done_signature or "").strip() != clean_signature:
+                return
+            try:
+                widget._command_done.disconnect(_done)
+            except Exception:
+                pass
+            try:
+                refs = getattr(widget, "_sales_agent_callbacks", None)
+                if isinstance(refs, list) and callback_ref in refs:
+                    refs.remove(callback_ref)
+            except Exception:
+                pass
+            try:
+                on_done(int(exit_code), str(error_text or ""), str(response_text or ""))
+            except Exception:
+                pass
+
+        callback_ref = _done
+        try:
+            refs = getattr(widget, "_sales_agent_callbacks", None)
+            if not isinstance(refs, list):
+                refs = []
+                setattr(widget, "_sales_agent_callbacks", refs)
+            refs.append(callback_ref)
+            widget._command_done.connect(_done)
+        except Exception as exc:
+            return False, f"Failed to attach Sales Agent callback: {exc}"
+
+    try:
+        widget._last_prompt_voice_input = "Sales Agent task review"
+        widget._last_prompt_chatbot_history = ""
+    except Exception:
+        pass
+    try:
+        runner(clean_prompt, clean_signature, "sales_agent")
+    except Exception as exc:
+        if callback_ref is not None:
+            try:
+                widget._command_done.disconnect(callback_ref)
+            except Exception:
+                pass
+            try:
+                refs = getattr(widget, "_sales_agent_callbacks", None)
+                if isinstance(refs, list) and callback_ref in refs:
+                    refs.remove(callback_ref)
+            except Exception:
+                pass
+        return False, f"Failed to start Sales Agent through Mediator: {exc}"
+    return True, "Sales Agent task sent to Mediator AI."
 
 
 def _find_security_guard_item(scene, *, exclude_item=None):
@@ -2767,7 +3062,7 @@ def _clean_tanya_popup_text(text: str) -> str:
     clean = SECURITY_REQUEST_RE.sub("", clean)
     clean = SECURITY_APPROVAL_RE.sub("", clean)
     clean = re.sub(
-        r"<\s*/?\s*(?:security_request|security_approval|data_nexus_update)\b[^>]*>",
+        r"<\s*/?\s*(?:security_request|security_approval|data_nexus_update|sales_agent_review|sales_agent_questions|sales_agent_draft)\b[^>]*>",
         "",
         clean,
         flags=re.IGNORECASE | re.DOTALL,
@@ -3222,6 +3517,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._stop_requested = False
         self._last_prompt_voice_input = ""
         self._last_prompt_chatbot_history = ""
+        self._current_chatbot_prompt_session_token = ""
         self._security_dialog = None
         self._data_nexus_delete_dialog = None
         self._qdeck_handoff_dialog = None
@@ -3808,7 +4104,8 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._last_tanya_speech_key = dedupe_key
         self._last_tanya_speech_ms = now_ms
         self._tanya_popup_message = message
-        _publish_mediator_speech_text(self._node_item, message)
+        session_token = str(getattr(self, "_current_chatbot_prompt_session_token", "") or "").strip()
+        _publish_mediator_speech_text(self._node_item, message, session_token=session_token)
         old_dialog = getattr(self, "_tanya_dialog", None)
         try:
             if old_dialog is not None:
@@ -4275,7 +4572,11 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         payloads = _data_nexus_update_payloads(output)
         explicit_payloads = bool(payloads)
         fallback_is_write = _looks_like_data_nexus_write_request(fallback_request)
-        if fallback_request and not fallback_is_write:
+        explicit_answer_question = explicit_payloads and _data_nexus_payloads_have_op(
+            payloads,
+            {"answer_question", "answer_prep_question", "answer"},
+        )
+        if fallback_request and not fallback_is_write and not explicit_answer_question:
             if explicit_payloads and _data_nexus_read_query_from_request(fallback_request):
                 self._set_status("Data Nexus read-only request; ignored update tag.")
                 try:
@@ -4345,11 +4646,19 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._pending_signature = ""
         self._pending_source = ""
 
-    def _handle_chatbot_model_output(self, output: str, user_input: str, history_context: str = "") -> bool:
+    def _handle_chatbot_model_output(
+        self,
+        output: str,
+        user_input: str,
+        history_context: str = "",
+        *,
+        session_token: str = "",
+    ) -> bool:
         clean_output = str(output or "").strip()
         if not clean_output:
             return False
         self._last_prompt_voice_input = str(user_input or "").strip()
+        self._current_chatbot_prompt_session_token = str(session_token or "").strip()
         try:
             self._console_append.emit("[chatbot] Response received from Chatbot LLM runtime.")
         except Exception:
@@ -4374,6 +4683,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             qdeck_fallback_request = self._qdeck_security_fallback_request_text(self._last_prompt_voice_input)
         popup_output = clean_output
         popup_text = _clean_tanya_popup_text(clean_output)
+        claimed_write_without_update = _claims_data_nexus_write_without_update(clean_output)
         if (
             _looks_like_data_nexus_delete_request(self._last_prompt_voice_input)
             and (
@@ -4388,6 +4698,8 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             and (QDECK_COMMAND_OUTPUT_RE.search(clean_output) or USER_FEEDBACK_RE.search(clean_output))
         ):
             popup_output = "Updating Data Nexus from the chat history."
+        elif claimed_write_without_update:
+            popup_output = "No Data Nexus change was applied because Tanya did not send a valid update request."
         elif qdeck_fallback_request:
             target = _qdeck_launch_target_from_request(self._last_prompt_voice_input)
             popup_output = f"I need Security Guard approval before I open {target}."
@@ -4405,6 +4717,14 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             self._set_status("Chatbot response handed to Mediator security flow.")
         elif nexus_handled:
             self._chatbot_handoff_active = False
+        elif claimed_write_without_update:
+            self._chatbot_handoff_active = False
+            self._set_status("Chatbot claimed a Data Nexus write without a valid update tag.", error=True)
+            _set_node_info(
+                self._node_item,
+                "No Data Nexus change was applied. Tanya did not send a valid data_nexus_update request.",
+            )
+            return True
         else:
             self._chatbot_handoff_active = False
             self._set_status("Chatbot response observed.")
@@ -4517,6 +4837,8 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             mode = "data nexus"
         elif source == "teacher_agent":
             mode = "teacher agent"
+        elif source == "sales_agent":
+            mode = "sales agent"
         else:
             mode = "manual"
         self._stop_requested = False
@@ -4747,9 +5069,11 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 qdeck_fallback_request = ""
                 if clean_source not in {"security_request", "security_approval"} and not _first_security_request(output)[0]:
                     qdeck_fallback_request = self._qdeck_security_fallback_request_text(self._last_prompt_voice_input)
-                visible_output = _strip_data_nexus_update_tags(output)
+                visible_output = _strip_sales_agent_task_tags(_strip_data_nexus_update_tags(output))
                 if clean_source == "teacher_agent":
                     visible_output = "Teacher Agent conversion response received."
+                elif clean_source == "sales_agent":
+                    visible_output = "Sales Agent response received."
                 if (
                     _looks_like_data_nexus_write_request(self._last_prompt_voice_input)
                     and (QDECK_COMMAND_OUTPUT_RE.search(output) or USER_FEEDBACK_RE.search(output))
@@ -4769,6 +5093,8 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                     popup_text = _clean_tanya_popup_text(output)
                     if clean_source == "teacher_agent":
                         popup_output = "Teacher Agent conversion response received."
+                    elif clean_source == "sales_agent":
+                        popup_output = "Sales Agent response received."
                     elif (
                         GENERIC_PERMISSION_RESPONSE_RE.match(popup_text)
                         and _looks_like_data_nexus_delete_request(self._last_prompt_voice_input)

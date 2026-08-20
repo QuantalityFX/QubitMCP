@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 from typing import Any, Dict, List
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from echograph.services.sales_agent import generate_sales_deck_from_template
-from echograph.services.skills_library import scan_skills_library, skills_root, update_skill_asset_status
+from echograph.services.skills_library import resolve_library_path, scan_skills_library, skills_root, update_skill_asset_status
 from echograph.services.teacher_agent import (
     prepare_teacher_agent_conversion_request,
     write_teacher_agent_ai_response,
@@ -173,6 +174,8 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         self._convert_btn.setToolTip("Convert selected human template with Teacher Agent")
         self._generate_btn = QtWidgets.QPushButton("Generate Deck")
         self._generate_btn.setToolTip("Generate an HTML deck from the selected approved Sales Agent template and connected Data Nexus")
+        self._review_btn = QtWidgets.QPushButton("Review Diff")
+        self._review_btn.setToolTip("Compare the selected asset with the active approved or latest version")
         self._approve_btn = QtWidgets.QPushButton("Approve")
         self._draft_btn = QtWidgets.QPushButton("Draft")
         self._deprecate_btn = QtWidgets.QPushButton("Deprecate")
@@ -181,11 +184,13 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         self._status_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self._convert_btn.clicked.connect(self._convert_selected_human_template)
         self._generate_btn.clicked.connect(self._generate_sales_deck_from_selected_template)
+        self._review_btn.clicked.connect(self._show_selected_review_diff)
         self._approve_btn.clicked.connect(lambda _=False: self._set_selected_status("approved"))
         self._draft_btn.clicked.connect(lambda _=False: self._set_selected_status("draft"))
         self._deprecate_btn.clicked.connect(lambda _=False: self._set_selected_status("deprecated"))
         actions.addWidget(self._convert_btn, 0)
         actions.addWidget(self._generate_btn, 0)
+        actions.addWidget(self._review_btn, 0)
         actions.addWidget(self._approve_btn, 0)
         actions.addWidget(self._draft_btn, 0)
         actions.addWidget(self._deprecate_btn, 0)
@@ -327,6 +332,7 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
                 and str(asset.get("artifact_kind") or "").strip().lower() == "html_deck"
             )
         )
+        self._review_btn.setEnabled(is_agent or is_task_guide)
         for button in (self._approve_btn, self._draft_btn, self._deprecate_btn):
             button.setEnabled(is_agent or is_task_guide)
         if is_agent or is_task_guide:
@@ -381,6 +387,9 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         open_action = menu.addAction("Open in Explorer")
         open_action.setEnabled(bool(path_text.strip()))
         open_action.triggered.connect(lambda _checked=False, p=path_text: self._open_asset_folder(p))
+        if asset.get("kind") in {"agent_template", "task_guide"}:
+            review_action = menu.addAction("Review Diff")
+            review_action.triggered.connect(lambda _checked=False: self._show_selected_review_diff())
         menu.exec(self._list.viewport().mapToGlobal(pos))
 
     @staticmethod
@@ -416,6 +425,108 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         self._status_label.setText(message)
         if ok:
             self.refresh(select_path=path)
+
+    def _review_base_path(self, asset: Dict[str, Any]) -> tuple[str, str]:
+        kind = str(asset.get("kind") or "")
+        current_path = str(asset.get("path") or "")
+        if kind == "agent_template":
+            keys = (
+                ("latest_approved_template_path", "active approved"),
+                ("latest_template_path", "latest version"),
+            )
+            family_key = "template_family_id"
+        elif kind == "task_guide":
+            keys = (
+                ("latest_approved_asset_path", "active approved"),
+                ("latest_asset_path", "latest version"),
+            )
+            family_key = "guide_family_id"
+        else:
+            return "", ""
+        for key, label in keys:
+            path = str(asset.get(key) or "").strip()
+            if path and path != current_path:
+                return path, label
+
+        family = str(asset.get(family_key) or "").strip()
+        siblings = [
+            item
+            for item in self._assets
+            if item is not asset
+            and item.get("kind") == kind
+            and str(item.get(family_key) or "").strip() == family
+            and str(item.get("path") or "").strip()
+        ]
+        siblings.sort(
+            key=lambda item: (
+                str(item.get("status") or "").strip().lower() == "approved",
+                int(item.get("version_sort", -1) or -1),
+                str(item.get("name") or ""),
+            ),
+            reverse=True,
+        )
+        if siblings:
+            sibling = siblings[0]
+            label = "approved sibling" if str(sibling.get("status") or "").strip().lower() == "approved" else "nearby version"
+            return str(sibling.get("path") or ""), label
+        return "", ""
+
+    def _show_selected_review_diff(self):
+        asset = self._selected_asset()
+        if not asset or asset.get("kind") not in {"agent_template", "task_guide"}:
+            return
+        current_path_text = str(asset.get("path") or "")
+        base_path_text, base_label = self._review_base_path(asset)
+        if not base_path_text:
+            self._status_label.setText("No comparable version was found for review.")
+            return
+        try:
+            base_path = resolve_library_path(base_path_text, root=self._skills_root_text())
+            current_path = resolve_library_path(current_path_text, root=self._skills_root_text())
+            base_text = base_path.read_text(encoding="utf-8")
+            current_text = current_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            base_text = base_path.read_text(encoding="utf-8", errors="replace")
+            current_text = current_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            self._status_label.setText(f"Review diff unavailable: {exc}")
+            return
+
+        diff_lines = difflib.unified_diff(
+            base_text.splitlines(),
+            current_text.splitlines(),
+            fromfile=f"{base_label}: {base_path.name}",
+            tofile=f"selected: {current_path.name}",
+            lineterm="",
+        )
+        diff = "\n".join(diff_lines) or "No content changes."
+        self._open_diff_dialog(f"{base_path.name} -> {current_path.name}", diff)
+        self._status_label.setText(f"Reviewed diff against {base_label}.")
+
+    def _open_diff_dialog(self, title: str, diff: str):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(f"Review Diff - {title}")
+        dialog.resize(920, 640)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        label = QtWidgets.QLabel(title)
+        label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        editor = QtWidgets.QPlainTextEdit()
+        editor.setReadOnly(True)
+        editor.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        editor.setPlainText(diff)
+        try:
+            editor.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont))
+        except Exception:
+            pass
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        buttons = QtWidgets.QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(close_btn, 0)
+        layout.addWidget(label, 0)
+        layout.addWidget(editor, 1)
+        layout.addLayout(buttons)
+        dialog.exec()
 
     def _convert_selected_human_template(self):
         asset = self._selected_asset()

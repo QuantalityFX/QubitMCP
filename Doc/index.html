@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -37,7 +37,7 @@
           <a href="#hotkeys">Hotkeys</a>
           <a href="#settings">Settings</a>
           <a href="#nodes">Node Catalog</a>
-          <a href="#image-gs-splat">Image-GS Splat Node</a>
+          <a href="#agents">Agents</a>
           <a href="#pipelines">Common Pipelines</a>
           <a href="#troubleshooting">Troubleshooting</a>
           <a href="#developer">Developer Guide</a>
@@ -110,6 +110,41 @@
         <section id="latest-updates" class="section">
           <h2>Latest Updates</h2>
           <div class="grid latest-grid">
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/DataNexus_Icon.png" alt="Data Nexus icon" /> Data Nexus Sales Prep Loop</h3>
+              <ul class="bullet">
+                <li><code>skills</code>, <code>data_nexus</code>, <code>mediator_agent</code>, and <code>task</code> now support a guided Sales Agent preparation workflow.</li>
+                <li>Task <strong>Run Step</strong> checks the approved Skills template and connected Data Nexus facts; with <code>task.mediator</code> connected, Sales Agent AI semantically reviews the newest points, open questions, and slide readiness.</li>
+                <li>If a manually added point already answers an open prep question, Task can link that existing point back to the question with <code>answers_question</code> instead of asking again.</li>
+                <li>Task <strong>Write Questions</strong> uses the Mediator Sales Agent LLM when connected, creates genuinely new <code>prep_question</code> points only when needed, updates changed questions, and removes stale Task-owned questions.</li>
+                <li>Question references are stored as <code>source_point_ids</code> metadata and can be shown or hidden with short <strong>Needs?</strong> and <strong>Refine?</strong> toggles.</li>
+                <li>Data Nexus now distinguishes normal points, yellow refinement questions, orange needs-answer questions, and neon-green slide points with different dot sizes and matching connection gradients.</li>
+                <li>Newly added points receive a white review ring that stays through arrange/cluster operations and clears only when newer points are added.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/Tasks_Icon_s.png" alt="Task icon" /> Task to HTML Deck Output</h3>
+              <ul class="bullet">
+                <li><code>task</code> owns the Sales Agent step loop: readiness, Mediator AI review, question writing, draft generation, manual status, approve, and dismiss state.</li>
+                <li><strong>Generate Draft</strong> asks the Mediator Sales Agent LLM for slide copy, allows a conservative draft even when some slides need validation, and writes a versioned HTML deck under <code>Skills/generated_decks/</code>.</li>
+                <li><strong>Refresh HTML</strong> rebuilds the current generated deck with the latest style without rewriting the slide copy.</li>
+                <li><strong>Index Slides</strong> reads the generated deck and creates or updates neon-green <code>slide</code> points in a <code>Slides</code> folder.</li>
+                <li>Indexed slide points are linked in slide order with <code>next_slide</code> and connected back to their supporting Data Nexus points with <code>uses_source</code>.</li>
+                <li>Generated deck folders now include <code>index.html</code>, <code>styles.css</code>, and <code>manifest.json</code>.</li>
+                <li>Connected <code>html_preview.path</code> inputs refresh to the generated <code>index.html</code> after draft generation.</li>
+                <li>HTML Preview can export the deck to PDF with the cover and each slide paged separately for review or sharing.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/skills_Icon_s.png" alt="Skills icon" /> Skills Library Review</h3>
+              <ul class="bullet">
+                <li><code>skills</code> scans human templates, agent templates, task guides, and agent guides from the local <code>Skills/</code> library.</li>
+                <li>The browser marks latest, active approved, older, draft, deprecated, and warning states for template families.</li>
+                <li>Validation now checks required metadata, slide/slot counts, and local package references such as source templates and conversion reports.</li>
+                <li><strong>Review Diff</strong> compares the selected agent template or task guide against the active approved or latest comparable version.</li>
+                <li><strong>Generate Deck</strong> can still generate directly from an approved Sales Agent template when a Data Nexus node is connected.</li>
+              </ul>
+            </div>
             <div class="card feature-card">
               <h3><img class="inline-icon" src="../icons/TanyaAI_Icon.png" alt="Voice Actor icon" /> Voice Actor Send Modes</h3>
               <ul class="bullet">
@@ -636,329 +671,199 @@
 
         <section id="nodes" class="section">
           <h2>Node Catalog</h2>
-          <p class="muted">Current kinds available from Create Node and plugin registration.</p>
+          <p class="muted">Current kinds available from Create Node and plugin registration. Click a node to open its focused catalog page.</p>
 
           <div class="grid node-catalog-grid">
             <div class="card">
               <h3>Core and Utility</h3>
               <ul class="node-list">
-                <li><img class="node-inline-icon" src="../icons/Electric_Pen_Icon.png" alt="Note icon" /><span><strong>note</strong>: note tasks and text content with per-parameter controls.</span></li>
-                <li><img class="node-inline-icon" src="../icons/TabIcon.png" alt="Node icon" /><span><strong>node</strong>: standard general purpose parameter node.</span></li>
-                <li><img class="node-inline-icon" src="../icons/append_icon.png" alt="Append icon" /><span><strong>append</strong>: ordered input aggregation; can now drive Gantt group order.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Switch_Icon.png" alt="Switch icon" /><span><strong>switch</strong>: single-branch selection from multiple upstream nodes.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Calendar_Icon.png" alt="Gantt icon" /><span><strong>gantt_chart</strong>: scheduling board with multi-note grouping, collapse state persistence, and CSV copy/paste transfer.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Python_Icon.png" alt="Python icon" /><span><strong>python</strong>: run custom scripts in graph context.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Out_Node_Icon.png" alt="Output icon" /><span><strong>output</strong>: terminal collector for final graph output.</span></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=note"><img class="node-inline-icon" src="../icons/Electric_Pen_Icon.png" alt="Note icon" /><span><strong>note</strong>: note tasks and text content with per-parameter controls.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=node"><img class="node-inline-icon" src="../icons/TabIcon.png" alt="Node icon" /><span><strong>node</strong>: standard general-purpose parameter node.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=append"><img class="node-inline-icon" src="../icons/append_icon.png" alt="Append icon" /><span><strong>append</strong>: ordered input aggregation; can drive Gantt group order.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=switch"><img class="node-inline-icon" src="../icons/Switch_Icon.png" alt="Switch icon" /><span><strong>switch</strong>: single-branch selection from multiple upstream nodes.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=gantt-chart"><img class="node-inline-icon" src="../icons/Calendar_Icon.png" alt="Gantt icon" /><span><strong>gantt_chart</strong>: scheduling board with multi-note grouping, collapse persistence, and CSV copy/paste transfer.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=python"><img class="node-inline-icon" src="../icons/Python_Icon.png" alt="Python icon" /><span><strong>python</strong>: run custom scripts in graph context.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=output"><img class="node-inline-icon" src="../icons/Out_Node_Icon.png" alt="Output icon" /><span><strong>output</strong>: terminal collector for final graph output.</span></a></li>
               </ul>
             </div>
 
             <div class="card">
               <h3>AI and Knowledge</h3>
               <ul class="node-list">
-                <li><img class="node-inline-icon" src="../icons/Server_Icon.png" alt="Local server icon" /><span><strong>local_server</strong>: local server endpoint configuration.</span></li>
-                <li><img class="node-inline-icon" src="../icons/LLM_Icon.png" alt="Prompt icon" /><span><strong>llm_prompt</strong>: OpenAI or Ollama/DeepSeek model settings and response generation for Chatbot workflows.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Chatbot_Icon.png" alt="Chatbot icon" /><span><strong>chatbot</strong>: conversation workflows with Database history, Voice Actor input, LLM Prompt runtime, and optional <code>mediator_input</code>.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Database_Icon.png" alt="Database icon" /><span><strong>database</strong>: persistence layer for graph and chat data.</span></li>
-                <li><img class="node-inline-icon" src="../icons/librarian_search_Icon.png" alt="Librarian icon" /><span><strong>librarian</strong>: document indexing, search, summarize, and analysis.</span></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=local-server"><img class="node-inline-icon" src="../icons/Server_Icon.png" alt="Local server icon" /><span><strong>local_server</strong>: local server endpoint configuration.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=llm-prompt"><img class="node-inline-icon" src="../icons/LLM_Icon.png" alt="Prompt icon" /><span><strong>llm_prompt</strong>: OpenAI or Ollama/DeepSeek model settings and response generation for Chatbot workflows.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=chatbot"><img class="node-inline-icon" src="../icons/Chatbot_Icon.png" alt="Chatbot icon" /><span><strong>chatbot</strong>: conversation workflows with Database history, Voice Actor input, LLM Prompt runtime, and optional <code>mediator_input</code>.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=database"><img class="node-inline-icon" src="../icons/Database_Icon.png" alt="Database icon" /><span><strong>database</strong>: persistence layer for graph and chat data.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=data-nexus"><img class="node-inline-icon" src="../icons/DataNexus_Icon.png" alt="Data Nexus icon" /><span><strong>data_nexus</strong>: folder-aware knowledge canvas for points, vault files, graph relationships, question refs, slide refs, and answer links.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=skills"><img class="node-inline-icon" src="../icons/skills_Icon_s.png" alt="Skills icon" /><span><strong>skills</strong>: local Skills library browser for templates, task guides, approval state, review diffs, and deck generation.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=task"><img class="node-inline-icon" src="../icons/Tasks_Icon_s.png" alt="Task icon" /><span><strong>task</strong>: workflow step controller for readiness, questions, drafts, HTML refresh, slide indexing, and status.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=librarian"><img class="node-inline-icon" src="../icons/librarian_search_Icon.png" alt="Librarian icon" /><span><strong>librarian</strong>: document indexing, search, summarize, and analysis.</span></a></li>
               </ul>
             </div>
 
             <div class="card">
               <h3>Automation, Voice, and Control</h3>
               <ul class="node-list">
-                <li><img class="node-inline-icon" src="../icons/TanyaAI_Icon.png" alt="Voice Actor icon" /><span><strong>voice_actor</strong>: speech-to-text and text-to-speech node with Auto Respond, Ask First, and Manual send modes.</span></li>
-                <li><img class="node-inline-icon" src="../icons/AudioCapture_Icon.png" alt="Audio capture icon" /><span><strong>audio_capture</strong>: captures output device, input device, or application audio with backend, sample-rate, threshold, silence, and phrase controls.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Mediator_Icon_1_s.png" alt="Mediator icon" /><span><strong>mediator_agent</strong>: agent profile layer and technical executor for direct voice workflows or Chatbot-origin tool handoff.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Sandbox_Icon.png" alt="Sandbox icon" /><span><strong>codex_sandbox</strong>: future Mediator execution-policy node for Codex sandbox, approval, working directory, network, and output capture settings.</span></li>
-                <li><img class="node-inline-icon" src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="Qubit Deck icon" /><span><strong>qubit_deck_controller</strong>: list or execute Qubit Deck actions from manual fields or Mediator JSON on <code>mediator_input</code>.</span></li>
-                <li><img class="node-inline-icon" src="../icons/KeyboardActionRunner_Icon_s.png.png" alt="Keyboard sequence icon" /><span><strong>keyboard_sequence</strong>: Keyboard Auto Runner for timed key/action sequences with lead-in, hold time, delays, and injection mode.</span></li>
-                <li><img class="node-inline-icon" src="../icons/SerialCom_Icon_s.png" alt="Serial COM icon" /><span><strong>serial_com</strong>: stores COM port, baud, and timeout settings for serial/Pico HID automation paths.</span></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=voice-actor"><img class="node-inline-icon" src="../icons/TanyaAI_Icon.png" alt="Voice Actor icon" /><span><strong>voice_actor</strong>: speech-to-text and text-to-speech node with Auto Respond, Ask First, and Manual send modes.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=audio-capture"><img class="node-inline-icon" src="../icons/AudioCapture_Icon.png" alt="Audio capture icon" /><span><strong>audio_capture</strong>: captures output device, input device, or application audio with phrase controls.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=mediator-agent"><img class="node-inline-icon" src="../icons/Mediator_Icon_1_s.png" alt="Mediator icon" /><span><strong>mediator_agent</strong>: agent profile layer and technical executor for voice workflows, Chatbot handoff, and Sales Agent AI review.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=codex-sandbox"><img class="node-inline-icon" src="../icons/Sandbox_Icon.png" alt="Sandbox icon" /><span><strong>codex_sandbox</strong>: future Mediator execution-policy node for sandbox, approval, working directory, network, and output capture settings.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=qubit-deck-controller"><img class="node-inline-icon" src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="Qubit Deck icon" /><span><strong>qubit_deck_controller</strong>: list or execute Qubit Deck actions from manual fields or Mediator JSON.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=keyboard-sequence"><img class="node-inline-icon" src="../icons/KeyboardActionRunner_Icon_s.png.png" alt="Keyboard sequence icon" /><span><strong>keyboard_sequence</strong>: Keyboard Auto Runner for timed key/action sequences.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=serial-com"><img class="node-inline-icon" src="../icons/SerialCom_Icon_s.png" alt="Serial COM icon" /><span><strong>serial_com</strong>: COM port, baud, and timeout settings for serial/Pico HID automation paths.</span></a></li>
               </ul>
             </div>
 
             <div class="card">
               <h3>3D, Rigging, and Scene Processing</h3>
               <ul class="node-list">
-                <li><img class="node-inline-icon" src="../icons/Import_File_Icon.png" alt="Import icon" /><span><strong>import</strong>: load mesh or splat assets.</span></li>
-                <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX import icon" /><span><strong>fbx_import</strong>: ingest and validate FBX rest geometry, capture pose, and animated pose roles for rigging workflows.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="Gen-X icon" /><span><strong>genx_video_mocap</strong>: run GEN-X/GEM-X video mocap and create downstream BVH import nodes.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="Mocap icon" /><span><strong>mocap_import</strong>: import and validate BVH mocap clips with skeleton, frame, and clip summaries.</span></li>
-                <li><img class="node-inline-icon" src="../icons/anim_retarget_Icon_s.png" alt="Retarget icon" /><span><strong>anim_retarget</strong>: connect a mocap/FBX source to a target FBX rig with joint mapping, root controls, pose offsets, and preview options.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Camera_icon.png" alt="Camera icon" /><span><strong>camera</strong>: scene camera placement/control node.</span></li>
-                <li><img class="node-inline-icon" src="../icons/LightSource_Icon_s.png" alt="Light icon" /><span><strong>light</strong>: directional, point, spot, and area light setup with intensity, range, and shadow parameters.</span></li>
-                <li><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Instance icon" /><span><strong>instance</strong>: create repeated scene instances.</span></li>
-                <li><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Copy to points icon" /><span><strong>copy_to_points</strong>: copy source geometry onto point inputs with instancing and material/texture support.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Primitive_Icon.png" alt="Primitive icon" /><span><strong>primitive</strong>: generate procedural primitive geometry.</span></li>
-                <li><img class="node-inline-icon" src="../icons/StreightCurve_Icon.png" alt="Curve icon" /><span><strong>curve</strong>: create line, circle, or spiral curve scene assets.</span></li>
-                <li><img class="node-inline-icon" src="../icons/ObjectSelect_Icon.png" alt="Modeler icon" /><span><strong>modeler</strong>: inspect model object names, hide/isolate submeshes, and save object/point/edge/face selection groups.</span></li>
-                <li><img class="node-inline-icon" src="../icons/TranformNode_Icon.png" alt="Transform icon" /><span><strong>transforms</strong>: apply translate/rotate/scale offsets in-chain.</span></li>
-                <li><img class="node-inline-icon" src="../icons/PLT_Icon.png" alt="PLY sequence icon" /><span><strong>ply_sequence</strong>: sequence playback/control for PLY streams and splat frame workflows.</span></li>
-                <li><img class="node-inline-icon" src="../icons/PixelsToSplat_Icon.png" alt="Image-GS splat icon" /><span><strong>image_gs_splat</strong>: download a URL or local image, run Image-GS, preview the generated Gaussian result in the node, and output a viewport-ready PLY splat.</span></li>
-                <li><img class="node-inline-icon" src="../icons/Scene_Icon.png" alt="Scene icon" /><span><strong>scene</strong>: assemble and manage multi-asset scenes.</span></li>
-                <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX icon" /><span><strong>export_fbx</strong>: export scene geometry to FBX.</span></li>
-                <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX animation icon" /><span><strong>export_fbx_animation</strong>: export validated FBX rigs with skeletons, skinned meshes, animation ranges, FPS, and optional joint-scale curves.</span></li>
-                <li><img class="node-inline-icon" src="../icons/OBJ_Icon.png" alt="OBJ icon" /><span><strong>export_obj</strong>: export to OBJ/MTL.</span></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=import"><img class="node-inline-icon" src="../icons/Import_File_Icon.png" alt="Import icon" /><span><strong>import</strong>: load mesh or splat assets.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=fbx-import"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX import icon" /><span><strong>fbx_import</strong>: ingest and validate FBX rest geometry, capture pose, and animated pose roles.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=genx-video-mocap"><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="Gen-X icon" /><span><strong>genx_video_mocap</strong>: run GEN-X/GEM-X video mocap and create downstream BVH import nodes.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=mocap-import"><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="Mocap icon" /><span><strong>mocap_import</strong>: import and validate BVH mocap clips with skeleton, frame, and clip summaries.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=anim-retarget"><img class="node-inline-icon" src="../icons/anim_retarget_Icon_s.png" alt="Retarget icon" /><span><strong>anim_retarget</strong>: connect a mocap/FBX source to a target FBX rig with joint mapping and preview options.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=camera"><img class="node-inline-icon" src="../icons/Camera_icon.png" alt="Camera icon" /><span><strong>camera</strong>: scene camera placement/control node.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=light"><img class="node-inline-icon" src="../icons/LightSource_Icon_s.png" alt="Light icon" /><span><strong>light</strong>: directional, point, spot, and area light setup with intensity, range, and shadow parameters.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=instance"><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Instance icon" /><span><strong>instance</strong>: create repeated scene instances.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=copy-to-points"><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Copy to points icon" /><span><strong>copy_to_points</strong>: copy source geometry onto point inputs with instancing and material/texture support.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=primitive"><img class="node-inline-icon" src="../icons/Primitive_Icon.png" alt="Primitive icon" /><span><strong>primitive</strong>: generate procedural primitive geometry.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=curve"><img class="node-inline-icon" src="../icons/StreightCurve_Icon.png" alt="Curve icon" /><span><strong>curve</strong>: create line, circle, or spiral curve scene assets.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=modeler"><img class="node-inline-icon" src="../icons/ObjectSelect_Icon.png" alt="Modeler icon" /><span><strong>modeler</strong>: inspect model object names, hide/isolate submeshes, and save object/point/edge/face selection groups.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=transforms"><img class="node-inline-icon" src="../icons/TranformNode_Icon.png" alt="Transform icon" /><span><strong>transforms</strong>: apply translate/rotate/scale offsets in-chain.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=ply-sequence"><img class="node-inline-icon" src="../icons/PLT_Icon.png" alt="PLY sequence icon" /><span><strong>ply_sequence</strong>: sequence playback/control for PLY streams and splat frame workflows.</span></a></li>
+                <li><a class="node-catalog-link" href="image_gs_splat.html"><img class="node-inline-icon" src="../icons/PixelsToSplat_Icon.png" alt="Image-GS splat icon" /><span><strong>image_gs_splat</strong>: download a URL or local image, run Image-GS, preview the generated Gaussian result, and output a viewport-ready PLY splat.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=scene"><img class="node-inline-icon" src="../icons/Scene_Icon.png" alt="Scene icon" /><span><strong>scene</strong>: assemble and manage multi-asset scenes.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=export-fbx"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX icon" /><span><strong>export_fbx</strong>: export scene geometry to FBX.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=export-fbx-animation"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX animation icon" /><span><strong>export_fbx_animation</strong>: export validated FBX rigs with skeletons, skinned meshes, animation ranges, FPS, and optional joint-scale curves.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=export-obj"><img class="node-inline-icon" src="../icons/OBJ_Icon.png" alt="OBJ icon" /><span><strong>export_obj</strong>: export to OBJ/MTL.</span></a></li>
               </ul>
             </div>
 
             <div class="card">
               <h3>Mesh, Materials, and Grooming</h3>
               <ul class="node-list">
-                <li><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="UV icon" /><span><strong>uv_unwrap</strong>: UV workflow stage.</span></li>
-                <li><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="Normals icon" /><span><strong>normals</strong>: smooth mesh normals and cache an updated OBJ for downstream texture, mask, and scene workflows.</span></li>
-                <li><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="Texture icon" /><span><strong>texture</strong>: base texturing stage.</span></li>
-                <li><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="Texture pro icon" /><span><strong>texture_pro</strong>: expanded texture processing controls.</span></li>
-                <li><img class="node-inline-icon" src="../icons/layer_Texture_Icon.png" alt="Texture layer icon" /><span><strong>texture_layer</strong>: layered texture compositing.</span></li>
-                <li><img class="node-inline-icon" src="../icons/MaterialGenerator_Icon_S.png" alt="Material icon" /><span><strong>material</strong>: material setup and conversion utilities.</span></li>
-                <li><img class="node-inline-icon" src="../icons/PaintBrush_Off_Icon.png" alt="Mask icon" /><span><strong>mask</strong>: paint foreground/background mesh masks with brush, falloff, invert, clear, and preview controls.</span></li>
-                <li><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="Volume split icon" /><span><strong>split_volume</strong> / <strong>volume_selector</strong>: filter/split geometry by volume.</span></li>
-                <li><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="FX icon" /><span><strong>fx</strong>: post-process and trail-style pipeline stage.</span></li>
-                <li><img class="node-inline-icon" src="../icons/StreightArrow_Icon.png" alt="Wire icon" /><span><strong>wire</strong>: wire and curve-based geometry path workflows.</span></li>
-                <li><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom guides icon" /><span><strong>groom_guides</strong>: generate guide curves from a painted mask and source mesh, with guide count, length, segments, seed, and threshold controls.</span></li>
-                <li><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom deform icon" /><span><strong>groom_deform</strong>: bind guide curves to FBX/retarget rigs and optionally hide the deformer geometry.</span></li>
-                <li><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom pose icon" /><span><strong>groom_guide_pose</strong>: pose guide curves from animation frames with XPBD-style strand settings and optional GPU support.</span></li>
-                <li><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom simulation icon" /><span><strong>groom_guide_sim</strong>: simulate guides with start frame, FPS, substeps, iterations, stretch, bend, damping, gravity, wind, and optional collider input.</span></li>
-                <li><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Guide tube icon" /><span><strong>groom_guide_tube</strong>: convert guide curves into tube geometry with root/tip radius, profile ramp, sides, subdivisions, caps, smoothing, and source-guide display.</span></li>
-                <li><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="Skinned volume mesh icon" /><span><strong>skinned_volume_mesh</strong>: generate skinned voxel collision meshes from rig contexts for grooming simulation and viewport collision.</span></li>
-                <li><img class="node-inline-icon" src="../icons/PointID_Icon.png" alt="Skinned splat proxy icon" /><span><strong>skinned_splat_proxy</strong>: generate skinned splat proxies from retargeted rigs, FBX imports, or guide tubes with sample count, influence, radius, auto-generate, and color-mode controls.</span></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=uv-unwrap"><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="UV icon" /><span><strong>uv_unwrap</strong>: UV workflow stage.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=normals"><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="Normals icon" /><span><strong>normals</strong>: smooth mesh normals and cache an updated OBJ for downstream texture, mask, and scene workflows.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=texture"><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="Texture icon" /><span><strong>texture</strong>: base texturing stage.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=texture-pro"><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="Texture pro icon" /><span><strong>texture_pro</strong>: expanded texture processing controls.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=texture-layer"><img class="node-inline-icon" src="../icons/layer_Texture_Icon.png" alt="Texture layer icon" /><span><strong>texture_layer</strong>: layered texture compositing.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=material"><img class="node-inline-icon" src="../icons/MaterialGenerator_Icon_S.png" alt="Material icon" /><span><strong>material</strong>: material setup and conversion utilities.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=mask"><img class="node-inline-icon" src="../icons/PaintBrush_Off_Icon.png" alt="Mask icon" /><span><strong>mask</strong>: paint foreground/background mesh masks with brush, falloff, invert, clear, and preview controls.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=split-volume"><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="Volume split icon" /><span><strong>split_volume</strong> / <strong>volume_selector</strong>: filter/split geometry by volume.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=fx"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="FX icon" /><span><strong>fx</strong>: post-process and trail-style pipeline stage.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=wire"><img class="node-inline-icon" src="../icons/StreightArrow_Icon.png" alt="Wire icon" /><span><strong>wire</strong>: wire and curve-based geometry path workflows.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=groom-guides"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom guides icon" /><span><strong>groom_guides</strong>: generate guide curves from a painted mask and source mesh.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=groom-deform"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom deform icon" /><span><strong>groom_deform</strong>: bind guide curves to FBX/retarget rigs and optionally hide the deformer geometry.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=groom-guide-pose"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom pose icon" /><span><strong>groom_guide_pose</strong>: pose guide curves from animation frames with XPBD-style strand settings and optional GPU support.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=groom-guide-sim"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom simulation icon" /><span><strong>groom_guide_sim</strong>: simulate guides with frame, FPS, substep, stretch, bend, gravity, wind, and collider controls.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=groom-guide-tube"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Guide tube icon" /><span><strong>groom_guide_tube</strong>: convert guide curves into tube geometry with radius ramp, subdivisions, caps, smoothing, and source-guide display.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=skinned-volume-mesh"><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="Skinned volume mesh icon" /><span><strong>skinned_volume_mesh</strong>: generate skinned voxel collision meshes from rig contexts for grooming simulation and viewport collision.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=skinned-splat-proxy"><img class="node-inline-icon" src="../icons/PointID_Icon.png" alt="Skinned splat proxy icon" /><span><strong>skinned_splat_proxy</strong>: generate skinned splat proxies from retargeted rigs, FBX imports, or guide tubes.</span></a></li>
               </ul>
             </div>
 
             <div class="card">
               <h3>Media and Review</h3>
               <ul class="node-list">
-                <li><img class="node-inline-icon" src="../icons/HTML_Preview.png" alt="HTML icon" /><span><strong>html_preview</strong>: in-node HTML rendering.</span></li>
-                <li><img class="node-inline-icon" src="../icons/PhotoCollection.png" alt="Image collection icon" /><span><strong>image_collection</strong>: assemble and preview image sets.</span></li>
-                <li><img class="node-inline-icon" src="../icons/ReelVideo_Icon.png" alt="Video icon" /><span><strong>video_player</strong>: timeline playback and clip inspection.</span></li>
-                <li><img class="node-inline-icon" src="../icons/RenderNode_Icon.png" alt="Render icon" /><span><strong>render</strong>: render sequence/export pipeline stage.</span></li>
-                <li><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="Post process icon" /><span><strong>post_process</strong>: apply image-sequence effects such as ordered dithering and produce an output frame pattern.</span></li>
-                <li><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="Sequence to MP4 icon" /><span><strong>sequence_to_mp4</strong>: encode image sequences to MP4 with FPS, codec, and bitrate settings.</span></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=html-preview"><img class="node-inline-icon" src="../icons/HTML_Preview.png" alt="HTML icon" /><span><strong>html_preview</strong>: in-node HTML rendering with PDF export for generated decks and other upstream HTML artifacts.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=image-collection"><img class="node-inline-icon" src="../icons/PhotoCollection.png" alt="Image collection icon" /><span><strong>image_collection</strong>: assemble and preview image sets.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=video-player"><img class="node-inline-icon" src="../icons/ReelVideo_Icon.png" alt="Video icon" /><span><strong>video_player</strong>: timeline playback and clip inspection.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=render"><img class="node-inline-icon" src="../icons/RenderNode_Icon.png" alt="Render icon" /><span><strong>render</strong>: render sequence/export pipeline stage.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=post-process"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="Post process icon" /><span><strong>post_process</strong>: apply image-sequence effects such as ordered dithering and produce an output frame pattern.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=sequence-to-mp4"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="Sequence to MP4 icon" /><span><strong>sequence_to_mp4</strong>: encode image sequences to MP4 with FPS, codec, and bitrate settings.</span></a></li>
               </ul>
             </div>
           </div>
           <p class="muted">Aliases also exist for many node kinds, including <code>scene_assembly</code>, <code>scene_outliner</code>, <code>exportfbx</code>, <code>export fbx animation</code>, <code>video player</code>, <code>bvh_import</code>, <code>retarget</code>, <code>gpt_prompt</code>, <code>copy to points</code>, <code>hair guides</code>, <code>guide_tube</code>, <code>serial_port</code>, and legacy <code>medigator_agent</code>.</p>
         </section>
-
-        <section id="image-gs-splat" class="section">
-          <h2>Image-GS Splat Node</h2>
+        <section id="agents" class="section">
+          <h2>Agents</h2>
           <p>
-            <code>image_gs_splat</code> converts a single source image into a viewport-ready PLY splat. Exact Pixel mode writes a deterministic front-facing splat sheet with one Gaussian per visible source pixel. Image-GS mode uses the optional Image-GS runtime to fit a smaller optimized set of Gaussian primitives, then converts the checkpoint into the same PLY path. The result is different from showing a flat image texture: the image is represented by many colored, semi-transparent Gaussian splats that can be loaded through the same scene and viewport path used by other splat assets.
-          </p>
-          <p>
-            This is not multi-view photogrammetry or a full hidden-surface 3D scan. With one image, the node creates an image-driven splat surface/field rather than a complete object with a reliable backside. In QubitMCP, the value is that the generated splats can be viewed, transformed, layered, connected into <code>scene</code>, and processed alongside other 3D and splat workflows.
+            Agent workflows cover the Task, Data Nexus, Mediator, Chatbot, and HTML Preview loop used by guided AI roles.
+            This section is placed with the pipeline examples because agent work is one workflow category, not the only workflow type.
           </p>
           <div class="grid two">
             <div class="card">
-              <h3>What Generate Does</h3>
+              <h3>Agents and Supporting Pieces</h3>
+              <ul class="bullet">
+                <li><strong>Sales Agent</strong>: the pitch-deck agent role that reviews readiness, writes or updates prep questions, resolves answered questions, and drafts slide copy from Data Nexus facts.</li>
+                <li><strong>Teacher Agent</strong>: the template-building agent role that converts human templates into structured agent templates through the Skills library workflow.</li>
+                <li><strong>Tanya / Chatbot</strong>: the user-facing conversation surface for asking to continue work and answering active questions.</li>
+                <li><strong>Mediator</strong>: the routing and execution layer that hands controlled agent requests to the right workflow and applies Data Nexus updates.</li>
+                <li><strong>Task node</strong>: not an agent. It is the explicit workflow step controller for Run Step, Write Questions, Generate Draft, Refresh HTML, Index Slides, and status.</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Language and Reading Agents</h3>
+              <ul class="bullet">
+                <li><strong>Translator Agent</strong>: a Mediator profile that translates the latest voice-transcribed input into the downstream Voice Actor target language, or natural English when no target language is provided.</li>
+                <li><strong>Japanese Reader</strong>: converts English, Japanese, or mixed input into natural Japanese plus ASCII romaji pronunciation for someone who cannot read Japanese.</li>
+                <li><strong>Korean Reader</strong>: converts English, Korean, or mixed input into natural Korean plus ASCII romanized pronunciation for someone who cannot read Hangul.</li>
+                <li><strong>Chinese Reader</strong>: converts English, Chinese, or mixed input into Mandarin Chinese plus ASCII pinyin pronunciation for someone who cannot read Chinese characters.</li>
+                <li><strong>Multilingual speech path</strong>: <code>voice_actor</code> handles listening and speaking; the Mediator language profile handles translation or reading output.</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Agent Task Preparation Workflow</h3>
               <ol class="steps">
-                <li>Reads a local image path or HTTP image URL from the node.</li>
-                <li>In <strong>Exact Pixel</strong> mode, stages the source as RGBA PNG and writes one front-facing splat per visible pixel, capped at 5 million splats by default.</li>
-                <li>In <strong>Image-GS</strong> mode, stages the source as an 8-bit RGB PNG so Image-GS receives a predictable image format.</li>
-                <li>When <strong>Auto HQ</strong> is enabled in Image-GS mode, analyzes source resolution/detail, chooses quality-focused settings, and keeps Image-GS progressive error-guided optimization enabled.</li>
-                <li>Runs Image-GS in <code>%QUBITMCP_HOME%\third_party\image-gs</code> only when Image-GS mode is selected.</li>
-                <li>Converts the exact image or latest checkpoint into a PLY Gaussian splat stored under <code>logs\image_gs_splat</code>.</li>
-                <li>Writes QC data for the generated path; Image-GS mode also compares the rendered reconstruction back to the staged source image when a render image is available.</li>
-                <li>Updates the node output so <strong>View</strong> or a connected <code>scene</code> node can display the generated splat in the 3D viewport.</li>
+                <li>Create or open a workflow with <code>skills</code>, <code>data_nexus</code>, <code>mediator_agent</code>, <code>task</code>, and optionally <code>html_preview</code>.</li>
+                <li>Connect <code>skills</code> to <code>task.skills</code>, <code>data_nexus</code> to <code>task.data_nexus</code>, and <code>mediator_agent</code> to <code>task.mediator</code>.</li>
+                <li>Optional: connect <code>task.artifact</code> to <code>html_preview.path</code> so generated decks preview automatically.</li>
+                <li>Click <strong>Run Step</strong> on the Task node to check slide readiness. With Mediator connected, Sales Agent AI reviews the newest Data Nexus points and can mark old prep questions as answered by existing points.</li>
+                <li>Click <strong>Write Questions</strong> to create or update only the still-needed <code>prep_question</code> points. If the graph has not changed and the old questions are still valid, the task reuses them instead of creating duplicates.</li>
+                <li>In Data Nexus, use <strong>Needs?</strong> and <strong>Refine?</strong> to show or hide question-source reference lines. These refs are saved as metadata, so they do not need to clutter the graph.</li>
+                <li>In Chatbot, ask Tanya to continue the Sales Agent or keep working on the pitch deck. She should ask the active open prep question.</li>
+                <li>Answer naturally in Chatbot. If the answer is coherent, Tanya saves it as a normal Data Nexus point and links it back to the yellow question point.</li>
+                <li>If you added answer points manually, click <strong>Run Step</strong> again. Task can link those existing points to open questions using <code>answers_question</code>.</li>
+                <li>Click <strong>Generate Draft</strong> when you want to view a deck. The draft can still be generated with weak slides; unsupported sections are written conservatively for review.</li>
+                <li>Review the generated <code>index.html</code>, <code>styles.css</code>, and <code>manifest.json</code> under <code>Skills/generated_decks/</code>. Task also indexes generated slides as green <code>slide</code> points in Data Nexus.</li>
               </ol>
             </div>
             <div class="card">
-              <h3>Setup and Debug</h3>
+              <h3>Answering Prep Questions</h3>
               <ul class="bullet">
-                <li>Exact Pixel mode does not require the optional Image-GS checkout. Use <code>setup.bat</code>, accept the first-use setup prompt, or click <strong>Setup Image-GS</strong> in the InfoCard only when Image-GS mode is needed.</li>
-                <li>The node writes generated files under <code>logs\image_gs_splat</code> and keeps the Image-GS checkout under <code>%QUBITMCP_HOME%\third_party\image-gs</code>.</li>
-                <li>While generation is running, a bottom-row <strong>Stop</strong> button appears to interrupt the active exact converter or Image-GS process.</li>
-                <li>The top-right debug icon opens an Image-GS report with dependency status, command line, generated paths, QC status, exit code, and captured stdout/stderr from the last setup or generate run.</li>
-                <li>Image inputs are normalized before training, while Image-GS plot previews use JPG to avoid 16-bit PNG visualization errors in the upstream plotting code.</li>
-                <li>QC is a validation estimate: it checks the available rendered output, splat density, export limits, and edge/detail retention, but it does not replace visual review in the viewport.</li>
+                <li>Preferred chat flow: ask Tanya <code>continue the Sales Agent for the pitch deck</code>, then answer the one question she asks.</li>
+                <li>You can still use an exact question ID when needed, for example <code>Answer prep_question slide_03_problem_prep_question: Customers lose time because review work is spread across chat, files, and engine tools.</code></li>
+                <li>Data Nexus keeps the yellow question point as a question, creates or updates a normal answer point, and adds an <code>answers_question</code> link.</li>
+                <li>If you add a normal point yourself instead of answering through chat, Task <strong>Run Step</strong> can ask Sales Agent AI whether that point resolves an existing prep question and then add the same <code>answers_question</code> link.</li>
+                <li>After a saved answer, Data Nexus advances the active question to the next open prep question when one exists.</li>
+                <li>Answered questions improve Task readiness because connected Task nodes rerun readiness after non-Task Data Nexus updates.</li>
+                <li>Question-source references do not need to clutter the graph. They are saved as <code>source_point_ids</code> metadata and only draw when their toggle is enabled.</li>
               </ul>
             </div>
-          </div>
-
-          <h3>Main Parameters</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Parameter</th>
-                  <th>Default</th>
-                  <th>What It Controls</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><code>image_url</code> / Image</td>
-                  <td>empty</td>
-                  <td>Local image path or HTTP/HTTPS image URL. The browse button selects a local image. This value is also mirrored to <code>source</code> for compatibility.</td>
-                </tr>
-                <tr>
-                  <td><code>generation_mode</code> / Mode</td>
-                  <td><code>exact_pixel</code></td>
-                  <td>Selects deterministic Exact Pixel export or the optional Image-GS optimizer path. Exact Pixel is the preferred mode for filled single-image coverage.</td>
-                </tr>
-                <tr>
-                  <td><code>auto_quality</code> / Auto HQ</td>
-                  <td><code>1</code></td>
-                  <td>Image-GS mode only. Automatically chooses high-quality generation settings from source image size/detail and uses progressive error-guided optimization so new Gaussians are added into high-error regions during training.</td>
-                </tr>
-                <tr>
-                  <td><code>num_gaussians</code> / Splats</td>
-                  <td><code>2000</code></td>
-                  <td>Number of Gaussian primitives Image-GS optimizes. Higher values can capture more detail but increase runtime, memory use, and output size. Auto HQ now raises this aggressively based on image resolution and detail.</td>
-                </tr>
-                <tr>
-                  <td><code>max_steps</code> / Steps</td>
-                  <td><code>800</code></td>
-                  <td>Optimization iterations. Higher values usually improve reconstruction quality but take longer. The node saves checkpoint and render output at the final step; Auto HQ uses longer high-quality progressive runs.</td>
-                </tr>
-                <tr>
-                  <td><code>render_height</code> / Height</td>
-                  <td><code>768</code></td>
-                  <td>Training/render height passed to Image-GS. Larger values preserve more image detail but increase VRAM and runtime cost. Auto HQ caps this at a practical high-quality height.</td>
-                </tr>
-                <tr>
-                  <td><code>init_mode</code> / Init</td>
-                  <td><code>gradient</code></td>
-                  <td>Initial placement strategy for splats. <code>gradient</code> follows image detail/edges, <code>saliency</code> favors visually important regions, and <code>random</code> distributes splats randomly.</td>
-                </tr>
-                <tr>
-                  <td><code>sheet_scale</code> / Sheet</td>
-                  <td><code>2.0</code></td>
-                  <td>Scale used when converting the source image or 2D Image-GS checkpoint into a viewport splat sheet. Increase for a larger generated surface in scene units.</td>
-                </tr>
-                <tr>
-                  <td><code>radius_scale</code> / Radius</td>
-                  <td><code>1.0</code></td>
-                  <td>Multiplier applied to exact pixel footprints or checkpoint splat radii. Increase for softer/larger splats; decrease for tighter points.</td>
-                </tr>
-                <tr>
-                  <td><code>alpha</code> / Alpha</td>
-                  <td><code>0.92</code></td>
-                  <td>Opacity value assigned during PLY conversion. Lower values make the generated splat sheet more transparent.</td>
-                </tr>
-                <tr>
-                  <td><code>quantize</code> / Quantize</td>
-                  <td><code>0</code></td>
-                  <td>Enables Image-GS quantization mode. Use it when testing compressed/bit-limited representations; leave off for normal quality-focused generation.</td>
-                </tr>
-                <tr>
-                  <td><code>vis_gaussians</code> / Points</td>
-                  <td><code>1</code></td>
-                  <td>Asks Image-GS to write Gaussian position and diagnostic preview images. These previews help inspect the fitted splat distribution but add a little runtime.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <h3>Advanced and Generated Parameters</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Parameter</th>
-                  <th>Purpose</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><code>source</code></td>
-                  <td>Compatibility mirror of the input image path/URL used by graph and scene helpers.</td>
-                </tr>
-                <tr>
-                  <td><code>path</code></td>
-                  <td>Final generated PLY path after a successful run. This is the path consumed by scene/import-style viewport loading.</td>
-                </tr>
-                <tr>
-                  <td><code>source_image</code></td>
-                  <td>Local staged PNG used as generation input. Exact Pixel preserves RGBA; Image-GS uses 8-bit RGB.</td>
-                </tr>
-                <tr>
-                  <td><code>exact_max_splats</code>, <code>exact_alpha_threshold</code></td>
-                  <td>Exact Pixel controls for the maximum exported visible pixels and the alpha cutoff for skipping transparent pixels. Exact Pixel PLY records are interleaved so partial viewport samples cover the full source image; large exact exports display through a sampled viewport preview with compensated radius while the PLY on disk remains full resolution.</td>
-                </tr>
-                <tr>
-                  <td><code>image_gs_input</code></td>
-                  <td>Relative media path passed to Image-GS, such as <code>qubitmcp/name_hash.png</code>.</td>
-                </tr>
-                <tr>
-                  <td><code>image_gs_exp_name</code></td>
-                  <td>Experiment name used under the Image-GS <code>results</code> folder.</td>
-                </tr>
-                <tr>
-                  <td><code>output_dir</code></td>
-                  <td>Optional output folder override. If empty, the node writes generated PLY, manifest, and staged input files under <code>logs\image_gs_splat\&lt;node name&gt;</code>.</td>
-                </tr>
-                <tr>
-                  <td><code>splat_ply</code></td>
-                  <td>Generated PLY splat path written after checkpoint conversion.</td>
-                </tr>
-                <tr>
-                  <td><code>checkpoint</code></td>
-                  <td>Latest Image-GS checkpoint selected for conversion.</td>
-                </tr>
-                <tr>
-                  <td><code>preview_image</code></td>
-                  <td>Preview image shown on the node when available. Before generation it may point to the source; after generation it points to the latest Image-GS preview.</td>
-                </tr>
-                <tr>
-                  <td><code>render_image</code></td>
-                  <td>Latest rendered Image-GS reconstruction used for QC comparison when available.</td>
-                </tr>
-                <tr>
-                  <td><code>manifest</code></td>
-                  <td>JSON manifest recording the source image, checkpoint, generated PLY, dimensions, conversion settings, automatic settings, and QC report.</td>
-                </tr>
-                <tr>
-                  <td><code>auto_quality_report</code></td>
-                  <td>JSON details for the Auto HQ decision, including detected source detail, selected density, progressive optimization strategy, and loss settings.</td>
-                </tr>
-                <tr>
-                  <td><code>qc_report</code></td>
-                  <td>JSON report with QC status, splat density, export cap status, source-vs-render similarity, PSNR-style score, and edge/detail retention when a render image is available.</td>
-                </tr>
-                <tr>
-                  <td><code>device</code></td>
-                  <td>Compute device passed to Image-GS, usually <code>cuda:0</code>. Change only when using another CUDA device or CPU-compatible testing path.</td>
-                </tr>
-                <tr>
-                  <td><code>disable_inverse_scale</code></td>
-                  <td>Advanced conversion flag that changes how 2D scale values are mapped into exported splat radii.</td>
-                </tr>
-                <tr>
-                  <td><code>max_splats</code></td>
-                  <td>Safety cap for how many optimized splats are exported to PLY during conversion. Auto HQ raises this to match the selected splat count so high-detail runs are not silently capped.</td>
-                </tr>
-                <tr>
-                  <td><code>min_axis_px</code>, <code>max_axis_px</code>, <code>max_anisotropy</code>, <code>drop_scale_outliers</code></td>
-                  <td>PLY export scale guard. Auto HQ uses these to prevent very large circular patches or long stretched splats from a few extreme checkpoint scale values.</td>
-                </tr>
-                <tr>
-                  <td><code>coverage_boost</code>, <code>z_axis_ratio</code></td>
-                  <td>PLY viewport coverage settings. Auto HQ uses these to reduce holes caused by converting Image-GS's 2D splats into QubitMCP's 3D Gaussian PLY format.</td>
-                </tr>
-                <tr>
-                  <td><code>progressive_optim</code></td>
-                  <td>Controls Image-GS error-guided progressive optimization. Auto HQ leaves this on so training adds Gaussians into high-error regions instead of optimizing one fixed distribution from the start.</td>
-                </tr>
-                <tr>
-                  <td><code>initial_ratio</code>, <code>add_steps</code>, <code>add_times</code>, <code>post_min_steps</code></td>
-                  <td>Progressive optimization schedule. Auto HQ starts from a smaller seed set, adds splats repeatedly from reconstruction error maps, then leaves extra post-addition steps for refinement.</td>
-                </tr>
-                <tr>
-                  <td><code>l1_loss_ratio</code>, <code>l2_loss_ratio</code>, <code>ssim_loss_ratio</code></td>
-                  <td>Image-GS training loss weights. Auto HQ balances pixel accuracy with structural similarity for fewer holes and better detail retention.</td>
-                </tr>
-                <tr>
-                  <td><code>debug_log</code></td>
-                  <td>Enables extra JSONL diagnostics. The node always captures the latest setup/generate output for the debug report, even when this is off.</td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="card">
+              <h3>Data Nexus Review Tools</h3>
+              <ul class="bullet">
+                <li>Drag the vertical dividers to resize the point list, graph canvas, and point detail columns when text needs more room.</li>
+                <li>Use <strong>Arrange</strong> for linked-point layout and <strong>Cluster</strong> to separate regular points, question points, and slide points into clearer groups.</li>
+                <li>Normal points, needs-answer questions, refinement questions, and slide points use different colors and dot sizes so the graph is easier to scan.</li>
+                <li>Newly created points show a white review ring until the next add operation, even if you move, arrange, or cluster the graph.</li>
+                <li><strong>Delete selected point</strong> now asks for confirmation and shows how many links will be removed before the point is deleted.</li>
+                <li>Use <strong>Index Slides</strong> on Task after an existing deck changes; slide points update in place and keep ordered <code>next_slide</code> links plus <code>uses_source</code> links to supporting points.</li>
+              </ul>
+            </div>
           </div>
         </section>
 
         <section id="pipelines" class="section">
           <h2>Common Pipelines</h2>
           <div class="grid pipeline-grid">
+            <div class="card">
+              <h3>Skills + Data Nexus + Task Sales Deck</h3>
+              <ol class="steps">
+                <li>Use <code>skills</code> to confirm an approved Sales Agent <code>html_deck</code> template and an approved sales pitch deck task guide are available.</li>
+                <li>Use <code>data_nexus</code> to collect sales facts as normal answer points, such as company profile, problem, workflow outcome, traction, pricing, competition, and team context.</li>
+                <li>Connect <code>skills -> task.skills</code>, <code>data_nexus -> task.data_nexus</code>, and optionally <code>mediator_agent -> task.mediator</code> for LLM review/question writing.</li>
+                <li>Click Task <strong>Run Step</strong>. The Task node resolves the guide/template, reads Data Nexus, reports slide readiness, and asks Sales Agent AI to review when Mediator is connected.</li>
+                <li>If you added new points manually, <strong>Run Step</strong> can reconcile them against open prep questions and link existing answer points with <code>answers_question</code>.</li>
+                <li>Click Task <strong>Write Questions</strong> to have Sales Agent AI write focused <code>prep_question</code> points into Data Nexus. The write sync adds genuinely new questions, updates changed questions, and removes stale Task-owned questions.</li>
+                <li>Ask Tanya in Chatbot to continue the Sales Agent/pitch deck. She asks one active open prep question at a time; coherent answers become normal points linked back with <code>answers_question</code>.</li>
+                <li>Use Data Nexus <strong>Needs?</strong> and <strong>Refine?</strong> to show or hide question-source lines while preserving traceability.</li>
+                <li>Click <strong>Generate Draft</strong> to create a Mediator-written deck draft. Weak slides are allowed in the draft but are marked conservatively for review.</li>
+                <li>Review the generated deck folder containing <code>index.html</code>, <code>styles.css</code>, and <code>manifest.json</code>; connect <code>task.artifact</code> to <code>html_preview.path</code> for in-app review.</li>
+                <li>Use <strong>Refresh HTML</strong> for style-only deck updates, <strong>Index Slides</strong> to rebuild green slide points from an existing deck, and HTML Preview <strong>Export PDF</strong> when you need a paged PDF copy.</li>
+              </ol>
+            </div>
             <div class="card">
               <h3>Scene Assembly and Export</h3>
               <ol class="steps">
@@ -1107,6 +1012,12 @@
             <li>Audio Capture issues: rerun <code>setup.bat</code>; output-device capture needs <code>soundcard</code> plus <code>numpy</code>, and input-device capture needs a working audio backend such as PyAudio.</li>
             <li>Mediator issues: confirm Node.js, <code>npx</code>, and <code>tools\codex.ps1</code> are available; Mediator logs are under <code>logs\mediator_agents</code>.</li>
             <li>Chatbot/Mediator handoff issues: confirm <code>chatbot.mediator_input</code> is connected, <code>llm_prompt</code> is set to the intended DeepSeek/Ollama model, and only the active input route owns speech output. Chatbot-origin tool execution should speak through Chatbot output, while direct Mediator voice workflows speak through Mediator output.</li>
+            <li>Task readiness issues: confirm <code>skills -> task.skills</code> and <code>data_nexus -> task.data_nexus</code> are connected, then press Task <strong>Run Step</strong> before <strong>Generate Draft</strong>. Connect <code>mediator_agent -> task.mediator</code> when you want Sales Agent AI review.</li>
+            <li>Task question-write issues: if <strong>Write Questions</strong> seems quiet, check <code>data_nexus_write</code>. <code>questions</code> is the active question count; the message shows whether points were added, updated, or deleted. <code>data_nexus_answer_links</code> shows when newer points were linked as answers to old questions.</li>
+            <li>Prep question visibility issues: yellow/orange <code>prep_question</code> points can exist without visible source lines; enable Data Nexus <strong>Needs?</strong> or <strong>Refine?</strong> to show the reference lines.</li>
+            <li>Prep question answer issues: ask Tanya to <code>continue the Sales Agent for the pitch deck</code>, then answer the active question she asks. Exact IDs still work, for example <code>Answer prep_question slide_03_problem_prep_question: ...</code>.</li>
+            <li>Generated deck issues: after Task <strong>Generate Draft</strong>, check the Task <code>artifact</code> output and the generated folder under <code>Skills/generated_decks/</code> for <code>index.html</code>, <code>styles.css</code>, and <code>manifest.json</code>. Use Task <strong>Index Slides</strong> if the green slide points need to be rebuilt from an existing deck.</li>
+            <li>Skills validation warnings: open the Skills node details panel. Package warnings usually mean a referenced source template, conversion report, or supporting file listed in front matter is missing from the local <code>Skills/</code> library.</li>
             <li>Qubit Deck control issues: use <code>qubit_deck_controller</code> Context mode first to confirm button names before sending Executor JSON from Mediator.</li>
             <li>Keyboard Auto Runner issues: make sure the intended target app has focus before the lead-in delay ends, increase key hold time for apps that miss fast input, and check connected <code>serial_com</code> nodes when Pico HID output is enabled.</li>
             <li>Serial COM issues: install <code>pyserial</code> through the node prompt or rerun <code>setup.bat</code>, then confirm the COM port, baud rate, and timeout match the target device firmware.</li>
@@ -1140,4 +1051,3 @@
     <script src="app.js"></script>
   </body>
 </html>
-

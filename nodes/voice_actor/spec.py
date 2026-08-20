@@ -139,6 +139,8 @@ MEDIGATOR_NODE_KINDS = {
 MEDIGATOR_OUTPUT_TOKEN_KEY = "__medigator_output_token"
 MEDIGATOR_SPEECH_TEXT_KEY = "__medigator_speech_text"
 MEDIGATOR_SPEECH_TOKEN_KEY = "__medigator_speech_token"
+MEDIGATOR_SPEECH_SESSION_TOKEN_KEY = "__medigator_speech_session_token"
+CHATBOT_PROMPT_SESSION_TOKEN_KEY = "__chatbot_prompt_session_token"
 DATABASE_NODE_KINDS = {"database"}
 CHATBOT_DB_NAME = "my_database"
 CHATBOT_DEFAULT_COLLECTION = "EchoGragh"
@@ -196,9 +198,17 @@ _SECURITY_REQUEST_TAG_RE = re.compile(
     r"<\s*security_request\b[^>]*>.*?<\s*/\s*security_request\s*>",
     re.IGNORECASE | re.DOTALL,
 )
-_VOICE_CONTROL_TAG_RE = re.compile(
-    r"<\s*/?\s*(?:security_request|security_approval)\b[^>]*>",
+_DATA_NEXUS_UPDATE_TAG_RE = re.compile(
+    r"<\s*data_nexus_update\b[^>]*>.*?<\s*/\s*data_nexus_update\s*>",
     re.IGNORECASE | re.DOTALL,
+)
+_VOICE_CONTROL_TAG_RE = re.compile(
+    r"<\s*/?\s*(?:security_request|security_approval|data_nexus_update|sales_agent_review|sales_agent_questions|sales_agent_draft)\b[^>]*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_MEDIATOR_ROUTE_STATUS_RE = re.compile(
+    r"^\s*(?:data\s+nexus|sales\s+agent)\s+route\s*:",
+    re.IGNORECASE,
 )
 _MULTI_BLANK_RE = re.compile(r"\n{3,}")
 
@@ -489,10 +499,17 @@ def _text_from_input(scene, node_item, port_name: str) -> str:
         src = getattr(edge, "src", None)
         if src is None:
             continue
-        try:
-            text = scene.resolve_text_value(src)
-        except Exception:
-            text = ""
+        text = ""
+        if _kind_of_item(src) in MEDIGATOR_NODE_KINDS:
+            model = getattr(src, "model", None)
+            text = _param_value(model, MEDIGATOR_SPEECH_TEXT_KEY, "").strip()
+        if not text:
+            try:
+                text = scene.resolve_text_value(src)
+            except Exception:
+                text = ""
+        if _kind_of_item(src) in MEDIGATOR_NODE_KINDS and _MEDIATOR_ROUTE_STATUS_RE.match(str(text or "")):
+            continue
         if text:
             parts.append(text.strip())
     return "\n\n".join(parts).strip()
@@ -978,6 +995,22 @@ def _latest_auto_speech_response(scene, source_item) -> tuple[str, str, str]:
     return _latest_chatbot_response(scene, source_item)
 
 
+def _auto_speech_session_token(source_item, response_token: str = "") -> str:
+    model = getattr(source_item, "model", None)
+    kind = _auto_speech_source_kind(source_item)
+    if kind == "mediator":
+        return (
+            _param_value(model, MEDIGATOR_SPEECH_SESSION_TOKEN_KEY, "").strip()
+            or str(response_token or "").strip()
+        )
+    if kind == "chatbot":
+        return (
+            _param_value(model, CHATBOT_PROMPT_SESSION_TOKEN_KEY, "").strip()
+            or str(response_token or "").strip()
+        )
+    return str(response_token or "").strip()
+
+
 def _extract_user_feedback_text(text: str) -> str:
     matches = []
     for match in _USER_FEEDBACK_TAG_RE.finditer(str(text or "")):
@@ -990,6 +1023,7 @@ def _extract_user_feedback_text(text: str) -> str:
 def _clean_voice_text(text: str) -> str:
     cleaned = str(text or "")
     cleaned = _SECURITY_REQUEST_TAG_RE.sub("", cleaned)
+    cleaned = _DATA_NEXUS_UPDATE_TAG_RE.sub("", cleaned)
     cleaned = _VOICE_CONTROL_TAG_RE.sub("", cleaned)
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
@@ -1002,26 +1036,31 @@ def _clean_voice_text(text: str) -> str:
         count=1,
         flags=re.IGNORECASE,
     )
-    return cleaned.strip()
+    cleaned = cleaned.strip()
+    if _MEDIATOR_ROUTE_STATUS_RE.match(cleaned):
+        return ""
+    return cleaned
 
 
 def _proxy_auto_speech_text(source_item, text: str, *, fallback_text: str = "") -> str:
     clean = str(text or "").strip()
     if _auto_speech_source_kind(source_item) != "mediator":
         return _clean_voice_text(clean)
+
+    def fallback_clean() -> str:
+        fallback_feedback = _extract_user_feedback_text(fallback_text)
+        if fallback_feedback:
+            return fallback_feedback
+        return _clean_voice_text(fallback_text)
+
     feedback = _extract_user_feedback_text(clean)
     if feedback:
         return feedback
     stripped = _clean_voice_text(clean)
-    if stripped and stripped != clean:
-        return stripped
+    if stripped != clean:
+        return stripped or fallback_clean()
     if not clean:
-        fallback_feedback = _extract_user_feedback_text(fallback_text)
-        if fallback_feedback:
-            return fallback_feedback
-        fallback_stripped = _clean_voice_text(fallback_text)
-        if fallback_stripped:
-            return fallback_stripped
+        return fallback_clean()
     return stripped or clean
 
 
@@ -1842,7 +1881,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._chatbot_proxy_item = None
         self._chatbot_via_proxy = False
         self._last_chatbot_token = ""
+        self._readout_session_token = ""
         self._pending_chatbot_text = ""
+        self._pending_chatbot_session_token = ""
         self._turn_taking_paused_actors = []
         self._last_tts_text = ""
         self._processing_chatbot_auto = False
@@ -2445,6 +2486,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if not chatbot_connected:
             self._last_chatbot_token = ""
             self._pending_chatbot_text = ""
+            self._pending_chatbot_session_token = ""
         self._chatbot_connected = chatbot_connected
         self._chatbot_input_item = chatbot_item
         self._chatbot_proxy_item = chatbot_proxy
@@ -2846,6 +2888,52 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 self._transcript_undo_stack = self._transcript_undo_stack[-200:]
         self._set_transcript(merged, publish=publish)
 
+    def _transcript_last_response_matches(self, text: str) -> bool:
+        clean = _clean_voice_text(text)
+        if not clean:
+            return False
+        current = str(self._transcript.toPlainText() or "").strip()
+        if not current:
+            return False
+        blocks = [block.strip() for block in re.split(r"\n{2,}", current) if block.strip()]
+        if not blocks:
+            return False
+        return _clean_voice_text(blocks[-1]) == clean
+
+    def _append_spoken_response_to_transcript(self, text: str, *, publish: bool = True) -> None:
+        clean = _clean_voice_text(text)
+        if not clean:
+            return
+        current = str(self._transcript.toPlainText() or "")
+        if self._transcript_last_response_matches(clean):
+            if publish:
+                _set_node_info(self._node_item, current)
+            return
+        base = current.rstrip()
+        merged = clean if not base.strip() else f"{base}\n\n{clean}"
+        if merged != current:
+            self._transcript_undo_stack.append(current)
+            if len(self._transcript_undo_stack) > 200:
+                self._transcript_undo_stack = self._transcript_undo_stack[-200:]
+        self._set_transcript(merged, publish=publish)
+        try:
+            cursor = self._transcript.textCursor()
+            cursor.movePosition(QtGui.QTextCursor.End)
+            self._transcript.setTextCursor(cursor)
+            self._transcript.ensureCursorVisible()
+        except Exception:
+            pass
+
+    def _prepare_readout_session(self, session_token: str) -> None:
+        clean_token = str(session_token or "").strip()
+        if not clean_token:
+            return
+        if clean_token == str(self._readout_session_token or "").strip():
+            return
+        self._readout_session_token = clean_token
+        self._transcript_undo_stack.clear()
+        self._set_transcript("", publish=True)
+
     def _toggle_mode(self) -> None:
         if self._busy:
             return
@@ -2998,6 +3086,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if not self._tts_playing:
             if self._busy:
                 self._pending_chatbot_text = ""
+                self._pending_chatbot_session_token = ""
                 self._set_busy(False, "")
                 self._resume_turn_taking_paused_actors()
                 self._set_status("Speech playback ended.")
@@ -3005,6 +3094,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._set_status("Nothing is playing.")
             return
         self._pending_chatbot_text = ""
+        self._pending_chatbot_session_token = ""
         engine = None
         using_pygame = False
         with self._tts_lock:
@@ -3169,8 +3259,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _stop_tts_only(self, *, reason: str = "") -> bool:
         if not self._tts_playing:
             self._pending_chatbot_text = ""
+            self._pending_chatbot_session_token = ""
             return False
         self._pending_chatbot_text = ""
+        self._pending_chatbot_session_token = ""
         engine = None
         using_pygame = False
         with self._tts_lock:
@@ -3924,6 +4016,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 if token:
                     self._last_chatbot_token = token
                 self._pending_chatbot_text = ""
+                self._pending_chatbot_session_token = ""
                 self._set_status("Mediator Voice Actor is handling this response.")
                 return
             source_name = _node_name(source_item)
@@ -3941,10 +4034,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
             text = ""
             token = ""
+            session_token = ""
             source_text = ""
             py_error = ""
             if self._chatbot_via_proxy:
                 source_text, token, _err = _latest_auto_speech_response(self._scene, source_item)
+                session_token = _auto_speech_session_token(source_item, token)
                 proxy_item = self._chatbot_proxy_item
                 if proxy_item is not None and _kind_of_item(proxy_item) == "python":
                     text, py_error = _run_python_transform(self._scene, proxy_item)
@@ -3960,6 +4055,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     return
             else:
                 text, token, _err = _latest_auto_speech_response(self._scene, source_item)
+                session_token = _auto_speech_session_token(source_item, token)
                 if not text:
                     return
                 text = _proxy_auto_speech_text(source_item, text, fallback_text=text).strip()
@@ -3968,20 +4064,21 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
             same_token = bool(token and token == self._last_chatbot_token)
             if same_token:
-                current_text = str(self._transcript.toPlainText() or "").strip()
-                if current_text == text.strip():
+                pending_text = _clean_voice_text(self._pending_chatbot_text)
+                if self._transcript_last_response_matches(text) or (pending_text and pending_text == _clean_voice_text(text)):
                     return
+                return
             if token:
                 self._last_chatbot_token = token
-            self._set_transcript(text)
             if self._busy:
                 self._pending_chatbot_text = text
+                self._pending_chatbot_session_token = session_token
                 return
-            self._speak_text(text, source="chatbot_auto")
+            self._speak_text(text, source="chatbot_auto", session_token=session_token)
         finally:
             self._processing_chatbot_auto = False
 
-    def _speak_text(self, text: str, *, source: str) -> bool:
+    def _speak_text(self, text: str, *, source: str, session_token: str = "") -> bool:
         voice_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
         tts_language = _normalize_stt_language(self._selected_stt_language)
         voice_gender = _normalize_voice_gender(self._selected_voice_gender)
@@ -4023,6 +4120,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
             else:
                 self._set_status("No text to speak. Connect input 'text' or type transcript.", error=True)
             return False
+        if source not in {"selection", "transcript", "replay"}:
+            self._prepare_readout_session(session_token)
+            self._append_spoken_response_to_transcript(clean, publish=True)
         language_suffix = ""
         if voice_key in {VOICE_TANYA_GOOGLE, VOICE_KOKORO_82M}:
             language_suffix = f" ({_stt_language_name(tts_language)})"
@@ -4299,9 +4399,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         self._set_status("Speech playback complete.")
         pending = (self._pending_chatbot_text or "").strip()
+        pending_session = str(self._pending_chatbot_session_token or "").strip()
         self._pending_chatbot_text = ""
+        self._pending_chatbot_session_token = ""
         if pending:
-            self._speak_text(pending, source="chatbot_auto")
+            self._speak_text(pending, source="chatbot_auto", session_token=pending_session)
 
 
 def render_node_body(node_item, y_cursor: int) -> int:

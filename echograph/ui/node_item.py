@@ -796,7 +796,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 try:
                     self.ensure_input("path")
                     setattr(self, "_default_named_input", "path")
-                    setattr(self, "_show_default_input_with_named", True)
+                    setattr(self, "_show_default_input_with_named", False)
                 except Exception:
                     pass
                 hidden_entry = None
@@ -6683,6 +6683,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
         btn.clicked.connect(lambda _=False, p=path: self._open_import_preview(p))
         btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
 
+        if kind == "html_preview":
+            pdf_btn = QtWidgets.QPushButton("PDF")
+            pdf_btn.setToolTip("Export this HTML preview to a PDF file")
+            pdf_btn.setEnabled(btn_enabled and bool(path))
+            pdf_btn.setFixedWidth(52)
+            pdf_btn.setStyleSheet(
+                "QPushButton{background:#166534;color:#f0fdf4;border:1px solid #39ff14;border-radius:4px;padding:2px 8px;}"
+                "QPushButton:hover{background:#15803d;}"
+                "QPushButton:disabled{background:#334155;color:#94a3b8;border-color:#475569;}"
+            )
+            pdf_btn.clicked.connect(lambda _=False, p=path: self._export_html_preview_pdf(p))
+            btn_row.addWidget(pdf_btn, 0, QtCore.Qt.AlignLeft)
+
         # Snapshot version dropdown (import only) beside View
         if kind in ("import", "scene", "scene_assembly", "scene_outliner"):
             try:
@@ -6996,6 +7009,245 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return
         value = (self._param_value("path") or "").strip()
         QtCore.QTimer.singleShot(0, lambda v=value: self._set_param_value("path", v))
+
+    @staticmethod
+    def _default_pdf_export_path(path: str) -> str:
+        clean = os.path.abspath(str(path or "").strip())
+        base, _ext = os.path.splitext(clean)
+        return f"{base or clean}.pdf"
+
+    @staticmethod
+    def _deck_pdf_print_fix_js() -> str:
+        css = """
+@page {
+  size: 11in 8.5in;
+  margin: 0;
+}
+
+html,
+body {
+  width: 11in !important;
+  min-height: 8.5in !important;
+  margin: 0 !important;
+  background: #111315 !important;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+
+.deck-header {
+  position: relative !important;
+  top: auto !important;
+  z-index: auto !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1.2fr) minmax(3.1in, 0.8fr) !important;
+  align-items: center !important;
+  justify-content: stretch !important;
+  width: 11in !important;
+  height: 8.5in !important;
+  min-height: 8.5in !important;
+  max-height: 8.5in !important;
+  gap: 0.45in !important;
+  padding: 0.78in !important;
+  overflow: hidden !important;
+  background: #111315 !important;
+  border-bottom: 0 !important;
+  backdrop-filter: none !important;
+  box-sizing: border-box !important;
+  break-after: page !important;
+  page-break-after: always !important;
+  break-inside: avoid !important;
+  page-break-inside: avoid !important;
+}
+
+.deck-header h1 {
+  font-size: 0.46in !important;
+  line-height: 1.05 !important;
+}
+
+.deck-header .eyebrow {
+  font-size: 0.12in !important;
+}
+
+.deck-header dl {
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  gap: 0.14in !important;
+}
+
+.deck-header dl > div {
+  padding: 0.16in !important;
+  background: #191d22 !important;
+  border: 1px solid #303844 !important;
+  border-radius: 0.08in !important;
+}
+
+.deck-header dt {
+  font-size: 0.09in !important;
+}
+
+.deck-header dd {
+  font-size: 0.14in !important;
+}
+
+.deck {
+  display: block !important;
+  width: 11in !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.slide {
+  width: 11in !important;
+  height: 8.5in !important;
+  min-height: 8.5in !important;
+  max-height: 8.5in !important;
+  overflow: hidden !important;
+  border-bottom: 0 !important;
+  box-sizing: border-box !important;
+  break-after: page !important;
+  page-break-after: always !important;
+  break-inside: avoid !important;
+  page-break-inside: avoid !important;
+  scroll-snap-align: none !important;
+}
+
+.slide:last-child {
+  break-after: auto !important;
+  page-break-after: auto !important;
+}
+"""
+        return (
+            "(function(){"
+            "if(!document.querySelector('.deck-header')||!document.querySelector('.slide')){return false;}"
+            "var existing=document.getElementById('qubitmcp-pdf-print-fix');"
+            "if(existing&&existing.parentNode){existing.parentNode.removeChild(existing);}"
+            "var style=document.createElement('style');"
+            "style.id='qubitmcp-pdf-print-fix';"
+            "style.media='print';"
+            f"style.textContent={json.dumps(css)};"
+            "document.head.appendChild(style);"
+            "return true;"
+            "})();"
+        )
+
+    def _export_html_preview_pdf(self, path: str) -> None:
+        path = (path or "").strip()
+        parent = _top_level_parent_for_dialog()
+        if not path or not os.path.exists(path):
+            QtWidgets.QMessageBox.warning(parent, "HTML Preview", "No HTML file is available to export.")
+            return
+        if WebEngine is None:
+            QtWidgets.QMessageBox.warning(
+                parent,
+                "HTML Preview",
+                "PDF export needs Qt WebEngine. This Qt install is using the text preview fallback.",
+            )
+            return
+
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            parent,
+            "Export HTML Preview to PDF",
+            self._default_pdf_export_path(path),
+            "PDF files (*.pdf);;All Files (*.*)",
+        )
+        file_path = (file_path or "").strip()
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".pdf"):
+            file_path += ".pdf"
+
+        view = None
+        try:
+            view = WebEngine.QWebEngineView(parent)
+            view.resize(1280, 720)
+            view.hide()
+            self._html_pdf_export_view = view
+            page = view.page()
+            print_to_pdf = getattr(page, "printToPdf", None)
+            finished_signal = getattr(page, "pdfPrintingFinished", None)
+            if not callable(print_to_pdf) or finished_signal is None or not hasattr(finished_signal, "connect"):
+                QtWidgets.QMessageBox.warning(parent, "HTML Preview", "This Qt WebEngine build does not support PDF export.")
+                try:
+                    view.deleteLater()
+                except Exception:
+                    pass
+                return
+
+            def _cleanup() -> None:
+                try:
+                    view.deleteLater()
+                except Exception:
+                    pass
+                if getattr(self, "_html_pdf_export_view", None) is view:
+                    try:
+                        delattr(self, "_html_pdf_export_view")
+                    except Exception:
+                        pass
+
+            def _finished(*args) -> None:
+                success = bool(args[-1]) if args else os.path.exists(file_path)
+                if success and os.path.exists(file_path):
+                    QtWidgets.QMessageBox.information(parent, "HTML Preview", f"Exported PDF:\n{file_path}")
+                else:
+                    QtWidgets.QMessageBox.warning(parent, "HTML Preview", "PDF export failed.")
+                _cleanup()
+
+            def _loaded(ok: bool) -> None:
+                if not ok:
+                    QtWidgets.QMessageBox.warning(parent, "HTML Preview", "Failed to load the HTML file for PDF export.")
+                    _cleanup()
+                    return
+
+                def _print() -> None:
+                    try:
+                        try:
+                            page_size_id = QtGui.QPageSize.PageSizeId.Letter
+                        except Exception:
+                            page_size_id = getattr(QtGui.QPageSize, "Letter")
+                        try:
+                            orientation = QtGui.QPageLayout.Orientation.Landscape
+                        except Exception:
+                            orientation = getattr(QtGui.QPageLayout, "Landscape")
+                        try:
+                            unit = QtGui.QPageLayout.Unit.Point
+                        except Exception:
+                            unit = getattr(QtGui.QPageLayout, "Point")
+                        page_size = QtGui.QPageSize(page_size_id)
+                        layout = QtGui.QPageLayout(
+                            page_size,
+                            orientation,
+                            QtCore.QMarginsF(0.0, 0.0, 0.0, 0.0),
+                            unit,
+                        )
+                        try:
+                            mode_group = getattr(QtGui.QPageLayout, "Mode", QtGui.QPageLayout)
+                            layout.setMode(getattr(mode_group, "FullPageMode"))
+                        except Exception:
+                            pass
+                        print_to_pdf(file_path, layout)
+                    except Exception:
+                        print_to_pdf(file_path)
+
+                run_js = getattr(page, "runJavaScript", None)
+                if callable(run_js):
+                    try:
+                        run_js(self._deck_pdf_print_fix_js(), lambda _result=None: QtCore.QTimer.singleShot(250, _print))
+                        return
+                    except Exception:
+                        pass
+
+                QtCore.QTimer.singleShot(300, _print)
+
+            finished_signal.connect(_finished)
+            view.loadFinished.connect(_loaded)
+            view.load(QtCore.QUrl.fromLocalFile(os.path.abspath(path)))
+        except Exception as exc:
+            try:
+                if view is not None:
+                    view.deleteLater()
+            except Exception:
+                pass
+            QtWidgets.QMessageBox.warning(parent, "HTML Preview", f"PDF export failed:\n{exc}")
 
     def _on_screengrab_clicked(self, path: str):
         path = (path or "").strip()

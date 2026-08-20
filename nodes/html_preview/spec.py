@@ -9,7 +9,7 @@ def build_ports(node_item) -> None:
         node_item.ensure_input(HTML_PREVIEW_PATH_INPUT)
     try:
         setattr(node_item, "_default_named_input", HTML_PREVIEW_PATH_INPUT)
-        setattr(node_item, "_show_default_input_with_named", True)
+        setattr(node_item, "_show_default_input_with_named", False)
     except Exception:
         pass
 
