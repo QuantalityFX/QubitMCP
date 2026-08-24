@@ -240,6 +240,8 @@ def _kind_label(kind: str) -> str:
         return "FX Music Visualizer"
     if key in ("gen-x-videomocap", "gen-x_video_mocap", "genx_video_mocap", "genx_videomocap", "gemx_video_mocap"):
         return "GEN-X Video Mocap"
+    if key in ("youtube_downloader", "youtube downloader", "youtube", "yt_downloader", "yt downloader", "youtube_to_mp4", "youtube to mp4"):
+        return "YouTube Downloader"
     if key in ("llm", "local_server", "localserver"):
         return "Local Server"
     if key in ("data_nexus", "data_graph", "nexus"):
@@ -303,6 +305,7 @@ _NODE_KIND_SEARCH_HINTS = {
     "video_player": "video playback movie preview",
     "post_process": "post process effect render video",
     "sequence_to_mp4": "image sequence video mp4 export",
+    "youtube_downloader": "youtube download video mp4 mp3 audio transcript captions subtitles markdown",
     "export_fbx": "fbx export mesh",
     "export_fbx_animation": "fbx animation export",
     "html_preview": "html web preview browser",
@@ -560,6 +563,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._post_process_icon() or node_icons._fx_node_icon() or node_icons._output_icon()
     elif key in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
         icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
+    elif key in ("youtube_downloader", "youtube downloader", "youtube", "yt_downloader", "yt downloader", "youtube_to_mp4", "youtube to mp4"):
+        icon_pm = node_icons._youtube_downloader_icon() or node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
     elif key == "instance":
         icon_pm = node_icons._instance_icon() or node_icons._output_icon()
     elif key in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
@@ -673,7 +678,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         _configure_node_type_popup_view(kind_popup_view)
         self.kind_edit.setView(kind_popup_view)
         self._kinds = [
-            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","fbx_animation","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","image_gs_splat","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
+            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","fbx_animation","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","image_gs_splat","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","youtube_downloader","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "audio_capture",

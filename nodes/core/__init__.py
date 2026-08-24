@@ -117,6 +117,7 @@ def register_defaults() -> None:
     register("workflow_task", stripe_color="#0f766e")
     register("codex_sandbox", stripe_color="#475569")
     register("audio_capture", stripe_color="#14b8a6")
+    register("youtube_downloader", stripe_color="#dc2626")
     # librarian plugins can override this later
     register("librarian", stripe_color="#74d603")
     register("qubit_deck_controller", stripe_color="#0f766e")

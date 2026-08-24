@@ -28,6 +28,7 @@ _RENDER_NODE_ICON = None
 _VIDEO_PLAYER_ICON = None
 _POST_PROCESS_ICON = None
 _SEQUENCE_TO_MP4_ICON = None
+_YOUTUBE_DOWNLOADER_ICON = None
 _INSTANCE_ICON = None
 _PRIMITIVE_ICON = None
 _OBJECT_SELECT_ICON = None
@@ -281,6 +282,14 @@ def _sequence_to_mp4_icon():
         or _render_node_icon()
     )
     return _SEQUENCE_TO_MP4_ICON
+
+
+def _youtube_downloader_icon():
+    global _YOUTUBE_DOWNLOADER_ICON
+    if _YOUTUBE_DOWNLOADER_ICON is not None:
+        return _YOUTUBE_DOWNLOADER_ICON
+    _YOUTUBE_DOWNLOADER_ICON = _sequence_to_mp4_icon() or _video_player_icon() or _audio_capture_icon()
+    return _YOUTUBE_DOWNLOADER_ICON
 
 
 def _instance_icon():

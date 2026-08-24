@@ -527,6 +527,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _sequence_to_mp4.register()
             except Exception:
                 pass
+        # Ensure YouTube Downloader spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "youtube_downloader",
+            "youtube downloader",
+            "youtube",
+            "yt_downloader",
+            "yt downloader",
+            "youtube_to_mp4",
+            "youtube to mp4",
+        ):
+            try:
+                from nodes import youtube_downloader as _youtube_downloader  # type: ignore
+                if hasattr(_youtube_downloader, "register"):
+                    _youtube_downloader.register()
+            except Exception:
+                pass
         # Ensure Primitive spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "primitive":
             try:
@@ -2492,6 +2508,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
             body_h = 176
             node_w = self._BASE_W
+        elif kind in ("youtube_downloader", "youtube downloader", "youtube", "yt_downloader", "yt downloader", "youtube_to_mp4", "youtube to mp4"):
+            body_h = 262
+            node_w = max(self._BASE_W, 440)
+            try:
+                from nodes.youtube_downloader import spec as _youtube_downloader_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_youtube_downloader_spec, "YOUTUBE_DOWNLOADER_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_youtube_downloader_spec, "YOUTUBE_DOWNLOADER_BODY_W", node_w)))
+            except Exception:
+                pass
         elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
             body_h = 320
             node_w = max(self._BASE_W, 1010)
@@ -9159,6 +9184,13 @@ body {
                 icon_pm = node_icons._post_process_icon() or node_icons._fx_node_icon() or node_icons._output_icon()
             elif kind_lower in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
                 icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
+            elif kind_lower in ("youtube_downloader", "youtube downloader", "youtube", "yt_downloader", "yt downloader", "youtube_to_mp4", "youtube to mp4"):
+                icon_pm = (
+                    node_icons._youtube_downloader_icon()
+                    or node_icons._sequence_to_mp4_icon()
+                    or node_icons._video_player_icon()
+                    or node_icons._output_icon()
+                )
             elif kind_lower == "instance":
                 icon_pm = node_icons._instance_icon() or node_icons._output_icon()
             elif kind_lower in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
@@ -9250,6 +9282,8 @@ body {
                     size = int(max(34, size * 0.86))
                 if kind_lower in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
                     size = int(max(70, size * 1.65))
+                if kind_lower in ("youtube_downloader", "youtube downloader", "youtube", "yt_downloader", "yt downloader", "youtube_to_mp4", "youtube to mp4"):
+                    size = int(max(70, size * 1.65))
                 if kind_lower in ("uv_unwrap", "uv unwrap", "normals", "normal", "smooth_normals", "smooth normals"):
                     size = int(max(34, size * 0.792))
                 if kind_lower == "modeler":
@@ -9277,7 +9311,23 @@ body {
                 y = -pm_scaled.height() * 0.6
                 if kind_lower in ("video_player", "video player", "videoplayer"):
                     y = -pm_scaled.height() * 0.5
-                if kind_lower in ("post_process", "postprocess", "post_processing", "post_process_effect", "sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
+                if kind_lower in (
+                    "post_process",
+                    "postprocess",
+                    "post_processing",
+                    "post_process_effect",
+                    "sequence_to_mp4",
+                    "sequence mp4",
+                    "sequence_to_video",
+                    "image_sequence_to_mp4",
+                    "youtube_downloader",
+                    "youtube downloader",
+                    "youtube",
+                    "yt_downloader",
+                    "yt downloader",
+                    "youtube_to_mp4",
+                    "youtube to mp4",
+                ):
                     y = -pm_scaled.height() * 0.45
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     y = -pm_scaled.height() * 0.7
