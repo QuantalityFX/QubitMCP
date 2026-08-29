@@ -473,7 +473,23 @@ def _point_is_question_like(point: Dict[str, Any]) -> bool:
 def _usable_sales_points(point_bundle: Dict[str, Any]) -> List[Dict[str, Any]]:
     raw_points = (point_bundle or {}).get("points", [])
     points = [dict(point) for point in raw_points if isinstance(point, dict)]
-    return [point for point in points if not _point_is_question_like(point)]
+    usable: List[Dict[str, Any]] = []
+    for point in points:
+        if _point_is_question_like(point):
+            continue
+        point_type = _point_type(point)
+        folder = str(point.get("folder") or "").strip().lower()
+        if point_type in {
+            "slide",
+            "deck_slide",
+            "generated_slide",
+            "old_slide",
+            "previous_slide",
+            "deprecated_slide",
+        } or folder in {"slides", "generated_slides", "previous slides", "old slides", "deprecated slides"}:
+            continue
+        usable.append(point)
+    return usable
 
 
 def _target_point_type_for_slide(slide: SalesTemplateSlide, selected: List[Dict[str, Any]]) -> str:
@@ -877,6 +893,10 @@ def _render_css() -> str:
     return """\
 :root {
   color-scheme: dark;
+  --deck-width: 1920px;
+  --deck-height: 1080px;
+  --deck-screen-width: min(100vw, calc(100vh * 16 / 9));
+  --deck-screen-height: min(100vh, calc(100vw * 9 / 16));
   --bg: #111315;
   --panel: #191d22;
   --text: #f4f7fb;
@@ -902,31 +922,37 @@ body {
   color: var(--text);
   font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   letter-spacing: 0;
+  overflow-x: hidden;
 }
 
 .deck-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: flex;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(420px, 0.8fr);
   align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 18px 40px;
-  background: rgba(17, 19, 21, 0.94);
-  border-bottom: 1px solid var(--line);
-  backdrop-filter: blur(10px);
+  gap: clamp(42px, 4vw, 74px);
+  width: var(--deck-screen-width);
+  height: var(--deck-screen-height);
+  max-width: var(--deck-width);
+  max-height: var(--deck-height);
+  margin: 0 auto;
+  padding: clamp(58px, 5.2vw, 100px);
+  overflow: hidden;
+  scroll-snap-align: start;
+  background: var(--bg);
+  border-bottom: 0;
 }
 
 .deck-header h1 {
-  margin: 2px 0 0;
-  font-size: 1.55rem;
-  line-height: 1.2;
+  margin: 8px 0 0;
+  font-size: clamp(3.2rem, 5.2vw, 6.1rem);
+  line-height: 1.04;
   font-weight: 650;
 }
 
 .deck-header dl {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 18px;
   margin: 0;
 }
@@ -939,28 +965,35 @@ body {
 
 .deck-header dt {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.94rem;
   text-transform: uppercase;
 }
 
 .deck-header dd {
-  margin: 2px 0 0;
-  font-size: 0.88rem;
+  margin: 4px 0 0;
+  font-size: 1.22rem;
 }
 
 .deck {
-  width: 100%;
+  width: var(--deck-screen-width);
+  max-width: var(--deck-width);
+  margin: 0 auto;
 }
 
 .slide {
-  min-height: 100vh;
+  width: var(--deck-screen-width);
+  height: var(--deck-screen-height);
+  min-height: var(--deck-screen-height);
+  max-width: var(--deck-width);
+  max-height: var(--deck-height);
+  overflow: hidden;
   scroll-snap-align: start;
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-  grid-template-rows: auto 1fr auto;
-  gap: 28px 34px;
-  padding: 62px 56px 44px;
-  border-bottom: 1px solid var(--line);
+  grid-template-columns: minmax(0, 1.2fr) minmax(420px, 0.8fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: clamp(12px, 1.25vw, 22px) clamp(24px, 2.35vw, 44px);
+  padding: clamp(30px, 3.6vw, 62px) clamp(40px, 4.1vw, 78px) clamp(24px, 2.8vw, 48px);
+  border-bottom: 0;
 }
 
 .slide-meta {
@@ -969,21 +1002,24 @@ body {
   justify-content: space-between;
   gap: 12px;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.98rem;
   text-transform: uppercase;
 }
 
 .eyebrow {
   margin: 0;
   color: var(--accent);
-  font-size: 0.82rem;
+  font-size: 1.02rem;
   font-weight: 650;
   text-transform: uppercase;
 }
 
 .slide-main {
+  grid-column: 1;
+  grid-row: 2;
   align-self: center;
   min-width: 0;
+  min-height: 0;
 }
 
 .slide-title-row {
@@ -997,21 +1033,21 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 48px;
-  height: 42px;
+  min-width: 60px;
+  height: 52px;
   padding: 0 10px;
   border: 1px solid #256b55;
   border-radius: 6px;
   color: #bbf7d0;
   background: #0f2d24;
-  font-size: 1.05rem;
+  font-size: 1.25rem;
   font-weight: 750;
 }
 
 .slide-title {
   margin: 0;
   color: var(--accent);
-  font-size: 1.28rem;
+  font-size: clamp(1.3rem, 1.55vw, 1.85rem);
   line-height: 1.2;
   font-weight: 760;
   text-transform: uppercase;
@@ -1019,25 +1055,38 @@ body {
 
 .slide-main h2 {
   margin: 0;
-  max-width: 980px;
-  font-size: 3rem;
+  max-width: 1120px;
+  font-size: clamp(2.15rem, 3.75vw, 4.5rem);
   line-height: 1.05;
   font-weight: 720;
 }
 
 .slide-proof,
 .speaker-note {
-  align-self: center;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: break-word;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 22px;
+  padding: clamp(18px, 1.65vw, 28px);
+}
+
+.slide-proof {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
 }
 
 .slide-proof h3,
 .speaker-note h3 {
-  margin: 0 0 12px;
-  font-size: 0.86rem;
+  margin: 0 0 10px;
+  font-size: clamp(0.76rem, 0.86vw, 0.96rem);
   color: var(--accent-2);
   text-transform: uppercase;
 }
@@ -1048,21 +1097,26 @@ body {
 }
 
 .slide-proof li {
-  margin: 0 0 10px;
+  margin: 0 0 8px;
   color: #dbe4ef;
-  line-height: 1.45;
+  line-height: 1.3;
+  font-size: clamp(0.78rem, 0.9vw, 1.04rem);
+  overflow-wrap: break-word;
 }
 
 .speaker-note {
   grid-column: 1 / 2;
+  grid-row: 3;
   align-self: start;
+  max-height: clamp(92px, 14vh, 168px);
 }
 
 .speaker-note p,
 .empty {
   margin: 0;
   color: var(--muted);
-  line-height: 1.45;
+  line-height: 1.28;
+  font-size: clamp(0.76rem, 0.82vw, 0.98rem);
 }
 
 .missing-fields {
@@ -1078,22 +1132,29 @@ body {
 
 .sources {
   grid-column: 1 / -1;
+  grid-row: 4;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  align-content: flex-start;
+  gap: 6px;
+  max-height: clamp(24px, 4vh, 40px);
+  overflow: hidden;
+  min-width: 0;
 }
 
 .source {
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
-  padding: 4px 8px;
+  max-width: 100%;
+  min-height: 22px;
+  padding: 3px 7px;
   border: 1px solid #256b55;
   border-radius: 999px;
   color: #bbf7d0;
   background: #0f2d24;
-  font-size: 0.78rem;
+  font-size: 0.66rem;
+  overflow-wrap: anywhere;
 }
 
 .source.missing {
@@ -1108,10 +1169,9 @@ body {
 
 @media (max-width: 860px) {
   .deck-header {
-    position: static;
-    align-items: flex-start;
-    flex-direction: column;
-    padding: 16px 20px;
+    grid-template-columns: 1fr;
+    align-items: center;
+    padding: 24px;
   }
 
   .deck-header dl {
@@ -1119,13 +1179,12 @@ body {
   }
 
   .slide {
-    min-height: auto;
     grid-template-columns: 1fr;
-    padding: 40px 22px 32px;
+    padding: 26px 22px 24px;
   }
 
   .slide-main h2 {
-    font-size: 2rem;
+    font-size: clamp(1.6rem, 7vw, 2.4rem);
   }
 
   .slide-title-row {
@@ -1149,7 +1208,7 @@ body {
 }
 
 @page {
-  size: 11in 8.5in;
+  size: 20in 11.25in;
   margin: 0;
 }
 
@@ -1160,8 +1219,8 @@ body {
 
   html,
   body {
-    width: 11in;
-    min-height: 8.5in;
+    width: 20in;
+    min-height: 11.25in;
     margin: 0;
     background: #111315;
     -webkit-print-color-adjust: exact;
@@ -1173,15 +1232,15 @@ body {
     top: auto;
     z-index: auto;
     display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(3.1in, 0.8fr);
+    grid-template-columns: minmax(0, 1.2fr) minmax(5.1in, 0.8fr);
     align-items: center;
     justify-content: stretch;
-    width: 11in;
-    height: 8.5in;
-    min-height: 8.5in;
-    max-height: 8.5in;
-    gap: 0.45in;
-    padding: 0.78in;
+    width: 20in;
+    height: 11.25in;
+    min-height: 11.25in;
+    max-height: 11.25in;
+    gap: 0.7in;
+    padding: 1in;
     overflow: hidden;
     background: #111315;
     border-bottom: 0;
@@ -1193,12 +1252,12 @@ body {
   }
 
   .deck-header h1 {
-    font-size: 0.46in;
+    font-size: 0.72in;
     line-height: 1.05;
   }
 
   .deck-header .eyebrow {
-    font-size: 0.12in;
+    font-size: 0.15in;
   }
 
   .deck-header dl {
@@ -1219,30 +1278,31 @@ body {
   }
 
   .deck-header dd {
-    font-size: 0.14in;
+    font-size: 0.17in;
   }
 
   .deck {
     display: block;
-    width: 11in;
+    width: 20in;
     margin: 0;
     padding: 0;
   }
 
   .slide {
-    width: 11in;
-    height: 8.5in;
-    min-height: 8.5in;
-    max-height: 8.5in;
+    width: 20in;
+    height: 11.25in;
+    min-height: 11.25in;
+    max-height: 11.25in;
     overflow: hidden;
     break-after: page;
     page-break-after: always;
     break-inside: avoid;
     page-break-inside: avoid;
     scroll-snap-align: none;
-    grid-template-columns: minmax(0, 1.2fr) minmax(2.9in, 0.8fr);
-    gap: 0.24in 0.32in;
-    padding: 0.48in 0.52in 0.4in;
+    grid-template-columns: minmax(0, 1.2fr) minmax(5in, 0.8fr);
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    gap: 0.22in 0.48in;
+    padding: 0.52in 0.72in 0.42in;
     border-bottom: 0;
   }
 
@@ -1252,27 +1312,60 @@ body {
   }
 
   .slide-meta {
-    font-size: 0.68rem;
+    font-size: 0.9rem;
   }
 
   .slide-main h2 {
-    font-size: 2.35rem;
+    font-size: 3.68rem;
     line-height: 1.05;
   }
 
   .slide-title {
-    font-size: 1.05rem;
+    font-size: 1.45rem;
   }
 
   .slide-proof,
   .speaker-note {
-    padding: 0.18in;
+    padding: 0.16in;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+    overflow-wrap: break-word;
+  }
+
+  .slide-proof {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: center;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  .speaker-note {
+    grid-column: 1 / 2;
+    grid-row: 3;
+    align-self: start;
+    max-height: 1.8in;
   }
 
   .slide-proof li,
   .speaker-note p,
   .empty {
-    line-height: 1.35;
+    line-height: 1.28;
+    overflow-wrap: break-word;
+  }
+
+  .sources {
+    grid-row: 4;
+    max-height: 0.58in;
+    overflow: hidden;
+  }
+
+  .source {
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 }
 """
@@ -1545,6 +1638,9 @@ def sales_deck_prompt_context_from_index(index_path: str | Path) -> Dict[str, An
         "ok": True,
         "index_path": str(path),
         "deck_title": title or _coerce_slide_text(manifest.get("deck_title") or "Sales Deck", limit=140),
+        "template_path": manifest.get("template_path") or "",
+        "template_family_id": manifest.get("template_family_id") or "",
+        "template_version_id": manifest.get("template_version_id") or "",
         "generated_at": manifest.get("generated_at") or "",
         "review_status": manifest.get("review_status") or "",
         "slides": [

@@ -7045,14 +7045,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def _deck_pdf_print_fix_js() -> str:
         css = """
 @page {
-  size: 11in 8.5in;
+  size: 20in 11.25in;
   margin: 0;
 }
 
 html,
 body {
-  width: 11in !important;
-  min-height: 8.5in !important;
+  width: 20in !important;
+  min-height: 11.25in !important;
   margin: 0 !important;
   background: #111315 !important;
   -webkit-print-color-adjust: exact !important;
@@ -7064,15 +7064,15 @@ body {
   top: auto !important;
   z-index: auto !important;
   display: grid !important;
-  grid-template-columns: minmax(0, 1.2fr) minmax(3.1in, 0.8fr) !important;
+  grid-template-columns: minmax(0, 1.2fr) minmax(5.1in, 0.8fr) !important;
   align-items: center !important;
   justify-content: stretch !important;
-  width: 11in !important;
-  height: 8.5in !important;
-  min-height: 8.5in !important;
-  max-height: 8.5in !important;
-  gap: 0.45in !important;
-  padding: 0.78in !important;
+  width: 20in !important;
+  height: 11.25in !important;
+  min-height: 11.25in !important;
+  max-height: 11.25in !important;
+  gap: 0.7in !important;
+  padding: 1in !important;
   overflow: hidden !important;
   background: #111315 !important;
   border-bottom: 0 !important;
@@ -7085,12 +7085,12 @@ body {
 }
 
 .deck-header h1 {
-  font-size: 0.46in !important;
+  font-size: 0.72in !important;
   line-height: 1.05 !important;
 }
 
 .deck-header .eyebrow {
-  font-size: 0.12in !important;
+  font-size: 0.15in !important;
 }
 
 .deck-header dl {
@@ -7111,24 +7111,28 @@ body {
 }
 
 .deck-header dd {
-  font-size: 0.14in !important;
+  font-size: 0.17in !important;
 }
 
 .deck {
   display: block !important;
-  width: 11in !important;
+  width: 20in !important;
   margin: 0 !important;
   padding: 0 !important;
 }
 
 .slide {
-  width: 11in !important;
-  height: 8.5in !important;
-  min-height: 8.5in !important;
-  max-height: 8.5in !important;
+  width: 20in !important;
+  height: 11.25in !important;
+  min-height: 11.25in !important;
+  max-height: 11.25in !important;
   overflow: hidden !important;
   border-bottom: 0 !important;
   box-sizing: border-box !important;
+  grid-template-columns: minmax(0, 1.2fr) minmax(5in, 0.8fr) !important;
+  grid-template-rows: auto minmax(0, 1fr) auto auto !important;
+  gap: 0.22in 0.48in !important;
+  padding: 0.52in 0.72in 0.42in !important;
   break-after: page !important;
   page-break-after: always !important;
   break-inside: avoid !important;
@@ -7139,6 +7143,55 @@ body {
 .slide:last-child {
   break-after: auto !important;
   page-break-after: auto !important;
+}
+
+.slide-main h2 {
+  font-size: 3.68rem !important;
+  line-height: 1.05 !important;
+}
+
+.slide-proof,
+.speaker-note {
+  padding: 0.16in !important;
+  min-height: 0 !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  overflow-wrap: break-word !important;
+}
+
+.slide-proof {
+  grid-column: 2 !important;
+  grid-row: 2 !important;
+  align-self: center !important;
+  max-height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: flex-start !important;
+}
+
+.speaker-note {
+  grid-column: 1 / 2 !important;
+  grid-row: 3 !important;
+  align-self: start !important;
+  max-height: 1.8in !important;
+}
+
+.slide-proof li,
+.speaker-note p,
+.empty {
+  line-height: 1.28 !important;
+  overflow-wrap: break-word !important;
+}
+
+.sources {
+  grid-row: 4 !important;
+  max-height: 0.58in !important;
+  overflow: hidden !important;
+}
+
+.source {
+  max-width: 100% !important;
+  overflow-wrap: anywhere !important;
 }
 """
         return (
@@ -7184,7 +7237,7 @@ body {
         view = None
         try:
             view = WebEngine.QWebEngineView(parent)
-            view.resize(1280, 720)
+            view.resize(1920, 1080)
             view.hide()
             self._html_pdf_export_view = view
             page = view.page()
@@ -7226,18 +7279,22 @@ body {
                 def _print() -> None:
                     try:
                         try:
-                            page_size_id = QtGui.QPageSize.PageSizeId.Letter
+                            page_size_unit = QtGui.QPageSize.Unit.Inch
                         except Exception:
-                            page_size_id = getattr(QtGui.QPageSize, "Letter")
+                            page_size_unit = getattr(QtGui.QPageSize, "Inch")
                         try:
-                            orientation = QtGui.QPageLayout.Orientation.Landscape
+                            orientation = QtGui.QPageLayout.Orientation.Portrait
                         except Exception:
-                            orientation = getattr(QtGui.QPageLayout, "Landscape")
+                            orientation = getattr(QtGui.QPageLayout, "Portrait")
                         try:
                             unit = QtGui.QPageLayout.Unit.Point
                         except Exception:
                             unit = getattr(QtGui.QPageLayout, "Point")
-                        page_size = QtGui.QPageSize(page_size_id)
+                        page_size = QtGui.QPageSize(
+                            QtCore.QSizeF(20.0, 11.25),
+                            page_size_unit,
+                            "1920x1080",
+                        )
                         layout = QtGui.QPageLayout(
                             page_size,
                             orientation,
@@ -8108,6 +8165,44 @@ body {
             return NodeItem._read_pdf_text(path)
         return NodeItem._read_plaintext_file(path)
 
+    def _create_markdown_preview_widget(self, text: str, path: str) -> QtWidgets.QTextBrowser:
+        view = QtWidgets.QTextBrowser()
+        view.setObjectName("MarkdownImportPreview")
+        view.setOpenExternalLinks(True)
+        view.setReadOnly(True)
+        view.setStyleSheet(
+            "QTextBrowser{background:#0f1216;color:#e6edf3;"
+            "border:1px solid #3c4450;border-radius:6px;padding:10px;}"
+        )
+        try:
+            view.setFont(QtGui.QFont("Segoe UI", 10))
+        except Exception:
+            pass
+        try:
+            base_dir = os.path.dirname(os.path.abspath(path))
+            if base_dir:
+                view.setSearchPaths([base_dir])
+                view.document().setBaseUrl(QtCore.QUrl.fromLocalFile(base_dir + os.sep))
+        except Exception:
+            pass
+        try:
+            view.setMarkdown(text or "")
+        except Exception:
+            view.setPlainText(text or "")
+        return view
+
+    def _show_markdown_import_preview(self, path: str, text: str) -> None:
+        dlg = QtWidgets.QDialog(_top_level_parent_for_dialog())
+        dlg.setWindowTitle(f"Preview: {os.path.basename(path)}")
+        dlg.resize(760, 540)
+        layout = QtWidgets.QVBoxLayout(dlg)
+        layout.addWidget(self._create_markdown_preview_widget(text, path), 1)
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        bb.rejected.connect(dlg.close)
+        bb.accepted.connect(dlg.close)
+        layout.addWidget(bb)
+        self._show_modeless_dialog(dlg)
+
     def _browse_import_file(self, current: str):
         start = current or os.path.expanduser("~")
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -8178,6 +8273,10 @@ body {
                 text = fh.read()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(_top_level_parent_for_dialog(), "Import", f"Failed to open file:\n{exc}")
+            return
+
+        if ext in (".md", ".markdown"):
+            self._show_markdown_import_preview(path, text)
             return
 
         html = self._highlight_html_content(text, path)

@@ -13,10 +13,11 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from echograph.services.sales_agent import (
     analyze_sales_deck_readiness,
     generate_sales_deck_from_ai_draft,
+    parse_sales_agent_template,
     restyle_sales_deck_from_index,
     sales_deck_prompt_context_from_index,
 )
-from echograph.services.skills_library import scan_skills_library
+from echograph.services.skills_library import resolve_library_path, scan_skills_library
 from nodes.core import Spec
 
 
@@ -42,6 +43,11 @@ TASK_LAST_QUESTIONS_PARAM = "__task_last_questions_json"
 TASK_LAST_REPORT_PARAM = "__task_last_report_json"
 TASK_LAST_ARTIFACT_PARAM = "__task_last_artifact_path"
 TASK_SIZE_PARAM = "__task_size"
+
+CURRENT_SLIDE_TYPE = "slide"
+CURRENT_SLIDE_FOLDER = "Slides"
+PREVIOUS_SLIDE_TYPE = "old_slide"
+PREVIOUS_SLIDE_FOLDER = "Previous Slides"
 
 TASK_STATUS_CHOICES = (
     ("created", "Created"),
@@ -259,6 +265,25 @@ def _is_question_like_point(point: Dict[str, Any]) -> bool:
     return content.endswith("?")
 
 
+def _is_generated_slide_point(point: Dict[str, Any]) -> bool:
+    point_type = str(point.get("type") or "").strip().lower()
+    folder = str(point.get("folder") or "").strip().lower()
+    return point_type in {
+        CURRENT_SLIDE_TYPE,
+        "deck_slide",
+        "generated_slide",
+        PREVIOUS_SLIDE_TYPE,
+        "previous_slide",
+        "deprecated_slide",
+    } or folder in {
+        "slides",
+        "generated_slides",
+        "previous slides",
+        "old slides",
+        "deprecated slides",
+    }
+
+
 def _slug(value: Any, fallback: str = "item") -> str:
     text = str(value or "").strip().lower()
     out = []
@@ -441,6 +466,12 @@ def _slide_point_note(deck_context: Dict[str, Any], slide: Dict[str, Any]) -> st
     ]
     if deck_context.get("index_path"):
         lines.append(f"Artifact: {deck_context.get('index_path')}")
+    if deck_context.get("template_path"):
+        lines.append(f"Template path: {deck_context.get('template_path')}")
+    if deck_context.get("template_family_id"):
+        lines.append(f"Template family: {deck_context.get('template_family_id')}")
+    if deck_context.get("template_version_id"):
+        lines.append(f"Template version: {deck_context.get('template_version_id')}")
     if deck_context.get("generated_at"):
         lines.append(f"Generated: {deck_context.get('generated_at')}")
     if review_status:
@@ -483,8 +514,8 @@ def _slide_actions_from_deck_context(task_id: str, deck_context: Dict[str, Any])
                 "op": "upsert_point",
                 "id": point_id,
                 "label": f"Slide {number:02d} - {title}"[:120],
-                "type": "slide",
-                "folder": "Slides",
+                "type": CURRENT_SLIDE_TYPE,
+                "folder": CURRENT_SLIDE_FOLDER,
                 "summary": headline or title,
                 "note": _slide_point_note(deck_context, raw_slide),
                 "note_mode": "replace",
@@ -505,6 +536,311 @@ def _slide_actions_from_deck_context(task_id: str, deck_context: Dict[str, Any])
             }
         )
     return actions
+
+
+def _existing_current_slide_points(task_id: str, bundle: Dict[str, Any]) -> List[Dict[str, Any]]:
+    clean_task_id = _slug(task_id, fallback="task")
+    prefix = f"{clean_task_id}_slide_"
+    out: List[Dict[str, Any]] = []
+    for point in (bundle or {}).get("points", []) or []:
+        if not isinstance(point, dict):
+            continue
+        point_id = str(point.get("id") or "").strip()
+        point_type = str(point.get("type") or "").strip().lower()
+        folder = str(point.get("folder") or "").strip().lower()
+        if not point_id.startswith(prefix):
+            continue
+        if point_type != CURRENT_SLIDE_TYPE and folder != CURRENT_SLIDE_FOLDER.lower():
+            continue
+        out.append(dict(point))
+    return out
+
+
+def _point_note_text(point: Dict[str, Any]) -> str:
+    return str(point.get("content") or point.get("note") or "").strip()
+
+
+def _archive_slide_point_id(point: Dict[str, Any]) -> str:
+    point_id = str(point.get("id") or "").strip()
+    payload = "\n".join(
+        [
+            point_id,
+            str(point.get("title") or point.get("label") or ""),
+            str(point.get("summary") or ""),
+            _point_note_text(point),
+        ]
+    )
+    digest = hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    return _slug(f"{point_id}_old_{digest}", fallback="old_slide")
+
+
+def _archive_note_for_slide_point(point: Dict[str, Any], *, replacement_id: str = "", reason: str = "") -> str:
+    point_id = str(point.get("id") or "").strip()
+    title = str(point.get("title") or point.get("label") or point_id or "Slide").strip()
+    summary = str(point.get("summary") or "").strip()
+    note = _point_note_text(point)
+    clean_reason = str(reason or "a newer generated deck indexed replacement slides for this Task.").strip()
+    lines = [
+        f"# Old Slide: {title}",
+        "",
+        f"Archived from current slide point: `{point_id}`",
+        f"Reason: {clean_reason}",
+    ]
+    if replacement_id:
+        lines.append(f"Replacement current slide point: `{replacement_id}`")
+    if summary:
+        lines.extend(["", "Previous summary:", "", summary])
+    if note:
+        lines.extend(["", "Previous slide content:", "", note])
+    return "\n".join(lines).strip()
+
+
+def _archive_replaced_slide_actions(
+    task_id: str,
+    existing_points: List[Dict[str, Any]],
+    current_slide_actions: List[Dict[str, Any]],
+    *,
+    reason: str = "",
+) -> List[Dict[str, Any]]:
+    current_by_id = {
+        str(action.get("id") or "").strip(): action
+        for action in current_slide_actions
+        if action.get("op") == "upsert_point" and str(action.get("type") or "").strip().lower() == CURRENT_SLIDE_TYPE
+    }
+    actions: List[Dict[str, Any]] = []
+    link_actions: List[Dict[str, Any]] = []
+    for point in existing_points:
+        point_id = str(point.get("id") or "").strip()
+        if not point_id:
+            continue
+        replacement = current_by_id.get(point_id)
+        old_note = _point_note_text(point)
+        old_summary = str(point.get("summary") or "").strip()
+        old_label = str(point.get("title") or point.get("label") or "").strip()
+        if replacement is not None:
+            new_note = str(replacement.get("note") or "").strip()
+            new_summary = str(replacement.get("summary") or "").strip()
+            new_label = str(replacement.get("label") or "").strip()
+            if old_note == new_note and old_summary == new_summary and old_label == new_label:
+                continue
+        archive_id = _archive_slide_point_id(point)
+        source_ids = _coerce_string_list(point.get("source_point_ids") or point.get("source_ids") or [], limit=40)
+        actions.append(
+            {
+                "op": "upsert_point",
+                "id": archive_id,
+                "label": f"Old {old_label or point_id}"[:120],
+                "type": PREVIOUS_SLIDE_TYPE,
+                "folder": PREVIOUS_SLIDE_FOLDER,
+                "summary": f"Archived slide output: {old_summary or old_label or point_id}"[:500],
+                "note": _archive_note_for_slide_point(
+                    point,
+                    replacement_id=point_id if replacement is not None else "",
+                    reason=reason,
+                ),
+                "note_mode": "replace",
+                "source_point_ids": source_ids,
+                "replace_source_edges": True,
+                "create_source_edges": True,
+                "source_edge_label": "uses_source",
+            }
+        )
+        if replacement is not None:
+            link_actions.append(
+                {
+                    "op": "link",
+                    "source": archive_id,
+                    "target": point_id,
+                    "label": "replaced_by",
+                    "create_missing": False,
+                }
+            )
+    return [*actions, *link_actions]
+
+
+def _delete_current_slide_actions(existing_points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    actions: List[Dict[str, Any]] = []
+    for point in existing_points:
+        point_id = str(point.get("id") or "").strip()
+        if point_id:
+            actions.append({"op": "delete_point", "id": point_id})
+    return actions
+
+
+def _compare_token(value: Any) -> str:
+    return str(value or "").strip().replace("\\", "/").lower()
+
+
+def _template_identity_changed(previous_report: Dict[str, Any], current_template: Dict[str, Any]) -> bool:
+    previous_template = previous_report.get("agent_template") if isinstance(previous_report.get("agent_template"), dict) else {}
+    if not previous_template or not current_template:
+        return False
+    for key in ("path", "template_version_id", "template_family_id", "template_id"):
+        old_value = _compare_token(previous_template.get(key))
+        new_value = _compare_token(current_template.get(key))
+        if old_value and new_value and old_value != new_value:
+            return True
+    return False
+
+
+def _note_field_value(note: str, label: str) -> str:
+    match = re.search(rf"(?im)^{re.escape(label)}\s*:\s*(?P<value>.+?)\s*$", str(note or ""))
+    return str(match.group("value") or "").strip() if match else ""
+
+
+def _slide_point_template_identity_changed(existing_points: List[Dict[str, Any]], current_template: Dict[str, Any]) -> bool:
+    current_values = {
+        "Template path": _compare_token(current_template.get("path")),
+        "Template family": _compare_token(current_template.get("template_family_id")),
+        "Template version": _compare_token(current_template.get("template_version_id")),
+    }
+    for point in existing_points:
+        note = _point_note_text(point)
+        for label, current_value in current_values.items():
+            old_value = _compare_token(_note_field_value(note, label))
+            if old_value and current_value and old_value != current_value:
+                return True
+    return False
+
+
+def _slide_number_from_point(point: Dict[str, Any]) -> int:
+    point_id = str(point.get("id") or "").strip()
+    match = re.search(r"(?:^|_)slide_(?P<number>\d{1,2})(?:_|$)", point_id, re.IGNORECASE)
+    if match:
+        return _int_or_zero(match.group("number"))
+    label = str(point.get("label") or point.get("title") or "").strip()
+    match = re.search(r"\bslide\s+(?P<number>\d{1,2})\b", label, re.IGNORECASE)
+    if match:
+        return _int_or_zero(match.group("number"))
+    note = _point_note_text(point)
+    match = re.search(r"(?m)^#\s+Slide\s+(?P<number>\d{1,2})\s*:", note, re.IGNORECASE)
+    return _int_or_zero(match.group("number")) if match else 0
+
+
+def _normalize_slide_title(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip()).lower()
+    text = re.sub(r"^slide\s+\d{1,2}\s*[-:]\s*", "", text, flags=re.IGNORECASE)
+    return text.strip(" .:-_")
+
+
+def _slide_title_from_point(point: Dict[str, Any]) -> str:
+    note = _point_note_text(point)
+    match = re.search(r"(?m)^#\s+Slide\s+\d{1,2}\s*:\s*(?P<title>.+?)\s*$", note, re.IGNORECASE)
+    if match:
+        return str(match.group("title") or "").strip()
+    label = str(point.get("label") or point.get("title") or "").strip()
+    return re.sub(r"^Slide\s+\d{1,2}\s*[-:]\s*", "", label, flags=re.IGNORECASE).strip()
+
+
+def _template_slide_titles_from_readiness(readiness: Dict[str, Any]) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    for slide in (readiness or {}).get("slides", []) or []:
+        if not isinstance(slide, dict):
+            continue
+        number = _int_or_zero(slide.get("number"))
+        title = str(slide.get("title") or "").strip()
+        if number and title:
+            out[number] = title
+    return out
+
+
+def _template_slide_titles_from_asset(template: Dict[str, Any], skills_root: str) -> Dict[int, str]:
+    path_text = str((template or {}).get("path") or "").strip()
+    if not path_text:
+        return {}
+    try:
+        path = resolve_library_path(path_text, root=skills_root or "Skills")
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        _metadata, _body, slides = parse_sales_agent_template(text)
+    except Exception:
+        return {}
+    return {slide.number: slide.title for slide in slides if slide.number and slide.title}
+
+
+def _slide_signature_mismatch(existing_points: List[Dict[str, Any]], template_titles: Dict[int, str]) -> bool:
+    if not existing_points or not template_titles:
+        return False
+    existing_titles: Dict[int, str] = {}
+    for point in existing_points:
+        number = _slide_number_from_point(point)
+        if number:
+            existing_titles[number] = _slide_title_from_point(point)
+    if not existing_titles:
+        return False
+    if set(existing_titles) != set(template_titles):
+        return True
+    for number, old_title in existing_titles.items():
+        new_title = template_titles.get(number, "")
+        if _normalize_slide_title(old_title) and _normalize_slide_title(new_title) and _normalize_slide_title(old_title) != _normalize_slide_title(new_title):
+            return True
+    return False
+
+
+def _deprecate_current_slides_for_template_change(
+    node_item,
+    task_id: str,
+    bundle: Dict[str, Any],
+    current_template: Dict[str, Any],
+    previous_report: Dict[str, Any],
+    skills_root: str,
+    readiness: Dict[str, Any],
+) -> Dict[str, Any]:
+    result = {
+        "ok": True,
+        "deprecated_slide_count": 0,
+        "folder": PREVIOUS_SLIDE_FOLDER,
+        "point_type": PREVIOUS_SLIDE_TYPE,
+        "message": "",
+    }
+    existing_points = _existing_current_slide_points(task_id, bundle)
+    if not existing_points or not current_template:
+        return result
+
+    template_changed = _template_identity_changed(previous_report, current_template) or _slide_point_template_identity_changed(
+        existing_points,
+        current_template,
+    )
+    template_titles = _template_slide_titles_from_readiness(readiness) or _template_slide_titles_from_asset(current_template, skills_root)
+    signature_mismatch = _slide_signature_mismatch(existing_points, template_titles)
+    if not template_changed and not signature_mismatch:
+        return result
+
+    reason_parts = []
+    if template_changed:
+        reason_parts.append("the approved agent template changed")
+    if signature_mismatch:
+        reason_parts.append("the current slide points no longer match the approved template slide structure")
+    reason = "; ".join(reason_parts) + "."
+    actions = [
+        *_archive_replaced_slide_actions(task_id, existing_points, [], reason=reason),
+        *_delete_current_slide_actions(existing_points),
+    ]
+    if not actions:
+        return result
+
+    _, _, data_nexus_node = _connected_task_nodes(node_item)
+    if data_nexus_node is None:
+        result["ok"] = False
+        result["message"] = "Connect a Data Nexus node before deprecating old slide points."
+        return result
+
+    try:
+        from nodes.data_nexus import spec as data_nexus_spec
+
+        handler = getattr(data_nexus_spec, "apply_data_nexus_update_from_item", None)
+        if not callable(handler):
+            result["ok"] = False
+            result["message"] = "Data Nexus update helper is unavailable."
+            return result
+        ok, message = handler(data_nexus_node, {"actions": actions}, requester="Task")
+        already_current = str(message or "").startswith("No Data Nexus changes")
+        result["ok"] = bool(ok or already_current)
+        result["deprecated_slide_count"] = len(existing_points) if result["ok"] else 0
+        result["message"] = str(message or f"Moved {len(existing_points)} old slide point(s) to {PREVIOUS_SLIDE_FOLDER}.")
+    except Exception as exc:
+        result["ok"] = False
+        result["message"] = f"Failed to deprecate old slide points: {exc}"
+    return result
 
 
 def _index_deck_slides_to_data_nexus(node_item, artifact_path: str, report: Dict[str, Any]) -> Dict[str, Any]:
@@ -533,7 +869,7 @@ def _index_deck_slides_to_data_nexus(node_item, artifact_path: str, report: Dict
     source_link_count = sum(
         len(action.get("source_point_ids") or [])
         for action in actions
-        if action.get("op") == "upsert_point" and action.get("type") == "slide"
+        if action.get("op") == "upsert_point" and action.get("type") == CURRENT_SLIDE_TYPE
     )
     if not slide_point_count:
         result["message"] = "Deck HTML did not contain any slide data to index."
@@ -555,15 +891,36 @@ def _index_deck_slides_to_data_nexus(node_item, artifact_path: str, report: Dict
         if not callable(handler):
             result["message"] = "Data Nexus update helper is unavailable."
         else:
-            ok, message = handler(data_nexus_node, {"actions": actions}, requester="Task")
+            existing_bundle, _bundle_error = _data_nexus_bundle_from_node(data_nexus_node)
+            existing_current_slides = _existing_current_slide_points(task_id, existing_bundle)
+            archive_actions = _archive_replaced_slide_actions(
+                task_id,
+                existing_current_slides,
+                actions,
+                reason="a newer generated deck indexed replacement slides for this Task.",
+            )
+            current_slide_ids = {
+                str(action.get("id") or "").strip()
+                for action in actions
+                if action.get("op") == "upsert_point" and str(action.get("type") or "").strip().lower() == CURRENT_SLIDE_TYPE
+            }
+            delete_stale_slide_actions = _delete_current_slide_actions(
+                [
+                    point
+                    for point in existing_current_slides
+                    if str(point.get("id") or "").strip() not in current_slide_ids
+                ]
+            )
+            ok, message = handler(data_nexus_node, {"actions": [*archive_actions, *delete_stale_slide_actions, *actions]}, requester="Task")
             already_current = str(message or "").startswith("No Data Nexus changes")
             result = {
                 "ok": bool(ok or already_current),
                 "slide_count": slide_point_count,
+                "old_slide_count": sum(1 for action in archive_actions if action.get("op") == "upsert_point"),
                 "message": str(message or "Indexed generated deck slides into Data Nexus."),
                 "index_path": path,
-                "folder": "Slides",
-                "point_type": "slide",
+                "folder": CURRENT_SLIDE_FOLDER,
+                "point_type": CURRENT_SLIDE_TYPE,
                 "sequence_link_count": max(0, slide_point_count - 1),
                 "source_link_count": source_link_count,
             }
@@ -1602,6 +1959,8 @@ def _sales_agent_bundle_for_prompt(bundle: Dict[str, Any]) -> Dict[str, Any]:
     for point in (bundle or {}).get("points", []) or []:
         if not isinstance(point, dict):
             continue
+        if _is_generated_slide_point(point):
+            continue
         points.append(
             {
                 "id": point.get("id"),
@@ -1664,6 +2023,7 @@ def _compose_sales_agent_task_prompt(report: Dict[str, Any], bundle: Dict[str, A
             "- Questions must be specific to the saved Data Nexus facts and the slide they support.\n"
             "- Every question must include: question_id, point_type=\"prep_question\", question_kind, slide_number, slide_title, accepted_point_type, matched_point_ids, text, and evaluation_criteria.\n\n"
             "Return a short user-facing summary, then exactly one hidden JSON tag. Do not emit data_nexus_update tags.\n"
+            "The user-facing summary must not expose question_id, point_type, expected answer type, matched_point_ids, source-point plumbing, or hidden JSON details.\n"
             "Use this tag:\n"
             "<sales_agent_draft>{\"status\":\"draft_ready|needs_answers\",\"message\":\"short summary\",\"deck_title\":\"\",\"slide_reviews\":[],\"questions\":[],\"warnings\":[],\"slides\":[]}</sales_agent_draft>\n\n"
             "Slide object example:\n"
@@ -1711,6 +2071,7 @@ def _compose_sales_agent_task_prompt(report: Dict[str, Any], bundle: Dict[str, A
         "- If an existing prep question has stale source references, preserve the question_id when appropriate but return the corrected matched_point_ids list, including [] when no source should remain connected.\n"
         "- evaluation_criteria should say how to judge whether the user's answer is coherent and useful enough to become a Data Nexus answer point.\n\n"
         "Return a short user-facing summary, then exactly one hidden JSON tag. Do not emit data_nexus_update tags.\n"
+        "The user-facing summary must not expose question_id, point_type, expected answer type, matched_point_ids, source-point plumbing, or hidden JSON details.\n"
         f"Use this tag:\n<{tag}>{{\"status\":\"needs_answers|ready_to_generate\",\"message\":\"short summary\",\"slide_reviews\":[],\"questions\":[],\"refinement_questions\":[],\"resolved_questions\":[],\"next_question_id\":\"\",\"next_question_text\":\"\"}}</{tag}>\n\n"
         "Include resolved_questions when existing points answer open prep questions, for example:\n"
         "\"resolved_questions\":[{\"question_id\":\"task_20260817_071710_slide_08_refine_traction_metric\",\"answer_point_ids\":[\"product_validation_workflow_test\"],\"answer_point_type\":\"traction_metric\"}]\n\n"
@@ -2028,6 +2389,7 @@ def _apply_sales_agent_draft_output(node_item, report: Dict[str, Any], response_
 
 def run_task_step_from_item(node_item) -> Dict[str, Any]:
     task_id = _task_id_for_item(node_item)
+    previous_report = _report_from_model(node_item)
     _, skills_node, data_nexus_node = _connected_task_nodes(node_item)
     mediator_node = _connected_task_mediator_node(node_item)
 
@@ -2089,6 +2451,22 @@ def run_task_step_from_item(node_item) -> Dict[str, Any]:
     usable_points = 0
     vault_path = ""
     readiness: Dict[str, Any] = {}
+    slide_deprecation: Dict[str, Any] = {}
+
+    def apply_bundle_summary(next_bundle: Dict[str, Any]) -> None:
+        nonlocal points, point_counts, usable_points, vault_path
+        raw_points = next_bundle.get("points", []) if isinstance(next_bundle, dict) else []
+        points = [dict(point) for point in raw_points if isinstance(point, dict)]
+        point_counts = _point_type_counts(points)
+        usable_points = sum(
+            1
+            for point in points
+            if str(point.get("content") or point.get("note") or point.get("summary") or "").strip()
+            and not _is_question_like_point(point)
+            and not _is_generated_slide_point(point)
+        )
+        vault_path = str(next_bundle.get("vault") or "") if isinstance(next_bundle, dict) else ""
+
     if data_nexus_node is None:
         questions.append(
             {
@@ -2107,15 +2485,7 @@ def run_task_step_from_item(node_item) -> Dict[str, Any]:
                     "text": bundle_error,
                 }
             )
-        raw_points = bundle.get("points", []) if isinstance(bundle, dict) else []
-        points = [dict(point) for point in raw_points if isinstance(point, dict)]
-        point_counts = _point_type_counts(points)
-        usable_points = sum(
-            1
-            for point in points
-            if str(point.get("content") or point.get("summary") or "").strip() and not _is_question_like_point(point)
-        )
-        vault_path = str(bundle.get("vault") or "") if isinstance(bundle, dict) else ""
+        apply_bundle_summary(bundle)
         checks["points_found"] = bool(points)
         if not points:
             questions.append(
@@ -2146,6 +2516,27 @@ def run_task_step_from_item(node_item) -> Dict[str, Any]:
             bundle,
             root=skills_root or "Skills",
         )
+        slide_deprecation = _deprecate_current_slides_for_template_change(
+            node_item,
+            task_id,
+            bundle,
+            template or {},
+            previous_report,
+            skills_root or "Skills",
+            readiness,
+        )
+        if slide_deprecation.get("ok") and int(slide_deprecation.get("deprecated_slide_count", 0) or 0) > 0:
+            refreshed_bundle, refresh_error = _data_nexus_bundle_from_node(data_nexus_node)
+            if refresh_error:
+                slide_deprecation["message"] = f"{slide_deprecation.get('message') or ''} Refresh failed: {refresh_error}".strip()
+            else:
+                bundle = refreshed_bundle
+                apply_bundle_summary(bundle)
+                readiness = analyze_sales_deck_readiness(
+                    str((template or {}).get("path") or ""),
+                    bundle,
+                    root=skills_root or "Skills",
+                )
         checks["readiness_ready"] = str(readiness.get("status") or "").strip().lower() == "ready_to_generate"
         if not bool(readiness.get("ok", False)):
             questions.append(
@@ -2186,6 +2577,7 @@ def run_task_step_from_item(node_item) -> Dict[str, Any]:
         },
         "checks": checks,
         "readiness": readiness,
+        "slide_deprecation": slide_deprecation,
         "questions": questions,
         "refinement_questions": refinement_questions,
         "snapshot_warnings": list(snapshot.get("warnings", []) or []) if isinstance(snapshot, dict) else [],
@@ -2402,6 +2794,19 @@ def _format_report(report: Dict[str, Any]) -> str:
                 f"  message: {data_nexus_write.get('message') or ''}",
             ]
         )
+    slide_deprecation = report.get("slide_deprecation") if isinstance(report.get("slide_deprecation"), dict) else {}
+    if slide_deprecation and (slide_deprecation.get("deprecated_slide_count") or slide_deprecation.get("message")):
+        lines.extend(
+            [
+                "",
+                "slide_deprecation:",
+                f"  ok: {slide_deprecation.get('ok')}",
+                f"  previous_slides: {slide_deprecation.get('deprecated_slide_count', 0)}",
+                f"  folder: {slide_deprecation.get('folder') or ''}",
+                f"  type: {slide_deprecation.get('point_type') or ''}",
+                f"  message: {slide_deprecation.get('message') or ''}",
+            ]
+        )
     slide_index = report.get("slide_index") if isinstance(report.get("slide_index"), dict) else {}
     if slide_index:
         lines.extend(
@@ -2410,6 +2815,7 @@ def _format_report(report: Dict[str, Any]) -> str:
                 "slide_index:",
                 f"  ok: {slide_index.get('ok')}",
                 f"  slides: {slide_index.get('slide_count', 0)}",
+                f"  previous_slides: {slide_index.get('old_slide_count', 0)}",
                 f"  sequence_links: {slide_index.get('sequence_link_count', 0)}",
                 f"  source_links: {slide_index.get('source_link_count', 0)}",
                 f"  folder: {slide_index.get('folder') or ''}",

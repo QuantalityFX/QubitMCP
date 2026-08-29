@@ -10,12 +10,14 @@ from echograph.services.sales_agent import generate_sales_deck_from_template
 from echograph.services.skills_library import resolve_library_path, scan_skills_library, skills_root, update_skill_asset_status
 from echograph.services.teacher_agent import (
     prepare_teacher_agent_conversion_request,
+    prepare_teacher_agent_guide_request,
     write_teacher_agent_ai_response,
+    write_teacher_agent_guide_response,
 )
 from nodes.core import Spec
 
 
-BODY_W = 680
+BODY_W = 760
 BODY_H = 380
 MEDIATOR_INPUT_PORT = "mediator"
 DATA_NEXUS_INPUT_PORT = "data_nexus"
@@ -170,8 +172,10 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         actions = QtWidgets.QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(6)
-        self._convert_btn = QtWidgets.QPushButton("Convert")
-        self._convert_btn.setToolTip("Convert selected human template with Teacher Agent")
+        self._convert_btn = QtWidgets.QPushButton("Create Template")
+        self._convert_btn.setToolTip("Create an agent template from the selected human template with Teacher Agent")
+        self._create_guide_btn = QtWidgets.QPushButton("Create Guide")
+        self._create_guide_btn.setToolTip("Create a task guide from the selected agent template with Teacher Agent")
         self._generate_btn = QtWidgets.QPushButton("Generate Deck")
         self._generate_btn.setToolTip("Generate an HTML deck from the selected approved Sales Agent template and connected Data Nexus")
         self._review_btn = QtWidgets.QPushButton("Review Diff")
@@ -183,12 +187,14 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         self._status_label.setObjectName("SkillsSubtle")
         self._status_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self._convert_btn.clicked.connect(self._convert_selected_human_template)
+        self._create_guide_btn.clicked.connect(self._create_guide_from_selected_agent_template)
         self._generate_btn.clicked.connect(self._generate_sales_deck_from_selected_template)
         self._review_btn.clicked.connect(self._show_selected_review_diff)
         self._approve_btn.clicked.connect(lambda _=False: self._set_selected_status("approved"))
         self._draft_btn.clicked.connect(lambda _=False: self._set_selected_status("draft"))
         self._deprecate_btn.clicked.connect(lambda _=False: self._set_selected_status("deprecated"))
         actions.addWidget(self._convert_btn, 0)
+        actions.addWidget(self._create_guide_btn, 0)
         actions.addWidget(self._generate_btn, 0)
         actions.addWidget(self._review_btn, 0)
         actions.addWidget(self._approve_btn, 0)
@@ -324,6 +330,7 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         is_human = bool(asset and asset.get("kind") == "human_template")
         status = str((asset or {}).get("status") or "").strip().lower()
         self._convert_btn.setEnabled(is_human)
+        self._create_guide_btn.setEnabled(is_agent)
         self._generate_btn.setEnabled(
             bool(
                 is_agent
@@ -390,6 +397,9 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
         if asset.get("kind") in {"agent_template", "task_guide"}:
             review_action = menu.addAction("Review Diff")
             review_action.triggered.connect(lambda _checked=False: self._show_selected_review_diff())
+        if asset.get("kind") == "agent_template":
+            guide_action = menu.addAction("Create Guide")
+            guide_action.triggered.connect(lambda _checked=False: self._create_guide_from_selected_agent_template())
         menu.exec(self._list.viewport().mapToGlobal(pos))
 
     @staticmethod
@@ -577,6 +587,65 @@ class SkillsLibraryWidget(QtWidgets.QFrame):
                 self._status_label.setText(result.message)
                 if result.ok:
                     self.refresh(select_path=result.agent_template_path)
+
+            try:
+                QtCore.QTimer.singleShot(0, self, _apply)
+            except Exception:
+                _apply()
+
+        ok, message = runner(scene, mediator_node, request.prompt, request.signature, on_done=_finish)
+        self._status_label.setText(message)
+
+    def _create_guide_from_selected_agent_template(self):
+        asset = self._selected_asset()
+        if not asset or asset.get("kind") != "agent_template":
+            return
+        request = prepare_teacher_agent_guide_request(
+            str(asset.get("path") or ""),
+            root=self._skills_root_text(),
+            target_agent=str(asset.get("target_agent") or "sales_agent"),
+            task_kind="pitch_deck",
+            artifact_kind=str(asset.get("artifact_kind") or "html_deck"),
+        )
+        if not request.ok:
+            self._status_label.setText(request.message)
+            return
+
+        scene = None
+        try:
+            scene = self._node_item.scene()
+        except Exception:
+            scene = None
+        mediator_node = _connected_mediator_node(scene, self._node_item)
+        if mediator_node is None:
+            self._status_label.setText("Connect a Mediator node to run Teacher Agent guide creation.")
+            return
+
+        try:
+            from nodes.mediator_agent import spec as mediator_spec
+        except Exception as exc:
+            self._status_label.setText(f"Mediator unavailable: {exc}")
+            return
+        runner = getattr(mediator_spec, "run_teacher_agent_conversion_from_item", None)
+        if not callable(runner):
+            self._status_label.setText("Mediator Teacher Agent bridge is unavailable.")
+            return
+
+        request_data = request.to_dict()
+
+        def _finish(exit_code: int, error_text: str, response_text: str):
+            def _apply():
+                if int(exit_code) != 0 or str(error_text or "").strip():
+                    self._status_label.setText(str(error_text or f"Teacher Agent exited with code {exit_code}."))
+                    return
+                result = write_teacher_agent_guide_response(
+                    response_text,
+                    request_data,
+                    root=self._skills_root_text(),
+                )
+                self._status_label.setText(result.message)
+                if result.ok:
+                    self.refresh(select_path=result.task_guide_path)
 
             try:
                 QtCore.QTimer.singleShot(0, self, _apply)

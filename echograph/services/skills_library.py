@@ -12,6 +12,7 @@ SLIDE_HEADING_RE = re.compile(r"^##\s+Slide\s+\d+", re.IGNORECASE | re.MULTILINE
 VALID_TEMPLATE_STATUSES = {"draft", "needs_review", "approved", "deprecated", "archived"}
 PACKAGE_REFERENCE_KEYS = (
     "source_human_template",
+    "source_agent_template",
     "conversion_report",
     "package_files",
     "required_files",

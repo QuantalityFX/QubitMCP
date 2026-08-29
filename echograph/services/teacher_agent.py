@@ -14,12 +14,19 @@ from echograph.services.skills_library import resolve_library_path, scan_skills_
 SLIDE_MARKER_RE = re.compile(r"(?m)^SLIDE\s+(\d{1,2})\s*$", re.IGNORECASE)
 TABLE_ROW_RE = re.compile(r"^\|\s*\*\*(?P<key>[^*|]+)\*\*\s*\|\s*(?P<value>.*?)\s*\|\s*$")
 VERSION_SUFFIX_RE = re.compile(r"_v_(\d{3,})$", re.IGNORECASE)
+AGENT_SLOT_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
+AGENT_SLIDE_HEADING_RE = re.compile(r"(?m)^##\s+Slide\s+\d{1,3}\b", re.IGNORECASE)
+FRONT_MATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.DOTALL)
 AGENT_TEMPLATE_TAG_RE = re.compile(
     r"<agent_template_markdown\b[^>]*>(?P<body>.*?)</agent_template_markdown>",
     re.IGNORECASE | re.DOTALL,
 )
 CONVERSION_REPORT_TAG_RE = re.compile(
     r"<conversion_report_markdown\b[^>]*>(?P<body>.*?)</conversion_report_markdown>",
+    re.IGNORECASE | re.DOTALL,
+)
+TASK_GUIDE_TAG_RE = re.compile(
+    r"<task_guide_markdown\b[^>]*>(?P<body>.*?)</task_guide_markdown>",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -54,6 +61,44 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _coerce_front_matter_scalar(value: str) -> Any:
+    text = str(value or "").strip()
+    if text.lower() in {"true", "false"}:
+        return text.lower() == "true"
+    return text
+
+
+def _parse_front_matter(text: str) -> Dict[str, Any]:
+    match = FRONT_MATTER_RE.match(text or "")
+    if not match:
+        return {}
+    data: Dict[str, Any] = {}
+    current_key = ""
+    for raw_line in match.group(1).splitlines():
+        line = raw_line.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        stripped = line.strip()
+        if stripped.startswith("- ") and current_key:
+            value = _coerce_front_matter_scalar(stripped[2:])
+            existing = data.get(current_key)
+            if isinstance(existing, list):
+                existing.append(value)
+            else:
+                data[current_key] = [value]
+            continue
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        if not key:
+            continue
+        current_key = key
+        value = value.strip()
+        data[key] = _coerce_front_matter_scalar(value) if value else []
+    return data
 
 
 def _ascii(value: Any) -> str:
@@ -281,6 +326,32 @@ class TeacherConversionResult:
 
 
 @dataclass
+class TeacherGuideResult:
+    ok: bool
+    message: str
+    task_guide_path: str = ""
+    guide_family_id: str = ""
+    guide_version_id: str = ""
+    target_agent: str = ""
+    task_kind: str = ""
+    artifact_kind: str = ""
+    warnings: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "message": self.message,
+            "task_guide_path": self.task_guide_path,
+            "guide_family_id": self.guide_family_id,
+            "guide_version_id": self.guide_version_id,
+            "target_agent": self.target_agent,
+            "task_kind": self.task_kind,
+            "artifact_kind": self.artifact_kind,
+            "warnings": list(self.warnings),
+        }
+
+
+@dataclass
 class TeacherConversionRequest:
     ok: bool
     message: str
@@ -293,6 +364,7 @@ class TeacherConversionRequest:
     template_version_id: str = ""
     target_agent: str = ""
     artifact_kind: str = ""
+    source_mode: str = ""
     slide_count: int = 0
     slot_count: int = 0
     warnings: List[str] = field(default_factory=list)
@@ -310,8 +382,47 @@ class TeacherConversionRequest:
             "template_version_id": self.template_version_id,
             "target_agent": self.target_agent,
             "artifact_kind": self.artifact_kind,
+            "source_mode": self.source_mode,
             "slide_count": self.slide_count,
             "slot_count": self.slot_count,
+            "warnings": list(self.warnings),
+        }
+
+
+@dataclass
+class TeacherGuideRequest:
+    ok: bool
+    message: str
+    prompt: str = ""
+    signature: str = ""
+    source_template_path: str = ""
+    task_guide_path: str = ""
+    guide_family_id: str = ""
+    guide_version_id: str = ""
+    source_template_id: str = ""
+    source_template_family_id: str = ""
+    source_template_version_id: str = ""
+    target_agent: str = ""
+    task_kind: str = ""
+    artifact_kind: str = ""
+    warnings: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "message": self.message,
+            "prompt": self.prompt,
+            "signature": self.signature,
+            "source_template_path": self.source_template_path,
+            "task_guide_path": self.task_guide_path,
+            "guide_family_id": self.guide_family_id,
+            "guide_version_id": self.guide_version_id,
+            "source_template_id": self.source_template_id,
+            "source_template_family_id": self.source_template_family_id,
+            "source_template_version_id": self.source_template_version_id,
+            "target_agent": self.target_agent,
+            "task_kind": self.task_kind,
+            "artifact_kind": self.artifact_kind,
             "warnings": list(self.warnings),
         }
 
@@ -419,6 +530,82 @@ def _next_output_path(source_path: Path, root: Path, next_number: int) -> tuple[
         version_number += 1
 
 
+def _task_guide_output_base_name(source_path: Path) -> str:
+    stem = VERSION_SUFFIX_RE.sub("", source_path.stem)
+    if re.search(r"(?i)agent_template", stem):
+        return re.sub(r"(?i)agent_template", "Agent_Guide", stem, count=1)
+    if re.search(r"(?i)_template(_|$)", stem):
+        return re.sub(r"(?i)_template(_|$)", r"_Agent_Guide\1", stem, count=1)
+    if re.search(r"(?i)_guide(_|$)", stem):
+        return stem
+    return f"{stem}_Agent_Guide"
+
+
+def _guide_family_from_agent_template(
+    source_path: Path,
+    root: Path,
+    metadata: Dict[str, Any],
+    target_agent: str,
+    task_kind: str,
+    artifact_kind: str,
+) -> tuple[str, int]:
+    source_display = _display_path(source_path)
+    source_key = _normalize_path_text(source_display)
+    base_name = _task_guide_output_base_name(source_path)
+    snapshot = scan_skills_library(root)
+    best_family = ""
+    best_version = 0
+    filename_family = ""
+    filename_version = 0
+    for asset in snapshot.task_guides:
+        data = asset.to_dict()
+        family = str(data.get("guide_family_id") or "").strip()
+        version = int(data.get("version_sort", -1) or -1)
+        source = _normalize_path_text(data.get("source_agent_template"))
+        agent = str(data.get("target_agent") or "").strip().lower()
+        guide_task = str(data.get("task_kind") or "").strip().lower()
+        guide_artifact = str(data.get("artifact_kind") or "").strip().lower()
+        if (
+            family
+            and source == source_key
+            and (not agent or agent == target_agent.lower())
+            and (not guide_task or guide_task == task_kind.lower())
+            and (not guide_artifact or guide_artifact == artifact_kind.lower())
+        ):
+            best_family = family
+            best_version = max(best_version, version)
+        name_base = VERSION_SUFFIX_RE.sub("", asset.name.rsplit(".", 1)[0]).lower()
+        if (
+            family
+            and name_base == base_name.lower()
+            and (not agent or agent == target_agent.lower())
+            and (not guide_task or guide_task == task_kind.lower())
+            and (not guide_artifact or guide_artifact == artifact_kind.lower())
+        ):
+            filename_family = family
+            filename_version = max(filename_version, version)
+    if best_family:
+        return best_family, best_version
+    if filename_family:
+        return filename_family, filename_version
+    template_family = str(metadata.get("template_family_id") or "").strip()
+    if template_family:
+        return _slug(f"{template_family}_agent_guide", fallback="agent_guide"), 0
+    return _slug(base_name, fallback="agent_guide"), 0
+
+
+def _next_task_guide_output_path(source_path: Path, root: Path, next_number: int) -> tuple[Path, str]:
+    guide_dir = root / "agent_guides"
+    base_name = _task_guide_output_base_name(source_path)
+    version_number = max(1, int(next_number or 1))
+    while True:
+        version_id = f"v_{version_number:03d}"
+        output_path = guide_dir / f"{base_name}_{version_id}.md"
+        if not output_path.exists():
+            return output_path, version_id
+        version_number += 1
+
+
 def _yaml_list(values: List[str], indent: str = "  ") -> str:
     if not values:
         return f"{indent}- none"
@@ -514,6 +701,8 @@ def _render_agent_template(
         "delivery_formats:",
         "  - html",
         "  - pdf",
+        f"slide_count: {len(slides)}",
+        f"slot_count: {slot_count}",
         "version: 0.1.0",
         "status: draft",
         "generated_by: teacher_agent",
@@ -611,75 +800,13 @@ def _render_agent_template(
     return "\n\n".join(part.rstrip() for part in lines if part is not None).rstrip() + "\n"
 
 
-def _render_report(
-    *,
-    source_path: Path,
-    output_path: Path,
-    template_family_id: str,
-    template_version_id: str,
-    target_agent: str,
-    artifact_kind: str,
-    slides: List[ConvertedSlide],
-    warnings: List[str],
-    generated_at: str,
-) -> str:
-    lines: List[str] = [
-        "# Teacher Agent Conversion Report",
-        "",
-        f"Generated at: {generated_at}",
-        "",
-        "## Input",
-        "",
-        f"- Source: `{_display_path(source_path)}`",
-        f"- Target agent: `{target_agent}`",
-        f"- Target artifact: `{artifact_kind}`",
-        "",
-        "## Output",
-        "",
-        f"- Agent template: `{_display_path(output_path)}`",
-        f"- Template family: `{template_family_id}`",
-        f"- Template version: `{template_version_id}`",
-        f"- Status: `draft`",
-        "",
-        "## Detection",
-        "",
-        f"- Slides detected: `{len(slides)}`",
-        f"- Slots declared: `{_total_slot_count(slides, artifact_kind)}`",
-        "",
-        "## Slide IDs",
-        "",
-    ]
-    for slide in slides:
-        lines.append(f"- `{slide.slide_id}` from `SLIDE {slide.number:02d}`")
-    lines.extend(["", "## Warnings", ""])
-    all_warnings = list(warnings)
-    for slide in slides:
-        for warning in slide.warnings:
-            all_warnings.append(f"Slide {slide.number:02d}: {warning}")
-    if all_warnings:
-        lines.extend(f"- {warning}" for warning in all_warnings)
-    else:
-        lines.append("- No conversion warnings.")
-    lines.extend(
-        [
-            "",
-            "## Review Checklist",
-            "",
-            "- Confirm slide titles and IDs are correct.",
-            "- Confirm accepted Data Nexus point types match the current knowledge format.",
-            "- Confirm required slots are complete.",
-            "- Approve the generated agent template from the Skills node before target-agent use.",
-        ]
-    )
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def _conversion_paths_and_context(
     source_path: str | Path,
     *,
     root: str | Path | None = None,
     target_agent: str = "sales_agent",
     artifact_kind: str = "html_deck",
+    allow_unstructured: bool = False,
 ) -> tuple[bool, str, Path | None, Path | None, Path | None, str, str, List[ConvertedSlide], List[str], str]:
     root_path = _library_root(root)
     try:
@@ -700,9 +827,11 @@ def _conversion_paths_and_context(
         text = _read_text(source)
     except Exception as exc:
         return False, f"Failed to read human template: {exc}", None, None, None, "", "", [], [], ""
+    if not str(text or "").strip():
+        return False, "Human template is empty.", source, None, None, "", "", [], [], text
 
     slides, warnings = extract_slides(text)
-    if not slides:
+    if not slides and not allow_unstructured:
         return False, "No slide sections found to convert.", source, None, None, "", "", [], warnings, text
 
     family_id, latest_version = _template_family_from_source(source, root_path, target_agent)
@@ -710,6 +839,56 @@ def _conversion_paths_and_context(
     report_dir = root_path / "conversion_reports"
     report_path = report_dir / f"{VERSION_SUFFIX_RE.sub('', output_path.stem)}_Conversion_Report_{version_id}.md"
     return True, "", source, output_path, report_path, family_id, version_id, slides, warnings, text
+
+
+def _guide_paths_and_context(
+    source_template_path: str | Path,
+    *,
+    root: str | Path | None = None,
+    target_agent: str = "sales_agent",
+    task_kind: str = "pitch_deck",
+    artifact_kind: str = "html_deck",
+) -> tuple[bool, str, Path | None, Path | None, str, str, Dict[str, Any], str]:
+    root_path = _library_root(root)
+    try:
+        source = resolve_library_path(source_template_path, root=root_path)
+    except Exception as exc:
+        return False, str(exc), None, None, "", "", {}, ""
+
+    agent_dir = root_path / "agent_templates"
+    try:
+        source.relative_to(agent_dir)
+    except Exception:
+        return False, "Teacher Agent can only create guides from files under `Skills/agent_templates/`.", None, None, "", "", {}, ""
+
+    if not source.exists() or source.suffix.lower() != ".md":
+        return False, f"Agent template not found or not markdown: {_display_path(source)}", source, None, "", "", {}, ""
+
+    try:
+        text = _read_text(source)
+    except Exception as exc:
+        return False, f"Failed to read agent template: {exc}", source, None, "", "", {}, ""
+    if not str(text or "").strip():
+        return False, "Agent template is empty.", source, None, "", "", {}, text
+
+    metadata = _parse_front_matter(text)
+    if str(metadata.get("template_kind") or "").strip().lower() != "agent_template":
+        return False, "Selected file is not an agent template.", source, None, "", "", metadata, text
+    if target_agent and str(metadata.get("target_agent") or "").strip().lower() not in {"", target_agent.lower()}:
+        return False, f"Agent template target_agent is not `{target_agent}`.", source, None, "", "", metadata, text
+    if artifact_kind and str(metadata.get("artifact_kind") or "").strip().lower() not in {"", artifact_kind.lower()}:
+        return False, f"Agent template artifact_kind is not `{artifact_kind}`.", source, None, "", "", metadata, text
+
+    family_id, latest_version = _guide_family_from_agent_template(
+        source,
+        root_path,
+        metadata,
+        target_agent,
+        task_kind,
+        artifact_kind,
+    )
+    output_path, version_id = _next_task_guide_output_path(source, root_path, latest_version + 1)
+    return True, "", source, output_path, family_id, version_id, metadata, text
 
 
 def prepare_teacher_agent_conversion_request(
@@ -724,12 +903,15 @@ def prepare_teacher_agent_conversion_request(
         root=root,
         target_agent=target_agent,
         artifact_kind=artifact_kind,
+        allow_unstructured=True,
     )
     if not ok or source is None or output_path is None or report_path is None:
         return TeacherConversionRequest(False, message, warnings=warnings)
 
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     source_title = _title_from_source_path(source) or _title_from_intro(text, "Agent Template")
+    source_mode = "structured_template" if slides else "unstructured_source"
+    parsed_slot_count = _total_slot_count(slides, artifact_kind) if slides else 0
     fallback_scaffold = _render_agent_template(
         source_path=source,
         source_title=source_title,
@@ -741,11 +923,44 @@ def prepare_teacher_agent_conversion_request(
         target_agent=target_agent,
         artifact_kind=artifact_kind,
     )
+    if slides:
+        source_mode_instruction = (
+            "Source mode: structured human template.\n"
+            "Use the detected slide sections as the base structure, but still improve weak or generic mappings with semantic reasoning. "
+            "Also read the non-slide sections, worksheets, QA checklists, appendix notes, research notes, and usage guidance. "
+            "Integrate that material into global pitch specifications, validation rules, optional appendix guidance, and review warnings.\n\n"
+        )
+        slide_count_requirement = f"- slide_count: {len(slides)}"
+        slot_count_requirement = f"- slot_count: {parsed_slot_count}"
+        fallback_note = (
+            "A deterministic fallback scaffold is provided only as a structural hint. Improve it with semantic reasoning; "
+            "do not copy weak generic point-type hints when the source supports better specific requirements."
+        )
+    else:
+        source_mode_instruction = (
+            "Source mode: unstructured source document, raw transcript, or AI-formatted markdown guide.\n"
+            "No reliable `SLIDE ##` markers were detected. Do not reject the source and do not ask for manual formatting. "
+            "Study the whole document as expert guidance. Infer the reusable deck template from explicit slide mentions, "
+            "journey points, lesson sequence, examples, comparisons, warnings, and repeated advice. "
+            "Create slide sections for the explicit or implied pitch components, and mark uncertain inferences as `needs_review`.\n\n"
+            "For unstructured sources, also create global pitch specifications from the non-slide guidance: overall focus, "
+            "target audience, narrative arc, positioning, tone, readability constraints, evidence standards, market/timing/competition "
+            "rules, ask/use-of-funds rules, visual/copy guidance, and things to avoid.\n\n"
+        )
+        slide_count_requirement = (
+            "- slide_count: concrete integer inferred from the source document; do not use 0 unless no deck structure can be inferred"
+        )
+        slot_count_requirement = "- slot_count: concrete integer after defining all global and slide slots"
+        fallback_note = (
+            "A metadata scaffold is provided only to show the required file shape. Because the source is unstructured, "
+            "replace the zero-slide scaffold with an inferred slide template and concrete counts."
+        )
     prompt = (
         "You are the Teacher Agent running through the Mediator AI layer.\n\n"
-        "Convert the provided human-authored template into an agent-formatted template. "
+        "Convert the provided human-authored source document into an agent-formatted template. "
         "Do not rely on hardcoded examples or slide-number assumptions. Infer the reusable structure, slots, "
         "Data Nexus point requirements, validation rules, and review warnings from the source document itself.\n\n"
+        f"{source_mode_instruction}"
         "Return exactly two tagged markdown blocks and no extra prose outside the tags:\n\n"
         "<agent_template_markdown>\n"
         "FULL_AGENT_TEMPLATE_MARKDOWN_HERE\n"
@@ -763,8 +978,8 @@ def prepare_teacher_agent_conversion_request(
         f"- target_agent: {target_agent}\n"
         f"- artifact_kind: {artifact_kind}\n"
         "- delivery_formats: html, pdf when relevant to the artifact, otherwise infer from artifact_kind\n"
-        f"- slide_count: {len(slides)}\n"
-        f"- slot_count: {_total_slot_count(slides, artifact_kind)}\n"
+        f"{slide_count_requirement}\n"
+        f"{slot_count_requirement}\n"
         "- version: 0.1.0\n"
         "- status: draft\n"
         "- generated_by: teacher_agent\n"
@@ -774,13 +989,14 @@ def prepare_teacher_agent_conversion_request(
         "Write every fillable value as a literal double-brace slot such as `{{slide_01.headline}}`. "
         "For deck or slide artifacts, use scanner-friendly headings like `## Slide 01: Title`. "
         "Preserve source guidance that matters. If a section cannot be confidently converted, mark it for review.\n\n"
-        "A deterministic fallback scaffold is provided only as a structural hint. Improve it with semantic reasoning; "
-        "do not copy weak generic point-type hints when the source supports better specific requirements.\n\n"
+        "Add an `## Overall Pitch Specification` section before slide sections. Capture the presentation's strategic focus, "
+        "story model, audience assumptions, evidence standard, copy/design constraints, and review checklist there.\n\n"
+        f"{fallback_note}\n\n"
         "Fallback scaffold:\n"
         "```md\n"
         f"{fallback_scaffold}\n"
         "```\n\n"
-        "Human source template:\n"
+        "Human source document:\n"
         "```md\n"
         f"{text}\n"
         "```\n"
@@ -802,9 +1018,137 @@ def prepare_teacher_agent_conversion_request(
         template_version_id=version_id,
         target_agent=target_agent,
         artifact_kind=artifact_kind,
+        source_mode=source_mode,
         slide_count=len(slides),
-        slot_count=_total_slot_count(slides, artifact_kind),
+        slot_count=parsed_slot_count,
         warnings=warnings + [f"Slide {slide.number:02d}: {warning}" for slide in slides for warning in slide.warnings],
+    )
+
+
+def prepare_teacher_agent_guide_request(
+    source_template_path: str | Path,
+    *,
+    root: str | Path | None = None,
+    target_agent: str = "sales_agent",
+    task_kind: str = "pitch_deck",
+    artifact_kind: str = "html_deck",
+) -> TeacherGuideRequest:
+    ok, message, source, output_path, family_id, version_id, metadata, text = _guide_paths_and_context(
+        source_template_path,
+        root=root,
+        target_agent=target_agent,
+        task_kind=task_kind,
+        artifact_kind=artifact_kind,
+    )
+    if not ok or source is None or output_path is None:
+        return TeacherGuideRequest(False, message)
+
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    source_display = _display_path(source)
+    output_display = _display_path(output_path)
+    guide_id = f"{family_id}_{version_id}"
+    source_template_id = str(metadata.get("template_id") or "").strip()
+    source_template_family_id = str(metadata.get("template_family_id") or "").strip()
+    source_template_version_id = str(metadata.get("template_version_id") or "").strip()
+    source_slide_count = str(metadata.get("slide_count") or "").strip()
+    source_slot_count = str(metadata.get("slot_count") or "").strip()
+    prompt = (
+        "You are the Teacher Agent running through the Mediator AI layer.\n\n"
+        "Create a task guide from the selected agent template. The task guide is not the deck template itself. "
+        "It tells the Task node and Sales Agent how to use the template, inspect Data Nexus, ask prep questions, "
+        "generate drafts, and keep the user interaction natural.\n\n"
+        "Base the guide on what the agent template actually says. If the template emphasizes story, story-first must become "
+        "a guide priority. If it emphasizes product workflow, proof quality, 3-minute readability, market timing, competition, "
+        "ask/use-of-funds, clarity over design, or technical-founder translation, carry those priorities into the guide. "
+        "Do not produce generic workflow boilerplate that ignores the template-specific instructions.\n\n"
+        "Return exactly one tagged markdown block and no extra prose outside the tag:\n\n"
+        "<task_guide_markdown>\n"
+        "FULL_TASK_GUIDE_MARKDOWN_HERE\n"
+        "</task_guide_markdown>\n\n"
+        "Required YAML front matter for the task guide:\n"
+        "```yaml\n"
+        "---\n"
+        "kind: task_guide\n"
+        f"guide_id: {guide_id}\n"
+        f"guide_family_id: {family_id}\n"
+        f"guide_version_id: {version_id}\n"
+        f"target_agent: {target_agent}\n"
+        f"task_kind: {task_kind}\n"
+        f"artifact_kind: {artifact_kind}\n"
+        "status: draft\n"
+        f"source_agent_template: {source_display}\n"
+        f"source_template_id: {source_template_id}\n"
+        f"source_template_family_id: {source_template_family_id}\n"
+        f"source_template_version_id: {source_template_version_id}\n"
+        "required_inputs:\n"
+        "  - agent_template\n"
+        "  - data_nexus\n"
+        "default_steps:\n"
+        "  - readiness_report\n"
+        "  - ask_missing_questions\n"
+        "  - generate_draft\n"
+        "  - review\n"
+        "approval_required: true\n"
+        "generated_by: teacher_agent\n"
+        f"generated_at: {generated_at}\n"
+        "---\n"
+        "```\n\n"
+        "Guide body requirements:\n"
+        "- Include `# Sales Pitch Deck Agent Guide` or a similarly specific title.\n"
+        "- Include a `## Template-Specific Priorities` section derived from the selected agent template.\n"
+        "- Include readiness rules that tell the Sales Agent how to judge whether Data Nexus points satisfy each slide's intent.\n"
+        "- Include question rules that ask the smallest useful set of missing business questions.\n"
+        "- User-facing questions must be natural and concise. Do not expose internal `question_id`, expected answer point type, "
+        "hidden JSON tags, source-point plumbing, or Data Nexus implementation details in chat copy.\n"
+        "- Internal prep questions may still define stable IDs, accepted point types, matched point IDs, and evaluation criteria; "
+        "those belong in Task/Data Nexus state and hidden JSON, not in the human-facing message.\n"
+        "- Tell the Sales Agent to ask one question at a time when continuing through the chatbot, using the active prep question "
+        "tracked by Data Nexus/Task state.\n"
+        "- Include generation rules for draft decks, review rules, approval/dismissal rules, and warnings for unsupported claims.\n"
+        "- Preserve the agent template's validation rules and missing-field behavior at the workflow level.\n\n"
+        "Source template metadata:\n"
+        f"- template_id: {source_template_id}\n"
+        f"- template_family_id: {source_template_family_id}\n"
+        f"- template_version_id: {source_template_version_id}\n"
+        f"- slide_count: {source_slide_count}\n"
+        f"- slot_count: {source_slot_count}\n"
+        f"- output_path: {output_display}\n\n"
+        "Selected agent template:\n"
+        "```md\n"
+        f"{text}\n"
+        "```\n"
+    )
+    signature = hashlib.sha1(
+        "\n".join(
+            [
+                source_display,
+                output_display,
+                family_id,
+                version_id,
+                source_template_id,
+                source_template_version_id,
+                target_agent,
+                task_kind,
+                artifact_kind,
+                text,
+            ]
+        ).encode("utf-8", errors="ignore")
+    ).hexdigest()
+    return TeacherGuideRequest(
+        True,
+        f"Prepared Teacher Agent guide request for `{version_id}`.",
+        prompt=prompt,
+        signature=signature,
+        source_template_path=source_display,
+        task_guide_path=output_display,
+        guide_family_id=family_id,
+        guide_version_id=version_id,
+        source_template_id=source_template_id,
+        source_template_family_id=source_template_family_id,
+        source_template_version_id=source_template_version_id,
+        target_agent=target_agent,
+        task_kind=task_kind,
+        artifact_kind=artifact_kind,
     )
 
 
@@ -813,6 +1157,48 @@ def _extract_tagged_markdown(response_text: str, pattern: re.Pattern[str]) -> st
     if not match:
         return ""
     return str(match.group("body") or "").strip()
+
+
+def write_teacher_agent_guide_response(
+    response_text: str,
+    request: TeacherGuideRequest | Dict[str, Any],
+    *,
+    root: str | Path | None = None,
+) -> TeacherGuideResult:
+    data = request.to_dict() if isinstance(request, TeacherGuideRequest) else dict(request or {})
+    if not bool(data.get("ok", False)):
+        return TeacherGuideResult(False, str(data.get("message") or "Teacher Agent guide request was not valid."))
+
+    guide_body = _extract_tagged_markdown(response_text, TASK_GUIDE_TAG_RE)
+    if not guide_body:
+        return TeacherGuideResult(
+            False,
+            "Mediator AI response did not include `<task_guide_markdown>`.",
+            warnings=["Teacher Agent guide response could not be written."],
+        )
+
+    try:
+        output_path = resolve_library_path(str(data.get("task_guide_path") or ""), root=_library_root(root))
+    except Exception as exc:
+        return TeacherGuideResult(False, str(exc))
+
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(guide_body.rstrip() + "\n", encoding="utf-8")
+    except Exception as exc:
+        return TeacherGuideResult(False, f"Failed to write Teacher Agent guide output: {exc}")
+
+    return TeacherGuideResult(
+        True,
+        f"Created {output_path.name} from Mediator AI response.",
+        task_guide_path=_display_path(output_path),
+        guide_family_id=str(data.get("guide_family_id") or ""),
+        guide_version_id=str(data.get("guide_version_id") or ""),
+        target_agent=str(data.get("target_agent") or ""),
+        task_kind=str(data.get("task_kind") or ""),
+        artifact_kind=str(data.get("artifact_kind") or ""),
+        warnings=list(data.get("warnings", []) or []),
+    )
 
 
 def write_teacher_agent_ai_response(
@@ -861,6 +1247,9 @@ def write_teacher_agent_ai_response(
     except Exception as exc:
         return TeacherConversionResult(False, f"Failed to write Teacher Agent AI output: {exc}")
 
+    response_slide_count = len(AGENT_SLIDE_HEADING_RE.findall(template_body or ""))
+    response_slot_count = len({slot.strip() for slot in AGENT_SLOT_RE.findall(template_body or "") if slot.strip()})
+
     return TeacherConversionResult(
         True,
         f"Created {output_path.name} from Mediator AI response.",
@@ -868,69 +1257,7 @@ def write_teacher_agent_ai_response(
         conversion_report_path=_display_path(report_path),
         template_family_id=str(data.get("template_family_id") or ""),
         template_version_id=str(data.get("template_version_id") or ""),
-        slide_count=int(data.get("slide_count", 0) or 0),
-        slot_count=int(data.get("slot_count", 0) or 0),
+        slide_count=response_slide_count or int(data.get("slide_count", 0) or 0),
+        slot_count=response_slot_count or int(data.get("slot_count", 0) or 0),
         warnings=list(data.get("warnings", []) or []),
-    )
-
-
-def convert_human_template_to_agent_template(
-    source_path: str | Path,
-    *,
-    root: str | Path | None = None,
-    target_agent: str = "sales_agent",
-    artifact_kind: str = "html_deck",
-) -> TeacherConversionResult:
-    ok, message, source, output_path, report_path, family_id, version_id, slides, warnings, text = _conversion_paths_and_context(
-        source_path,
-        root=root,
-        target_agent=target_agent,
-        artifact_kind=artifact_kind,
-    )
-    if not ok or source is None or output_path is None or report_path is None:
-        return TeacherConversionResult(False, message, warnings=warnings)
-
-    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    source_title = _title_from_source_path(source) or _title_from_intro(text, "Agent Template")
-    template_text = _render_agent_template(
-        source_path=source,
-        source_title=source_title,
-        template_family_id=family_id,
-        template_version_id=version_id,
-        conversion_report_path=_display_path(report_path),
-        slides=slides,
-        generated_at=generated_at,
-        target_agent=target_agent,
-        artifact_kind=artifact_kind,
-    )
-    report_text = _render_report(
-        source_path=source,
-        output_path=output_path,
-        template_family_id=family_id,
-        template_version_id=version_id,
-        target_agent=target_agent,
-        artifact_kind=artifact_kind,
-        slides=slides,
-        warnings=warnings,
-        generated_at=generated_at,
-    )
-
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(template_text, encoding="utf-8")
-        report_path.write_text(report_text, encoding="utf-8")
-    except Exception as exc:
-        return TeacherConversionResult(False, f"Failed to write Teacher Agent output: {exc}", warnings=warnings)
-
-    return TeacherConversionResult(
-        True,
-        f"Created {output_path.name} as `{version_id}`.",
-        agent_template_path=_display_path(output_path),
-        conversion_report_path=_display_path(report_path),
-        template_family_id=family_id,
-        template_version_id=version_id,
-        slide_count=len(slides),
-        slot_count=_total_slot_count(slides, artifact_kind),
-        warnings=warnings + [f"Slide {slide.number:02d}: {warning}" for slide in slides for warning in slide.warnings],
     )

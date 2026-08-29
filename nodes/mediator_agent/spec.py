@@ -1676,7 +1676,7 @@ def sales_agent_continue_response_from_item(scene, node_item, user_input: str) -
             if bool(point.get("is_question")) and str(point.get("answer_status") or "").strip().lower() == "open"
         ]
         if not open_questions:
-            message = "I checked Data Nexus just now. There are no open Sales Agent prep questions."
+            message = "There are no open Sales Agent prep questions."
             _set_node_info(node_item, f"Sales Agent route: {message}")
             return message
         active_id = str(bundle.get("active_question_id") or "").strip()
@@ -1710,22 +1710,14 @@ def sales_agent_continue_response_from_item(scene, node_item, user_input: str) -
                 ),
                 open_questions[0],
             )
-        question_id = str(active_question.get("id") or "").strip()
-        title = str(active_question.get("title") or "Sales Agent Prep Question").strip()
-        expected = str(active_question.get("expected_answer_point_type") or "").strip()
         question = _question_display_text(active_question)
         lines = [
-            "I checked the connected Data Nexus just now.",
+            "Here is the next thing I need:",
             "",
-            f"{title}:",
             question,
         ]
-        if expected:
-            lines.extend(["", f"Expected answer type: `{expected}`"])
-        if question_id:
-            lines.extend(["", f"Question id: `{question_id}`"])
         lines.append("")
-        lines.append("Answer this normally, or start with `save this as the answer to the active prep question:` if you want me to store it immediately.")
+        lines.append("Answer naturally and I will save it to the active prep question.")
         message = "\n".join(lines).strip()
         _set_node_info(node_item, f"Sales Agent route: active question\n\n{message}")
         return message

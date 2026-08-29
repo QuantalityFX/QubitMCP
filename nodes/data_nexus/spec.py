@@ -233,8 +233,41 @@ def _is_slide_point(entry: dict[str, Any]) -> bool:
     return _entry_folder(entry).lower() == "slides"
 
 
+def _is_archived_slide_point(entry: dict[str, Any]) -> bool:
+    point_type = _normalize_point_type(entry.get("type", ""), fallback="")
+    if point_type in {"old_slide", "previous_slide", "deprecated_slide"}:
+        return True
+    return _entry_folder(entry).lower() in {"previous slides", "old slides", "deprecated slides"}
+
+
+def _is_answer_point(entry: dict[str, Any], answer_ids: set[str] | None = None) -> bool:
+    point_id = str((entry or {}).get("id", "") or "").strip()
+    if answer_ids is not None and point_id and point_id in answer_ids:
+        return True
+    point_type = _normalize_point_type((entry or {}).get("type", ""), fallback="")
+    if point_type in {"answer", "prep_answer"}:
+        return True
+    return _entry_folder(entry or {}).lower() in {"answers", "prep_answers"}
+
+
 def _edge_label(edge: dict[str, Any]) -> str:
     return str((edge or {}).get("label", "") or "").strip().lower()
+
+
+def _answer_point_ids_from_edges(nodes: dict[str, dict[str, Any]], edges: list[dict[str, Any]]) -> set[str]:
+    out: set[str] = set()
+    for edge in edges:
+        if _edge_label(edge) != DATA_NEXUS_ANSWER_EDGE_LABEL:
+            continue
+        source_id = str(edge.get("source", "") or "").strip()
+        target_id = str(edge.get("target", "") or "").strip()
+        source = nodes.get(source_id)
+        target = nodes.get(target_id)
+        if source is not None and target is not None and _is_question_point(target) and not _is_question_point(source):
+            out.add(source_id)
+        elif source is not None and target is not None and _is_question_point(source) and not _is_question_point(target):
+            out.add(target_id)
+    return out
 
 
 def _is_question_reference_edge(edge: dict[str, Any]) -> bool:
@@ -2042,16 +2075,46 @@ def _arrange_graph_question_clusters(graph: dict[str, Any]) -> dict[str, Any]:
         ],
         key=sort_key,
     )
+    archived_slide_ids = sorted(
+        [
+            point_id
+            for point_id, entry in by_id.items()
+            if not _is_question_point(entry) and _is_archived_slide_point(entry)
+        ],
+        key=sort_key,
+    )
     other_ids = sorted(
         [
             point_id
             for point_id, entry in by_id.items()
-            if not _is_question_point(entry) and not _is_slide_point(entry)
+            if not _is_question_point(entry) and not _is_slide_point(entry) and not _is_archived_slide_point(entry)
         ],
         key=sort_key,
     )
-    groups = [ids for ids in (question_ids, slide_ids, other_ids) if ids]
-    if not groups:
+
+    def regular_cluster_key(point_id: str) -> str:
+        entry = by_id.get(point_id, {})
+        point_type = _normalize_point_type(entry.get("type", ""), fallback="")
+        folder = _entry_folder(entry).strip().lower()
+        if point_type and point_type not in {"concept", "point", "answer", "prep_answer"}:
+            return f"type:{point_type}"
+        if folder:
+            return f"folder:{folder}"
+        return f"type:{point_type or 'concept'}"
+
+    regular_by_cluster: dict[str, list[str]] = {}
+    for point_id in other_ids:
+        regular_by_cluster.setdefault(regular_cluster_key(point_id), []).append(point_id)
+    regular_group_specs = [
+        (f"regular:{cluster_key}", sorted(ids, key=sort_key))
+        for cluster_key, ids in sorted(
+            regular_by_cluster.items(),
+            key=lambda item: (-len(item[1]), item[0]),
+        )
+    ]
+
+    has_groups = any(ids for ids in (question_ids, slide_ids, archived_slide_ids)) or bool(regular_group_specs)
+    if not has_groups:
         clean["nodes"] = nodes
         clean["edges"] = edges
         return clean
@@ -2070,12 +2133,29 @@ def _arrange_graph_question_clusters(graph: dict[str, Any]) -> dict[str, Any]:
     center_by_group = {
         "questions": (-0.62, -0.48),
         "slides": (1.58, -0.48),
+        "previous_slides": (1.58, 1.12),
         "regular": (0.5, 1.1),
     }
+    if regular_group_specs:
+        regular_count = len(regular_group_specs)
+        if regular_count == 1:
+            center_by_group[regular_group_specs[0][0]] = center_by_group["regular"]
+        else:
+            max_regular_size = max(len(ids) for _name, ids in regular_group_specs)
+            columns = max(1, min(3, math.ceil(math.sqrt(float(regular_count)))))
+            step_x = max(0.72, group_extent(max_regular_size) + 0.32)
+            step_y = max(0.54, group_extent(max_regular_size) + 0.24)
+            base_x = -0.05 - ((columns - 1) * step_x * 0.5)
+            base_y = 1.24
+            for index, (name, _ids) in enumerate(regular_group_specs):
+                row = index // columns
+                col = index % columns
+                center_by_group[name] = (base_x + (col * step_x), base_y + (row * step_y))
     group_specs = [
         ("questions", question_ids),
         ("slides", slide_ids),
-        ("regular", other_ids),
+        ("previous_slides", archived_slide_ids),
+        *regular_group_specs,
     ]
     groups = [(name, ids) for name, ids in group_specs if ids]
     if len(groups) == 1:
@@ -2942,11 +3022,15 @@ class DataNexusCanvas(QtWidgets.QWidget):
         return True
 
     @staticmethod
-    def _point_edge_color(entry: dict[str, Any]) -> QtGui.QColor:
+    def _point_edge_color(entry: dict[str, Any], answer_ids: set[str] | None = None) -> QtGui.QColor:
         if _is_question_point(entry):
             return QtGui.QColor(_question_display_color(entry))
+        if _is_archived_slide_point(entry):
+            return QtGui.QColor("#166534")
         if _is_slide_point(entry):
             return QtGui.QColor("#39ff14")
+        if _is_answer_point(entry, answer_ids=answer_ids):
+            return QtGui.QColor("#0f766e")
         return QtGui.QColor("#14b8a6")
 
     def _edge_width(self, edge: dict[str, Any], *, glow: bool = False) -> float:
@@ -2979,13 +3063,14 @@ class DataNexusCanvas(QtWidgets.QWidget):
         end: QtCore.QPointF,
         *,
         alpha: int,
+        answer_ids: set[str] | None = None,
     ) -> QtGui.QBrush:
-        src_color = self._point_edge_color(src)
-        dst_color = self._point_edge_color(dst)
+        src_color = self._point_edge_color(src, answer_ids=answer_ids)
+        dst_color = self._point_edge_color(dst, answer_ids=answer_ids)
         src_color.setAlpha(alpha)
         dst_color.setAlpha(alpha)
-        src_kind = "question" if _is_question_point(src) else "slide" if _is_slide_point(src) else "point"
-        dst_kind = "question" if _is_question_point(dst) else "slide" if _is_slide_point(dst) else "point"
+        src_kind = "question" if _is_question_point(src) else "slide" if (_is_slide_point(src) or _is_archived_slide_point(src)) else "answer" if _is_answer_point(src, answer_ids=answer_ids) else "point"
+        dst_kind = "question" if _is_question_point(dst) else "slide" if (_is_slide_point(dst) or _is_archived_slide_point(dst)) else "answer" if _is_answer_point(dst, answer_ids=answer_ids) else "point"
         if src_kind == dst_kind:
             return QtGui.QBrush(src_color)
         gradient = QtGui.QLinearGradient(start, end)
@@ -3002,14 +3087,15 @@ class DataNexusCanvas(QtWidgets.QWidget):
         end: QtCore.QPointF,
         *,
         glow: bool = False,
+        answer_ids: set[str] | None = None,
     ) -> QtGui.QPen:
         width = self._edge_width(edge, glow=glow)
         alpha = self._edge_alpha(edge, glow=glow)
-        brush = self._edge_brush(src, dst, start, end, alpha=alpha)
+        brush = self._edge_brush(src, dst, start, end, alpha=alpha, answer_ids=answer_ids)
         try:
             pen = QtGui.QPen(brush, width)
         except Exception:
-            color = self._point_edge_color(src)
+            color = self._point_edge_color(src, answer_ids=answer_ids)
             color.setAlpha(alpha)
             pen = QtGui.QPen(color, width)
         try:
@@ -3061,6 +3147,7 @@ class DataNexusCanvas(QtWidgets.QWidget):
         painter: QtGui.QPainter,
         nodes: dict[str, dict[str, Any]],
         edge: dict[str, Any],
+        answer_ids: set[str] | None = None,
     ) -> bool:
         if not self._should_draw_edge(edge):
             return False
@@ -3070,9 +3157,9 @@ class DataNexusCanvas(QtWidgets.QWidget):
             return False
         a = self._to_screen(src.get("x", 0.5), src.get("y", 0.5))
         b = self._to_screen(dst.get("x", 0.5), dst.get("y", 0.5))
-        painter.setPen(self._edge_pen(edge, src, dst, a, b, glow=True))
+        painter.setPen(self._edge_pen(edge, src, dst, a, b, glow=True, answer_ids=answer_ids))
         painter.drawLine(a, b)
-        painter.setPen(self._edge_pen(edge, src, dst, a, b))
+        painter.setPen(self._edge_pen(edge, src, dst, a, b, answer_ids=answer_ids))
         painter.drawLine(a, b)
         return True
 
@@ -3238,7 +3325,7 @@ class DataNexusCanvas(QtWidgets.QWidget):
                 self._point_radius(
                     selected=False,
                     is_question=_is_question_point(entry),
-                    is_slide=_is_slide_point(entry),
+                    is_slide=_is_slide_point(entry) or _is_archived_slide_point(entry),
                 )
                 + 7.0,
             )
@@ -3613,9 +3700,11 @@ class DataNexusCanvas(QtWidgets.QWidget):
         painter.setClipRect(plot.adjusted(1.0, 1.0, -1.0, -1.0))
         self._draw_world_grid(painter, plot)
         nodes = {entry.get("id"): entry for entry in self._graph.get("nodes", []) or []}
+        graph_edges = list(self._graph.get("edges", []) or [])
+        answer_ids = _answer_point_ids_from_edges(nodes, graph_edges)
         drawn_question_refs: set[tuple[str, str, str]] = set()
-        for edge in self._graph.get("edges", []) or []:
-            if self._draw_edge_line(painter, nodes, edge) and _is_question_reference_edge(edge):
+        for edge in graph_edges:
+            if self._draw_edge_line(painter, nodes, edge, answer_ids=answer_ids) and _is_question_reference_edge(edge):
                 drawn_question_refs.add(
                     (
                         str(edge.get("source", "") or ""),
@@ -3631,7 +3720,7 @@ class DataNexusCanvas(QtWidgets.QWidget):
             )
             if key in drawn_question_refs:
                 continue
-            self._draw_edge_line(painter, nodes, edge)
+            self._draw_edge_line(painter, nodes, edge, answer_ids=answer_ids)
 
         draw_labels = self._should_draw_point_labels()
         if draw_labels:
@@ -3649,13 +3738,16 @@ class DataNexusCanvas(QtWidgets.QWidget):
             hovered = point_id == self._hover_id
             is_question = _is_question_point(entry)
             is_slide = _is_slide_point(entry)
-            radius = self._point_radius(selected=selected, is_question=is_question, is_slide=is_slide)
+            is_archived_slide = _is_archived_slide_point(entry)
+            is_answer = _is_answer_point(entry, answer_ids=answer_ids)
+            is_slide_like = is_slide or is_archived_slide
+            radius = self._point_radius(selected=selected, is_question=is_question, is_slide=is_slide_like)
             glow_radius = self._point_glow_radius(
                 radius,
                 selected=selected,
                 hovered=hovered,
                 is_question=is_question,
-                is_slide=is_slide,
+                is_slide=is_slide_like,
             )
             glow = QtGui.QRadialGradient(center, glow_radius)
             if is_question:
@@ -3677,6 +3769,18 @@ class DataNexusCanvas(QtWidgets.QWidget):
                 inner = QtGui.QColor("#dcff8f" if selected or hovered else "#baff6b")
                 core = QtGui.QColor("#f7ffe8")
                 label_color = QtGui.QColor("#dcff8f" if selected else "#39ff14")
+            elif is_archived_slide:
+                outer = QtGui.QColor("#15803d" if selected or hovered else "#14532d")
+                mid = QtGui.QColor("#16a34a" if selected or hovered else "#166534")
+                inner = QtGui.QColor("#86efac" if selected or hovered else "#4ade80")
+                core = QtGui.QColor("#dcfce7")
+                label_color = QtGui.QColor("#86efac" if selected else "#22c55e")
+            elif is_answer:
+                outer = QtGui.QColor("#0f766e" if selected or hovered else "#115e59")
+                mid = QtGui.QColor("#0d9488" if selected or hovered else "#0f766e")
+                inner = QtGui.QColor("#5eead4" if selected or hovered else "#2dd4bf")
+                core = QtGui.QColor("#ccfbf1" if selected or hovered else "#99f6e4")
+                label_color = QtGui.QColor("#5eead4" if selected else "#2dd4bf")
             else:
                 outer = QtGui.QColor("#2dd4bf" if selected or hovered else "#0891b2")
                 mid = QtGui.QColor("#5eead4" if selected or hovered else "#14b8a6")
@@ -4029,7 +4133,7 @@ class DataNexusWidget(QtWidgets.QWidget):
         self._link_btn = self._make_tool_button("Link selected point", "SP_ArrowRight")
         self._delete_btn = self._make_tool_button("Delete selected point (asks first)", "SP_TrashIcon")
         self._layout_btn = self._make_tool_button("Arrange linked points", "SP_BrowserReload")
-        self._cluster_btn = self._make_tool_button("Cluster questions, slides, and regular points apart", "SP_FileDialogDetailedView")
+        self._cluster_btn = self._make_tool_button("Cluster questions, slides, previous slides, and regular point types apart", "SP_FileDialogDetailedView")
         self._zoom_out_btn = self._make_text_tool_button("-", "Zoom out")
         self._zoom_reset_btn = self._make_text_tool_button("1:1", "Reset zoom")
         self._zoom_in_btn = self._make_text_tool_button("+", "Zoom in")
@@ -4312,6 +4416,8 @@ class DataNexusWidget(QtWidgets.QWidget):
             for entry in graph.get("nodes", []) or []
             if isinstance(entry, dict)
         ]
+        node_by_id = {str(entry.get("id", "") or ""): entry for entry in nodes if str(entry.get("id", "") or "")}
+        answer_ids = _answer_point_ids_from_edges(node_by_id, list(graph.get("edges", []) or []))
         needle = self._point_filter_text()
         visible = [entry for entry in nodes if self._point_matches_filter(entry, needle)]
         selected = self._canvas.selected_id()
@@ -4399,9 +4505,19 @@ class DataNexusWidget(QtWidgets.QWidget):
                         item.setForeground(0, QtGui.QBrush(QtGui.QColor(_question_display_color(entry))))
                     except Exception:
                         pass
+                elif _is_archived_slide_point(entry):
+                    try:
+                        item.setForeground(0, QtGui.QBrush(QtGui.QColor("#22c55e")))
+                    except Exception:
+                        pass
                 elif _is_slide_point(entry):
                     try:
                         item.setForeground(0, QtGui.QBrush(QtGui.QColor("#39ff14")))
+                    except Exception:
+                        pass
+                elif _is_answer_point(entry, answer_ids=answer_ids):
+                    try:
+                        item.setForeground(0, QtGui.QBrush(QtGui.QColor("#2dd4bf")))
                     except Exception:
                         pass
                 try:
@@ -4881,14 +4997,36 @@ class DataNexusWidget(QtWidgets.QWidget):
             for entry in nodes
             if isinstance(entry, dict) and not _is_question_point(entry) and _is_slide_point(entry)
         )
+        archived_slide_count = sum(
+            1
+            for entry in nodes
+            if isinstance(entry, dict) and not _is_question_point(entry) and _is_archived_slide_point(entry)
+        )
         other_count = sum(
             1
             for entry in nodes
-            if isinstance(entry, dict) and not _is_question_point(entry) and not _is_slide_point(entry)
+            if isinstance(entry, dict)
+            and not _is_question_point(entry)
+            and not _is_slide_point(entry)
+            and not _is_archived_slide_point(entry)
         )
-        if question_count or slide_count:
+        regular_cluster_keys: set[str] = set()
+        for entry in nodes:
+            if not isinstance(entry, dict):
+                continue
+            if _is_question_point(entry) or _is_slide_point(entry) or _is_archived_slide_point(entry):
+                continue
+            point_type = _normalize_point_type(entry.get("type", ""), fallback="")
+            folder = _entry_folder(entry).strip().lower()
+            if point_type and point_type not in {"concept", "point", "answer", "prep_answer"}:
+                regular_cluster_keys.add(f"type:{point_type}")
+            elif folder:
+                regular_cluster_keys.add(f"folder:{folder}")
+            else:
+                regular_cluster_keys.add(f"type:{point_type or 'concept'}")
+        if question_count or slide_count or archived_slide_count:
             self._set_status(
-                f"Clustered {question_count} question point(s), {slide_count} slide point(s), and {other_count} regular point(s)."
+                f"Clustered {question_count} question point(s), {slide_count} current slide point(s), {archived_slide_count} previous slide point(s), and {other_count} regular point(s) across {len(regular_cluster_keys)} regular cluster(s)."
             )
         else:
             self._set_status("Clustered points by type.")

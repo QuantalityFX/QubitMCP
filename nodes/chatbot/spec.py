@@ -25,6 +25,7 @@ VOICE_ACTOR_NODE_KINDS = {"voice_actor", "voice actor", "voiceactor"}
 VOICE_INPUT_PORT = "voice_input"
 MEDIATOR_INPUT_PORT = "mediator_input"
 CHATBOT_PROMPT_SESSION_TOKEN_PARAM = "__chatbot_prompt_session_token"
+CHATBOT_RESPONSE_TOKEN_PARAM = "__chatbot_response_token"
 
 DB_NAME = "my_database"
 COLLECTION = "EchoGragh"
@@ -125,10 +126,9 @@ def _ensure_hidden_params(model, names) -> None:
     model.params = params
 
 
-def _set_hidden_param_on_node(node_item, name: str, value: str) -> None:
-    model = getattr(node_item, "model", None)
+def _set_hidden_param_on_model(model, name: str, value: str) -> bool:
     if model is None:
-        return
+        return False
     params = list(getattr(model, "params", None) or [])
     key = (name or "").strip().lower()
     clean_value = str(value or "")
@@ -147,6 +147,14 @@ def _set_hidden_param_on_node(node_item, name: str, value: str) -> None:
         changed = True
     model.params = params
     _ensure_hidden_params(model, [name])
+    return changed
+
+
+def _set_hidden_param_on_node(node_item, name: str, value: str) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    changed = _set_hidden_param_on_model(model, name, value)
     if not changed:
         return
     scene = node_item.scene() if hasattr(node_item, "scene") else None
@@ -164,6 +172,15 @@ def _new_prompt_session_token(prompt_text: str) -> str:
     except Exception:
         stamp = "0"
     digest = hashlib.sha1(str(prompt_text or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return f"{stamp}-{digest}"
+
+
+def _new_response_token(response_text: str) -> str:
+    try:
+        stamp = str(int(QtCore.QDateTime.currentMSecsSinceEpoch()))
+    except Exception:
+        stamp = "0"
+    digest = hashlib.sha1(str(response_text or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
     return f"{stamp}-{digest}"
 
 
@@ -1051,6 +1068,10 @@ class ChatbotWidget(QtWidgets.QWidget):
             if model is not None:
                 try:
                     model.info = clean_response
+                except Exception:
+                    pass
+                try:
+                    _set_hidden_param_on_model(model, CHATBOT_RESPONSE_TOKEN_PARAM, _new_response_token(clean_response))
                 except Exception:
                     pass
                 scene = self._ensure_scene()

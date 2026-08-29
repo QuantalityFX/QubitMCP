@@ -141,6 +141,7 @@ MEDIGATOR_SPEECH_TEXT_KEY = "__medigator_speech_text"
 MEDIGATOR_SPEECH_TOKEN_KEY = "__medigator_speech_token"
 MEDIGATOR_SPEECH_SESSION_TOKEN_KEY = "__medigator_speech_session_token"
 CHATBOT_PROMPT_SESSION_TOKEN_KEY = "__chatbot_prompt_session_token"
+CHATBOT_RESPONSE_TOKEN_KEY = "__chatbot_response_token"
 DATABASE_NODE_KINDS = {"database"}
 CHATBOT_DB_NAME = "my_database"
 CHATBOT_DEFAULT_COLLECTION = "EchoGragh"
@@ -927,6 +928,13 @@ def _chatbot_db_config(scene, chatbot_item):
 def _latest_chatbot_response(scene, chatbot_item) -> tuple[str, str, str]:
     if scene is None or chatbot_item is None:
         return "", "", "Chatbot input is unavailable."
+    model = getattr(chatbot_item, "model", None)
+    live_response = str(getattr(model, "info", "") or "").strip()
+    if live_response:
+        token = _param_value(model, CHATBOT_RESPONSE_TOKEN_KEY, "").strip()
+        if not token:
+            token = f"info:{hashlib.sha1(live_response.encode('utf-8', errors='ignore')).hexdigest()}"
+        return live_response, token, ""
     if MongoClient is None:
         return "", "", "Missing dependency: pymongo. Install: pip install pymongo"
     cfg = _chatbot_db_config(scene, chatbot_item)
@@ -1860,6 +1868,25 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
         self._node_item = node_item
+        self._widget_instance_token = f"{id(self)}"
+        self._widget_inactive = False
+        previous_widget = getattr(node_item, "_voice_actor_widget", None)
+        if previous_widget is not None and previous_widget is not self:
+            deactivate = getattr(previous_widget, "_mark_inactive", None)
+            if callable(deactivate):
+                try:
+                    deactivate()
+                except Exception:
+                    pass
+        try:
+            setattr(node_item, "_voice_actor_widget", self)
+            setattr(node_item, "_voice_actor_widget_token", self._widget_instance_token)
+        except Exception:
+            pass
+        try:
+            self.destroyed.connect(self._on_widget_destroyed)
+        except Exception:
+            pass
         self._busy = False
         self._syncing_text = False
         self._listen_icon = _voice_action_icon("Mic_Icon.png")
@@ -2148,6 +2175,70 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def minimumSizeHint(self):
         return QtCore.QSize(VOICE_ACTOR_BODY_W, VOICE_ACTOR_BODY_H)
 
+    def _is_live_widget(self) -> bool:
+        if self._widget_inactive:
+            return False
+        try:
+            return getattr(self._node_item, "_voice_actor_widget_token", "") == self._widget_instance_token
+        except Exception:
+            return False
+
+    def _disconnect_scene_connections(self) -> None:
+        scene = self._scene
+        if scene is None or not self._scene_connected:
+            self._scene_connected = False
+            return
+        try:
+            if hasattr(scene, "linksChanged"):
+                scene.linksChanged.disconnect(self._on_scene_links_changed)
+        except Exception:
+            pass
+        try:
+            if hasattr(scene, "paramChanged"):
+                scene.paramChanged.disconnect(self._on_scene_param_changed)
+        except Exception:
+            pass
+        self._scene_connected = False
+
+    def _mark_inactive(self) -> None:
+        self._widget_inactive = True
+        self._param_refresh_pending = False
+        self._pending_chatbot_text = ""
+        self._pending_chatbot_session_token = ""
+        self._disconnect_scene_connections()
+
+    def _on_widget_destroyed(self, *_args) -> None:
+        try:
+            if getattr(self._node_item, "_voice_actor_widget_token", "") == self._widget_instance_token:
+                setattr(self._node_item, "_voice_actor_widget", None)
+                setattr(self._node_item, "_voice_actor_widget_token", "")
+        except Exception:
+            pass
+
+    def _shared_auto_speech_token(self, token: str, text: str) -> str:
+        clean_token = str(token or "").strip()
+        if clean_token:
+            return clean_token
+        clean_text = _clean_voice_text(text)
+        if not clean_text:
+            return ""
+        return f"text:{hashlib.sha1(clean_text.encode('utf-8', errors='ignore')).hexdigest()}"
+
+    def _node_last_auto_speech_token(self) -> str:
+        try:
+            return str(getattr(self._node_item, "_voice_actor_last_auto_speech_token", "") or "").strip()
+        except Exception:
+            return ""
+
+    def _set_node_last_auto_speech_token(self, token: str) -> None:
+        clean_token = str(token or "").strip()
+        if not clean_token:
+            return
+        try:
+            setattr(self._node_item, "_voice_actor_last_auto_speech_token", clean_token)
+        except Exception:
+            pass
+
     def _configure_icon_button(self, button, *, icon_size: int = 16) -> None:
         try:
             button.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
@@ -2368,6 +2459,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
             _set_node_param(self._node_item, VOICE_ACTOR_MODE_KEY, self._mode)
 
     def _ensure_scene_connections(self) -> None:
+        if not self._is_live_widget():
+            self._disconnect_scene_connections()
+            return
         if self._scene is None:
             try:
                 self._scene = self._node_item.scene()
@@ -2396,13 +2490,22 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._schedule_param_refresh()
 
     def _on_scene_links_changed(self, *_args) -> None:
+        if not self._is_live_widget():
+            self._disconnect_scene_connections()
+            return
         self._schedule_param_refresh()
 
     def _on_scene_param_changed(self, name=None, _params=None) -> None:
+        if not self._is_live_widget():
+            self._disconnect_scene_connections()
+            return
         self._schedule_param_refresh()
         self._maybe_trigger_chatbot_auto(name)
 
     def _schedule_param_refresh(self) -> None:
+        if not self._is_live_widget():
+            self._disconnect_scene_connections()
+            return
         self._ensure_scene_connections()
         if self._param_refresh_pending:
             return
@@ -2472,6 +2575,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         return options, note_input_connected, chatbot_input_item, chatbot_proxy_item
 
     def _refresh_source_param_options(self) -> None:
+        if not self._is_live_widget():
+            self._disconnect_scene_connections()
+            return
         self._param_refresh_pending = False
         options, note_connected, chatbot_item, chatbot_proxy = self._collect_source_param_options()
         chatbot_connected = chatbot_item is not None
@@ -2483,6 +2589,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if chatbot_connected and not self._chatbot_connected:
             _text, token, _err = _latest_auto_speech_response(self._scene, chatbot_item)
             self._last_chatbot_token = token
+            self._set_node_last_auto_speech_token(token)
         if not chatbot_connected:
             self._last_chatbot_token = ""
             self._pending_chatbot_text = ""
@@ -2899,6 +3006,16 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if not blocks:
             return False
         return _clean_voice_text(blocks[-1]) == clean
+
+    def _auto_speech_text_already_handled(self, text: str) -> bool:
+        clean = _clean_voice_text(text)
+        if not clean:
+            return False
+        if _clean_voice_text(self._last_tts_text) == clean:
+            return True
+        if _clean_voice_text(self._pending_chatbot_text) == clean:
+            return True
+        return self._transcript_last_response_matches(clean)
 
     def _append_spoken_response_to_transcript(self, text: str, *, publish: bool = True) -> None:
         clean = _clean_voice_text(text)
@@ -3995,6 +4112,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._set_status("No speech captured.")
 
     def _maybe_trigger_chatbot_auto(self, changed_name=None) -> None:
+        if not self._is_live_widget():
+            self._disconnect_scene_connections()
+            return
         if self._processing_chatbot_auto:
             return
         if not self._chatbot_connected:
@@ -4047,8 +4167,6 @@ class VoiceActorWidget(QtWidgets.QWidget):
                         self._set_status(f"{py_error} Falling back to auto response.", error=True)
                 if not text:
                     text = str(source_text or "").strip()
-                if not text:
-                    text = _text_from_input(self._scene, self._node_item, "text").strip()
                 text = _proxy_auto_speech_text(source_item, text, fallback_text=source_text)
                 if not text:
                     self._set_status("Waiting for Python output from auto response...")
@@ -4068,8 +4186,19 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 if self._transcript_last_response_matches(text) or (pending_text and pending_text == _clean_voice_text(text)):
                     return
                 return
+            shared_token = self._shared_auto_speech_token(token, text)
+            if shared_token and shared_token == self._node_last_auto_speech_token():
+                if token:
+                    self._last_chatbot_token = token
+                return
+            if self._auto_speech_text_already_handled(text):
+                if token:
+                    self._last_chatbot_token = token
+                self._set_node_last_auto_speech_token(shared_token)
+                return
             if token:
                 self._last_chatbot_token = token
+            self._set_node_last_auto_speech_token(shared_token)
             if self._busy:
                 self._pending_chatbot_text = text
                 self._pending_chatbot_session_token = session_token
@@ -4079,6 +4208,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._processing_chatbot_auto = False
 
     def _speak_text(self, text: str, *, source: str, session_token: str = "") -> bool:
+        if source in {"chatbot_auto", "chatbot_latest"} and not self._is_live_widget():
+            self._disconnect_scene_connections()
+            return False
         voice_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
         tts_language = _normalize_stt_language(self._selected_stt_language)
         voice_gender = _normalize_voice_gender(self._selected_voice_gender)
@@ -4403,6 +4535,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._pending_chatbot_text = ""
         self._pending_chatbot_session_token = ""
         if pending:
+            if self._auto_speech_text_already_handled(pending):
+                return
             self._speak_text(pending, source="chatbot_auto", session_token=pending_session)
 
 
