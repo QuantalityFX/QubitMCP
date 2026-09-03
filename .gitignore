@@ -9,6 +9,7 @@ __pycache__/
 
 # workstation tools
 /tools/
+/installer/
 AGENTS.md
 
 # Local app state

@@ -17,7 +17,7 @@ except ImportError:
     from PySide2 import QtWidgets, QtGui, QtCore
 
 # Windows taskbar identity (groups under the same pinned launcher/shortcut)
-APP_USER_MODEL_ID = "QuantalityFX.EchoGraph"
+APP_USER_MODEL_ID = "QuantalityFX.QubitField"
 if sys.platform.startswith("win"):
     try:
         import ctypes
@@ -27,17 +27,18 @@ if sys.platform.startswith("win"):
 
 # Create the app first
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+app.setApplicationName("QubitField")
 
 # App/window icon
 icons_dir = Path(__file__).parent / "icons"
-icon_path = icons_dir / "QubitMCP_Icon.ico"
+icon_path = icons_dir / "QubitField_Icon.ico"
 if not icon_path.exists():
-    icon_path = icons_dir / "QubitMCP_Icon_s.png"
+    icon_path = icons_dir / "QubitField_Icon.png"
 
 if icon_path.exists():
     app.setWindowIcon(QtGui.QIcon(str(icon_path)))
 else:
-    print(f"[EchoGraph] Icon not found: {icon_path}")
+    print(f"[QubitField] Icon not found: {icon_path}")
 
 # Dark theme for standalone
 def apply_dark(app_):
@@ -77,7 +78,7 @@ try:
         app.setQuitOnLastWindowClosed(True)
         win.show(); win.raise_(); win.activateWindow()
 except Exception as e:
-    print("[EchoGraph] Failed to show window:", e)
+    print("[QubitField] Failed to show window:", e)
 
 # PySide6 uses exec(); PySide2 uses exec_()
 try:

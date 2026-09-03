@@ -21,6 +21,7 @@ if not defined RESOLVED_APP_HOME (
   exit /b 1
 )
 set "APP_HOME=%RESOLVED_APP_HOME%"
+set "QUBITFIELD_HOME=%APP_HOME%"
 set "QUBITMCP_HOME=%APP_HOME%"
 
 if not exist "%APP_HOME%" (
@@ -64,6 +65,18 @@ set "BASE_PY_ARG="
 set "BASE_PY_MM="
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
 set "FBX_WIN_INSTALLER_URL=https://damassets.autodesk.net/content/dam/autodesk/www/files/fbx202039_fbxpythonsdk_win.exe"
+set "PRIVATE_PYTHON_VERSION=3.10.11"
+set "PRIVATE_PYTHON_MM=3.10"
+set "PRIVATE_PYTHON_INSTALLER_NAME=python-%PRIVATE_PYTHON_VERSION%-amd64.exe"
+set "PRIVATE_PYTHON_INSTALLER_URL=https://www.python.org/ftp/python/%PRIVATE_PYTHON_VERSION%/%PRIVATE_PYTHON_INSTALLER_NAME%"
+if defined LOCALAPPDATA (
+  set "PRIVATE_PYTHON_HOME=%LOCALAPPDATA%\QubitField\Python310"
+  set "PRIVATE_PYTHON_INSTALLER=%LOCALAPPDATA%\QubitField\installers\%PRIVATE_PYTHON_INSTALLER_NAME%"
+) else (
+  set "PRIVATE_PYTHON_HOME=%APP_HOME%\python\Python310"
+  set "PRIVATE_PYTHON_INSTALLER=%APP_HOME%\installers\%PRIVATE_PYTHON_INSTALLER_NAME%"
+)
+set "PRIVATE_PYTHON_EXE=%PRIVATE_PYTHON_HOME%\python.exe"
 set "SETUP_MODE=%~1"
 set "SETUP_FBX_ARG=%~2"
 
@@ -91,16 +104,23 @@ echo [setup] Home: %APP_HOME% >> "%LOG%"
 echo [setup] Mode: %SETUP_MODE% >> "%LOG%"
 if defined FBX_SDK_SOURCE echo [setup] FBX SDK source: %FBX_SDK_SOURCE% >> "%LOG%"
 
-call :try_base_python "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" ""
-call :try_base_python "py" "-3.10"
-call :try_base_python "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" ""
-call :try_base_python "py" "-3.12"
-call :try_base_python "py" "-3"
-call :try_base_python "python" ""
+call :ensure_private_python
+if not errorlevel 1 call :try_base_python "%PRIVATE_PYTHON_EXE%" ""
+
+if not defined BASE_PY_EXE (
+  echo [setup] WARNING: App-private Python is not available; checking existing system Python.
+  echo [setup] WARNING: App-private Python is not available; checking existing system Python. >> "%LOG%"
+  call :try_base_python "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" ""
+  call :try_base_python "py" "-3.10"
+  call :try_base_python "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" ""
+  call :try_base_python "py" "-3.12"
+  call :try_base_python "py" "-3"
+  call :try_base_python "python" ""
+)
 
 if not defined BASE_PY_EXE (
   echo [setup] ERROR: Could not find a usable Python interpreter. >> "%LOG%"
-  echo [setup] ERROR: Could not find Python 3.x. Install Python and retry.
+  echo [setup] ERROR: Could not install app-private Python and could not find Python 3.x. Install Python and retry.
   goto :fail
 )
 
@@ -148,6 +168,89 @@ echo [setup] SUCCESS (%SETUP_MODE%)
 echo [setup] SUCCESS (%SETUP_MODE%) >> "%LOG%"
 echo [setup] Log: %LOG%
 popd
+exit /b 0
+
+:ensure_private_python
+if exist "%PRIVATE_PYTHON_EXE%" (
+  "%PRIVATE_PYTHON_EXE%" -c "import sys, venv; raise SystemExit(0 if '.'.join(map(str, sys.version_info[:2])) == '%PRIVATE_PYTHON_MM%' else 1)" >nul 2>&1
+  if errorlevel 1 (
+    echo [setup] WARNING: Existing app-private Python failed validation: %PRIVATE_PYTHON_EXE%
+    echo [setup] WARNING: Existing app-private Python failed validation: %PRIVATE_PYTHON_EXE% >> "%LOG%"
+    exit /b 1
+  )
+  echo [setup] App-private Python ready: %PRIVATE_PYTHON_EXE%
+  echo [setup] App-private Python ready: %PRIVATE_PYTHON_EXE% >> "%LOG%"
+  exit /b 0
+)
+
+if /I not "%PROCESSOR_ARCHITECTURE%"=="AMD64" if /I not "%PROCESSOR_ARCHITEW6432%"=="AMD64" (
+  echo [setup] WARNING: App-private Python auto-install requires 64-bit Windows.
+  echo [setup] WARNING: App-private Python auto-install requires 64-bit Windows. >> "%LOG%"
+  exit /b 1
+)
+
+echo [setup] Installing app-private Python %PRIVATE_PYTHON_VERSION%...
+echo [setup] Installing app-private Python %PRIVATE_PYTHON_VERSION% to %PRIVATE_PYTHON_HOME% >> "%LOG%"
+echo [setup] Python installer URL: %PRIVATE_PYTHON_INSTALLER_URL% >> "%LOG%"
+
+if not exist "%PRIVATE_PYTHON_INSTALLER%" (
+  for %%I in ("%PRIVATE_PYTHON_INSTALLER%") do set "PRIVATE_PYTHON_INSTALLER_DIR=%%~dpI"
+  if not exist "%PRIVATE_PYTHON_INSTALLER_DIR%" (
+    mkdir "%PRIVATE_PYTHON_INSTALLER_DIR%" >nul 2>&1
+  )
+  if not exist "%PRIVATE_PYTHON_INSTALLER_DIR%" (
+    echo [setup] WARNING: Could not create Python installer cache: %PRIVATE_PYTHON_INSTALLER_DIR%
+    echo [setup] WARNING: Could not create Python installer cache: %PRIVATE_PYTHON_INSTALLER_DIR% >> "%LOG%"
+    exit /b 1
+  )
+
+  where powershell >nul 2>&1
+  if errorlevel 1 (
+    echo [setup] WARNING: powershell.exe not found; cannot download app-private Python.
+    echo [setup] WARNING: powershell.exe not found; cannot download app-private Python. >> "%LOG%"
+    exit /b 1
+  )
+
+  echo [setup] Downloading app-private Python installer...
+  echo [setup] Downloading app-private Python installer to %PRIVATE_PYTHON_INSTALLER% >> "%LOG%"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile($env:PRIVATE_PYTHON_INSTALLER_URL, $env:PRIVATE_PYTHON_INSTALLER)" >> "%LOG%" 2>&1
+  if errorlevel 1 (
+    echo [setup] WARNING: Failed to download app-private Python installer.
+    echo [setup] WARNING: Failed to download app-private Python installer. >> "%LOG%"
+    exit /b 1
+  )
+)
+
+if not exist "%PRIVATE_PYTHON_INSTALLER%" (
+  echo [setup] WARNING: Python installer is missing: %PRIVATE_PYTHON_INSTALLER%
+  echo [setup] WARNING: Python installer is missing: %PRIVATE_PYTHON_INSTALLER% >> "%LOG%"
+  exit /b 1
+)
+
+echo [setup] Running app-private Python installer...
+echo [setup] Running app-private Python installer: %PRIVATE_PYTHON_INSTALLER% >> "%LOG%"
+"%PRIVATE_PYTHON_INSTALLER%" /quiet InstallAllUsers=0 TargetDir="%PRIVATE_PYTHON_HOME%" PrependPath=0 Include_launcher=0 Include_exe=1 Include_lib=1 Include_pip=1 Include_tcltk=1 Include_test=0 Include_doc=0 Shortcuts=0 /log "%LOG_DIR%\python-install.log"
+if errorlevel 1 (
+  echo [setup] WARNING: App-private Python installer failed.
+  echo [setup] WARNING: App-private Python installer failed. See %LOG_DIR%\python-install.log >> "%LOG%"
+  exit /b 1
+)
+
+if not exist "%PRIVATE_PYTHON_EXE%" (
+  echo [setup] WARNING: App-private Python install finished, but python.exe was not found.
+  echo [setup] WARNING: Expected app-private Python at %PRIVATE_PYTHON_EXE% >> "%LOG%"
+  exit /b 1
+)
+
+"%PRIVATE_PYTHON_EXE%" -c "import sys, venv; raise SystemExit(0 if '.'.join(map(str, sys.version_info[:2])) == '%PRIVATE_PYTHON_MM%' else 1)" >> "%LOG%" 2>&1
+if errorlevel 1 (
+  echo [setup] WARNING: App-private Python validation failed.
+  echo [setup] WARNING: App-private Python validation failed. >> "%LOG%"
+  exit /b 1
+)
+
+echo [setup] App-private Python installed: %PRIVATE_PYTHON_EXE%
+echo [setup] App-private Python installed: %PRIVATE_PYTHON_EXE% >> "%LOG%"
 exit /b 0
 
 :ensure_venv
@@ -537,6 +640,11 @@ exit /b 0
 set "TARGET_DIR=%~f1"
 set "RESOLVED_APP_HOME="
 
+if defined QUBITFIELD_HOME (
+  set "RESOLVED_APP_HOME=%QUBITFIELD_HOME%"
+  exit /b 0
+)
+
 if defined QUBITMCP_HOME (
   set "RESOLVED_APP_HOME=%QUBITMCP_HOME%"
   exit /b 0
@@ -655,11 +763,13 @@ exit /b 1
 
 :print_usage
 echo Usage: setup.bat [core^|full] [fbx_sdk_source_dir]
+echo   Installs app-private Python %PRIVATE_PYTHON_VERSION% if needed; it is not added to PATH.
 echo   core = setup root app env only
 echo   full = setup root + librarian + QubitDeckController envs (default)
 echo   optional fbx_sdk_source_dir = folder containing either:
 echo      1^) fbx-*.whl + FbxCommon.py
 echo      2^) fbx*.pyd + FbxCommon.py ^(+ optional libfbxsdk.dll^)
 echo   optional env var: FBX_SDK_SOURCE=C:\path\to\fbx_runtime
+echo   optional env var: QUBITFIELD_HOME=C:\path\to\app_home
 echo   optional env var: QUBITMCP_SKIP_IMAGE_GS=1 skips Image-GS download/setup
 exit /b 0

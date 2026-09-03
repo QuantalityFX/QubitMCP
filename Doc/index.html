@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>QubitMCP 1.2.5 Documentation</title>
+    <title>Qubit Field 1.2.5 Documentation</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="layout">
       <aside class="sidebar">
         <div class="brand">
-          <img class="brand-logo" src="../icons/QubitMCP_Icon_s.png" alt="QubitMCP icon" />
-          <div class="brand-title">QubitMCP 1.2.5</div>
+          <img class="brand-logo" src="../icons/QubitMCP_Icon_s.png" alt="Qubit Field icon" />
+          <div class="brand-title">Qubit Field 1.2.5</div>
           <div class="brand-sub">Docs + Download</div>
         </div>
         <nav class="nav">
@@ -49,22 +49,16 @@
           <canvas class="hero-canvas" aria-hidden="true"></canvas>
           <button class="hero-debug-toggle" type="button" aria-pressed="false">Debug Off</button>
           <div class="hero-kicker">Windows desktop node workspace</div>
-          <h1>Qubit MCP</h1>
+          <h1>Qubit Field</h1>
           <p class="lead hero-lead">
             Build AI-assisted creative, production, mocap, asset, and Unreal workflows
             with a visual graph, a 3D viewport, librarian tools, voice automation,
             and a growing node ecosystem.
           </p>
           <div class="hero-actions">
-            <a class="button primary" href="../setup.bat" download>Download Setup</a>
+            <a class="button primary" href="https://github.com/QuantalityFX/QubitMCP/raw/refs/heads/Latest/downloads/QubitFieldInstaller.exe" download data-installer-download>Download Setup</a>
             <a class="button" href="https://github.com/QuantalityFX/QubitMCP" target="_blank" rel="noreferrer">GitHub Repository</a>
             <a class="button ghost" href="#nodes">Browse Nodes</a>
-          </div>
-          <div class="hero-strip" aria-label="QubitMCP capability highlights">
-            <span>Visual graph editor</span>
-            <span>3D scene viewport</span>
-            <span>AI and voice workflows</span>
-            <span>Mocap, grooming, and export tools</span>
           </div>
         </header>
 
@@ -73,8 +67,8 @@
           <div class="grid three">
             <div class="card link-card">
               <h3>Windows Setup</h3>
-              <p>Run <code>setup.bat</code> once to create the app environment, install dependencies, and check optional runtime support.</p>
-              <a class="text-link" href="../setup.bat" download>Download setup.bat</a>
+              <p>Run the Windows installer to download Qubit Field, install dependencies, create the app environment, and add the desktop shortcut.</p>
+              <a class="text-link" href="https://github.com/QuantalityFX/QubitMCP/raw/refs/heads/Latest/downloads/QubitFieldInstaller.exe" download data-installer-download>Download Qubit Field Installer</a>
             </div>
             <div class="card link-card">
               <h3>Source Repository</h3>
@@ -92,7 +86,7 @@
         <section id="overview" class="section">
           <h2>Overview</h2>
           <div class="callout">
-            <strong>What QubitMCP does:</strong> connect nodes, process text and AI workflows,
+            <strong>What Qubit Field does:</strong> connect nodes, process text and AI workflows,
             assemble 3D scenes, drive automation, process mocap, generate grooming assets,
             and export results from a single graph.
           </div>
@@ -203,7 +197,7 @@
               <ul class="bullet">
                 <li><code>keyboard_sequence</code> builds timed keyboard action sequences from the graph.</li>
                 <li>Actions include configurable lead-in, per-key hold time, action delay, and injection mode.</li>
-                <li>Use it for repeatable app-control steps after QubitMCP brings the target app into focus.</li>
+                <li>Use it for repeatable app-control steps after Qubit Field brings the target app into focus.</li>
               </ul>
             </div>
             <div class="card feature-card">
@@ -286,7 +280,7 @@
         <section id="quick-start" class="section">
           <h2>Quick Start</h2>
           <ol class="steps">
-            <li>Run setup once with <code>.\setup.bat</code>.</li>
+            <li>Run the Windows installer, or run setup once with <code>.\setup.bat</code> from a source checkout.</li>
             <li>Launch with <code>.\Run_QubitMCP.bat</code> or run <code>echograph_app.py</code> from the project venv.</li>
             <li>Create nodes with <strong>Create - Node</strong> or press <strong>Tab</strong>.</li>
             <li>Connect outputs to inputs by dragging from one port to another.</li>
@@ -368,7 +362,7 @@
             <div class="card">
               <h3>File</h3>
               <ul class="bullet">
-                <li><strong>New</strong>: launch a fresh QubitMCP window.</li>
+                <li><strong>New</strong>: launch a fresh Qubit Field window.</li>
                 <li><strong>Open</strong>: load a workflow JSON file.</li>
                 <li><strong>Open Recent</strong>: choose from recent workflow files.</li>
                 <li><strong>New Project</strong>: create a project folder for the next workflow save.</li>
@@ -520,7 +514,7 @@
           <h2><img class="inline-icon" src="../icons/keyframe_Icon.png" alt="Timeline icon" /> Animation Timeline</h2>
           <ul class="bullet">
             <li>Open from top bar <strong>Panels -> Timeline</strong>.</li>
-            <li>If you enable timeline while in 2D mode, QubitMCP auto-switches to <strong>Split</strong> view.</li>
+            <li>If you enable timeline while in 2D mode, Qubit Field auto-switches to <strong>Split</strong> view.</li>
             <li>Keyframing channels include <code>Px</code>, <code>Py</code>, <code>Pz</code>, <code>Rx</code>, <code>Ry</code>, and <code>Rz</code>.</li>
             <li>Use <code>ply_sequence</code> for frame-by-frame PLY playback workflows that sync well with timeline scrubbing.</li>
             <li>Use <code>mocap_import</code>, <code>fbx_import</code>, and <code>anim_retarget</code> for skeleton/animation retargeting workflows before scene preview or render.</li>

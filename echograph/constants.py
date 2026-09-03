@@ -1,7 +1,7 @@
 from pathlib import Path
 from .qt_compat import QtGui
 
-APP_TITLE = "QubitMCP 1.4.0"
+APP_TITLE = "QubitField"
 KEY_BIGEDIT = "Ctrl+B"
 
 LLM_URL = "http://127.0.0.1:7860"
@@ -22,11 +22,11 @@ def script_dir() -> Path:
     except Exception:
         return Path.home()
 
-APP_USER_MODEL_ID = "QuantalityFX.EchoGraph"
+APP_USER_MODEL_ID = "QuantalityFX.QubitField"
 
-ICON_PATH = script_dir() / "icons" / "QubitMCP_Icon.ico"
+ICON_PATH = script_dir() / "icons" / "QubitField_Icon.ico"
 if not ICON_PATH.exists():
-    ICON_PATH = script_dir() / "icons" / "QubitMCP_Icon_s.png"
+    ICON_PATH = script_dir() / "icons" / "QubitField_Icon.png"
 try:
     _gui_app = QtGui.QGuiApplication.instance()
 except Exception:

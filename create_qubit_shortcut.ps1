@@ -7,7 +7,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$appUserModelId = "QuantalityFX.EchoGraph"
+$appUserModelId = "QuantalityFX.QubitField"
 $repoRoot = Split-Path -Path $PSCommandPath -Parent
 $constantsPath = Join-Path $repoRoot "echograph\constants.py"
 
@@ -52,14 +52,18 @@ function Get-SafeShortcutNameFromAppTitle {
     return $safeName
 }
 
-$shortcutBaseName = Get-SafeShortcutNameFromAppTitle -ConstantsFile $constantsPath -FallbackName "QubitMCP"
+$shortcutBaseName = Get-SafeShortcutNameFromAppTitle -ConstantsFile $constantsPath -FallbackName "QubitField"
 
 $launcherHomeCandidates = @()
+if (-not [string]::IsNullOrWhiteSpace($env:QUBITFIELD_HOME)) {
+    $launcherHomeCandidates += $env:QUBITFIELD_HOME
+}
 if (-not [string]::IsNullOrWhiteSpace($env:QUBITMCP_HOME)) {
     $launcherHomeCandidates += $env:QUBITMCP_HOME
 }
 $launcherHomeCandidates += $repoRoot
 if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    $launcherHomeCandidates += (Join-Path $env:LOCALAPPDATA "QubitField")
     $launcherHomeCandidates += (Join-Path $env:LOCALAPPDATA "QubitMCP")
 }
 
@@ -86,7 +90,7 @@ foreach ($candidate in ($launcherHomeCandidates | Select-Object -Unique)) {
 $launcherPythonW = if ($launcherHome) { Join-Path $launcherHome ".venv\Scripts\pythonw.exe" } else { "" }
 $launcherPython = if ($launcherHome) { Join-Path $launcherHome ".venv\Scripts\python.exe" } else { "" }
 $entryScript = Join-Path $repoRoot "echograph_app.py"
-$iconPath = Join-Path $repoRoot "icons\QubitMCP_Icon.ico"
+$iconPath = Join-Path $repoRoot "icons\QubitField_Icon.ico"
 $desktopShortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) ($shortcutBaseName + ".lnk")
 
 if (-not (Test-Path -LiteralPath $entryScript)) {
@@ -294,6 +298,7 @@ if (Test-Path -LiteralPath $legacyRepoShortcutPath) {
 }
 
 $legacyDesktopShortcutPaths = @(
+    (Join-Path ([Environment]::GetFolderPath("Desktop")) "QubitMCP 1.4.0.lnk"),
     (Join-Path ([Environment]::GetFolderPath("Desktop")) "QubitMCP.lnk"),
     (Join-Path ([Environment]::GetFolderPath("Desktop")) "QubitMCP Launcher.lnk")
 )
