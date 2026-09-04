@@ -1,10 +1,11 @@
 # echograph/ui/dialogs.py
 from __future__ import annotations
+import json
 from typing import List, Dict, Any
 from pathlib import Path
 
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, _qexec
-from echograph.constants import LLM_URL, APP_TITLE
+from echograph.constants import LLM_URL, APP_TITLE, script_dir
 from echograph.ui import node_icons
 try:
     from nodes.python.highlighter import PythonSyntaxHighlighter
@@ -649,13 +650,77 @@ _LIGHT_PRESET_TYPES = {
 }
 
 
+_CREATE_NODE_MIN_W = 560
+_CREATE_NODE_MIN_H = 430
+_CREATE_NODE_DEFAULT_W = 700
+_CREATE_NODE_DEFAULT_H = 630
+_CREATE_NODE_SCREEN_MARGIN = 48
+_CREATE_NODE_QUICK_DEFAULT_COLS = 4
+_CREATE_NODE_QUICK_EXTRA_START_W = 660
+_CREATE_NODE_QUICK_EXTRA_COL_W = 132
+_CREATE_NODE_QUICK_BUTTON_H = 30
+_CREATE_NODE_DIALOG_SIZE_KEY = "create_node_dialog_size"
+_APP_SETTINGS_PATH = script_dir() / "app_settings.json"
+
+
+def _read_create_node_app_settings() -> Dict[str, Any]:
+    try:
+        data = json.loads(_APP_SETTINGS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return dict(data)
+    except Exception:
+        pass
+    return {}
+
+
+def _coerce_create_node_dialog_size(value) -> QtCore.QSize | None:
+    width = height = None
+    if isinstance(value, dict):
+        width = value.get("width", value.get("w"))
+        height = value.get("height", value.get("h"))
+    elif isinstance(value, (list, tuple)) and len(value) >= 2:
+        width, height = value[0], value[1]
+    try:
+        width = int(width)
+        height = int(height)
+    except Exception:
+        return None
+    if width < 320 or height < 320 or width > 10000 or height > 10000:
+        return None
+    return QtCore.QSize(width, height)
+
+
+def _load_create_node_dialog_size() -> QtCore.QSize | None:
+    settings = _read_create_node_app_settings()
+    return _coerce_create_node_dialog_size(settings.get(_CREATE_NODE_DIALOG_SIZE_KEY))
+
+
+def _save_create_node_dialog_size(size: QtCore.QSize) -> None:
+    try:
+        width = max(_CREATE_NODE_MIN_W, int(size.width()))
+        height = max(_CREATE_NODE_MIN_H, int(size.height()))
+    except Exception:
+        return
+    settings = _read_create_node_app_settings()
+    settings[_CREATE_NODE_DIALOG_SIZE_KEY] = {"width": width, "height": height}
+    try:
+        _APP_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _APP_SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 class CreateNodeDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, existing_names=None):
         super().__init__(parent)
         self.setWindowTitle("Create Node")
         self.setModal(True)
-        self.setMinimumSize(660, 620)
-        self.resize(700, 630)
+        self.setMinimumSize(_CREATE_NODE_MIN_W, _CREATE_NODE_MIN_H)
+        self.setSizeGripEnabled(True)
+        saved_size = _load_create_node_dialog_size()
+        if saved_size is None:
+            saved_size = QtCore.QSize(_CREATE_NODE_DEFAULT_W, _CREATE_NODE_DEFAULT_H)
+        self.resize(saved_size)
         self._existing = set(existing_names or [])
         self._quick_kind_override = None
 
@@ -736,18 +801,20 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self._llm_row.setVisible(False)
 
         nodes_box = QtWidgets.QGroupBox("Existing Nodes (click to create)")
-        nodes_box.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
+        nodes_box.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         qv = QtWidgets.QVBoxLayout(nodes_box)
         qv.setContentsMargins(6, 6, 6, 6)
         qv.setSpacing(4)
-        qv.setAlignment(QtCore.Qt.AlignTop)
-        quick_grid = QtWidgets.QGridLayout()
+
+        self._quick_nodes_container = QtWidgets.QWidget()
+        self._quick_grid = QtWidgets.QGridLayout(self._quick_nodes_container)
         self._quick_node_buttons: Dict[str, QtWidgets.QToolButton] = {}
         self._quick_node_search: Dict[str, str] = {}
-        quick_grid.setContentsMargins(0, 0, 0, 0)
-        quick_grid.setHorizontalSpacing(3)
-        quick_grid.setVerticalSpacing(4)
-        quick_cols = 4
+        self._quick_grid.setContentsMargins(0, 0, 0, 0)
+        self._quick_grid.setHorizontalSpacing(3)
+        self._quick_grid.setVerticalSpacing(4)
+        self._quick_grid.setAlignment(QtCore.Qt.AlignTop)
+        quick_cols = _CREATE_NODE_QUICK_DEFAULT_COLS
         forced_positions = {
             "fx": (4, 3),
             "fx_splat_physics": (5, 3),
@@ -768,9 +835,23 @@ class CreateNodeDialog(QtWidgets.QDialog):
                 if (row, col) not in occupied:
                     quick_positions[kind] = (row, col)
                     break
+        self._quick_default_positions = dict(quick_positions)
+        self._quick_grid_columns = 0
+
+        self._quick_nodes_view = QtWidgets.QScrollArea()
+        self._quick_nodes_view.setWidgetResizable(True)
+        self._quick_nodes_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self._quick_nodes_view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self._quick_nodes_view.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self._quick_nodes_view.setWidget(self._quick_nodes_container)
+        self._quick_nodes_view.setMinimumHeight(220)
+        self._quick_nodes_view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        try:
+            self._quick_nodes_view.viewport().installEventFilter(self)
+        except Exception:
+            pass
 
         for kind in self._kinds:
-            row, col = quick_positions[kind]
             btn = QtWidgets.QToolButton()
             btn.setAutoRaise(True)
             btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
@@ -787,18 +868,8 @@ class CreateNodeDialog(QtWidgets.QDialog):
             btn.clicked.connect(lambda _checked=False, k=kind: self._quick_create_from_kind(k))
             self._quick_node_buttons[kind] = btn
             self._quick_node_search[kind] = _node_kind_search_blob(kind)
-            quick_grid.addWidget(btn, row, col)
-        for col in range(quick_cols):
-            quick_grid.setColumnStretch(col, 1)
-        qv.addLayout(quick_grid)
-        quick_rows = max(row for row, _col in quick_positions.values()) + 1
-        button_row_h = 30
-        grid_h = (quick_rows * button_row_h) + ((quick_rows - 1) * quick_grid.verticalSpacing())
-        bottom_gutter_h = 4
-        qv.addSpacing(bottom_gutter_h)
-        group_extra_h = 42  # title + frame + internal gutters
-        nodes_box_min_h = grid_h + bottom_gutter_h + group_extra_h
-        nodes_box.setFixedHeight(max(nodes_box.sizeHint().height() + 6, nodes_box_min_h))
+        self._relayout_quick_nodes(force=True)
+        qv.addWidget(self._quick_nodes_view, 1)
 
         param_box = QtWidgets.QGroupBox("Parameters (optional)")
         param_box.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
@@ -847,19 +918,39 @@ class CreateNodeDialog(QtWidgets.QDialog):
         layout.addLayout(form)
         layout.addWidget(self._llm_row)
         layout.addSpacing(8)
-        layout.addWidget(nodes_box)
+        layout.addWidget(nodes_box, 1)
         layout.addSpacing(12)
         layout.addWidget(param_box)
         layout.addSpacing(6)
         layout.addWidget(code_box)
         layout.addWidget(bb)
-        layout.setAlignment(QtCore.Qt.AlignTop)
         self._fit_to_content()
 
     def showEvent(self, e):
         super().showEvent(e)
         QtCore.QTimer.singleShot(0, self._fit_to_content)
+        QtCore.QTimer.singleShot(0, self._relayout_quick_nodes)
         QtCore.QTimer.singleShot(0, self._focus_kind)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._relayout_quick_nodes()
+
+    def done(self, result: int) -> None:
+        _save_create_node_dialog_size(self.size())
+        super().done(result)
+
+    def eventFilter(self, watched, event):
+        try:
+            viewport = self._quick_nodes_view.viewport()
+            resize_type = getattr(QtCore.QEvent, "Resize", None)
+            if resize_type is None:
+                resize_type = getattr(getattr(QtCore.QEvent, "Type", None), "Resize", None)
+            if watched is viewport and resize_type is not None and event.type() == resize_type:
+                self._relayout_quick_nodes()
+        except Exception:
+            pass
+        return super().eventFilter(watched, event)
 
     def _schedule_fit_to_content(self) -> None:
         if self.layout() is None:
@@ -872,11 +963,130 @@ class CreateNodeDialog(QtWidgets.QDialog):
             return
         try:
             layout.activate()
-            min_h = 620
-            self.setMinimumHeight(min_h)
-            target_h = max(min_h, int(self.sizeHint().height()))
-            self.setMinimumHeight(target_h)
-            self.resize(max(700, int(self.width())), target_h)
+            available = self._available_dialog_size()
+            min_w = min(_CREATE_NODE_MIN_W, max(320, int(available.width())))
+            min_h = min(_CREATE_NODE_MIN_H, max(320, int(available.height())))
+            self.setMinimumSize(min_w, min_h)
+            target_w = max(int(self.width()), min_w)
+            target_h = max(int(self.height()), min_h)
+            target_w = min(target_w, max(min_w, int(available.width())))
+            target_h = min(target_h, max(min_h, int(available.height())))
+            self.resize(target_w, target_h)
+            self._relayout_quick_nodes()
+        except Exception:
+            pass
+
+    def _available_dialog_size(self) -> QtCore.QSize:
+        screen = None
+        try:
+            parent = self.parentWidget()
+            if parent is not None and hasattr(parent, "screen"):
+                screen = parent.screen()
+        except Exception:
+            screen = None
+        try:
+            if screen is None:
+                screen = QtGui.QGuiApplication.screenAt(self.mapToGlobal(self.rect().center()))
+        except Exception:
+            screen = None
+        try:
+            if screen is None:
+                screen = QtWidgets.QApplication.primaryScreen()
+        except Exception:
+            screen = None
+        try:
+            geom = screen.availableGeometry() if screen is not None else QtCore.QRect(0, 0, 1200, 800)
+            return QtCore.QSize(
+                max(320, int(geom.width()) - _CREATE_NODE_SCREEN_MARGIN),
+                max(320, int(geom.height()) - _CREATE_NODE_SCREEN_MARGIN),
+            )
+        except Exception:
+            return QtCore.QSize(1200 - _CREATE_NODE_SCREEN_MARGIN, 800 - _CREATE_NODE_SCREEN_MARGIN)
+
+    def _quick_available_width(self) -> int:
+        try:
+            width = int(self._quick_nodes_view.viewport().width())
+            if width > 0:
+                return width
+        except Exception:
+            pass
+        return max(0, int(self.width()) - 24)
+
+    def _quick_column_count_for_width(self, width: int) -> int:
+        base_cols = _CREATE_NODE_QUICK_DEFAULT_COLS
+        available = max(0, int(width or 0))
+        extra_cols = max(0, (available - _CREATE_NODE_QUICK_EXTRA_START_W) // _CREATE_NODE_QUICK_EXTRA_COL_W)
+        return max(base_cols, min(len(self._kinds), base_cols + extra_cols))
+
+    def _quick_positions_for_columns(self, columns: int) -> Dict[str, tuple[int, int]]:
+        default_positions = dict(getattr(self, "_quick_default_positions", {}) or {})
+        if columns <= _CREATE_NODE_QUICK_DEFAULT_COLS:
+            return default_positions
+
+        ordered = sorted(
+            self._kinds,
+            key=lambda kind: default_positions.get(kind, (10_000, 10_000)),
+        )
+        target_rows = max(1, (len(ordered) + columns - 1) // columns)
+        positions: Dict[str, tuple[int, int]] = {}
+        overflow: list[str] = []
+        for kind in ordered:
+            row, col = default_positions.get(kind, (0, 0))
+            if row < target_rows:
+                positions[kind] = (row, col)
+            else:
+                overflow.append(kind)
+
+        moved_capacity = max(1, columns - _CREATE_NODE_QUICK_DEFAULT_COLS) * target_rows
+        for index, kind in enumerate(overflow):
+            if index < moved_capacity:
+                row = index % target_rows
+                col = _CREATE_NODE_QUICK_DEFAULT_COLS + (index // target_rows)
+            else:
+                row = target_rows + (index - moved_capacity)
+                col = columns - 1
+            positions[kind] = (row, col)
+        return positions
+
+    def _relayout_quick_nodes(self, force: bool = False) -> None:
+        quick_grid = getattr(self, "_quick_grid", None)
+        if quick_grid is None:
+            return
+        columns = self._quick_column_count_for_width(self._quick_available_width())
+        old_columns = int(getattr(self, "_quick_grid_columns", 0) or 0)
+        if not force and columns == old_columns:
+            return
+
+        while quick_grid.count():
+            quick_grid.takeAt(0)
+
+        positions = self._quick_positions_for_columns(columns)
+        max_row = 0
+        for kind in self._kinds:
+            btn = self._quick_node_buttons.get(kind)
+            if btn is None:
+                continue
+            row, col = positions.get(kind, (0, 0))
+            max_row = max(max_row, int(row))
+            quick_grid.addWidget(btn, int(row), int(col))
+
+        for col in range(max(old_columns, columns) + 1):
+            quick_grid.setColumnStretch(col, 1 if col < columns else 0)
+            quick_grid.setColumnMinimumWidth(col, 0 if col >= columns else 117)
+
+        rows = max_row + 1
+        old_rows = int(getattr(self, "_quick_grid_rows", 0) or 0)
+        for row in range(max(old_rows, rows) + 1):
+            quick_grid.setRowStretch(row, 0)
+            quick_grid.setRowMinimumHeight(row, _CREATE_NODE_QUICK_BUTTON_H if row < rows else 0)
+        spacing = max(0, int(quick_grid.verticalSpacing()))
+        grid_h = (rows * _CREATE_NODE_QUICK_BUTTON_H) + (max(0, rows - 1) * spacing)
+        self._quick_nodes_container.setMinimumHeight(grid_h)
+        self._quick_grid_columns = columns
+        self._quick_grid_rows = rows
+        try:
+            self._quick_nodes_container.updateGeometry()
+            self._quick_nodes_view.updateGeometry()
         except Exception:
             pass
 

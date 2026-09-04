@@ -81,6 +81,7 @@ LLM_NODE_W, LLM_NODE_H = _llm_dims()
 _RECENT_GRAPHS_PATH = script_dir() / "recent_graphs.json"
 _RECENT_GRAPHS_LIMIT = 10
 _APP_SETTINGS_PATH = script_dir() / "app_settings.json"
+_CREATE_NODE_DIALOG_SIZE_KEY = "create_node_dialog_size"
 _DEFAULT_PANEL_LAYOUT_PRESET = {"timeline": False, "audio": False, "profiler": False}
 _VOICE_AUDIO_MODE_BILATERAL = "bilateral"
 _VOICE_AUDIO_MODE_TURN_TAKING = "turn_taking"
@@ -353,7 +354,7 @@ def _load_app_settings() -> Dict[str, Any]:
         raw.get("scene_skeleton_joint_names"),
         _SCENE_SKELETON_JOINT_NAMES_DEFAULT,
     )
-    return {
+    payload = {
         "save_layout": bool(save_layout),
         "shelf_visible": bool(shelf_visible),
         "panel_layout": panel_layout,
@@ -370,9 +371,37 @@ def _load_app_settings() -> Dict[str, Any]:
         "ambient_light_strength": float(ambient_light_strength),
         "scene_skeleton_joint_names": bool(scene_skeleton_joint_names),
     }
+    create_node_dialog_size = _normalize_create_node_dialog_size(raw.get(_CREATE_NODE_DIALOG_SIZE_KEY))
+    if create_node_dialog_size is not None:
+        payload[_CREATE_NODE_DIALOG_SIZE_KEY] = create_node_dialog_size
+    return payload
+
+
+def _normalize_create_node_dialog_size(value) -> Dict[str, int] | None:
+    width = height = None
+    if isinstance(value, dict):
+        width = value.get("width", value.get("w"))
+        height = value.get("height", value.get("h"))
+    elif isinstance(value, (list, tuple)) and len(value) >= 2:
+        width, height = value[0], value[1]
+    try:
+        width = int(width)
+        height = int(height)
+    except Exception:
+        return None
+    if width < 320 or height < 320 or width > 10000 or height > 10000:
+        return None
+    return {"width": width, "height": height}
 
 
 def _save_app_settings(settings: Dict[str, Any]) -> None:
+    existing = {}
+    try:
+        data = json.loads(_APP_SETTINGS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            existing = data
+    except Exception:
+        existing = {}
     payload = {
         "save_layout": _coerce_bool((settings or {}).get("save_layout"), True),
         "shelf_visible": _coerce_bool((settings or {}).get("shelf_visible"), True),
@@ -402,6 +431,13 @@ def _save_app_settings(settings: Dict[str, Any]) -> None:
             _SCENE_SKELETON_JOINT_NAMES_DEFAULT,
         ),
     }
+    create_node_dialog_size = _normalize_create_node_dialog_size(
+        (settings or {}).get(_CREATE_NODE_DIALOG_SIZE_KEY)
+    )
+    if create_node_dialog_size is None:
+        create_node_dialog_size = _normalize_create_node_dialog_size(existing.get(_CREATE_NODE_DIALOG_SIZE_KEY))
+    if create_node_dialog_size is not None:
+        payload[_CREATE_NODE_DIALOG_SIZE_KEY] = create_node_dialog_size
     try:
         _APP_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         _APP_SETTINGS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

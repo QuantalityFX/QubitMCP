@@ -56,8 +56,13 @@ set "LIB_VENV=%APP_HOME%\librarian\.venv"
 set "LIB_PY=%LIB_VENV%\Scripts\python.exe"
 set "QDECK_SETUP_SCRIPT=%REPO_DIR%\nodes\qubit_deck_controller\setup_qubit_deck_controller.bat"
 set "IMAGE_GS_SETUP_SCRIPT=%REPO_DIR%\nodes\image_gs\setup_image_gs.bat"
-set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio soundcard gTTS pygame faster-whisper pymongo"
-set "KOKORO_DEPS=kokoro misaki[ja,zh] unidic-lite"
+set "VOICE_DEPS=SpeechRecognition pyttsx3 soundcard gTTS pygame faster-whisper pymongo"
+set "VOICE_MIC_DEPS=pyaudio"
+set "KOKORO_CORE_DEPS=kokoro"
+set "KOKORO_PLAYBACK_DEPS=pygame"
+set "KOKORO_JA_DEPS=misaki[ja]"
+set "KOKORO_JA_DICT_DEPS=unidic-lite"
+set "KOKORO_ZH_DEPS=misaki[zh]"
 set "BASE_PY_EXE="
 set "BASE_PY_ARG="
 set "BASE_PY_MM="
@@ -136,7 +141,8 @@ call :ensure_venv "%ROOT_VENV%" "root" || goto :fail
 call :install_requirements "%ROOT_PY%" "%MAIN_REQ%" "root requirements" || goto :fail
 call :check_ffmpeg_runtime "%ROOT_PY%"
 call :install_voice_deps "%ROOT_PY%" "root voice dependencies"
-call :install_optional_deps "%ROOT_PY%" "%KOKORO_DEPS%" "Kokoro-82M voice dependencies"
+call :install_optional_deps "%ROOT_PY%" "%VOICE_MIC_DEPS%" "root microphone dependency"
+call :install_kokoro_deps "%ROOT_PY%"
 call :check_mediator_runtime
 call :check_keyboard_sequence_runtime "%ROOT_PY%"
 echo [setup] FBX SDK setup is handled by FBX nodes when needed.
@@ -356,11 +362,21 @@ echo [setup] Live pip output follows for optional %LABEL%. >> "%LOG%"
 "%PY%" -m pip install --progress-bar on %DEPS%
 if errorlevel 1 (
   echo [setup] WARNING: Failed to install optional %LABEL%. >> "%LOG%"
-  echo [setup] WARNING: Optional %LABEL% failed. Kokoro voice will remain disabled until installed.
+  echo [setup] WARNING: Optional %LABEL% failed. Related features will remain disabled until installed.
   exit /b 0
 )
 echo [setup] Completed optional %LABEL%.
 echo [setup] Completed optional %LABEL%. >> "%LOG%"
+exit /b 0
+
+:install_kokoro_deps
+set "PY=%~1"
+
+call :install_optional_deps "%PY%" "%KOKORO_PLAYBACK_DEPS%" "Kokoro-82M playback dependency"
+call :install_optional_deps "%PY%" "%KOKORO_CORE_DEPS%" "Kokoro-82M base package"
+call :install_optional_deps "%PY%" "%KOKORO_JA_DEPS%" "Kokoro-82M Japanese tokenizer"
+call :install_optional_deps "%PY%" "%KOKORO_JA_DICT_DEPS%" "Kokoro-82M Japanese dictionary"
+call :install_optional_deps "%PY%" "%KOKORO_ZH_DEPS%" "Kokoro-82M Chinese tokenizer"
 exit /b 0
 
 :check_ffmpeg_runtime

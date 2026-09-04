@@ -516,14 +516,20 @@ def _text_from_input(scene, node_item, port_name: str) -> str:
     return "\n\n".join(parts).strip()
 
 
-def _set_node_info(node_item, text: str) -> None:
+def _cache_node_info(node_item, text: str) -> bool:
     model = getattr(node_item, "model", None)
     if model is None:
-        return
+        return False
     value = text or ""
     if (getattr(model, "info", "") or "") == value:
-        return
+        return False
     model.info = value
+    return True
+
+
+def _set_node_info(node_item, text: str) -> None:
+    if not _cache_node_info(node_item, text):
+        return
     scene = node_item.scene() if hasattr(node_item, "scene") else None
     if scene is None:
         return
@@ -1871,7 +1877,16 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._widget_instance_token = f"{id(self)}"
         self._widget_inactive = False
         previous_widget = getattr(node_item, "_voice_actor_widget", None)
+        previous_text = None
         if previous_widget is not None and previous_widget is not self:
+            previous_transcript = getattr(previous_widget, "_transcript", None)
+            if previous_transcript is not None:
+                try:
+                    previous_text = str(previous_transcript.toPlainText() or "")
+                except Exception:
+                    previous_text = None
+            if previous_text is not None:
+                _cache_node_info(node_item, previous_text)
             deactivate = getattr(previous_widget, "_mark_inactive", None)
             if callable(deactivate):
                 try:
@@ -2033,6 +2048,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
             "Transcript appears here in Voice -> Text mode.\n"
             "In Text -> Voice mode, this text is spoken if no input is wired."
         )
+        self._transcript.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        try:
+            self._transcript.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+        except Exception:
+            pass
+        self._transcript.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self._transcript.setStyleSheet(
             "QPlainTextEdit{background:#0f1216;color:#e6edf3;border:1px solid #334;"
             "border-radius:6px;padding:6px;}"
@@ -2156,9 +2177,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._stt_command.connect(self._on_stt_command)
         self._tts_done.connect(self._finish_tts)
 
-        initial_text = (getattr(getattr(self._node_item, "model", None), "info", "") or "").strip()
+        initial_text = getattr(getattr(self._node_item, "model", None), "info", "") or ""
         if initial_text:
-            self._set_transcript(initial_text)
+            self._set_transcript(initial_text, publish=False)
         self._apply_mode_ui()
         self._ensure_scene_connections()
         self._refresh_voice_options()
@@ -3065,6 +3086,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _on_transcript_changed(self) -> None:
         if self._syncing_text:
             return
+        _cache_node_info(self._node_item, self._transcript.toPlainText() or "")
         if not self._busy:
             self._transcript_undo_stack.clear()
         self._update_control_states()
