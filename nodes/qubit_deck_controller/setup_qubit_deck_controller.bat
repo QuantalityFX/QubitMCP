@@ -10,10 +10,12 @@ if errorlevel 1 (
 set "VENV=.venv"
 set "PYEXE=%CD%\%VENV%\Scripts\python.exe"
 set "REQ=%CD%\requirements.txt"
+set "BASE_PY=%~1"
 
 if not exist "%PYEXE%" (
   echo [qdeck-setup] Creating %VENV%...
-  py -3.11 -m venv "%VENV%" >nul 2>&1
+  if defined BASE_PY if exist "%BASE_PY%" "%BASE_PY%" -m venv "%VENV%" >nul 2>&1
+  if not exist "%PYEXE%" py -3.11 -m venv "%VENV%" >nul 2>&1
   if not exist "%PYEXE%" py -3 -m venv "%VENV%" >nul 2>&1
   if not exist "%PYEXE%" python -m venv "%VENV%" >nul 2>&1
 )

@@ -135,7 +135,7 @@ echo [setup] Base Python version: %BASE_PY_MM% >> "%LOG%"
 call :ensure_venv "%ROOT_VENV%" "root" || goto :fail
 call :install_requirements "%ROOT_PY%" "%MAIN_REQ%" "root requirements" || goto :fail
 call :check_ffmpeg_runtime "%ROOT_PY%"
-call :install_voice_deps "%ROOT_PY%" "root voice dependencies" || goto :fail
+call :install_voice_deps "%ROOT_PY%" "root voice dependencies"
 call :install_optional_deps "%ROOT_PY%" "%KOKORO_DEPS%" "Kokoro-82M voice dependencies"
 call :check_mediator_runtime
 call :check_keyboard_sequence_runtime "%ROOT_PY%"
@@ -144,9 +144,8 @@ echo [setup] FBX SDK setup is handled by FBX nodes when needed. >> "%LOG%"
 call :setup_image_gs_runtime "%ROOT_PY%"
 
 if /I "%SETUP_MODE%"=="full" (
-  call :ensure_venv "%LIB_VENV%" "librarian" || goto :fail
-  call :install_requirements "%LIB_PY%" "%LIB_REQ%" "librarian requirements" || goto :fail
-  call :setup_qubit_deck_controller || goto :fail
+  call :setup_librarian_runtime
+  call :setup_qubit_deck_controller "%ROOT_PY%"
 ) else (
   echo [setup] Skipping librarian setup ^(mode=%SETUP_MODE%^).
   echo [setup] Skipping librarian setup ^(mode=%SETUP_MODE%^). >> "%LOG%"
@@ -332,16 +331,17 @@ exit /b 0
 set "PY=%~1"
 set "LABEL=%~2"
 
-echo [setup] Installing %LABEL%...
-echo [setup] Installing %LABEL%: %VOICE_DEPS% >> "%LOG%"
-echo [setup] Live pip output follows for %LABEL%. >> "%LOG%"
+echo [setup] Installing optional %LABEL%...
+echo [setup] Installing optional %LABEL%: %VOICE_DEPS% >> "%LOG%"
+echo [setup] Live pip output follows for optional %LABEL%. >> "%LOG%"
 "%PY%" -m pip install --progress-bar on %VOICE_DEPS%
 if errorlevel 1 (
-  echo [setup] ERROR: Failed to install %LABEL%. >> "%LOG%"
-  exit /b 1
+  echo [setup] WARNING: Failed to install optional %LABEL%. >> "%LOG%"
+  echo [setup] WARNING: Optional %LABEL% failed. Voice features will remain disabled until installed.
+  exit /b 0
 )
-echo [setup] Completed %LABEL%.
-echo [setup] Completed %LABEL%. >> "%LOG%"
+echo [setup] Completed optional %LABEL%.
+echo [setup] Completed optional %LABEL%. >> "%LOG%"
 exit /b 0
 
 :install_optional_deps
@@ -482,6 +482,7 @@ echo [setup] Image-GS runtime is ready. >> "%LOG%"
 exit /b 0
 
 :setup_qubit_deck_controller
+set "QDECK_BASE_PY=%~1"
 if not exist "%QDECK_SETUP_SCRIPT%" (
   echo [setup] WARNING: QubitDeckController setup script not found: %QDECK_SETUP_SCRIPT%
   echo [setup] WARNING: QubitDeckController setup script not found: %QDECK_SETUP_SCRIPT% >> "%LOG%"
@@ -490,14 +491,35 @@ if not exist "%QDECK_SETUP_SCRIPT%" (
 
 echo [setup] Running QubitDeckController setup...
 echo [setup] Running QubitDeckController setup script: %QDECK_SETUP_SCRIPT% >> "%LOG%"
-call "%QDECK_SETUP_SCRIPT%"
+call "%QDECK_SETUP_SCRIPT%" "%QDECK_BASE_PY%"
 if errorlevel 1 (
-  echo [setup] ERROR: QubitDeckController setup failed.
-  echo [setup] ERROR: QubitDeckController setup failed. >> "%LOG%"
-  exit /b 1
+  echo [setup] WARNING: QubitDeckController setup failed. It can be repaired later from the node workflow.
+  echo [setup] WARNING: QubitDeckController setup failed. It can be repaired later from the node workflow. >> "%LOG%"
+  exit /b 0
 )
 echo [setup] QubitDeckController setup complete.
 echo [setup] QubitDeckController setup complete. >> "%LOG%"
+exit /b 0
+
+:setup_librarian_runtime
+echo [setup] Preparing librarian runtime...
+echo [setup] Preparing librarian runtime... >> "%LOG%"
+call :ensure_venv "%LIB_VENV%" "librarian"
+if errorlevel 1 (
+  echo [setup] WARNING: Librarian venv setup failed. Librarian tools will remain unavailable until setup is rerun.
+  echo [setup] WARNING: Librarian venv setup failed. >> "%LOG%"
+  exit /b 0
+)
+
+call :install_requirements "%LIB_PY%" "%LIB_REQ%" "librarian requirements"
+if errorlevel 1 (
+  echo [setup] WARNING: Librarian requirements setup failed. Librarian tools will remain unavailable until setup is rerun.
+  echo [setup] WARNING: Librarian requirements setup failed. >> "%LOG%"
+  exit /b 0
+)
+
+echo [setup] Librarian runtime is ready.
+echo [setup] Librarian runtime is ready. >> "%LOG%"
 exit /b 0
 
 :create_windows_shortcuts
@@ -658,7 +680,7 @@ exit /b 1
 echo Usage: setup.bat [core^|full]
 echo   Installs app-private Python %PRIVATE_PYTHON_VERSION% if needed; it is not added to PATH.
 echo   core = setup root app env only
-echo   full = setup root + librarian + QubitDeckController envs (default)
+echo   full = setup root + optional librarian + QubitDeckController envs (default)
 echo   FBX SDK setup is handled by FBX nodes when needed.
 echo   optional env var: QUBITFIELD_HOME=C:\path\to\app_home
 echo   optional env var: QUBITMCP_SKIP_IMAGE_GS=1 skips Image-GS download/setup
