@@ -52,8 +52,6 @@ set "MAIN_REQ=%REPO_DIR%\requirements.txt"
 set "LIB_REQ=%REPO_DIR%\nodes\librarian\requirements.txt"
 set "ROOT_VENV=%APP_HOME%\.venv"
 set "ROOT_PY=%ROOT_VENV%\Scripts\python.exe"
-set "CHECK_FBX_SCRIPT=%REPO_DIR%\check_fbx_sdk.ps1"
-set "INSTALL_FBX_SCRIPT=%REPO_DIR%\install_fbx_sdk.ps1"
 set "LIB_VENV=%APP_HOME%\librarian\.venv"
 set "LIB_PY=%LIB_VENV%\Scripts\python.exe"
 set "QDECK_SETUP_SCRIPT=%REPO_DIR%\nodes\qubit_deck_controller\setup_qubit_deck_controller.bat"
@@ -64,7 +62,6 @@ set "BASE_PY_EXE="
 set "BASE_PY_ARG="
 set "BASE_PY_MM="
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
-set "FBX_WIN_INSTALLER_URL=https://damassets.autodesk.net/content/dam/autodesk/www/files/fbx202039_fbxpythonsdk_win.exe"
 set "PRIVATE_PYTHON_VERSION=3.10.11"
 set "PRIVATE_PYTHON_MM=3.10"
 set "PRIVATE_PYTHON_INSTALLER_NAME=python-%PRIVATE_PYTHON_VERSION%-amd64.exe"
@@ -78,11 +75,6 @@ if defined LOCALAPPDATA (
 )
 set "PRIVATE_PYTHON_EXE=%PRIVATE_PYTHON_HOME%\python.exe"
 set "SETUP_MODE=%~1"
-set "SETUP_FBX_ARG=%~2"
-
-if defined SETUP_FBX_ARG (
-  set "FBX_SDK_SOURCE=%SETUP_FBX_ARG%"
-)
 
 if not defined SETUP_MODE set "SETUP_MODE=full"
 if /I "%SETUP_MODE%"=="--core" set "SETUP_MODE=core"
@@ -102,7 +94,6 @@ echo [setup] ==== START %DATE% %TIME% ==== > "%LOG%"
 echo [setup] Repo: %REPO_DIR% >> "%LOG%"
 echo [setup] Home: %APP_HOME% >> "%LOG%"
 echo [setup] Mode: %SETUP_MODE% >> "%LOG%"
-if defined FBX_SDK_SOURCE echo [setup] FBX SDK source: %FBX_SDK_SOURCE% >> "%LOG%"
 
 call :ensure_private_python
 if not errorlevel 1 call :try_base_python "%PRIVATE_PYTHON_EXE%" ""
@@ -148,7 +139,8 @@ call :install_voice_deps "%ROOT_PY%" "root voice dependencies" || goto :fail
 call :install_optional_deps "%ROOT_PY%" "%KOKORO_DEPS%" "Kokoro-82M voice dependencies"
 call :check_mediator_runtime
 call :check_keyboard_sequence_runtime "%ROOT_PY%"
-call :setup_fbx_sdk "%ROOT_PY%"
+echo [setup] FBX SDK setup is handled by FBX nodes when needed.
+echo [setup] FBX SDK setup is handled by FBX nodes when needed. >> "%LOG%"
 call :setup_image_gs_runtime "%ROOT_PY%"
 
 if /I "%SETUP_MODE%"=="full" (
@@ -193,8 +185,8 @@ echo [setup] Installing app-private Python %PRIVATE_PYTHON_VERSION%...
 echo [setup] Installing app-private Python %PRIVATE_PYTHON_VERSION% to %PRIVATE_PYTHON_HOME% >> "%LOG%"
 echo [setup] Python installer URL: %PRIVATE_PYTHON_INSTALLER_URL% >> "%LOG%"
 
+for %%I in ("%PRIVATE_PYTHON_INSTALLER%") do set "PRIVATE_PYTHON_INSTALLER_DIR=%%~dpI"
 if not exist "%PRIVATE_PYTHON_INSTALLER%" (
-  for %%I in ("%PRIVATE_PYTHON_INSTALLER%") do set "PRIVATE_PYTHON_INSTALLER_DIR=%%~dpI"
   if not exist "%PRIVATE_PYTHON_INSTALLER_DIR%" (
     mkdir "%PRIVATE_PYTHON_INSTALLER_DIR%" >nul 2>&1
   )
@@ -213,7 +205,7 @@ if not exist "%PRIVATE_PYTHON_INSTALLER%" (
 
   echo [setup] Downloading app-private Python installer...
   echo [setup] Downloading app-private Python installer to %PRIVATE_PYTHON_INSTALLER% >> "%LOG%"
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile($env:PRIVATE_PYTHON_INSTALLER_URL, $env:PRIVATE_PYTHON_INSTALLER)" >> "%LOG%" 2>&1
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile($env:PRIVATE_PYTHON_INSTALLER_URL, $env:PRIVATE_PYTHON_INSTALLER)"
   if errorlevel 1 (
     echo [setup] WARNING: Failed to download app-private Python installer.
     echo [setup] WARNING: Failed to download app-private Python installer. >> "%LOG%"
@@ -229,7 +221,7 @@ if not exist "%PRIVATE_PYTHON_INSTALLER%" (
 
 echo [setup] Running app-private Python installer...
 echo [setup] Running app-private Python installer: %PRIVATE_PYTHON_INSTALLER% >> "%LOG%"
-"%PRIVATE_PYTHON_INSTALLER%" /quiet InstallAllUsers=0 TargetDir="%PRIVATE_PYTHON_HOME%" PrependPath=0 Include_launcher=0 Include_exe=1 Include_lib=1 Include_pip=1 Include_tcltk=1 Include_test=0 Include_doc=0 Shortcuts=0 /log "%LOG_DIR%\python-install.log"
+"%PRIVATE_PYTHON_INSTALLER%" /passive InstallAllUsers=0 TargetDir="%PRIVATE_PYTHON_HOME%" PrependPath=0 Include_launcher=0 Include_exe=1 Include_lib=1 Include_pip=1 Include_tcltk=1 Include_test=0 Include_doc=0 Shortcuts=0 /log "%LOG_DIR%\python-install.log"
 if errorlevel 1 (
   echo [setup] WARNING: App-private Python installer failed.
   echo [setup] WARNING: App-private Python installer failed. See %LOG_DIR%\python-install.log >> "%LOG%"
@@ -489,105 +481,6 @@ echo [setup] Image-GS runtime is ready.
 echo [setup] Image-GS runtime is ready. >> "%LOG%"
 exit /b 0
 
-:setup_fbx_sdk
-set "PY=%~1"
-
-where powershell >nul 2>&1
-if errorlevel 1 (
-  echo [setup] WARNING: powershell.exe not found; skipping FBX SDK checks.
-  echo [setup] WARNING: powershell.exe not found; skipping FBX SDK checks. >> "%LOG%"
-  exit /b 0
-)
-
-if not exist "%CHECK_FBX_SCRIPT%" (
-  echo [setup] WARNING: FBX SDK check script not found: %CHECK_FBX_SCRIPT%
-  echo [setup] WARNING: FBX SDK check script not found: %CHECK_FBX_SCRIPT% >> "%LOG%"
-  exit /b 0
-)
-
-if defined FBX_SDK_SOURCE call :install_fbx_sdk_from_source "%PY%" "%FBX_SDK_SOURCE%"
-
-call :check_fbx_sdk_runtime "%PY%"
-if not errorlevel 1 (
-  echo [setup] FBX SDK runtime is ready.
-  echo [setup] FBX SDK runtime is ready. >> "%LOG%"
-  exit /b 0
-)
-
-if not defined FBX_SDK_SOURCE (
-  if exist "%INSTALL_FBX_SCRIPT%" (
-    call :prompt_fbx_sdk_source
-    if defined FBX_SDK_SOURCE (
-      call :install_fbx_sdk_from_source "%PY%" "%FBX_SDK_SOURCE%"
-      call :check_fbx_sdk_runtime "%PY%"
-      if not errorlevel 1 (
-        echo [setup] FBX SDK runtime is ready.
-        echo [setup] FBX SDK runtime is ready. >> "%LOG%"
-        exit /b 0
-      )
-    )
-  )
-)
-
-echo [setup] WARNING: FBX SDK runtime not ready; FBX import fallback has limited compatibility.
-echo [setup] WARNING: FBX SDK runtime not ready; FBX import fallback has limited compatibility. >> "%LOG%"
-echo [setup] Autodesk FBX Python SDK (Windows) download:
-echo         %FBX_WIN_INSTALLER_URL%
-echo [setup] Autodesk FBX Python SDK (Windows): %FBX_WIN_INSTALLER_URL% >> "%LOG%"
-if exist "%INSTALL_FBX_SCRIPT%" (
-  echo [setup] To install later, run:
-  echo         powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_FBX_SCRIPT%" -SourceDir "C:\path\to\fbx_runtime" -PythonExe "%PY%"
-  echo [setup] Source folder layouts supported:
-  echo         - fbx-*.whl + FbxCommon.py
-  echo         - fbx*.pyd + FbxCommon.py ^(+ optional libfbxsdk.dll^)
-  echo [setup] Install command shown to user. >> "%LOG%"
-)
-exit /b 0
-
-:check_fbx_sdk_runtime
-set "PY=%~1"
-echo [setup] Checking Autodesk FBX SDK runtime...
-echo [setup] Checking Autodesk FBX SDK runtime... >> "%LOG%"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%CHECK_FBX_SCRIPT%" -PythonExe "%PY%"
-exit /b %ERRORLEVEL%
-
-:install_fbx_sdk_from_source
-set "PY=%~1"
-set "SRC=%~2"
-if not exist "%INSTALL_FBX_SCRIPT%" (
-  echo [setup] WARNING: FBX SDK install script not found: %INSTALL_FBX_SCRIPT%
-  echo [setup] WARNING: FBX SDK install script not found: %INSTALL_FBX_SCRIPT% >> "%LOG%"
-  exit /b 0
-)
-if not defined SRC exit /b 0
-
-echo [setup] FBX SDK source detected. Attempting runtime install...
-echo [setup] FBX SDK source detected: %SRC% >> "%LOG%"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_FBX_SCRIPT%" -SourceDir "%SRC%" -PythonExe "%PY%"
-if errorlevel 1 (
-  echo [setup] WARNING: FBX SDK runtime install attempt failed.
-  echo [setup] WARNING: FBX SDK runtime install attempt failed. >> "%LOG%"
-) else (
-  echo [setup] FBX SDK runtime install completed.
-  echo [setup] FBX SDK runtime install completed. >> "%LOG%"
-)
-exit /b 0
-
-:prompt_fbx_sdk_source
-set "FBX_PROMPT_SOURCE="
-echo [setup] Autodesk FBX SDK is optional but recommended for full FBX compatibility.
-echo [setup] Autodesk FBX Python SDK (Windows) download:
-echo         %FBX_WIN_INSTALLER_URL%
-echo [setup] Source folder layouts supported:
-echo         - fbx-*.whl + FbxCommon.py
-echo         - fbx*.pyd + FbxCommon.py ^(+ optional libfbxsdk.dll^)
-set /p FBX_PROMPT_SOURCE=[setup] Enter FBX SDK source folder now (or press Enter to skip): 
-if defined FBX_PROMPT_SOURCE (
-  set "FBX_SDK_SOURCE=%FBX_PROMPT_SOURCE:"=%"
-  echo [setup] FBX SDK source entered by user: %FBX_SDK_SOURCE% >> "%LOG%"
-)
-exit /b 0
-
 :setup_qubit_deck_controller
 if not exist "%QDECK_SETUP_SCRIPT%" (
   echo [setup] WARNING: QubitDeckController setup script not found: %QDECK_SETUP_SCRIPT%
@@ -762,14 +655,11 @@ popd
 exit /b 1
 
 :print_usage
-echo Usage: setup.bat [core^|full] [fbx_sdk_source_dir]
+echo Usage: setup.bat [core^|full]
 echo   Installs app-private Python %PRIVATE_PYTHON_VERSION% if needed; it is not added to PATH.
 echo   core = setup root app env only
 echo   full = setup root + librarian + QubitDeckController envs (default)
-echo   optional fbx_sdk_source_dir = folder containing either:
-echo      1^) fbx-*.whl + FbxCommon.py
-echo      2^) fbx*.pyd + FbxCommon.py ^(+ optional libfbxsdk.dll^)
-echo   optional env var: FBX_SDK_SOURCE=C:\path\to\fbx_runtime
+echo   FBX SDK setup is handled by FBX nodes when needed.
 echo   optional env var: QUBITFIELD_HOME=C:\path\to\app_home
 echo   optional env var: QUBITMCP_SKIP_IMAGE_GS=1 skips Image-GS download/setup
 exit /b 0
