@@ -681,6 +681,50 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Sequence to MP4 plugin import failed:", e)
 
+    # 16.3) MiniMax H3 Video
+    try:
+        from nodes import minimax_h3_video
+        if hasattr(minimax_h3_video, "register"):
+            minimax_h3_video.register()
+            _safe_probe("minimax_h3_video")
+        else:
+            print("[EchoGraph] MiniMax H3 Video module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] MiniMax H3 Video plugin import failed:", e)
+
+    # 16.3.1) MiniMax H3 API Video
+    try:
+        from nodes import minimax_h3_api_video
+        if hasattr(minimax_h3_api_video, "register"):
+            minimax_h3_api_video.register()
+            _safe_probe("minimax_h3_api_video")
+        else:
+            print("[EchoGraph] MiniMax H3 API Video module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] MiniMax H3 API Video plugin import failed:", e)
+
+    # 16.3.2) MiniMax TTS API
+    try:
+        from nodes import minimax_tts_api
+        if hasattr(minimax_tts_api, "register"):
+            minimax_tts_api.register()
+            _safe_probe("minimax_tts_api")
+        else:
+            print("[EchoGraph] MiniMax TTS API module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] MiniMax TTS API plugin import failed:", e)
+
+    # 16.4) Wan2.2 TI2V Video
+    try:
+        from nodes import wan22_video
+        if hasattr(wan22_video, "register"):
+            wan22_video.register()
+            _safe_probe("wan22_video")
+        else:
+            print("[EchoGraph] Wan2.2 Video module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Wan2.2 Video plugin import failed:", e)
+
     # 16.5) Qubit Deck Controller
     try:
         from nodes import qubit_deck_controller

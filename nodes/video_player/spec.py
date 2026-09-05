@@ -322,6 +322,77 @@ def _dialog_parent(node_item):
     return QtWidgets.QApplication.activeWindow()
 
 
+def _edge_port(edge) -> str:
+    name = (
+        getattr(edge, "dst_port_name", None)
+        or getattr(edge, "dst_label", None)
+        or getattr(edge, "dst_name", None)
+        or ""
+    )
+    return str(name or "").strip().lower()
+
+
+def _ordered_in_edges(node_item):
+    scene = node_item.scene() if hasattr(node_item, "scene") else None
+    if scene is None:
+        return []
+    try:
+        return list(scene._ordered_in_edges(node_item))
+    except Exception:
+        try:
+            return list(scene._in_edges(node_item))
+        except Exception:
+            return []
+
+
+def _looks_like_media_text(text: str) -> bool:
+    raw = str(text or "").strip().strip('"').strip("'")
+    if not raw:
+        return False
+    suffix = Path(raw).suffix.lower()
+    if suffix in (_VIDEO_EXTS | _IMAGE_EXTS):
+        return True
+    if any(token in raw for token in ("*", "####", "{frame}", "%0")):
+        return True
+    try:
+        path = Path(raw).expanduser()
+        return path.exists()
+    except Exception:
+        return False
+
+
+def _connected_path_from_graph(node_item) -> str:
+    scene = node_item.scene() if hasattr(node_item, "scene") else None
+    if scene is None:
+        return ""
+    edges = _ordered_in_edges(node_item)
+    named = [edge for edge in edges if _edge_port(edge) == "path"]
+    if named:
+        edges = named
+    path_param_names = ("mp4_path", "video_path", "path", "output", "output_path")
+    for edge in edges:
+        src = getattr(edge, "src", None)
+        model = getattr(src, "model", None)
+        if model is None:
+            continue
+        for param_name in path_param_names:
+            value = (_param_value(model, param_name) or "").strip()
+            if value:
+                return value
+        info = str(getattr(model, "info", "") or "").strip()
+        if _looks_like_media_text(info):
+            return info
+        try:
+            text = str(scene.resolve_text_value(src) or "").strip()
+        except Exception:
+            text = ""
+        for line in text.splitlines():
+            candidate = line.strip().strip('"').strip("'")
+            if _looks_like_media_text(candidate):
+                return candidate
+    return ""
+
+
 def _is_image_path(path: Path) -> bool:
     return path.suffix.lower() in _IMAGE_EXTS
 
@@ -435,6 +506,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._scene = None
         self._scene_connected = False
         self._loaded_path = None
+        self._connected_path = ""
 
         self._mode = "none"
         self._seq_paths: list[Path] = []
@@ -473,10 +545,10 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._path_edit.setPlaceholderText("Image sequence or .mp4 path")
         self._path_edit.editingFinished.connect(self._on_path_committed)
         row1.addWidget(self._path_edit, 1)
-        browse_btn = QtWidgets.QPushButton("Browse")
-        browse_btn.setFixedWidth(70)
-        browse_btn.clicked.connect(self._on_browse_clicked)
-        row1.addWidget(browse_btn, 0)
+        self._browse_btn = QtWidgets.QPushButton("Browse")
+        self._browse_btn.setFixedWidth(70)
+        self._browse_btn.clicked.connect(self._on_browse_clicked)
+        row1.addWidget(self._browse_btn, 0)
         layout.addLayout(row1, 0)
 
         self._preview = QtWidgets.QLabel("No media loaded")
@@ -535,12 +607,20 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             self._scene = self._node_item.scene()
         if self._scene is None or self._scene_connected:
             return
+        if hasattr(self._scene, "linksChanged"):
+            try:
+                self._scene.linksChanged.connect(self._on_scene_links_changed)
+            except Exception:
+                pass
         if hasattr(self._scene, "paramChanged"):
             try:
                 self._scene.paramChanged.connect(self._on_scene_param_changed)
             except Exception:
                 pass
         self._scene_connected = True
+
+    def _on_scene_links_changed(self, *_args):
+        self._sync_from_params(force=True)
 
     def _on_scene_param_changed(self, name=None, _params=None):
         if _param_change_relevant(self._node_item, name):
@@ -550,24 +630,33 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         model = getattr(self._node_item, "model", None)
         if model is None:
             return
-        path_text = (_param_value(model, "path") or "").strip()
+        connected_path = _connected_path_from_graph(self._node_item)
+        self._connected_path = connected_path
+        path_text = connected_path or (_param_value(model, "path") or "").strip()
         if path_text != (self._path_edit.text() or "").strip():
             try:
                 self._path_edit.blockSignals(True)
                 self._path_edit.setText(path_text)
             finally:
                 self._path_edit.blockSignals(False)
+        self._path_edit.setEnabled(not bool(connected_path))
+        self._browse_btn.setEnabled(not bool(connected_path))
+        self._path_edit.setToolTip("Driven by connected path input." if connected_path else "")
         self._load_media(path_text, force=force)
 
     def _set_status(self, text: str):
         self._status.setText(str(text or ""))
 
     def _on_path_committed(self):
+        if self._connected_path:
+            return
         text = (self._path_edit.text() or "").strip()
         _set_param_value(self._node_item, "path", text, notify_scene=True)
         self._load_media(text, force=True)
 
     def _on_browse_clicked(self):
+        if self._connected_path:
+            return
         current = (self._path_edit.text() or "").strip()
         if current:
             start_path = _resolve_source_path(self._node_item, current)
@@ -1112,6 +1201,12 @@ class VideoPlayerWidget(QtWidgets.QWidget):
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "path", "")
     _ensure_hidden_params(getattr(node_item, "model", None), ["path"])
+    try:
+        setattr(node_item, "_default_named_input", "path")
+        setattr(node_item, "_show_default_input_with_named", True)
+        node_item.ensure_input("path")
+    except Exception:
+        pass
 
 
 def render_node_body(node_item, y_cursor: int) -> int:

@@ -118,6 +118,10 @@ def register_defaults() -> None:
     register("codex_sandbox", stripe_color="#475569")
     register("audio_capture", stripe_color="#14b8a6")
     register("youtube_downloader", stripe_color="#dc2626")
+    register("minimax_h3_video", stripe_color="#4f46e5")
+    register("minimax_h3_api_video", stripe_color="#06b6d4")
+    register("minimax_tts_api", stripe_color="#14b8a6")
+    register("wan22_video", stripe_color="#0f766e")
     # librarian plugins can override this later
     register("librarian", stripe_color="#74d603")
     register("qubit_deck_controller", stripe_color="#0f766e")
@@ -209,6 +213,38 @@ def register_defaults() -> None:
             _task.register(core=sys.modules[__name__])
     except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Task auto-register failed:", exc)
+
+    # Auto-register MiniMax H3 Video so saved workflows can rebuild its generator body early.
+    try:
+        from nodes import minimax_h3_video as _minimax_h3_video  # type: ignore
+        if hasattr(_minimax_h3_video, "register"):
+            _minimax_h3_video.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] MiniMax H3 Video auto-register failed:", exc)
+
+    # Auto-register MiniMax H3 API Video so saved workflows can rebuild its cloud generator body early.
+    try:
+        from nodes import minimax_h3_api_video as _minimax_h3_api_video  # type: ignore
+        if hasattr(_minimax_h3_api_video, "register"):
+            _minimax_h3_api_video.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] MiniMax H3 API Video auto-register failed:", exc)
+
+    # Auto-register MiniMax TTS API so saved workflows can rebuild its generator body early.
+    try:
+        from nodes import minimax_tts_api as _minimax_tts_api  # type: ignore
+        if hasattr(_minimax_tts_api, "register"):
+            _minimax_tts_api.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] MiniMax TTS API auto-register failed:", exc)
+
+    # Auto-register Wan2.2 Video so saved workflows can rebuild its generator body early.
+    try:
+        from nodes import wan22_video as _wan22_video  # type: ignore
+        if hasattr(_wan22_video, "register"):
+            _wan22_video.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Wan2.2 Video auto-register failed:", exc)
 
 
 def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:

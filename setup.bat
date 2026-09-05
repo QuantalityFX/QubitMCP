@@ -56,6 +56,8 @@ set "LIB_VENV=%APP_HOME%\librarian\.venv"
 set "LIB_PY=%LIB_VENV%\Scripts\python.exe"
 set "QDECK_SETUP_SCRIPT=%REPO_DIR%\nodes\qubit_deck_controller\setup_qubit_deck_controller.bat"
 set "IMAGE_GS_SETUP_SCRIPT=%REPO_DIR%\nodes\image_gs\setup_image_gs.bat"
+set "MINIMAX_H3_DOWNLOAD_SCRIPT=%REPO_DIR%\nodes\minimax_h3_video\download_model.py"
+set "WAN22_SETUP_SCRIPT=%REPO_DIR%\nodes\wan22_video\setup_wan22_video.bat"
 set "VOICE_DEPS=SpeechRecognition pyttsx3 soundcard gTTS pygame faster-whisper pymongo"
 set "VOICE_MIC_DEPS=pyaudio"
 set "KOKORO_CORE_DEPS=kokoro"
@@ -84,13 +86,29 @@ set "SETUP_MODE=%~1"
 if not defined SETUP_MODE set "SETUP_MODE=full"
 if /I "%SETUP_MODE%"=="--core" set "SETUP_MODE=core"
 if /I "%SETUP_MODE%"=="--full" set "SETUP_MODE=full"
+if /I "%SETUP_MODE%"=="--minimax-h3" set "SETUP_MODE=minimax_h3"
+if /I "%SETUP_MODE%"=="--minimax_h3" set "SETUP_MODE=minimax_h3"
+if /I "%SETUP_MODE%"=="--wan22" set "SETUP_MODE=wan22_video"
+if /I "%SETUP_MODE%"=="--wan22-video" set "SETUP_MODE=wan22_video"
+if /I "%SETUP_MODE%"=="--wan22_video" set "SETUP_MODE=wan22_video"
 if /I "%SETUP_MODE%"=="/core" set "SETUP_MODE=core"
 if /I "%SETUP_MODE%"=="/full" set "SETUP_MODE=full"
+if /I "%SETUP_MODE%"=="/minimax-h3" set "SETUP_MODE=minimax_h3"
+if /I "%SETUP_MODE%"=="/minimax_h3" set "SETUP_MODE=minimax_h3"
+if /I "%SETUP_MODE%"=="/wan22" set "SETUP_MODE=wan22_video"
+if /I "%SETUP_MODE%"=="/wan22-video" set "SETUP_MODE=wan22_video"
+if /I "%SETUP_MODE%"=="/wan22_video" set "SETUP_MODE=wan22_video"
+if /I "%SETUP_MODE%"=="minimax-h3" set "SETUP_MODE=minimax_h3"
+if /I "%SETUP_MODE%"=="h3" set "SETUP_MODE=minimax_h3"
+if /I "%SETUP_MODE%"=="wan" set "SETUP_MODE=wan22_video"
+if /I "%SETUP_MODE%"=="wan2.2" set "SETUP_MODE=wan22_video"
+if /I "%SETUP_MODE%"=="wan22" set "SETUP_MODE=wan22_video"
+if /I "%SETUP_MODE%"=="wan22-video" set "SETUP_MODE=wan22_video"
 if /I "%SETUP_MODE%"=="help" goto :usage
 if /I "%SETUP_MODE%"=="--help" goto :usage
 if /I "%SETUP_MODE%"=="/?" goto :usage
 
-if /I not "%SETUP_MODE%"=="core" if /I not "%SETUP_MODE%"=="full" (
+if /I not "%SETUP_MODE%"=="core" if /I not "%SETUP_MODE%"=="full" if /I not "%SETUP_MODE%"=="minimax_h3" if /I not "%SETUP_MODE%"=="wan22_video" (
   echo [setup] ERROR: Unknown mode "%SETUP_MODE%".
   goto :usage_fail
 )
@@ -138,7 +156,19 @@ echo [setup] Base Python version: %BASE_PY_MM%
 echo [setup] Base Python version: %BASE_PY_MM% >> "%LOG%"
 
 call :ensure_venv "%ROOT_VENV%" "root" || goto :fail
+
+if /I "%SETUP_MODE%"=="minimax_h3" (
+  call :setup_minimax_h3_model "%ROOT_PY%" || goto :fail
+  goto :success
+)
+
+if /I "%SETUP_MODE%"=="wan22_video" (
+  call :setup_wan22_video "%ROOT_PY%" || goto :fail
+  goto :success
+)
+
 call :install_requirements "%ROOT_PY%" "%MAIN_REQ%" "root requirements" || goto :fail
+
 call :check_ffmpeg_runtime "%ROOT_PY%"
 call :install_voice_deps "%ROOT_PY%" "root voice dependencies"
 call :install_optional_deps "%ROOT_PY%" "%VOICE_MIC_DEPS%" "root microphone dependency"
@@ -159,8 +189,25 @@ if /I "%SETUP_MODE%"=="full" (
   echo [setup] Skipping QubitDeckController setup ^(mode=%SETUP_MODE%^). >> "%LOG%"
 )
 
+if /I "%QUBITMCP_SETUP_MINIMAX_H3%"=="1" (
+  call :setup_minimax_h3_model "%ROOT_PY%"
+  if errorlevel 1 (
+    echo [setup] WARNING: MiniMax H3 model download failed. Run setup.bat minimax_h3 to retry.
+    echo [setup] WARNING: MiniMax H3 model download failed. >> "%LOG%"
+  )
+)
+
+if /I "%QUBITMCP_SETUP_WAN22%"=="1" (
+  call :setup_wan22_video "%ROOT_PY%"
+  if errorlevel 1 (
+    echo [setup] WARNING: Wan2.2 setup failed. Run setup.bat wan22_video to retry.
+    echo [setup] WARNING: Wan2.2 setup failed. >> "%LOG%"
+  )
+)
+
 call :create_windows_shortcuts
 
+:success
 echo [setup] SUCCESS (%SETUP_MODE%)
 echo [setup] SUCCESS (%SETUP_MODE%) >> "%LOG%"
 echo [setup] Log: %LOG%
@@ -497,6 +544,83 @@ echo [setup] Image-GS runtime is ready.
 echo [setup] Image-GS runtime is ready. >> "%LOG%"
 exit /b 0
 
+:setup_minimax_h3_model
+set "PY=%~1"
+
+if /I "%QUBITMCP_SKIP_MINIMAX_H3%"=="1" (
+  echo [setup] Skipping MiniMax H3 model download ^(QUBITMCP_SKIP_MINIMAX_H3=1^).
+  echo [setup] Skipping MiniMax H3 model download ^(QUBITMCP_SKIP_MINIMAX_H3=1^). >> "%LOG%"
+  exit /b 0
+)
+
+if not exist "%PY%" (
+  echo [setup] ERROR: MiniMax H3 setup skipped ^(missing Python: %PY%^).
+  echo [setup] ERROR: MiniMax H3 setup skipped ^(missing Python: %PY%^). >> "%LOG%"
+  exit /b 1
+)
+
+if not exist "%MINIMAX_H3_DOWNLOAD_SCRIPT%" (
+  echo [setup] ERROR: MiniMax H3 download script not found: %MINIMAX_H3_DOWNLOAD_SCRIPT%
+  echo [setup] ERROR: MiniMax H3 download script not found: %MINIMAX_H3_DOWNLOAD_SCRIPT% >> "%LOG%"
+  exit /b 1
+)
+
+echo [setup] Installing MiniMax H3 downloader dependency...
+echo [setup] Installing MiniMax H3 downloader dependency. >> "%LOG%"
+"%PY%" -m pip install --progress-bar on huggingface_hub[hf_xet]
+if errorlevel 1 (
+  echo [setup] ERROR: Failed to install MiniMax H3 downloader dependency.
+  echo [setup] ERROR: Failed to install MiniMax H3 downloader dependency. >> "%LOG%"
+  exit /b 1
+)
+
+echo [setup] Downloading MiniMax H3 local model...
+echo [setup] Downloading MiniMax H3 local model with %MINIMAX_H3_DOWNLOAD_SCRIPT% >> "%LOG%"
+"%PY%" "%MINIMAX_H3_DOWNLOAD_SCRIPT%" --app-home "%APP_HOME%"
+if errorlevel 1 (
+  echo [setup] ERROR: MiniMax H3 model download failed.
+  echo [setup] ERROR: MiniMax H3 model download failed. >> "%LOG%"
+  exit /b 1
+)
+
+echo [setup] MiniMax H3 model is ready.
+echo [setup] MiniMax H3 model is ready. >> "%LOG%"
+exit /b 0
+
+:setup_wan22_video
+set "PY=%~1"
+
+if /I "%QUBITMCP_SKIP_WAN22%"=="1" (
+  echo [setup] Skipping Wan2.2 setup ^(QUBITMCP_SKIP_WAN22=1^).
+  echo [setup] Skipping Wan2.2 setup ^(QUBITMCP_SKIP_WAN22=1^). >> "%LOG%"
+  exit /b 0
+)
+
+if not exist "%PY%" (
+  echo [setup] ERROR: Wan2.2 setup skipped ^(missing Python: %PY%^).
+  echo [setup] ERROR: Wan2.2 setup skipped ^(missing Python: %PY%^). >> "%LOG%"
+  exit /b 1
+)
+
+if not exist "%WAN22_SETUP_SCRIPT%" (
+  echo [setup] ERROR: Wan2.2 setup script not found: %WAN22_SETUP_SCRIPT%
+  echo [setup] ERROR: Wan2.2 setup script not found: %WAN22_SETUP_SCRIPT% >> "%LOG%"
+  exit /b 1
+)
+
+echo [setup] Preparing Wan2.2 TI2V-5B runtime...
+echo [setup] Preparing Wan2.2 TI2V-5B runtime with %WAN22_SETUP_SCRIPT% >> "%LOG%"
+call "%WAN22_SETUP_SCRIPT%" "%APP_HOME%" "%PY%"
+if errorlevel 1 (
+  echo [setup] ERROR: Wan2.2 setup failed.
+  echo [setup] ERROR: Wan2.2 setup failed. >> "%LOG%"
+  exit /b 1
+)
+
+echo [setup] Wan2.2 TI2V-5B runtime is ready.
+echo [setup] Wan2.2 TI2V-5B runtime is ready. >> "%LOG%"
+exit /b 0
+
 :setup_qubit_deck_controller
 set "QDECK_BASE_PY=%~1"
 if not exist "%QDECK_SETUP_SCRIPT%" (
@@ -693,11 +817,17 @@ popd
 exit /b 1
 
 :print_usage
-echo Usage: setup.bat [core^|full]
+echo Usage: setup.bat [core^|full^|minimax_h3^|wan22_video]
 echo   Installs app-private Python %PRIVATE_PYTHON_VERSION% if needed; it is not added to PATH.
 echo   core = setup root app env only
 echo   full = setup root + optional librarian + QubitDeckController envs (default)
+echo   minimax_h3 = download the local MiniMax-H3 Hugging Face checkpoint only
+echo   wan22_video = install Wan2.2 repo/deps and download Wan2.2-TI2V-5B
 echo   FBX SDK setup is handled by FBX nodes when needed.
 echo   optional env var: QUBITFIELD_HOME=C:\path\to\app_home
 echo   optional env var: QUBITMCP_SKIP_IMAGE_GS=1 skips Image-GS download/setup
+echo   optional env var: QUBITMCP_MINIMAX_H3_VARIANT=FL2VA^|Ref2VA^|both
+echo   optional env var: QUBITMCP_SETUP_MINIMAX_H3=1 downloads MiniMax H3 during core/full setup
+echo   optional env var: QUBITMCP_SETUP_WAN22=1 installs Wan2.2 during core/full setup
+echo   optional env var: HF_TOKEN=... for Hugging Face license-gated access
 exit /b 0

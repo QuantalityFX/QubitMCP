@@ -543,6 +543,76 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _youtube_downloader.register()
             except Exception:
                 pass
+        # Ensure MiniMax H3 Video spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "minimax_h3_video",
+            "minimax h3 video",
+            "minimax_h3",
+            "minimax h3",
+            "h3_video",
+            "h3 video",
+            "text_to_video",
+            "text to video",
+            "image_to_video",
+            "image to video",
+        ):
+            try:
+                from nodes import minimax_h3_video as _minimax_h3_video  # type: ignore
+                if hasattr(_minimax_h3_video, "register"):
+                    _minimax_h3_video.register()
+            except Exception:
+                pass
+        # Ensure MiniMax H3 API Video spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "minimax_h3_api_video",
+            "minimax h3 api video",
+            "minimax_h3_api",
+            "minimax h3 api",
+            "minimax_api_video",
+            "minimax api video",
+            "hailuo_h3_api_video",
+            "hailuo h3 api video",
+        ):
+            try:
+                from nodes import minimax_h3_api_video as _minimax_h3_api_video  # type: ignore
+                if hasattr(_minimax_h3_api_video, "register"):
+                    _minimax_h3_api_video.register()
+            except Exception:
+                pass
+        # Ensure MiniMax TTS API spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "minimax_tts_api",
+            "minimax text to speech",
+            "minimax speech api",
+            "minimax tts",
+            "minimax_speech",
+            "minimax_text_to_speech",
+        ):
+            try:
+                from nodes import minimax_tts_api as _minimax_tts_api  # type: ignore
+                if hasattr(_minimax_tts_api, "register"):
+                    _minimax_tts_api.register()
+            except Exception:
+                pass
+        # Ensure Wan2.2 Video spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "wan22_video",
+            "wan 2.2 video",
+            "wan2.2 video",
+            "wan22",
+            "wan_video",
+            "wan ti2v",
+            "wan2.2 ti2v",
+            "wan22_ti2v",
+            "text_image_to_video",
+            "text image to video",
+        ):
+            try:
+                from nodes import wan22_video as _wan22_video  # type: ignore
+                if hasattr(_wan22_video, "register"):
+                    _wan22_video.register()
+            except Exception:
+                pass
         # Ensure Primitive spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "primitive":
             try:
@@ -1642,6 +1712,133 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "output_dir", "output_pattern", "effect", "levels", "matrix", "strength", "grayscale", "frame_count"})
         elif kind in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
             hidden.update({"source", "output", "codec", "fps", "bitrate"})
+        elif kind in (
+            "minimax_h3_video",
+            "minimax h3 video",
+            "minimax_h3",
+            "minimax h3",
+            "h3_video",
+            "h3 video",
+            "text_to_video",
+            "text to video",
+            "image_to_video",
+            "image to video",
+        ):
+            hidden.update(
+                {
+                    "__minimax_h3_prompt",
+                    "__minimax_h3_first_image",
+                    "__minimax_h3_last_image",
+                    "__minimax_h3_model_path",
+                    "__minimax_h3_variant",
+                    "__minimax_h3_local_url",
+                    "__minimax_h3_create_path",
+                    "__minimax_h3_query_path",
+                    "__minimax_h3_retrieve_path",
+                    "__minimax_h3_duration",
+                    "__minimax_h3_ratio",
+                    "__minimax_h3_resolution",
+                    "__minimax_h3_output_dir",
+                    "__minimax_h3_poll_interval",
+                    "__minimax_h3_timeout",
+                    "mp4_path",
+                    "task_id",
+                    "h3_status",
+                }
+            )
+        elif kind in (
+            "minimax_h3_api_video",
+            "minimax h3 api video",
+            "minimax_h3_api",
+            "minimax h3 api",
+            "minimax_api_video",
+            "minimax api video",
+            "hailuo_h3_api_video",
+            "hailuo h3 api video",
+        ):
+            hidden.update(
+                {
+                    "__minimax_h3_api_prompt",
+                    "__minimax_h3_api_mode",
+                    "__minimax_h3_api_first_image",
+                    "__minimax_h3_api_last_image",
+                    "__minimax_h3_api_reference_images",
+                    "__minimax_h3_api_key",
+                    "__minimax_h3_api_base_url",
+                    "__minimax_h3_api_model",
+                    "__minimax_h3_api_create_path",
+                    "__minimax_h3_api_query_path",
+                    "__minimax_h3_api_file_path",
+                    "__minimax_h3_api_duration",
+                    "__minimax_h3_api_ratio",
+                    "__minimax_h3_api_resolution",
+                    "__minimax_h3_api_output_dir",
+                    "__minimax_h3_api_poll_interval",
+                    "__minimax_h3_api_timeout",
+                    "mp4_path",
+                    "task_id",
+                    "h3_api_status",
+                }
+            )
+        elif kind in (
+            "minimax_tts_api",
+            "minimax text to speech",
+            "minimax speech api",
+            "minimax tts",
+            "minimax_speech",
+            "minimax_text_to_speech",
+        ):
+            hidden.update(
+                {
+                    "__minimax_tts_text",
+                    "__minimax_tts_api_key",
+                    "__minimax_tts_api_base_url",
+                    "__minimax_tts_api_path",
+                    "__minimax_tts_model",
+                    "__minimax_tts_voice_id",
+                    "__minimax_tts_speed",
+                    "__minimax_tts_volume",
+                    "__minimax_tts_pitch",
+                    "__minimax_tts_format",
+                    "__minimax_tts_sample_rate",
+                    "__minimax_tts_bitrate",
+                    "__minimax_tts_channel",
+                    "__minimax_tts_output_dir",
+                    "__minimax_tts_timeout",
+                    "audio_path",
+                    "path",
+                    "tts_status",
+                }
+            )
+        elif kind in (
+            "wan22_video",
+            "wan 2.2 video",
+            "wan2.2 video",
+            "wan22",
+            "wan_video",
+            "wan ti2v",
+            "wan2.2 ti2v",
+            "wan22_ti2v",
+            "text_image_to_video",
+            "text image to video",
+        ):
+            hidden.update(
+                {
+                    "__wan22_prompt",
+                    "__wan22_image",
+                    "__wan22_model_path",
+                    "__wan22_runtime_path",
+                    "__wan22_size",
+                    "__wan22_output_dir",
+                    "__wan22_seed",
+                    "__wan22_offload",
+                    "__wan22_t5_cpu",
+                    "__wan22_convert_dtype",
+                    "__wan22_extra_args",
+                    "mp4_path",
+                    "wan_status",
+                }
+            )
         elif kind == "primitive":
             hidden.update({"primitive", "path"})
         elif kind in ("curve", "curve_primitive", "primitive_curve"):
@@ -2515,6 +2712,80 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 from nodes.youtube_downloader import spec as _youtube_downloader_spec  # type: ignore
                 body_h = max(body_h, int(getattr(_youtube_downloader_spec, "YOUTUBE_DOWNLOADER_BODY_H", body_h)))
                 node_w = max(node_w, int(getattr(_youtube_downloader_spec, "YOUTUBE_DOWNLOADER_BODY_W", node_w)))
+            except Exception:
+                pass
+        elif kind in (
+            "minimax_h3_video",
+            "minimax h3 video",
+            "minimax_h3",
+            "minimax h3",
+            "h3_video",
+            "h3 video",
+            "text_to_video",
+            "text to video",
+            "image_to_video",
+            "image to video",
+        ):
+            body_h = 456
+            node_w = max(self._BASE_W, 520)
+            try:
+                from nodes.minimax_h3_video import spec as _minimax_h3_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_minimax_h3_spec, "MINIMAX_H3_VIDEO_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_minimax_h3_spec, "MINIMAX_H3_VIDEO_BODY_W", node_w)))
+            except Exception:
+                pass
+        elif kind in (
+            "minimax_h3_api_video",
+            "minimax h3 api video",
+            "minimax_h3_api",
+            "minimax h3 api",
+            "minimax_api_video",
+            "minimax api video",
+            "hailuo_h3_api_video",
+            "hailuo h3 api video",
+        ):
+            body_h = 614
+            node_w = max(self._BASE_W, 520)
+            try:
+                from nodes.minimax_h3_api_video import spec as _minimax_h3_api_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_minimax_h3_api_spec, "MINIMAX_H3_API_VIDEO_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_minimax_h3_api_spec, "MINIMAX_H3_API_VIDEO_BODY_W", node_w)))
+            except Exception:
+                pass
+        elif kind in (
+            "minimax_tts_api",
+            "minimax text to speech",
+            "minimax speech api",
+            "minimax tts",
+            "minimax_speech",
+            "minimax_text_to_speech",
+        ):
+            body_h = 608
+            node_w = max(self._BASE_W, 520)
+            try:
+                from nodes.minimax_tts_api import spec as _minimax_tts_api_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_minimax_tts_api_spec, "MINIMAX_TTS_API_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_minimax_tts_api_spec, "MINIMAX_TTS_API_BODY_W", node_w)))
+            except Exception:
+                pass
+        elif kind in (
+            "wan22_video",
+            "wan 2.2 video",
+            "wan2.2 video",
+            "wan22",
+            "wan_video",
+            "wan ti2v",
+            "wan2.2 ti2v",
+            "wan22_ti2v",
+            "text_image_to_video",
+            "text image to video",
+        ):
+            body_h = 448
+            node_w = max(self._BASE_W, 520)
+            try:
+                from nodes.wan22_video import spec as _wan22_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_wan22_spec, "WAN22_VIDEO_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_wan22_spec, "WAN22_VIDEO_BODY_W", node_w)))
             except Exception:
                 pass
         elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
@@ -8813,6 +9084,8 @@ body {
             elif kind_lower in ("voice_actor", "voice actor", "voiceactor"):
                 # Voice icon sits larger and higher than default.
                 extra_top = 120.0
+            elif kind_lower in ("minimax_tts_api", "minimax text to speech", "minimax speech api", "minimax tts", "minimax_speech", "minimax_text_to_speech"):
+                extra_top = 120.0
             elif kind_lower in ("audio_capture", "audio capture", "audiocapture"):
                 extra_top = 120.0
             elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
@@ -9024,6 +9297,34 @@ body {
                 "sequence mp4",
                 "sequence_to_video",
                 "image_sequence_to_mp4",
+                "minimax_h3_video",
+                "minimax h3 video",
+                "minimax_h3",
+                "minimax h3",
+                "h3_video",
+                "h3 video",
+                "text_to_video",
+                "text to video",
+                "image_to_video",
+                "image to video",
+                "minimax_h3_api_video",
+                "minimax h3 api video",
+                "minimax_h3_api",
+                "minimax h3 api",
+                "minimax_api_video",
+                "minimax api video",
+                "hailuo_h3_api_video",
+                "hailuo h3 api video",
+                "wan22_video",
+                "wan 2.2 video",
+                "wan2.2 video",
+                "wan22",
+                "wan_video",
+                "wan ti2v",
+                "wan2.2 ti2v",
+                "wan22_ti2v",
+                "text_image_to_video",
+                "text image to video",
             ):
                 # Allow space for floating icon above the bar
                 extra_top = 80.0
@@ -9261,6 +9562,8 @@ body {
                 icon_pm = node_icons._chatbot_icon()
             elif kind_lower in ("voice_actor", "voice actor", "voiceactor"):
                 icon_pm = node_icons._voice_actor_icon() or node_icons._output_icon()
+            elif kind_lower in ("minimax_tts_api", "minimax text to speech", "minimax speech api", "minimax tts", "minimax_speech", "minimax_text_to_speech"):
+                icon_pm = node_icons._voice_actor_icon() or node_icons._audio_capture_icon() or node_icons._output_icon()
             elif kind_lower in ("audio_capture", "audio capture", "audiocapture"):
                 icon_pm = node_icons._audio_capture_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
             elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
@@ -9290,6 +9593,40 @@ body {
                     or node_icons._video_player_icon()
                     or node_icons._output_icon()
                 )
+            elif kind_lower in (
+                "minimax_h3_video",
+                "minimax h3 video",
+                "minimax_h3",
+                "minimax h3",
+                "h3_video",
+                "h3 video",
+                "text_to_video",
+                "text to video",
+                "image_to_video",
+                "image to video",
+                "minimax_h3_api_video",
+                "minimax h3 api video",
+                "minimax_h3_api",
+                "minimax h3 api",
+                "minimax_api_video",
+                "minimax api video",
+                "hailuo_h3_api_video",
+                "hailuo h3 api video",
+            ):
+                icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
+            elif kind_lower in (
+                "wan22_video",
+                "wan 2.2 video",
+                "wan2.2 video",
+                "wan22",
+                "wan_video",
+                "wan ti2v",
+                "wan2.2 ti2v",
+                "wan22_ti2v",
+                "text_image_to_video",
+                "text image to video",
+            ):
+                icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
             elif kind_lower == "instance":
                 icon_pm = node_icons._instance_icon() or node_icons._output_icon()
             elif kind_lower in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
@@ -9383,6 +9720,37 @@ body {
                     size = int(max(70, size * 1.65))
                 if kind_lower in ("youtube_downloader", "youtube downloader", "youtube", "yt_downloader", "yt downloader", "youtube_to_mp4", "youtube to mp4"):
                     size = int(max(70, size * 1.65))
+                if kind_lower in (
+                    "minimax_h3_video",
+                    "minimax h3 video",
+                    "minimax_h3",
+                    "minimax h3",
+                    "h3_video",
+                    "h3 video",
+                    "text_to_video",
+                    "text to video",
+                    "image_to_video",
+                    "image to video",
+                    "minimax_h3_api_video",
+                    "minimax h3 api video",
+                    "minimax_h3_api",
+                    "minimax h3 api",
+                    "minimax_api_video",
+                    "minimax api video",
+                    "hailuo_h3_api_video",
+                    "hailuo h3 api video",
+                    "wan22_video",
+                    "wan 2.2 video",
+                    "wan2.2 video",
+                    "wan22",
+                    "wan_video",
+                    "wan ti2v",
+                    "wan2.2 ti2v",
+                    "wan22_ti2v",
+                    "text_image_to_video",
+                    "text image to video",
+                ):
+                    size = int(max(70, size * 1.65))
                 if kind_lower in ("uv_unwrap", "uv unwrap", "normals", "normal", "smooth_normals", "smooth normals"):
                     size = int(max(34, size * 0.792))
                 if kind_lower == "modeler":
@@ -9396,6 +9764,9 @@ body {
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)
                 if kind_lower in ("voice_actor", "voice actor", "voiceactor"):
+                    size = int(size * 1.28)
+                    size = int(min(170, max(58, size)))
+                if kind_lower in ("minimax_tts_api", "minimax text to speech", "minimax speech api", "minimax tts", "minimax_speech", "minimax_text_to_speech"):
                     size = int(size * 1.28)
                     size = int(min(170, max(58, size)))
                 if kind_lower in ("audio_capture", "audio capture", "audiocapture"):
@@ -9426,6 +9797,34 @@ body {
                     "yt downloader",
                     "youtube_to_mp4",
                     "youtube to mp4",
+                    "minimax_h3_video",
+                    "minimax h3 video",
+                    "minimax_h3",
+                    "minimax h3",
+                    "h3_video",
+                    "h3 video",
+                    "text_to_video",
+                    "text to video",
+                    "image_to_video",
+                    "image to video",
+                    "minimax_h3_api_video",
+                    "minimax h3 api video",
+                    "minimax_h3_api",
+                    "minimax h3 api",
+                    "minimax_api_video",
+                    "minimax api video",
+                    "hailuo_h3_api_video",
+                    "hailuo h3 api video",
+                    "wan22_video",
+                    "wan 2.2 video",
+                    "wan2.2 video",
+                    "wan22",
+                    "wan_video",
+                    "wan ti2v",
+                    "wan2.2 ti2v",
+                    "wan22_ti2v",
+                    "text_image_to_video",
+                    "text image to video",
                 ):
                     y = -pm_scaled.height() * 0.45
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):

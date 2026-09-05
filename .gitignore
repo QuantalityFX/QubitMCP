@@ -42,6 +42,7 @@ AGENTS.md
 /echograph/QOpenGLWidget_example-main/
 /echograph/repos/
 /third_party/image-gs/
+/third_party/Wan2.2/
 /vcpkg/
 /Unreal/UnrealEnviroment/
 /Unreal/UnrealEnvironment/
@@ -52,6 +53,7 @@ AGENTS.md
 /Unreal/Plugins/AnimationReimportTool/
 
 # Large/local data assets
+/models/
 /echograph/3dmodels/
 /echograph/data/
 
