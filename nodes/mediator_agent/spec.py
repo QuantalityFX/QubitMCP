@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 from nodes.core import Spec
 from echograph.qt_compat import QtWidgets, QtCore, QtGui
+from echograph.services import codex_cli_runner
 
 
 MEDIGATOR_NODE_KIND = "mediator_agent"
@@ -676,6 +677,80 @@ def _codex_sandbox_context_text(scene, node_item) -> str:
         return str(scene.resolve_text_value(sandbox_item) or "").strip()
     except Exception:
         return ""
+
+
+def _codex_sandbox_config(scene, node_item) -> dict:
+    sandbox_item = _connected_codex_sandbox_item(scene, node_item)
+    if sandbox_item is None:
+        return {}
+    try:
+        from nodes.codex_sandbox import spec as sandbox_spec
+        config_from_item = getattr(sandbox_spec, "sandbox_config_from_item", None)
+        if callable(config_from_item):
+            return dict(config_from_item(sandbox_item) or {})
+    except Exception:
+        return {}
+    return {}
+
+
+def _resolve_configured_path(value: str, *, base: Path | None = None) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    expanded = os.path.expandvars(os.path.expanduser(raw))
+    path = Path(expanded)
+    if not path.is_absolute():
+        path = (base or _repo_root()) / path
+    try:
+        return path.resolve(strict=False)
+    except Exception:
+        return path.absolute()
+
+
+def _is_same_or_child_path(path: Path, parent: Path) -> bool:
+    try:
+        child = str(path.resolve(strict=False)).lower().rstrip("\\/")
+        root = str(parent.resolve(strict=False)).lower().rstrip("\\/")
+    except Exception:
+        child = str(path).lower().rstrip("\\/")
+        root = str(parent).lower().rstrip("\\/")
+    return child == root or child.startswith(root + os.sep.lower()) or child.startswith(root + "/")
+
+
+def _resolve_codex_runtime_config(scene, node_item, workspace_dir: Path) -> dict:
+    sandbox_config = _codex_sandbox_config(scene, node_item)
+    project_root = _resolve_configured_path(str(sandbox_config.get("project_root") or ""))
+    working_dir = _resolve_configured_path(str(sandbox_config.get("working_directory") or "")) or project_root
+    if working_dir is None:
+        working_dir = Path(workspace_dir).resolve(strict=False)
+
+    if not working_dir.exists():
+        logs_root = (_repo_root() / "logs").resolve(strict=False)
+        if _is_same_or_child_path(working_dir, logs_root):
+            working_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            raise RuntimeError(f"Codex working directory does not exist: {working_dir}")
+    if not working_dir.is_dir():
+        raise RuntimeError(f"Codex working directory is not a folder: {working_dir}")
+
+    return {
+        "codex_executable": str(sandbox_config.get("codex_executable") or ""),
+        "model": str(sandbox_config.get("model") or MEDIGATOR_CODEX_MODEL),
+        "model_reasoning_effort": codex_cli_runner.normalize_reasoning_effort(
+            str(sandbox_config.get("model_reasoning_effort") or "")
+        ),
+        "sandbox_mode": codex_cli_runner.normalize_sandbox_mode(str(sandbox_config.get("sandbox_mode") or "")),
+        "approval_policy": codex_cli_runner.normalize_approval_policy(
+            str(sandbox_config.get("approval_policy") or "")
+        ),
+        "codex_home": str(sandbox_config.get("codex_home") or ""),
+        "network_access": codex_cli_runner.normalize_bool(sandbox_config.get("network_access")),
+        "extra_args": str(sandbox_config.get("extra_args") or ""),
+        "writable_roots": str(sandbox_config.get("writable_roots") or ""),
+        "working_directory": working_dir,
+        "log_directory": Path(workspace_dir).resolve(strict=False),
+        "has_sandbox_node": bool(sandbox_config),
+    }
 
 
 def _data_nexus_context_text(scene, node_item) -> str:
@@ -3531,15 +3606,15 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._workspace_label.setStyleSheet("QLabel{color:#93c5fd;}")
 
         self._command_edit = QtWidgets.QLineEdit()
-        self._command_edit.setPlaceholderText("Enter a command (for example: & \".../tools/codex.ps1\")")
+        self._command_edit.setPlaceholderText("Enter a command (for example: codex login status)")
         self._command_edit.returnPressed.connect(self._run_command)
         self._command_edit.setStyleSheet(
             "QLineEdit{background:#0f1216;color:#e6edf3;border:1px solid #334155;border-radius:4px;padding:4px 6px;}"
         )
 
-        codex_script = _repo_root() / "tools" / "codex.ps1"
-        if codex_script.exists():
-            self._command_edit.setText(f'& "{codex_script}" -Sandbox read-only')
+        detected_codex = codex_cli_runner.detect_codex_executable()
+        if detected_codex:
+            self._command_edit.setText(codex_cli_runner.format_command([detected_codex, "login", "status"]))
 
         self._console = QtWidgets.QPlainTextEdit()
         self._console.setReadOnly(True)
@@ -4836,52 +4911,65 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._stop_requested = False
         self._set_running(True)
         self._set_status(f"Running Codex ({mode})...")
-        self._write_history(f"tools\\codex.ps1 -Exec <mediator:{mode}>")
+        try:
+            runtime = _resolve_codex_runtime_config(self._ensure_scene(), self._node_item, self._workspace_dir)
+        except Exception as exc:
+            error_text = f"Codex setup error: {exc}"
+            self._set_running(False)
+            self._set_status(error_text, error=True)
+            self._console_append.emit(f"[codex] Setup error: {exc}")
+            self._command_done.emit(-1, error_text, "", signature, source)
+            return
+        self._write_history(f"codex exec - <mediator:{mode}>")
         threading.Thread(
             target=self._codex_worker,
-            args=(prompt, signature, source),
+            args=(prompt, signature, source, runtime),
             daemon=True,
         ).start()
 
-    def _codex_worker(self, prompt: str, signature: str, source: str) -> None:
+    def _codex_worker(self, prompt: str, signature: str, source: str, runtime: dict) -> None:
         exit_code = -1
         error_text = ""
         response_text = ""
         process = None
         output_path = None
         try:
-            codex_script = _repo_root() / "tools" / "codex.ps1"
-            if not codex_script.exists():
-                raise RuntimeError(f"Missing Codex launcher: {codex_script}")
-
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             prompt_path = self._workspace_dir / f"mediator_prompt_{stamp}.md"
             output_path = self._workspace_dir / f"mediator_response_{stamp}.txt"
             prompt_path.write_text(prompt or "", encoding="utf-8")
             _prune_mediator_prompt_logs(self._workspace_dir)
 
-            cmd = [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(codex_script),
-                "-Exec",
-                "-Model",
-                MEDIGATOR_CODEX_MODEL,
-                "-Sandbox",
-                "read-only",
-                "-Cd",
-                str(self._workspace_dir),
-                "-OutputLastMessage",
-                str(output_path),
-            ]
+            if runtime.get("codex_home"):
+                self._console_append.emit(f"[codex] CODEX_HOME={runtime['codex_home']}")
+            self._console_append.emit(f"[codex] Working directory: {runtime['working_directory']}")
+            if runtime.get("writable_roots"):
+                self._console_append.emit(f"[codex] Writable roots: {runtime['writable_roots']}")
+            self._console_append.emit(f"[codex] Mediator logs: {runtime['log_directory']}")
 
-            self._console_append.emit(f"$ {subprocess.list2cmdline(cmd)}")
+            request = codex_cli_runner.CodexExecRequest(
+                codex_executable=str(runtime.get("codex_executable") or ""),
+                model=str(runtime.get("model") or MEDIGATOR_CODEX_MODEL),
+                model_reasoning_effort=str(
+                    runtime.get("model_reasoning_effort") or codex_cli_runner.DEFAULT_MODEL_REASONING_EFFORT
+                ),
+                sandbox_mode=str(runtime.get("sandbox_mode") or codex_cli_runner.DEFAULT_SANDBOX_MODE),
+                approval_policy=str(runtime.get("approval_policy") or codex_cli_runner.DEFAULT_APPROVAL_POLICY),
+                working_directory=runtime["working_directory"],
+                output_last_message_path=output_path,
+                codex_home=str(runtime.get("codex_home") or ""),
+                network_access=bool(runtime.get("network_access")),
+                writable_roots=str(runtime.get("writable_roots") or ""),
+                extra_args=str(runtime.get("extra_args") or ""),
+            )
+            cmd = codex_cli_runner.build_codex_exec_command(request)
+            env = codex_cli_runner.build_codex_env(str(runtime.get("codex_home") or ""))
+
+            self._console_append.emit(f"$ {codex_cli_runner.format_command(cmd)}")
             process = subprocess.Popen(
                 cmd,
-                cwd=str(self._workspace_dir),
+                cwd=str(runtime["working_directory"]),
+                env=env,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

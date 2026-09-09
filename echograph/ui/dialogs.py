@@ -253,6 +253,8 @@ def _kind_label(kind: str) -> str:
         return "Wan 2.2 TI2V Video"
     if key in ("llm", "local_server", "localserver"):
         return "Local Server"
+    if key in ("codex_sandbox", "sandbox"):
+        return "Codex Sandbox"
     if key in ("data_nexus", "data_graph", "nexus"):
         return "Data Nexus"
     if key in ("skills", "skills_library", "skill_library"):
@@ -341,6 +343,7 @@ _NODE_KIND_SEARCH_HINTS = {
     "chatbot": "chat conversation ai llm",
     "voice_actor": "voice speech tts audio actor",
     "mediator_agent": "agent ai mediator assistant",
+    "codex_sandbox": "codex sandbox cli agent workspace approval model config terminal login status",
     "librarian": "library search documents assets",
     "note": "comment text sticky note",
     "append": "combine merge append",
@@ -556,6 +559,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._audio_capture_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
     elif key in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
         icon_pm = node_icons._mediator_icon() or node_icons._python_icon() or node_icons._output_icon()
+    elif key in ("codex_sandbox", "codex sandbox", "sandbox"):
+        icon_pm = node_icons._sandbox_icon() or node_icons._llm_server_icon() or node_icons._output_icon()
     elif key in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):
         icon_pm = node_icons._db_icon() or node_icons._scene_icon() or node_icons._output_icon()
     elif key in ("skills", "skills_library", "skill_library"):
@@ -769,7 +774,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
             "audio_capture",
             "qubit_deck_controller",
             "data_nexus","skills","task",
-            "llm_prompt","chatbot","voice_actor","mediator_agent","librarian","note","append","image_collection","database"
+            "llm_prompt","chatbot","voice_actor","mediator_agent","codex_sandbox","librarian","note","append","image_collection","database"
         ]
         try:
             self._kinds.remove("note")

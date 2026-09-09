@@ -9,9 +9,17 @@ import os
 import datetime
 import re
 import hashlib
+import io
 import json
+import subprocess
+import tempfile
 import time
+import functools
+import shutil
+import threading
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
 from echograph.ui.dialogs import BigTextEditDialog
 from echograph.ui import node_icons
@@ -144,14 +152,521 @@ except Exception:
     PdfReader = None
     _HAS_PYPDF = False
 
+
+def _append_qtwebengine_chromium_flags(*flags: str) -> None:
+    existing = str(os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS") or "").strip()
+    parts = [part for part in existing.split() if part]
+    seen = set(parts)
+    for flag in flags:
+        flag = str(flag or "").strip()
+        if flag and flag not in seen:
+            parts.append(flag)
+            seen.add(flag)
+    if parts:
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(parts)
+
+
+_append_qtwebengine_chromium_flags(
+    "--autoplay-policy=no-user-gesture-required",
+    "--allow-file-access-from-files",
+)
+
 # Optional WebEngine
 try:
     from PySide6 import QtWebEngineWidgets as WebEngine
+    try:
+        from PySide6 import QtWebEngineCore as WebEngineCore
+    except Exception:
+        WebEngineCore = None
 except Exception:
     try:
         from PySide2 import QtWebEngineWidgets as WebEngine
+        try:
+            from PySide2 import QtWebEngineCore as WebEngineCore
+        except Exception:
+            WebEngineCore = WebEngine
     except Exception:
         WebEngine = None
+        WebEngineCore = None
+
+
+def _webengine_enum_value(enum_group: str, name: str, *owners):
+    for owner in owners:
+        if owner is None:
+            continue
+        group = getattr(owner, enum_group, None)
+        if group is not None:
+            value = getattr(group, name, None)
+            if value is not None:
+                return value
+        value = getattr(owner, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _set_webengine_attribute(settings, name: str, enabled: bool) -> None:
+    if settings is None:
+        return
+    attr = _webengine_enum_value(
+        "WebAttribute",
+        name,
+        type(settings),
+        getattr(WebEngineCore, "QWebEngineSettings", None),
+        getattr(WebEngine, "QWebEngineSettings", None),
+    )
+    if attr is None:
+        return
+    try:
+        settings.setAttribute(attr, enabled)
+    except Exception:
+        pass
+
+
+def _configure_html_preview_web_view(view) -> None:
+    try:
+        settings = view.settings()
+    except Exception:
+        settings = None
+
+    for name, enabled in (
+        ("JavascriptEnabled", True),
+        ("LocalContentCanAccessFileUrls", True),
+        ("LocalContentCanAccessRemoteUrls", True),
+        ("PlaybackRequiresUserGesture", False),
+        ("FullScreenSupportEnabled", True),
+    ):
+        _set_webengine_attribute(settings, name, enabled)
+
+    try:
+        page_settings = view.page().settings()
+    except Exception:
+        page_settings = None
+    if page_settings is not settings:
+        for name, enabled in (
+            ("JavascriptEnabled", True),
+            ("LocalContentCanAccessFileUrls", True),
+            ("LocalContentCanAccessRemoteUrls", True),
+            ("PlaybackRequiresUserGesture", False),
+            ("FullScreenSupportEnabled", True),
+        ):
+            _set_webengine_attribute(page_settings, name, enabled)
+
+
+class _HtmlPreviewHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+_HTML_PREVIEW_CACHE_ROUTE = "/__qubit_html_preview_cache__/"
+_HTML_PREVIEW_TRANSCODE_LOCK = threading.Lock()
+_HTML_PREVIEW_TRANSCODE_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _html_preview_cache_dir() -> Path:
+    root = Path(tempfile.gettempdir()) / "QubitMCP" / "html_preview_video_cache"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _html_preview_cache_path_from_request(request_path: str) -> Path | None:
+    parsed = urlsplit(str(request_path or ""))
+    if not parsed.path.startswith(_HTML_PREVIEW_CACHE_ROUTE):
+        return None
+    name = Path(unquote(parsed.path[len(_HTML_PREVIEW_CACHE_ROUTE):])).name
+    if not name:
+        return None
+    return _html_preview_cache_dir() / name
+
+
+def _html_preview_video_source_path(src: str, html_path: Path, server_root: Path) -> Path | None:
+    src = str(src or "").strip()
+    if not src:
+        return None
+    parsed = urlsplit(src)
+    if parsed.scheme and parsed.scheme.lower() != "file":
+        return None
+    if parsed.netloc:
+        return None
+
+    try:
+        if parsed.scheme.lower() == "file":
+            local = QtCore.QUrl(src).toLocalFile()
+            candidate = Path(local) if local else None
+        elif parsed.path.startswith("/"):
+            candidate = server_root / unquote(parsed.path).lstrip("/\\")
+        else:
+            candidate = html_path.parent / unquote(parsed.path)
+        if candidate is None:
+            return None
+        candidate = candidate.resolve()
+        if candidate.is_file() and candidate.suffix.lower() in {".mp4", ".m4v", ".mov"}:
+            return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _html_preview_video_cache_name(video_path: Path) -> str:
+    try:
+        stat = video_path.stat()
+        identity = f"{video_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
+    except Exception:
+        identity = str(video_path)
+    digest = hashlib.sha1(identity.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", video_path.stem).strip("._") or "video"
+    return f"{stem}_{digest}.webm"
+
+
+def _html_preview_transcode_lock_for(cache_path: Path) -> threading.Lock:
+    key = str(cache_path)
+    with _HTML_PREVIEW_TRANSCODE_LOCK:
+        lock = _HTML_PREVIEW_TRANSCODE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _HTML_PREVIEW_TRANSCODE_LOCKS[key] = lock
+        return lock
+
+
+def _html_preview_ffmpeg_exe() -> str:
+    try:
+        import imageio_ffmpeg  # type: ignore
+
+        exe = str(imageio_ffmpeg.get_ffmpeg_exe() or "").strip()
+        if exe:
+            return exe
+    except Exception:
+        pass
+    return "ffmpeg"
+
+
+def _html_preview_webm_fallback_for_video(video_path: Path) -> str | None:
+    try:
+        cache_path = _html_preview_cache_dir() / _html_preview_video_cache_name(video_path)
+        if cache_path.exists() and cache_path.stat().st_size > 0:
+            return _HTML_PREVIEW_CACHE_ROUTE + quote(cache_path.name)
+
+        lock = _html_preview_transcode_lock_for(cache_path)
+        with lock:
+            if cache_path.exists() and cache_path.stat().st_size > 0:
+                return _HTML_PREVIEW_CACHE_ROUTE + quote(cache_path.name)
+
+            tmp_path = cache_path.with_suffix(".part.webm")
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+
+            cmd = [
+                _html_preview_ffmpeg_exe(),
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(video_path),
+                "-map",
+                "0:v:0",
+                "-an",
+                "-c:v",
+                "libvpx",
+                "-deadline",
+                "realtime",
+                "-cpu-used",
+                "5",
+                "-b:v",
+                "2500k",
+                "-pix_fmt",
+                "yuv420p",
+                "-auto-alt-ref",
+                "0",
+                "-f",
+                "webm",
+                str(tmp_path),
+            ]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=180,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except Exception as exc:
+                print(f"[HTML Preview] video fallback transcode failed for {video_path}: {exc}", flush=True)
+                return None
+
+            if result.returncode != 0 or not tmp_path.exists() or tmp_path.stat().st_size <= 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                if detail:
+                    detail = detail[:800]
+                print(f"[HTML Preview] video fallback transcode failed for {video_path}: {detail}", flush=True)
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except Exception:
+                    pass
+                return None
+
+            try:
+                tmp_path.replace(cache_path)
+            except Exception:
+                shutil.move(str(tmp_path), str(cache_path))
+            return _HTML_PREVIEW_CACHE_ROUTE + quote(cache_path.name)
+    except Exception as exc:
+        print(f"[HTML Preview] video fallback unavailable for {video_path}: {exc}", flush=True)
+        return None
+
+
+def _html_preview_html_bytes_with_video_fallbacks(path: str, server_root: str) -> bytes | None:
+    try:
+        html_path = Path(path).resolve()
+        root = Path(server_root).resolve()
+        raw = html_path.read_bytes()
+    except Exception:
+        return None
+
+    try:
+        html = raw.decode("utf-8")
+    except Exception:
+        html = raw.decode("utf-8", errors="ignore")
+
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+    except Exception:
+        return raw
+
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        changed = False
+        for video in soup.find_all("video"):
+            try:
+                video["playsinline"] = ""
+                video["preload"] = video.get("preload") or "auto"
+                if video.has_attr("autoplay") or not video.has_attr("controls"):
+                    video["muted"] = ""
+
+                src_attr = str(video.get("src") or "").strip()
+                src_path = _html_preview_video_source_path(src_attr, html_path, root) if src_attr else None
+                if src_path is not None:
+                    fallback = _html_preview_webm_fallback_for_video(src_path)
+                    if fallback:
+                        video["src"] = fallback
+                        changed = True
+
+                existing_fallbacks = {
+                    str(source.get("src") or "").strip()
+                    for source in video.find_all("source")
+                    if str(source.get("type") or "").strip().lower() == "video/webm"
+                }
+                for source in list(video.find_all("source")):
+                    src = str(source.get("src") or "").strip()
+                    source_path = _html_preview_video_source_path(src, html_path, root)
+                    if source_path is None:
+                        continue
+                    fallback = _html_preview_webm_fallback_for_video(source_path)
+                    if not fallback or fallback in existing_fallbacks:
+                        continue
+                    fallback_tag = soup.new_tag("source")
+                    fallback_tag["src"] = fallback
+                    fallback_tag["type"] = "video/webm"
+                    source.insert_before(fallback_tag)
+                    existing_fallbacks.add(fallback)
+                    changed = True
+            except Exception as exc:
+                print(f"[HTML Preview] failed to prepare video fallback: {exc}", flush=True)
+
+        if not changed:
+            return raw
+        return str(soup).encode("utf-8")
+    except Exception as exc:
+        print(f"[HTML Preview] failed to rewrite HTML video sources: {exc}", flush=True)
+        return raw
+
+
+class _HtmlPreviewRequestHandler(SimpleHTTPRequestHandler):
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".mp4": "video/mp4",
+        ".m4v": "video/mp4",
+        ".mov": "video/quicktime",
+        ".webm": "video/webm",
+        ".ogv": "video/ogg",
+    }
+
+    def log_message(self, format, *args):
+        return
+
+    def end_headers(self):
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+    def _send_bytes(self, path: str, body: bytes):
+        self.send_response(200)
+        self.send_header("Content-type", self.guess_type(path))
+        self.send_header("Content-Length", str(len(body)))
+        try:
+            self.send_header("Last-Modified", self.date_time_string(os.path.getmtime(path)))
+        except Exception:
+            pass
+        self.end_headers()
+        return io.BytesIO(body)
+
+    def send_head(self):
+        cache_path = _html_preview_cache_path_from_request(self.path)
+        path = str(cache_path) if cache_path is not None else self.translate_path(self.path)
+        if os.path.isdir(path):
+            self.send_error(403, "Directory listing is not available")
+            return None
+        if not os.path.exists(path):
+            self.send_error(404, "File not found")
+            return None
+
+        if cache_path is None and Path(path).suffix.lower() in {".html", ".htm"}:
+            html_body = _html_preview_html_bytes_with_video_fallbacks(path, getattr(self, "directory", os.path.dirname(path)))
+            if html_body is not None:
+                return self._send_bytes(path, html_body)
+
+        try:
+            source = open(path, "rb")
+        except OSError:
+            self.send_error(404, "File not found")
+            return None
+
+        try:
+            stat = os.fstat(source.fileno())
+            size = int(stat.st_size)
+            start = 0
+            end = max(0, size - 1)
+            status = 200
+
+            range_header = str(self.headers.get("Range") or "").strip()
+            if range_header.lower().startswith("bytes="):
+                first_range = range_header[6:].split(",", 1)[0].strip()
+                start_text, sep, end_text = first_range.partition("-")
+                if sep:
+                    if start_text:
+                        start = int(start_text)
+                        end = int(end_text) if end_text else size - 1
+                    elif end_text:
+                        suffix_len = int(end_text)
+                        start = max(0, size - suffix_len)
+                        end = size - 1
+                    if start < 0 or end < start or start >= size:
+                        source.close()
+                        self.send_error(416, "Requested Range Not Satisfiable")
+                        return None
+                    end = min(end, size - 1)
+                    status = 206
+
+            length = max(0, end - start + 1)
+            self.send_response(status)
+            self.send_header("Content-type", self.guess_type(path))
+            self.send_header("Content-Length", str(length))
+            self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.end_headers()
+            source.seek(start)
+            self._html_preview_range = (start, end)
+            return source
+        except Exception:
+            source.close()
+            self.send_error(500, "Failed to read file")
+            return None
+
+    def copyfile(self, source, outputfile):
+        range_info = getattr(self, "_html_preview_range", None)
+        if range_info is None:
+            shutil.copyfileobj(source, outputfile)
+            return
+        start, end = range_info
+        remaining = max(0, int(end) - int(start) + 1)
+        while remaining > 0:
+            chunk = source.read(min(64 * 1024, remaining))
+            if not chunk:
+                break
+            outputfile.write(chunk)
+            remaining -= len(chunk)
+
+
+_HTML_PREVIEW_HTTP_SERVERS: dict[str, tuple[_HtmlPreviewHTTPServer, threading.Thread]] = {}
+
+
+def _html_preview_server_url_for_path(path: str):
+    try:
+        target = Path(path).resolve()
+        if not target.is_file():
+            return None
+        root = target.parent
+        key = str(root).casefold()
+        server_entry = _HTML_PREVIEW_HTTP_SERVERS.get(key)
+        if server_entry is None:
+            handler = functools.partial(_HtmlPreviewRequestHandler, directory=str(root))
+            server = _HtmlPreviewHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(
+                target=server.serve_forever,
+                name=f"HtmlPreviewHTTP:{root.name}",
+                daemon=True,
+            )
+            thread.start()
+            server_entry = (server, thread)
+            _HTML_PREVIEW_HTTP_SERVERS[key] = server_entry
+        server, _thread = server_entry
+        return QtCore.QUrl(f"http://127.0.0.1:{int(server.server_port)}/{quote(target.name)}")
+    except Exception as exc:
+        print("[HTML Preview] local preview server unavailable:", exc, flush=True)
+        return None
+
+
+def _prime_html_preview_videos(view) -> None:
+    try:
+        page = view.page()
+    except Exception:
+        return
+    run_js = getattr(page, "runJavaScript", None)
+    if not callable(run_js):
+        return
+
+    script = r"""
+(() => {
+  const videos = Array.from(document.querySelectorAll('video'));
+  for (const video of videos) {
+    video.setAttribute('playsinline', '');
+    video.playsInline = true;
+    video.preload = video.preload || 'auto';
+    const decorativeAutoplay = video.autoplay || video.hasAttribute('autoplay') || !video.hasAttribute('controls');
+    if (decorativeAutoplay) {
+      video.muted = true;
+      video.defaultMuted = true;
+      video.setAttribute('muted', '');
+    }
+    if (decorativeAutoplay && video.paused) {
+      const result = video.play();
+      if (result && typeof result.catch === 'function') {
+        result.catch((error) => {
+          const message = error && (error.name + ': ' + error.message);
+          console.warn('HTML Preview video play failed', message || error);
+        });
+      }
+    }
+  }
+  return videos.length;
+})()
+"""
+
+    def _run() -> None:
+        try:
+            run_js(script)
+        except Exception:
+            pass
+
+    QtCore.QTimer.singleShot(150, _run)
+    QtCore.QTimer.singleShot(900, _run)
 
 
 class _FeatureResizeHandle(QtWidgets.QWidget):
@@ -7508,6 +8023,7 @@ body {
         view = None
         try:
             view = WebEngine.QWebEngineView(parent)
+            _configure_html_preview_web_view(view)
             view.resize(1920, 1080)
             view.hide()
             self._html_pdf_export_view = view
@@ -7593,7 +8109,8 @@ body {
 
             finished_signal.connect(_finished)
             view.loadFinished.connect(_loaded)
-            view.load(QtCore.QUrl.fromLocalFile(os.path.abspath(path)))
+            url = _html_preview_server_url_for_path(path) or QtCore.QUrl.fromLocalFile(os.path.abspath(path))
+            view.load(url)
         except Exception as exc:
             try:
                 if view is not None:
@@ -8172,19 +8689,30 @@ body {
                 return ""
 
     def _create_html_preview_widget(self, path: str):
-        html = self._read_html_text(path)
-        if not html:
-            return None
         if WebEngine is not None:
+            path = (path or "").strip()
+            if not path or not os.path.exists(path):
+                return None
             view = WebEngine.QWebEngineView()
             view.setObjectName("HtmlPreviewView")
+            _configure_html_preview_web_view(view)
             try:
                 view.setZoomFactor(0.9)
             except Exception:
                 pass
-            view.setHtml(html, QtCore.QUrl.fromLocalFile(path))
+            def _loaded(ok: bool) -> None:
+                if ok:
+                    _prime_html_preview_videos(view)
+
+            view.loadFinished.connect(_loaded)
+            view._html_preview_loaded = _loaded
+            url = _html_preview_server_url_for_path(path) or QtCore.QUrl.fromLocalFile(os.path.abspath(path))
+            view.load(url)
             return self._make_html_preview_find_widget(view, is_web=True)
 
+        html = self._read_html_text(path)
+        if not html:
+            return None
         browser = QtWidgets.QTextBrowser()
         browser.setObjectName("HtmlPreviewFallback")
         browser.setStyleSheet(
@@ -8518,6 +9046,41 @@ body {
         if file_path:
             QtCore.QTimer.singleShot(0, lambda p=file_path: self._set_param_value("texture", p))
 
+    def _show_html_preview_dialog(self, path: str) -> bool:
+        if WebEngine is None:
+            return False
+        path = (path or "").strip()
+        if not path or not os.path.exists(path):
+            return False
+
+        try:
+            dlg = QtWidgets.QDialog(_top_level_parent_for_dialog())
+            dlg.setWindowTitle(f"HTML Preview: {os.path.basename(path)}")
+            dlg.resize(1180, 760)
+            layout = QtWidgets.QVBoxLayout(dlg)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            view = WebEngine.QWebEngineView(dlg)
+            view.setObjectName("HtmlPreviewDialogView")
+            _configure_html_preview_web_view(view)
+
+            def _loaded(ok: bool) -> None:
+                if ok:
+                    _prime_html_preview_videos(view)
+
+            view.loadFinished.connect(_loaded)
+            view._html_preview_loaded = _loaded
+            layout.addWidget(view, 1)
+
+            url = _html_preview_server_url_for_path(path) or QtCore.QUrl.fromLocalFile(os.path.abspath(path))
+            view.load(url)
+            self._show_modeless_dialog(dlg)
+            return True
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "HTML Preview", f"Failed to open rendered preview:\n{exc}")
+            return False
+
     def _open_import_preview(self, path: str):
         path = (path or "").strip()
         if not path:
@@ -8526,6 +9089,10 @@ body {
 
         ext = os.path.splitext(path)[1].lower()
         if self._open_import_model(path, ext):
+            return
+
+        kind = (self.model.kind or "").lower()
+        if kind == "html_preview" and ext in (".html", ".htm") and self._show_html_preview_dialog(path):
             return
 
         if ext == ".pdf":

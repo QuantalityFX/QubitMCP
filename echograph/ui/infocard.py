@@ -213,7 +213,15 @@ class InfoCard(QtWidgets.QFrame):
         pcol = self._build_param_controls()
 
         # Scene footer wants full-width (outliner), so don't add the trailing stretch spacer
-        if (node.kind or "").lower() not in ("scene", "scene_assembly", "scene_outliner", "modeler"):
+        if (node.kind or "").lower() not in (
+            "scene",
+            "scene_assembly",
+            "scene_outliner",
+            "modeler",
+            "codex_sandbox",
+            "codex sandbox",
+            "sandbox",
+        ):
             footer.addStretch(1)
 
         # Root layout

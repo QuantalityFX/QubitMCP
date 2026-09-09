@@ -1,9 +1,29 @@
 # echograph_app.py
 from pathlib import Path
+import os
 import sys
 
 # Ensure local imports (icons, echograph_shelf, nodes/*) resolve
 sys.path.insert(0, str(Path(__file__).parent))
+
+
+def _append_qtwebengine_chromium_flags(*flags: str) -> None:
+    existing = str(os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS") or "").strip()
+    parts = [part for part in existing.split() if part]
+    seen = set(parts)
+    for flag in flags:
+        flag = str(flag or "").strip()
+        if flag and flag not in seen:
+            parts.append(flag)
+            seen.add(flag)
+    if parts:
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(parts)
+
+
+_append_qtwebengine_chromium_flags(
+    "--autoplay-policy=no-user-gesture-required",
+    "--allow-file-access-from-files",
+)
 
 # --- EchoGraph: stdout/stderr -> per-day temp log (works with pythonw) ---
 from echograph.services import runtime_logging
@@ -15,6 +35,13 @@ try:
     from PySide6 import QtWidgets, QtGui, QtCore
 except ImportError:
     from PySide2 import QtWidgets, QtGui, QtCore
+
+try:
+    share_contexts = getattr(QtCore.Qt, "AA_ShareOpenGLContexts", None)
+    if share_contexts is not None:
+        QtCore.QCoreApplication.setAttribute(share_contexts, True)
+except Exception:
+    pass
 
 # Windows taskbar identity (groups under the same pinned launcher/shortcut)
 APP_USER_MODEL_ID = "QuantalityFX.QubitField"
