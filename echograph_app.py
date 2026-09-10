@@ -56,6 +56,98 @@ if sys.platform.startswith("win"):
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
 app.setApplicationName("QubitField")
 
+
+def _splash_window_flags():
+    try:
+        return QtCore.Qt.FramelessWindowHint
+    except Exception:
+        return QtCore.Qt.FramelessWindowHint
+
+
+def _create_startup_splash(app_):
+    splash_path = Path(__file__).parent / "Doc" / "assets" / "images" / "QubitField_SplashScreen_1.5_001.png"
+    if not splash_path.exists():
+        return None
+    pixmap = QtGui.QPixmap(str(splash_path))
+    if pixmap.isNull():
+        return None
+    try:
+        screen = app_.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        max_width = 1040
+        max_height = 585
+        if available is not None:
+            max_width = min(max_width, max(520, int(available.width() * 0.72)))
+            max_height = min(max_height, max(300, int(available.height() * 0.72)))
+        if pixmap.width() > max_width or pixmap.height() > max_height:
+            pixmap = pixmap.scaled(max_width, max_height, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+    except Exception:
+        pass
+    try:
+        painted = QtGui.QPixmap(pixmap)
+        painter = QtGui.QPainter(painted)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+        font = QtGui.QFont("Segoe UI", max(9, int(painted.height() * 0.019)))
+        font.setWeight(QtGui.QFont.DemiBold)
+        painter.setFont(font)
+        text = "Starting Qubit Field..."
+        metrics = QtGui.QFontMetrics(font)
+        margin_x = max(34, int(painted.width() * 0.045))
+        margin_bottom = max(30, int(painted.height() * 0.06))
+        text_rect = QtCore.QRect(
+            margin_x,
+            max(0, painted.height() - margin_bottom - metrics.height() - 8),
+            max(1, painted.width() - (margin_x * 2)),
+            metrics.height() + 8,
+        )
+        shadow_rect = text_rect.translated(1, 1)
+        painter.setPen(QtGui.QColor(0, 0, 0, 190))
+        painter.drawText(shadow_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, text)
+        painter.setPen(QtGui.QColor("#e6edf3"))
+        painter.drawText(text_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, text)
+        painter.end()
+        pixmap = painted
+    except Exception:
+        pass
+    try:
+        splash = QtWidgets.QSplashScreen(pixmap, _splash_window_flags())
+    except TypeError:
+        splash = QtWidgets.QSplashScreen(pixmap)
+    splash.setWindowTitle("QubitField")
+    splash.show()
+    try:
+        app_.processEvents()
+    except Exception:
+        pass
+    return splash
+
+
+startup_splash = _create_startup_splash(app)
+
+
+def _close_startup_splash() -> None:
+    global startup_splash
+    splash = startup_splash
+    startup_splash = None
+    if splash is None:
+        return
+    try:
+        splash.close()
+    except Exception:
+        pass
+    try:
+        splash.deleteLater()
+    except Exception:
+        pass
+    try:
+        app.processEvents()
+    except Exception:
+        pass
+
+
+QtCore.QTimer.singleShot(7000, _close_startup_splash)
+
 # App/window icon
 icons_dir = Path(__file__).parent / "icons"
 icon_path = icons_dir / "QubitField_Icon.ico"
@@ -104,7 +196,13 @@ try:
             win.setWindowFlags(QtCore.Qt.Window)
         app.setQuitOnLastWindowClosed(True)
         win.show(); win.raise_(); win.activateWindow()
+        if startup_splash is not None:
+            _close_startup_splash()
+    elif startup_splash is not None:
+        _close_startup_splash()
 except Exception as e:
+    if startup_splash is not None:
+        _close_startup_splash()
     print("[QubitField] Failed to show window:", e)
 
 # PySide6 uses exec(); PySide2 uses exec_()
