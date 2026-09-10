@@ -49,6 +49,9 @@ MEDIGATOR_MAX_VOICE_CHARS = 8000
 MEDIGATOR_MAX_OUTPUT_CONTEXT_CHARS = 2000
 MEDIGATOR_MAX_PROMPT_LOG_FILES = 15
 MEDIGATOR_MAX_CONSOLE_LOG_LINES = 5000
+MEDIGATOR_CONSOLE_FLUSH_INTERVAL_MS = 100
+MEDIGATOR_CONSOLE_MAX_LINES_PER_FLUSH = 200
+MEDIGATOR_CONSOLE_LOG_PRUNE_INTERVAL_MS = 5000
 MEDIGATOR_CODEX_MODEL = "gpt-5.5"
 VOICE_ACTOR_KINDS = {"voice_actor", "voice actor", "voiceactor"}
 VOICE_ACTOR_LANGUAGE_PARAM = "__voice_actor_stt_language"
@@ -94,11 +97,28 @@ SECURITY_GUARD_POPUP_NAME = "Security Guard popup"
 TANYA_PROMPT_PROFILE = "assistant_tanya"
 TEACHER_AGENT_PROMPT_PROFILE = "teacher_agent"
 SALES_AGENT_PROMPT_PROFILE = "sales_agent"
+WEB_DESIGNER_PROMPT_PROFILE = "web_designer"
 TRANSLATOR_PROMPT_PROFILE = "translator"
 MEDIATOR_PLANNER_PROMPT_PROFILE = "mediator_planner"
 JAPANESE_READER_PROMPT_PROFILE = "japanese_reader"
 KOREAN_READER_PROMPT_PROFILE = "korean_reader"
 CHINESE_READER_PROMPT_PROFILE = "chinese_reader"
+WEB_DESIGNER_ADVISORY_RE = re.compile(
+    r"\b("
+    r"what do you suggest|what would you suggest|what do you recommend|what would you recommend|"
+    r"what would you change|what should we use|what can we use|give me options|"
+    r"does this look|what do you think|why\b|how would you|review this|feedback|opinion"
+    r")\b",
+    re.IGNORECASE,
+)
+WEB_DESIGNER_IMPLEMENTATION_RE = re.compile(
+    r"\b(make|fix|update|replace|add|remove|redesign|implement|apply|create|build|edit)\b",
+    re.IGNORECASE,
+)
+WEB_DESIGNER_APPROVAL_RE = re.compile(
+    r"\b(go ahead|do that|yes do|yes, do|apply that|implement that|make that change|use option)\b",
+    re.IGNORECASE,
+)
 MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "romantic_dark_assistant": TANYA_PROMPT_PROFILE,
     "teacher": TEACHER_AGENT_PROMPT_PROFILE,
@@ -109,6 +129,18 @@ MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "sales_agent": SALES_AGENT_PROMPT_PROFILE,
     "pitch_deck_sales_agent": SALES_AGENT_PROMPT_PROFILE,
     "sales_pitch_deck_agent": SALES_AGENT_PROMPT_PROFILE,
+    "web": WEB_DESIGNER_PROMPT_PROFILE,
+    "website": WEB_DESIGNER_PROMPT_PROFILE,
+    "web_design": WEB_DESIGNER_PROMPT_PROFILE,
+    "web_designer": WEB_DESIGNER_PROMPT_PROFILE,
+    "website_design": WEB_DESIGNER_PROMPT_PROFILE,
+    "website_designer": WEB_DESIGNER_PROMPT_PROFILE,
+    "website_editor": WEB_DESIGNER_PROMPT_PROFILE,
+    "web_editor": WEB_DESIGNER_PROMPT_PROFILE,
+    "frontend": WEB_DESIGNER_PROMPT_PROFILE,
+    "frontend_agent": WEB_DESIGNER_PROMPT_PROFILE,
+    "frontend_designer": WEB_DESIGNER_PROMPT_PROFILE,
+    "html_editor": WEB_DESIGNER_PROMPT_PROFILE,
     "translator_agent": TRANSLATOR_PROMPT_PROFILE,
     "translation_agent": TRANSLATOR_PROMPT_PROFILE,
     "japanese_agent": JAPANESE_READER_PROMPT_PROFILE,
@@ -151,6 +183,7 @@ MEDIGATOR_PROMPT_PROFILE_ALIASES = {
 SECURITY_AGENT_ICON_FILENAMES = ("ScurityAgent_Icon.png", "SecurityAgent_Icon.png")
 OPERATOR_AGENT_ICON_FILENAMES = ("ITOperatorAgent_Icon.png", "OperatorAgent_Icon.png")
 TANYA_AGENT_ICON_FILENAMES = ("AssistentTanyaAgent_Icon.png", "AssistantTanyaAgent_Icon.png", "TanyaAI_Icon.png")
+WEB_DESIGNER_AGENT_ICON_FILENAMES = ("WebDesignerAgent_Icon.png",)
 MEDIGATOR_PENDING_SECURITY_REQUEST_PARAM = "__pending_security_request"
 MEDIGATOR_PENDING_SECURITY_REQUESTER_NODE_PARAM = "__pending_security_requester_node"
 MEDIGATOR_PENDING_SECURITY_USER_INPUT_PARAM = "__pending_security_user_input"
@@ -2605,12 +2638,49 @@ def _normalize_qdeck_voice_input(text: str) -> str:
     return out or raw
 
 
+def _web_designer_intent_hint(voice_input: str) -> str:
+    text = str(voice_input or "").strip()
+    if not text:
+        return "unclear"
+    if WEB_DESIGNER_APPROVAL_RE.search(text):
+        return "likely implementation: the user appears to be approving or applying a prior recommendation."
+    if WEB_DESIGNER_ADVISORY_RE.search(text):
+        return "likely advisory: answer with recommendations and do not edit files unless the user confirms implementation."
+    if WEB_DESIGNER_IMPLEMENTATION_RE.search(text):
+        return "likely implementation: inspect files, edit when writable, and verify the change."
+    if "?" in text:
+        return "likely advisory: answer the question and ask before editing files."
+    return "unclear: default to advisory behavior unless the conversation clearly asks for implementation."
+
+
+def _mediator_task_block_for_profile(profile: str) -> str:
+    token = _normalize_prompt_profile(profile)
+    if token == WEB_DESIGNER_PROMPT_PROFILE:
+        return (
+            "Task:\n"
+            "1. First classify the latest voice input as advisory or implementation.\n"
+            "2. If the user asks for suggestions, opinions, feasibility, explanation, review, options, or uses wording such as 'what do you suggest', do not edit files. Inspect website files only if useful, then answer with concise recommendations and ask before making changes.\n"
+            "3. If the user clearly asks to make, fix, add, remove, update, replace, redesign, implement, or apply a change, inspect the actual website files in the current working directory or user-specified path before editing.\n"
+            "4. For explicit implementation requests, make the necessary HTML, CSS, JavaScript, and asset-reference changes directly when the sandbox allows writes.\n"
+            "5. If the target website path is missing, files are unavailable, or the sandbox is read-only, state the exact blocker instead of pretending changes were made.\n"
+            "6. Run lightweight verification that fits any change, such as syntax checks, local file existence checks, or browser/dev-server checks when available.\n"
+            "7. Return recommendations for advisory requests, or a concise implementation summary with changed files and verification for implemented requests.\n"
+        )
+    return (
+        "Task:\n"
+        "1. Read the conversation history, latest voice input, and output context.\n"
+        "2. Produce the best next assistant reply.\n"
+        "3. Return only the assistant response text.\n"
+    )
+
+
 def _compose_mediator_prompt(
     system_prompt: str,
     chatbot_history: str,
     voice_input: str,
     default_system_prompt: str = "",
     output_context: str = "",
+    profile: str = "",
 ) -> tuple[str, str]:
     clean_system = _trim_text(system_prompt, MEDIGATOR_MAX_SYSTEM_CHARS, keep_tail=False)
     clean_history = _trim_text(chatbot_history, MEDIGATOR_MAX_HISTORY_CHARS, keep_tail=True)
@@ -2618,9 +2688,15 @@ def _compose_mediator_prompt(
     clean_default = _trim_text(default_system_prompt, MEDIGATOR_MAX_SYSTEM_CHARS, keep_tail=False)
     clean_output_context = _trim_text(output_context, MEDIGATOR_MAX_OUTPUT_CONTEXT_CHARS, keep_tail=False)
     effective_system = clean_system or clean_default or MEDIGATOR_DEFAULT_SYSTEM_PROMPT
+    profile_token = _normalize_prompt_profile(profile)
+    intent_block = ""
+    if profile_token == WEB_DESIGNER_PROMPT_PROFILE:
+        intent_block = f"Web Designer request intent hint: {_web_designer_intent_hint(clean_voice)}\n\n"
     payload = "\n\n".join(
         [
             effective_system,
+            profile_token,
+            intent_block,
             clean_history,
             clean_voice,
             clean_output_context,
@@ -2635,10 +2711,8 @@ def _compose_mediator_prompt(
     )
     prompt = (
         f"{effective_system}\n\n"
-        "Task:\n"
-        "1. Read the conversation history, latest voice input, and output context.\n"
-        "2. Produce the best next assistant reply.\n"
-        "3. Return only the assistant response text.\n\n"
+        f"{_mediator_task_block_for_profile(profile)}\n"
+        f"{intent_block}"
         f"{output_block}"
         "Conversation history:\n"
         f"{clean_history or '(none)'}\n\n"
@@ -2719,6 +2793,10 @@ def _operator_agent_icon_path() -> Path | None:
 
 def _tanya_agent_icon_path() -> Path | None:
     return _icon_path_from_filenames(TANYA_AGENT_ICON_FILENAMES)
+
+
+def _web_designer_agent_icon_path() -> Path | None:
+    return _icon_path_from_filenames(WEB_DESIGNER_AGENT_ICON_FILENAMES)
 
 
 def _scaled_pixmap(path: Path, size: int):
@@ -3214,6 +3292,89 @@ class TanyaSpeechDialog(AgentPopupDialog):
         self.resize(AGENT_POPUP_MIN_WIDTH, 190)
 
 
+class WebDesignerResponseDialog(AgentPopupDialog):
+    def __init__(self, *, message: str, parent=None):
+        super().__init__("Web Designer", parent=parent)
+
+        agent_icon_path = _web_designer_agent_icon_path()
+        if agent_icon_path is not None:
+            try:
+                self.setWindowIcon(QtGui.QIcon(str(agent_icon_path)))
+            except Exception:
+                pass
+
+        icon_label = QtWidgets.QLabel()
+        icon_pixmap = _scaled_pixmap(agent_icon_path, 62) if agent_icon_path is not None else None
+        if icon_pixmap is not None:
+            icon_label.setPixmap(icon_pixmap)
+        else:
+            icon = _style_icon(self, "SP_DesktopIcon")
+            if icon is not None:
+                icon_label.setPixmap(icon.pixmap(44, 44))
+        icon_label.setFixedSize(68, 68)
+        icon_label.setAlignment(QtCore.Qt.AlignCenter)
+
+        title = QtWidgets.QLabel("Web Designer")
+        title.setStyleSheet("QLabel{color:#f8fafc;font-size:16px;font-weight:700;}")
+        subtitle = QtWidgets.QLabel("Website implementation response")
+        subtitle.setStyleSheet("QLabel{color:#93c5fd;font-size:12px;}")
+
+        detail = AgentPopupTextBlock(str(message or "").strip())
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll.setMinimumHeight(120)
+        scroll.setMaximumHeight(360)
+        scroll.setStyleSheet(
+            "QScrollArea{background:transparent;border:0;}"
+            "QScrollBar:vertical{background:#0f172a;width:10px;margin:0;}"
+            "QScrollBar::handle:vertical{background:#2563eb;border-radius:4px;min-height:24px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;}"
+        )
+        scroll.setWidget(detail)
+
+        close_btn = QtWidgets.QPushButton()
+        close_icon = _popup_close_icon(self)
+        if close_icon is not None:
+            close_btn.setIcon(close_icon)
+        close_btn.setToolTip("Close")
+        close_btn.setAccessibleName("Close")
+        close_btn.setFixedSize(36, 32)
+        close_btn.clicked.connect(self.accept)
+
+        header_text = QtWidgets.QVBoxLayout()
+        header_text.setContentsMargins(0, 0, 0, 0)
+        header_text.setSpacing(4)
+        header_text.addWidget(title, 0)
+        header_text.addWidget(subtitle, 0)
+
+        header_row = QtWidgets.QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+        header_row.addWidget(icon_label, 0, QtCore.Qt.AlignTop)
+        header_row.addLayout(header_text, 1)
+
+        close_row = QtWidgets.QHBoxLayout()
+        close_row.setContentsMargins(0, 0, 0, 0)
+        close_row.addStretch(1)
+        close_row.addWidget(close_btn, 0)
+
+        content = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(content)
+        content_layout.setContentsMargins(14, 12, 14, 14)
+        content_layout.setSpacing(10)
+        content_layout.addLayout(header_row, 0)
+        content_layout.addWidget(scroll, 1)
+        content_layout.addLayout(close_row, 0)
+
+        layout = self._create_popup_surface(background="#07111f", border="#2563eb")
+        layout.addWidget(AgentPopupTitleBar(self, "Web Designer", accent="#1d4ed8", hover_accent="#2563eb"), 0)
+        layout.addWidget(content, 1)
+        self.resize(AGENT_POPUP_MIN_WIDTH, 330)
+
+
 class SecurityApprovalDialog(AgentPopupDialog):
     def __init__(self, *, request_text: str, attrs: dict[str, str], parent=None):
         super().__init__("Security Guard", parent=parent)
@@ -3562,6 +3723,7 @@ class QDeckHandoffDialog(AgentPopupDialog):
 
 class MediatorConsoleWidget(QtWidgets.QWidget):
     _console_append = QtCore.Signal(str)
+    _console_flush_requested = QtCore.Signal()
     _command_done = QtCore.Signal(int, str, str, str, str)
 
     def __init__(self, node_item, parent=None):
@@ -3594,6 +3756,13 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._tanya_popup_message = ""
         self._last_tanya_speech_key = ""
         self._last_tanya_speech_ms = 0
+        self._web_designer_dialog = None
+        self._last_web_designer_popup_key = ""
+        self._last_web_designer_popup_ms = 0
+        self._console_pending_lines: list[str] = []
+        self._console_pending_lock = threading.Lock()
+        self._console_flush_scheduled = False
+        self._last_console_log_prune_ms = 0
 
         self.setMinimumSize(MEDIGATOR_BODY_W, MEDIGATOR_BODY_H)
         try:
@@ -3733,9 +3902,15 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         layout.addWidget(self._console, 1)
         layout.addWidget(self._status, 0)
 
-        self._console_append.connect(self._append_console_line)
+        self._console_append.connect(self._queue_console_line)
+        self._console_flush_requested.connect(self._schedule_console_flush)
         self._command_done.connect(self._on_command_done)
         self._update_controls()
+
+        self._console_flush_timer = QtCore.QTimer(self)
+        self._console_flush_timer.setSingleShot(True)
+        self._console_flush_timer.setInterval(MEDIGATOR_CONSOLE_FLUSH_INTERVAL_MS)
+        self._console_flush_timer.timeout.connect(self._flush_console_lines)
 
         self._scene_timer = QtCore.QTimer(self)
         self._scene_timer.setInterval(250)
@@ -3756,14 +3931,26 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         return self._workspace_dir / "command_history.log"
 
     def _write_console_log(self, line: str) -> None:
-        payload = f"[{_format_ts()}] {line.rstrip()}\n"
+        self._write_console_log_lines([line])
+
+    def _write_console_log_lines(self, lines: list[str]) -> None:
+        clean_lines = [str(line or "").rstrip() for line in (lines or []) if str(line or "").rstrip()]
+        if not clean_lines:
+            return
+        stamp = _format_ts()
+        payload = "".join(f"[{stamp}] {line}\n" for line in clean_lines)
         path = self._console_log_path()
         try:
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(payload)
-            _prune_text_log_tail(path, keep_lines=MEDIGATOR_MAX_CONSOLE_LOG_LINES)
         except Exception:
-            pass
+            return
+        now_ms = int(QtCore.QDateTime.currentMSecsSinceEpoch())
+        last_ms = int(getattr(self, "_last_console_log_prune_ms", 0) or 0)
+        if now_ms - last_ms < MEDIGATOR_CONSOLE_LOG_PRUNE_INTERVAL_MS:
+            return
+        self._last_console_log_prune_ms = now_ms
+        _prune_text_log_tail(path, keep_lines=MEDIGATOR_MAX_CONSOLE_LOG_LINES)
 
     def _write_history(self, command: str) -> None:
         payload = f"[{_format_ts()}] {command.strip()}\n"
@@ -3773,13 +3960,58 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
-    @QtCore.Slot(str)
-    def _append_console_line(self, line: str) -> None:
+    def _queue_console_line_threadsafe(self, line: str) -> None:
         text = str(line or "").rstrip("\r\n")
         if not text:
             return
-        self._console.appendPlainText(text)
-        self._write_console_log(text)
+        request_flush = False
+        with self._console_pending_lock:
+            self._console_pending_lines.append(text)
+            if not self._console_flush_scheduled:
+                self._console_flush_scheduled = True
+                request_flush = True
+        if request_flush:
+            self._console_flush_requested.emit()
+
+    @QtCore.Slot(str)
+    def _queue_console_line(self, line: str) -> None:
+        self._queue_console_line_threadsafe(line)
+
+    @QtCore.Slot()
+    def _schedule_console_flush(self) -> None:
+        timer = getattr(self, "_console_flush_timer", None)
+        if timer is None:
+            self._flush_console_lines()
+            return
+        if not timer.isActive():
+            timer.start()
+
+    @QtCore.Slot()
+    def _flush_console_lines(self) -> None:
+        max_lines = max(1, int(MEDIGATOR_CONSOLE_MAX_LINES_PER_FLUSH))
+        request_next_flush = False
+        with self._console_pending_lock:
+            if len(self._console_pending_lines) > max_lines:
+                lines = self._console_pending_lines[:max_lines]
+                del self._console_pending_lines[:max_lines]
+                self._console_flush_scheduled = True
+                request_next_flush = True
+            else:
+                lines = list(self._console_pending_lines)
+                self._console_pending_lines.clear()
+                self._console_flush_scheduled = False
+        if not lines:
+            return
+        self._append_console_lines(lines)
+        if request_next_flush:
+            self._console_flush_requested.emit()
+
+    def _append_console_lines(self, lines: list[str]) -> None:
+        clean_lines = [str(line or "").rstrip("\r\n") for line in (lines or []) if str(line or "").rstrip("\r\n")]
+        if not clean_lines:
+            return
+        self._console.appendPlainText("\n".join(clean_lines))
+        self._write_console_log_lines(clean_lines)
         try:
             bar = self._console.verticalScrollBar()
             bar.setValue(bar.maximum())
@@ -4198,6 +4430,47 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             self._tanya_dialog = None
             self._tanya_popup_message = ""
 
+    def _maybe_show_web_designer_response_popup(self, output: str, *, source: str) -> None:
+        if self._selected_prompt_profile() != WEB_DESIGNER_PROMPT_PROFILE:
+            return
+        clean_source = str(source or "").strip().lower()
+        if clean_source == "security_approval":
+            return
+        message = _clean_tanya_popup_text(output)
+        if not message:
+            return
+        dedupe_key = hashlib.sha1(message.encode("utf-8", errors="ignore")).hexdigest()
+        now_ms = int(QtCore.QDateTime.currentMSecsSinceEpoch())
+        last_key = str(getattr(self, "_last_web_designer_popup_key", "") or "")
+        last_ms = int(getattr(self, "_last_web_designer_popup_ms", 0) or 0)
+        if dedupe_key == last_key and (now_ms - last_ms) < 3500:
+            return
+        self._last_web_designer_popup_key = dedupe_key
+        self._last_web_designer_popup_ms = now_ms
+        old_dialog = getattr(self, "_web_designer_dialog", None)
+        try:
+            if old_dialog is not None:
+                old_dialog.close()
+        except Exception:
+            pass
+        dialog = WebDesignerResponseDialog(message=message, parent=self)
+        self._web_designer_dialog = dialog
+        dialog.finished.connect(
+            lambda _result=0, _dialog=dialog: self._clear_web_designer_dialog_reference(_dialog)
+        )
+        dialog.destroyed.connect(
+            lambda _obj=None, _dialog=dialog: self._clear_web_designer_dialog_reference(_dialog)
+        )
+        try:
+            _show_agent_popup(dialog, self)
+        except Exception as exc:
+            self._clear_web_designer_dialog_reference(dialog)
+            self._set_status(f"Web Designer popup failed: {exc}", error=True)
+
+    def _clear_web_designer_dialog_reference(self, dialog) -> None:
+        if getattr(self, "_web_designer_dialog", None) is dialog:
+            self._web_designer_dialog = None
+
     def _process_approved_qdeck_decision(
         self,
         *,
@@ -4257,6 +4530,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             chatbot_history,
             clean_voice_input,
             _load_prompt_profile_text(QDECK_PROMPT_PROFILE),
+            profile=QDECK_PROMPT_PROFILE,
         )
         signature = _security_signature("qdeck_handoff", approval_text, request_text, clean_voice_input, signature)
         self._run_codex_prompt(prompt, signature, "security_approval")
@@ -4284,6 +4558,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             prompt_history,
             "Ask the user for approval for this controlled-tool access request.",
             self._selected_profile_prompt(),
+            profile=self._selected_prompt_profile(),
         )
         signature = _security_signature("security_request", request_signature, signature)
         self._run_codex_prompt(prompt, signature, "security_request")
@@ -4334,6 +4609,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             chatbot_history,
             clean_voice_input,
             self._selected_profile_prompt(),
+            profile=profile,
         )
         signature = _security_signature("security_approval", approval_text, request_text, clean_voice_input, signature)
         self._run_codex_prompt(prompt, signature, "security_approval")
@@ -4884,6 +5160,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             prompt_voice_input,
             self._selected_profile_prompt(),
             output_context,
+            profile=profile,
         )
         if not force and current_voice_token:
             signature = hashlib.sha1(f"{signature}\nvoice:{current_voice_token}".encode("utf-8")).hexdigest()
@@ -4941,11 +5218,11 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             _prune_mediator_prompt_logs(self._workspace_dir)
 
             if runtime.get("codex_home"):
-                self._console_append.emit(f"[codex] CODEX_HOME={runtime['codex_home']}")
-            self._console_append.emit(f"[codex] Working directory: {runtime['working_directory']}")
+                self._queue_console_line_threadsafe(f"[codex] CODEX_HOME={runtime['codex_home']}")
+            self._queue_console_line_threadsafe(f"[codex] Working directory: {runtime['working_directory']}")
             if runtime.get("writable_roots"):
-                self._console_append.emit(f"[codex] Writable roots: {runtime['writable_roots']}")
-            self._console_append.emit(f"[codex] Mediator logs: {runtime['log_directory']}")
+                self._queue_console_line_threadsafe(f"[codex] Writable roots: {runtime['writable_roots']}")
+            self._queue_console_line_threadsafe(f"[codex] Mediator logs: {runtime['log_directory']}")
 
             request = codex_cli_runner.CodexExecRequest(
                 codex_executable=str(runtime.get("codex_executable") or ""),
@@ -4965,7 +5242,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             cmd = codex_cli_runner.build_codex_exec_command(request)
             env = codex_cli_runner.build_codex_env(str(runtime.get("codex_home") or ""))
 
-            self._console_append.emit(f"$ {codex_cli_runner.format_command(cmd)}")
+            self._queue_console_line_threadsafe(f"$ {codex_cli_runner.format_command(cmd)}")
             process = subprocess.Popen(
                 cmd,
                 cwd=str(runtime["working_directory"]),
@@ -4991,7 +5268,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
 
             if process.stdout is not None:
                 for raw in process.stdout:
-                    self._console_append.emit(raw.rstrip("\n"))
+                    self._queue_console_line_threadsafe(raw.rstrip("\n"))
 
             exit_code = int(process.wait())
             if output_path.exists():
@@ -5055,7 +5332,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                 self._process = process
             if process.stdout is not None:
                 for raw in process.stdout:
-                    self._console_append.emit(raw.rstrip("\n"))
+                    self._queue_console_line_threadsafe(raw.rstrip("\n"))
             exit_code = int(process.wait())
         except Exception as exc:
             error_text = f"Failed to run command: {exc}"
@@ -5189,6 +5466,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
                         target = _qdeck_launch_target_from_request(self._last_prompt_voice_input)
                         popup_output = f"I need Security Guard approval before I open {target}."
                     self._maybe_show_tanya_speech_popup(popup_output, source=clean_source)
+                    self._maybe_show_web_designer_response_popup(popup_output, source=clean_source)
                 nexus_handled = self._handle_data_nexus_update_output(
                     output,
                     fallback_request=self._last_prompt_voice_input,
@@ -5237,6 +5515,13 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
         self._maybe_process_inputs(changed_name=name, force=False, source="auto")
 
     def _clear_console(self) -> None:
+        try:
+            self._console_flush_timer.stop()
+        except Exception:
+            pass
+        with self._console_pending_lock:
+            self._console_pending_lines.clear()
+            self._console_flush_scheduled = False
         self._console.clear()
         self._set_status("Console cleared.")
 

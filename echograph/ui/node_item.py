@@ -279,6 +279,13 @@ def _html_preview_cache_path_from_request(request_path: str) -> Path | None:
     return _html_preview_cache_dir() / name
 
 
+def _html_preview_is_transcodable_video_path(path: str | Path) -> bool:
+    try:
+        return Path(path).suffix.lower() in {".mp4", ".m4v", ".mov"}
+    except Exception:
+        return False
+
+
 def _html_preview_video_source_path(src: str, html_path: Path, server_root: Path) -> Path | None:
     src = str(src or "").strip()
     if not src:
@@ -300,7 +307,7 @@ def _html_preview_video_source_path(src: str, html_path: Path, server_root: Path
         if candidate is None:
             return None
         candidate = candidate.resolve()
-        if candidate.is_file() and candidate.suffix.lower() in {".mp4", ".m4v", ".mov"}:
+        if candidate.is_file() and _html_preview_is_transcodable_video_path(candidate):
             return candidate
     except Exception:
         return None
@@ -525,6 +532,12 @@ class _HtmlPreviewRequestHandler(SimpleHTTPRequestHandler):
         if not os.path.exists(path):
             self.send_error(404, "File not found")
             return None
+
+        if cache_path is None and _html_preview_is_transcodable_video_path(path):
+            fallback_route = _html_preview_webm_fallback_for_video(Path(path))
+            fallback_path = _html_preview_cache_path_from_request(fallback_route or "")
+            if fallback_path is not None and fallback_path.exists():
+                path = str(fallback_path)
 
         if cache_path is None and Path(path).suffix.lower() in {".html", ".htm"}:
             html_body = _html_preview_html_bytes_with_video_fallbacks(path, getattr(self, "directory", os.path.dirname(path)))
