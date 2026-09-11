@@ -1889,6 +1889,15 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     snap["gantt_chart_size"] = [gw, gh]
                 except Exception:
                     pass
+        if (node.kind or "").lower() in ("video_player", "video player", "videoplayer"):
+            vsize = getattr(node, "_video_player_size", None)
+            if isinstance(vsize, (list, tuple)) and len(vsize) >= 2:
+                try:
+                    vw = float(vsize[0])
+                    vh = float(vsize[1])
+                    snap["video_player_size"] = [vw, vh]
+                except Exception:
+                    pass
         return snap
 
     def selection_clipboard_payload(self) -> dict | None:
@@ -2079,6 +2088,15 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         gw = float(gsize[0])
                         gh = float(gsize[1])
                         setattr(node, "_gantt_chart_size", (gw, gh))
+                    except Exception:
+                        pass
+            if (kind or "").lower() in ("video_player", "video player", "videoplayer"):
+                vsize = entry.get("video_player_size")
+                if isinstance(vsize, (list, tuple)) and len(vsize) >= 2:
+                    try:
+                        vw = float(vsize[0])
+                        vh = float(vsize[1])
+                        setattr(node, "_video_player_size", (vw, vh))
                     except Exception:
                         pass
 
