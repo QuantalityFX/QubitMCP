@@ -70,6 +70,11 @@ _MAX_REQUEST_BYTES = 64 * 1024 * 1024
 _MAX_IMAGE_BYTES = 30 * 1024 * 1024
 _SUCCEEDED_STATUSES = {"succeeded", "success", "done", "completed", "complete"}
 _FAILED_STATUSES = {"failed", "error", "cancelled", "canceled", "rejected"}
+_DEFAULT_CREATE_PATH = "/v2/video_generation"
+_DEFAULT_QUERY_PATH = "/v2/query/video_generation/{task_id}"
+_LEGACY_QUERY_PATH = "/v2/video_generation/{task_id}"
+_DEFAULT_FILE_PATH = ""
+_LEGACY_FILE_PATH = "/v1/files/retrieve?file_id={file_id}"
 
 
 def _repo_root() -> Path:
@@ -420,6 +425,36 @@ def _join_api_url(base: str, path: str, default_path: str = "") -> str:
     if not suffix.startswith("/"):
         suffix = "/" + suffix
     return clean_base.rstrip("/") + suffix
+
+
+def _normalize_query_path(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return _DEFAULT_QUERY_PATH
+    normalized = text.replace("\\", "/")
+    parsed = url_parse.urlparse(normalized)
+    path_text = parsed.path if parsed.scheme else normalized
+    lower_path = path_text.rstrip("/").lower()
+    legacy_lower = _LEGACY_QUERY_PATH.lower()
+    is_legacy = lower_path in {legacy_lower, legacy_lower.lstrip("/")}
+    if not is_legacy:
+        return text
+    if parsed.scheme:
+        return url_parse.urlunparse(parsed._replace(path=_DEFAULT_QUERY_PATH))
+    return _DEFAULT_QUERY_PATH
+
+
+def _normalize_file_path(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return _DEFAULT_FILE_PATH
+    normalized = text.replace("\\", "/")
+    if normalized.lower() == _LEGACY_FILE_PATH.lower():
+        return _DEFAULT_FILE_PATH
+    parsed = url_parse.urlparse(normalized)
+    if parsed.scheme and parsed.path.lower() == "/v1/files/retrieve" and parsed.query.lower() == "file_id={file_id}":
+        return _DEFAULT_FILE_PATH
+    return text
 
 
 def _path_with_task(path: str, task_id: str) -> str:
@@ -963,7 +998,7 @@ def run_minimax_h3_api_job(settings: MiniMaxH3ApiJobSettings, progress=None) -> 
     headers = {"Authorization": f"Bearer {api_key}"}
     emit("Preparing MiniMax H3 API request...")
     payload = _api_payload(settings)
-    create_url = _join_api_url(settings.api_base_url, settings.create_path, "/v2/video_generation")
+    create_url = _join_api_url(settings.api_base_url, settings.create_path, _DEFAULT_CREATE_PATH)
     response = _http_json(create_url, payload, timeout=min(max(15, settings.timeout), 300), headers=headers)
 
     task_id = _extract_first_string(response, ("task_id", "id"))
@@ -981,8 +1016,8 @@ def run_minimax_h3_api_job(settings: MiniMaxH3ApiJobSettings, progress=None) -> 
     last_response: dict[str, Any] = response
     while time.monotonic() < deadline:
         time.sleep(max(0.5, float(settings.poll_interval)))
-        query_path = _path_with_task(settings.query_path or "/v2/video_generation/{task_id}", task_id)
-        query_url = _join_api_url(settings.api_base_url, query_path, "/v2/video_generation/{task_id}")
+        query_path = _path_with_task(_normalize_query_path(settings.query_path), task_id)
+        query_url = _join_api_url(settings.api_base_url, query_path, _DEFAULT_QUERY_PATH)
         try:
             last_response = _http_json(query_url, None, timeout=60, headers=headers)
         except RuntimeError:
@@ -996,8 +1031,9 @@ def run_minimax_h3_api_job(settings: MiniMaxH3ApiJobSettings, progress=None) -> 
             return MiniMaxH3ApiJobResult(True, str(path), task_id, f"Generated {path.name}.")
 
         file_id = _extract_first_string(last_response, ("file_id", "video_file_id", "output_file_id"))
-        if file_id and settings.file_path:
-            file_path = _path_with_file(settings.file_path, file_id, task_id)
+        file_path_setting = _normalize_file_path(settings.file_path)
+        if file_id and file_path_setting:
+            file_path = _path_with_file(file_path_setting, file_id, task_id)
             file_url = _join_api_url(settings.api_base_url, file_path)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             target = settings.output_dir / f"{_safe_stem(settings.node_name)}_{stamp}.mp4"
@@ -1387,9 +1423,9 @@ class MiniMaxH3ApiVideoWidget(QtWidgets.QWidget):
             ratio = _normalize_ratio(_param_value(model, _PARAM_RATIO, "adaptive") or "adaptive")
             ratio_idx = self._ratio_combo.findData(ratio)
             self._ratio_combo.setCurrentIndex(max(0, ratio_idx))
-            self._create_path_edit.setText(_param_value(model, _PARAM_CREATE_PATH, "/v2/video_generation") or "/v2/video_generation")
-            self._query_path_edit.setText(_param_value(model, _PARAM_QUERY_PATH, "/v2/video_generation/{task_id}") or "/v2/video_generation/{task_id}")
-            self._file_path_edit.setText(_param_value(model, _PARAM_FILE_PATH, "/v1/files/retrieve?file_id={file_id}") or "")
+            self._create_path_edit.setText(_param_value(model, _PARAM_CREATE_PATH, _DEFAULT_CREATE_PATH) or _DEFAULT_CREATE_PATH)
+            self._query_path_edit.setText(_normalize_query_path(_param_value(model, _PARAM_QUERY_PATH, _DEFAULT_QUERY_PATH)))
+            self._file_path_edit.setText(_normalize_file_path(_param_value(model, _PARAM_FILE_PATH, _DEFAULT_FILE_PATH)))
             output_dir = _param_value(model, _PARAM_OUTPUT_DIR, "")
             self._output_dir_edit.setText(output_dir or str(_default_output_dir(self._node_item)))
             self._mp4_out.setText(_param_value(model, MP4_OUTPUT_PARAM, ""))
@@ -1419,14 +1455,14 @@ class MiniMaxH3ApiVideoWidget(QtWidgets.QWidget):
         _set_param_value(self._node_item, _PARAM_RESOLUTION, str(self._resolution_combo.currentData() or "768P"), notify_scene=False)
         _set_param_value(self._node_item, _PARAM_DURATION, str(int(self._duration_spin.value())), notify_scene=False)
         _set_param_value(self._node_item, _PARAM_RATIO, str(self._ratio_combo.currentData() or "adaptive"), notify_scene=False)
-        _set_param_value(self._node_item, _PARAM_CREATE_PATH, self._create_path_edit.text().strip() or "/v2/video_generation", notify_scene=False)
+        _set_param_value(self._node_item, _PARAM_CREATE_PATH, self._create_path_edit.text().strip() or _DEFAULT_CREATE_PATH, notify_scene=False)
         _set_param_value(
             self._node_item,
             _PARAM_QUERY_PATH,
-            self._query_path_edit.text().strip() or "/v2/video_generation/{task_id}",
+            _normalize_query_path(self._query_path_edit.text().strip()),
             notify_scene=False,
         )
-        _set_param_value(self._node_item, _PARAM_FILE_PATH, self._file_path_edit.text().strip(), notify_scene=False)
+        _set_param_value(self._node_item, _PARAM_FILE_PATH, _normalize_file_path(self._file_path_edit.text().strip()), notify_scene=False)
         default_output = str(_default_output_dir(self._node_item))
         output_dir = self._output_dir_edit.text().strip() or default_output
         _set_param_value(self._node_item, _PARAM_OUTPUT_DIR, "" if output_dir == default_output else output_dir, notify_scene=False)
@@ -1609,9 +1645,9 @@ class MiniMaxH3ApiVideoWidget(QtWidgets.QWidget):
             api_key=self._api_key_edit.text().strip() or _default_api_key(),
             api_base_url=self._api_base_edit.text().strip() or _default_api_base_url(),
             model=str(self._model_combo.currentData() or "MiniMax-H3"),
-            create_path=self._create_path_edit.text().strip() or "/v2/video_generation",
-            query_path=self._query_path_edit.text().strip() or "/v2/video_generation/{task_id}",
-            file_path=self._file_path_edit.text().strip(),
+            create_path=self._create_path_edit.text().strip() or _DEFAULT_CREATE_PATH,
+            query_path=_normalize_query_path(self._query_path_edit.text().strip()),
+            file_path=_normalize_file_path(self._file_path_edit.text().strip()),
             duration=int(self._duration_spin.value()),
             ratio=str(self._ratio_combo.currentData() or "adaptive"),
             resolution=str(self._resolution_combo.currentData() or "768P"),
@@ -1721,9 +1757,9 @@ def build_ports(node_item) -> None:
         _PARAM_API_KEY: "",
         _PARAM_API_BASE_URL: _default_api_base_url(),
         _PARAM_MODEL: "MiniMax-H3",
-        _PARAM_CREATE_PATH: "/v2/video_generation",
-        _PARAM_QUERY_PATH: "/v2/video_generation/{task_id}",
-        _PARAM_FILE_PATH: "/v1/files/retrieve?file_id={file_id}",
+        _PARAM_CREATE_PATH: _DEFAULT_CREATE_PATH,
+        _PARAM_QUERY_PATH: _DEFAULT_QUERY_PATH,
+        _PARAM_FILE_PATH: _DEFAULT_FILE_PATH,
         _PARAM_DURATION: "5",
         _PARAM_RATIO: "adaptive",
         _PARAM_RESOLUTION: "768P",

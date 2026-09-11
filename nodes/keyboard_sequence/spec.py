@@ -825,6 +825,16 @@ def _text_preview(text: str, *, limit: int = 42) -> str:
     return clean
 
 
+def _text_char_label(ch: str) -> str:
+    if ch == "\n":
+        return "\\n"
+    if ch == "\t":
+        return "\\t"
+    if ch == "\r":
+        return "\\r"
+    return repr(str(ch or ""))
+
+
 def _text_key_hold_ms(value) -> int:
     return max(_MIN_TEXT_KEY_HOLD_MS, _coerce_action_hold_ms(value))
 
@@ -2200,6 +2210,33 @@ def _build_text_events(text: str, *, injection_mode: str = _MODE_VK) -> tuple[li
     return events, ""
 
 
+def _build_literal_text_events(text: str) -> tuple[list[tuple[int, int, int]] | None, str]:
+    clean = str(text or "")
+    if not clean:
+        return None, "Text action is empty."
+    events: list[tuple[int, int, int]] = []
+    for ch in clean:
+        if ch == "\r":
+            continue
+        if ch == "\n":
+            events.append(_key_event_for_vk(0x0D, False, injection_mode=_MODE_VK))
+            events.append(_key_event_for_vk(0x0D, True, injection_mode=_MODE_VK))
+            continue
+        try:
+            encoded = ch.encode("utf-16-le", errors="strict")
+        except Exception as exc:
+            return None, f"Could not encode text character {_text_char_label(ch)}: {exc}"
+        for offset in range(0, len(encoded), 2):
+            code_unit = int.from_bytes(encoded[offset : offset + 2], "little")
+            if code_unit <= 0:
+                return None, f"Invalid text character {_text_char_label(ch)}."
+            events.append((0, code_unit, _KEYEVENTF_UNICODE))
+            events.append((0, code_unit, _KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP))
+    if not events:
+        return None, "Text action is empty."
+    return events, ""
+
+
 def _send_input_events(events: list[tuple[int, int, int]]) -> tuple[bool, str]:
     if os.name != "nt" or _USER32 is None:
         return False, "Keyboard playback currently requires Windows."
@@ -2355,23 +2392,39 @@ def _send_text_by_character(
     injection_mode: str,
     key_hold_ms: int,
     send_stream,
+    prefer_literal: bool = False,
 ) -> tuple[bool, str]:
     clean = str(text or "")
     if clean == "":
         return False, "Text action is empty."
     hold_ms = _text_key_hold_ms(key_hold_ms)
     char_gap = _text_inter_char_seconds()
-    for ch in clean:
+    total_chars = len(clean)
+    for char_index, ch in enumerate(clean, start=1):
         if ch == "\r":
             continue
-        events, error = _build_text_events(ch, injection_mode=injection_mode)
-        if events is None:
-            return False, error or f"Invalid text character {repr(ch)}."
-        if not events:
-            continue
-        ok, message = send_stream(events, key_hold_ms=hold_ms)
-        if not ok:
-            return ok, message
+        builders = (
+            (_build_literal_text_events, lambda value: _build_text_events(value, injection_mode=injection_mode))
+            if bool(prefer_literal)
+            else (lambda value: _build_text_events(value, injection_mode=injection_mode), _build_literal_text_events)
+        )
+        last_error = ""
+        sent = False
+        for builder in builders:
+            events, error = builder(ch)
+            if events is None:
+                last_error = error or f"Invalid text character {_text_char_label(ch)}."
+                continue
+            if not events:
+                sent = True
+                break
+            ok, message = send_stream(events, key_hold_ms=hold_ms)
+            if ok:
+                sent = True
+                break
+            last_error = message or "Text character send failed."
+        if not sent:
+            return False, f"Text character {_text_char_label(ch)} at {char_index}/{total_chars} failed: {last_error}"
         if char_gap > 0.0:
             time.sleep(char_gap)
     return True, ""
@@ -2398,6 +2451,7 @@ def _dispatch_text_action_window_message(text: str, *, key_hold_ms: int = _DEFAU
         injection_mode=_MODE_VK,
         key_hold_ms=key_hold_ms,
         send_stream=_post_window_event_stream,
+        prefer_literal=True,
     )
 
 
@@ -2450,6 +2504,7 @@ def _dispatch_text_action(
         injection_mode=mode,
         key_hold_ms=key_hold_ms,
         send_stream=_send_input_event_stream,
+        prefer_literal=(mode == _MODE_VK),
     )
 
 
@@ -2733,24 +2788,200 @@ def _serial_key_for_text_char(ch: str) -> str | None:
     return ch
 
 
+_SERIAL_TEXT_KEY_ALIASES = {
+    ".": ("period", "dot", "fullstop", "full_stop", "point", "decimal", "key_period", "key_dot", "KEY_PERIOD", "KEY_DOT"),
+    ",": ("comma", "key_comma", "KEY_COMMA"),
+    "-": "minus",
+    "/": "slash",
+    "\\": "backslash",
+    ";": "semicolon",
+    "'": "apostrophe",
+    "`": "grave",
+    "[": "lbracket",
+    "]": "rbracket",
+    "=": ("equal", "equals", "plus"),
+    "+": "plus",
+}
+
+
+_SERIAL_SHIFTED_TEXT_KEYS = {
+    "!": "1",
+    "@": "2",
+    "#": "3",
+    "$": "4",
+    "%": "5",
+    "^": "6",
+    "&": "7",
+    "*": "8",
+    "(": "9",
+    ")": "0",
+    "_": ("minus", "-"),
+    "+": ("equal", "equals", "plus", "="),
+    ":": ("semicolon", ";"),
+    '"': ("quote", "apostrophe", "'"),
+    "<": ("comma", ","),
+    ">": ("period", "."),
+    "?": ("slash", "/"),
+    "|": ("backslash", "\\"),
+    "~": ("grave", "`"),
+    "{": ("lbracket", "["),
+    "}": ("rbracket", "]"),
+}
+
+
+def _serial_key_candidates_for_text_char(ch: str) -> list[tuple[tuple[str, ...], str]]:
+    if len(str(ch or "")) == 1 and str(ch).isalpha() and str(ch).isupper():
+        lower = str(ch).lower()
+        candidates = [(("shift",), lower), (("capslock",), lower), ((), str(ch))]
+        if lower != str(ch):
+            candidates.append(((), lower))
+        return candidates
+    shifted = _SERIAL_SHIFTED_TEXT_KEYS.get(ch)
+    if shifted:
+        if isinstance(shifted, (list, tuple)):
+            candidates = [(("shift",), str(key)) for key in shifted if str(key or "")]
+        else:
+            candidates = [(("shift",), str(shifted))]
+        candidates.append(((), str(ch)))
+        return candidates
+    key = _serial_key_for_text_char(ch)
+    if key is None:
+        return []
+    candidates: list[tuple[tuple[str, ...], str]] = [((), key)]
+    aliases = _SERIAL_TEXT_KEY_ALIASES.get(ch)
+    if aliases:
+        if not isinstance(aliases, (list, tuple)):
+            aliases = (aliases,)
+        for alias in aliases:
+            candidate = ((), str(alias))
+            if alias and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def _serial_key_candidate_label(candidate: tuple[tuple[str, ...], str]) -> str:
+    modifiers, key = candidate
+    parts = [str(mod or "").strip() for mod in modifiers if str(mod or "").strip()]
+    parts.append(str(key or "").strip())
+    return "+".join(part for part in parts if part)
+
+
+def _serial_modifier_sequences(modifiers: tuple[str, ...]) -> list[tuple[str, ...]]:
+    if modifiers == ("capslock",):
+        return [
+            ("capslock",),
+            ("caps_lock",),
+            ("caps-lock",),
+            ("key_caps_lock",),
+            ("KEY_CAPS_LOCK",),
+        ]
+    if modifiers == ("shift",):
+        return [
+            ("shift",),
+            ("key_shift",),
+            ("KEY_SHIFT",),
+            ("modifier_shift",),
+            ("lshift",),
+            ("rshift",),
+            ("leftshift",),
+            ("rightshift",),
+            ("left_shift",),
+            ("right_shift",),
+            ("left-shift",),
+            ("right-shift",),
+            ("shiftleft",),
+            ("shiftright",),
+            ("shift_l",),
+            ("shift_r",),
+            ("key_left_shift",),
+            ("key_right_shift",),
+            ("KEY_LEFT_SHIFT",),
+            ("KEY_RIGHT_SHIFT",),
+        ]
+    return [tuple(str(mod or "").strip() for mod in modifiers if str(mod or "").strip())]
+
+
+def _send_serial_key_candidate(session, candidate: tuple[tuple[str, ...], str], hold: int) -> tuple[bool, str]:
+    modifiers, key = candidate
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        return False, "Key is empty."
+    if "|" in clean_key:
+        return False, "Pico text playback cannot send the '|' character with the current firmware command format."
+    modifier_sequences = _serial_modifier_sequences(tuple(modifiers or ()))
+    last_message = ""
+    for modifier_sequence in modifier_sequences:
+        if any("|" in str(mod or "") for mod in modifier_sequence):
+            return False, "Pico text playback cannot send a modifier containing '|' with the current firmware command format."
+        if modifiers == ("capslock",):
+            for caps_key in modifier_sequence:
+                ok, message = session.tap(caps_key, hold)
+                if not ok:
+                    last_message = message
+                    continue
+                ok, message = session.tap(clean_key, hold)
+                if not ok:
+                    last_message = message
+                    session.tap(caps_key, hold)
+                    continue
+                off_ok, off_message = session.tap(caps_key, hold)
+                if off_ok:
+                    return True, ""
+                last_message = off_message
+            continue
+        if not modifier_sequence:
+            return session.tap(clean_key, hold)
+        pressed = False
+        ok = True
+        for modifier in modifier_sequence:
+            ok, message = session.key_down(modifier)
+            if not ok:
+                last_message = message
+                break
+            pressed = True
+        if ok:
+            ok, message = session.tap(clean_key, hold)
+            if not ok:
+                last_message = message
+        if pressed:
+            release_ok, release_message = session.release_all()
+            if ok and not release_ok:
+                ok = False
+                last_message = release_message
+        if ok:
+            return True, ""
+    return False, last_message or "tap failed"
+
+
 def _send_serial_text_action(serial_sessions, text: str, hold_ms: int, stop_event=None) -> tuple[bool, str]:
     clean = str(text or "")
     if clean == "":
         return False, "Text action is empty."
     hold = _text_key_hold_ms(hold_ms)
     char_gap = _text_inter_char_seconds()
-    for ch in clean:
+    total_chars = len(clean)
+    for char_index, ch in enumerate(clean, start=1):
         if stop_event is not None and stop_event.is_set():
             return False, "Playback stopped."
-        key = _serial_key_for_text_char(ch)
-        if key is None:
+        key_candidates = _serial_key_candidates_for_text_char(ch)
+        if not key_candidates:
             continue
-        if "|" in key:
-            return False, "Pico text playback cannot send the '|' character with the current firmware command format."
         for session in list(serial_sessions or []):
-            ok, message = session.tap(key, hold)
+            last_message = ""
+            attempted: list[str] = []
+            ok = False
+            for candidate in key_candidates:
+                attempted.append(_serial_key_candidate_label(candidate))
+                ok, message = _send_serial_key_candidate(session, candidate, hold)
+                if ok:
+                    break
+                last_message = message
             if not ok:
-                return ok, message
+                tried = f" Tried: {', '.join(attempted)}." if attempted else ""
+                return False, (
+                    f"Pico text character {_text_char_label(ch)} at {char_index}/{total_chars} failed: "
+                    f"{last_message or 'tap failed'}.{tried}"
+                )
         if char_gap > 0.0:
             time.sleep(char_gap)
     return True, ""
