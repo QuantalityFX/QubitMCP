@@ -124,6 +124,15 @@ STT_STOP_SPEAKING_PHRASES = (
     "stop playback",
 )
 CHATBOT_NODE_KINDS = {"chatbot", "chat bot", "chat_bot"}
+TRANSLATOR_NODE_KINDS = {
+    "translator",
+    "translate",
+    "translation",
+    "direct_translator",
+    "direct translator",
+    "voice_translator",
+    "voice translator",
+}
 # Only treat narrow relay/proxy nodes as auto speech sources.
 # This keeps auto speech working through common pass-through nodes
 # without matching unrelated agent chains.
@@ -142,6 +151,8 @@ MEDIGATOR_SPEECH_TOKEN_KEY = "__medigator_speech_token"
 MEDIGATOR_SPEECH_SESSION_TOKEN_KEY = "__medigator_speech_session_token"
 CHATBOT_PROMPT_SESSION_TOKEN_KEY = "__chatbot_prompt_session_token"
 CHATBOT_RESPONSE_TOKEN_KEY = "__chatbot_response_token"
+TRANSLATOR_OUTPUT_TOKEN_KEY = "__translator_output_token"
+TRANSLATOR_SESSION_TOKEN_KEY = "__translator_session_token"
 DATABASE_NODE_KINDS = {"database"}
 CHATBOT_DB_NAME = "my_database"
 CHATBOT_DEFAULT_COLLECTION = "EchoGragh"
@@ -530,6 +541,9 @@ def _cache_node_info(node_item, text: str) -> bool:
 def _set_node_info(node_item, text: str) -> None:
     if not _cache_node_info(node_item, text):
         return
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
     scene = node_item.scene() if hasattr(node_item, "scene") else None
     if scene is None:
         return
@@ -654,6 +668,8 @@ def _auto_speech_source_kind(node_item) -> str:
     kind = _kind_of_item(node_item)
     if kind in CHATBOT_NODE_KINDS:
         return "chatbot"
+    if kind in TRANSLATOR_NODE_KINDS:
+        return "translator"
     if kind in MEDIGATOR_NODE_KINDS:
         return "mediator"
     return ""
@@ -663,6 +679,8 @@ def _auto_speech_source_label(node_item) -> str:
     kind = _auto_speech_source_kind(node_item)
     if kind == "mediator":
         return "Mediator"
+    if kind == "translator":
+        return "Translator"
     if kind == "chatbot":
         return "Chatbot"
     return "Auto source"
@@ -1002,10 +1020,30 @@ def _latest_mediator_response(_scene, mediator_item) -> tuple[str, str, str]:
     return text, token, ""
 
 
+def _latest_translator_response(_scene, translator_item) -> tuple[str, str, str]:
+    if translator_item is None:
+        return "", "", "Translator input is unavailable."
+    model = getattr(translator_item, "model", None)
+    if model is None:
+        return "", "", "Translator input is unavailable."
+    text = (
+        str(getattr(model, "info", "") or "").strip()
+        or _param_value(model, "translation", "").strip()
+    )
+    token = _param_value(model, TRANSLATOR_OUTPUT_TOKEN_KEY, "").strip()
+    if not token and text:
+        token = f"translator:{hashlib.sha1(text.encode('utf-8', errors='ignore')).hexdigest()}"
+    if not text:
+        return "", token, "No Translator output available yet."
+    return text, token, ""
+
+
 def _latest_auto_speech_response(scene, source_item) -> tuple[str, str, str]:
     kind = _auto_speech_source_kind(source_item)
     if kind == "mediator":
         return _latest_mediator_response(scene, source_item)
+    if kind == "translator":
+        return _latest_translator_response(scene, source_item)
     return _latest_chatbot_response(scene, source_item)
 
 
@@ -1020,6 +1058,11 @@ def _auto_speech_session_token(source_item, response_token: str = "") -> str:
     if kind == "chatbot":
         return (
             _param_value(model, CHATBOT_PROMPT_SESSION_TOKEN_KEY, "").strip()
+            or str(response_token or "").strip()
+        )
+    if kind == "translator":
+        return (
+            _param_value(model, TRANSLATOR_SESSION_TOKEN_KEY, "").strip()
             or str(response_token or "").strip()
         )
     return str(response_token or "").strip()
@@ -1862,6 +1905,8 @@ def build_ports(node_item) -> None:
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("text")
         node_item.ensure_input(AUDIO_INPUT_PORT)
+    if hasattr(node_item, "ensure_output"):
+        node_item.ensure_output("text")
 
 
 class VoiceActorWidget(QtWidgets.QWidget):
@@ -1947,6 +1992,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._stt_session_has_new_text = False
         self._stt_session_base_text = ""
         self._stt_last_pause_snapshot = ""
+        self._stt_live_auto_publish = False
+        self._stt_live_published_text = ""
         self._stt_prompt_lock = threading.Lock()
         self._stt_prompt_stop_event = threading.Event()
         self._stt_prompt_thread = None
@@ -2556,7 +2603,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 continue
             if kind == "note":
                 note_input_connected = True
-            if kind in CHATBOT_NODE_KINDS or kind in MEDIGATOR_NODE_KINDS:
+            if _auto_speech_source_kind(src_item):
                 if chatbot_input_item is None:
                     chatbot_input_item = src_item
                 continue
@@ -3301,10 +3348,15 @@ class VoiceActorWidget(QtWidgets.QWidget):
             capture_config = dict(capture_config)
             if str(capture_config.get("source_mode", "") or "").strip().lower() == "output_device":
                 capture_config["threshold"] = min(float(capture_config.get("threshold", 0.001) or 0.001), 0.001)
+        live_capture = bool(capture_config and capture_config.get("live_mode"))
+        self._stt_live_auto_publish = bool(live_capture and send_mode == STT_SEND_MODE_AUTO_RESPOND)
+        self._stt_live_published_text = ""
         if send_mode == STT_SEND_MODE_MANUAL:
             send_hint = "Press Stop to send."
         elif send_mode == STT_SEND_MODE_ASK_FIRST:
             send_hint = "Ask First confirms before sending."
+        elif live_capture:
+            send_hint = "Live capture sends short chunks."
         else:
             send_hint = "Auto Respond sends after a pause."
         language_label = _stt_language_name(stt_language)
@@ -3797,6 +3849,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         selected_language = _normalize_stt_language(stt_language)
         audio_capture_config = dict(capture_config or {})
         audio_capture_label = str(capture_label or "").strip()
+        live_capture_auto_send = bool(audio_capture_config.get("live_mode")) and selected_send_mode == STT_SEND_MODE_AUTO_RESPOND
         wait_timeout = getattr(sr, "WaitTimeoutError", None) if sr is not None else None
         unknown_value = getattr(sr, "UnknownValueError", None) if sr is not None else None
         request_error = getattr(sr, "RequestError", None) if sr is not None else None
@@ -3845,6 +3898,18 @@ class VoiceActorWidget(QtWidgets.QWidget):
             clean_chunk = str(chunk or "").strip()
             if not clean_chunk:
                 return _maybe_handle_idle_send(time.monotonic())
+
+            def _send_live_chunk() -> bool:
+                nonlocal last_voice_activity
+                nonlocal send_confirmed
+                if not live_capture_auto_send:
+                    return False
+                send_confirmed = True
+                last_voice_activity = time.monotonic()
+                self._stt_status.emit("Sending live audio chunk...")
+                self._set_stt_state(stop_requested=True, paused=False)
+                return True
+
             if self._is_stop_speaking_command(clean_chunk):
                 awaiting_send_confirmation = False
                 prompt_response_until = 0.0
@@ -3884,12 +3949,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 last_voice_activity = time.monotonic()
                 self._stt_status.emit("Continuing to listen...")
                 self._stt_chunk.emit(clean_chunk)
-                return False
+                return _send_live_chunk()
             self._stop_stt_send_confirmation_prompt()
             transcript_parts.append(clean_chunk)
             last_voice_activity = time.monotonic()
             self._stt_chunk.emit(clean_chunk)
-            return False
+            return _send_live_chunk()
 
         class _AudioCaptureLoopComplete(Exception):
             pass
@@ -3933,8 +3998,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
                         prompt_response_until = 0.0
                         last_voice_activity = now
                         self._stt_status.emit("Continuing to listen...")
+                    capture_call_config = audio_capture_config
+                    if transcript_parts and not live_capture_auto_send and selected_send_mode != STT_SEND_MODE_MANUAL:
+                        capture_call_config = dict(audio_capture_config)
+                        capture_call_config["live_mode"] = False
                     audio_chunk, capture_error = audio_capture_spec.capture_next_phrase(
-                        audio_capture_config,
+                        capture_call_config,
                         should_stop=_capture_should_stop,
                         is_paused=_capture_is_paused,
                     )
@@ -4080,6 +4149,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         self._stt_session_has_new_text = True
         self._append_transcript(clean, publish=False)
+        if bool(getattr(self, "_stt_live_auto_publish", False)):
+            _publish_voice_command(self._node_item, clean)
+            self._stt_live_published_text = clean
         self._update_control_states()
 
     @QtCore.Slot(str, str)
@@ -4100,9 +4172,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if had_new_text:
             text = self._transcript.toPlainText() or ""
             if send_completed:
-                _publish_voice_command(self._node_item, text)
+                if not bool(getattr(self, "_stt_live_auto_publish", False)):
+                    _publish_voice_command(self._node_item, text)
             else:
                 _set_node_info(self._node_item, text)
+        self._stt_live_auto_publish = False
+        self._stt_live_published_text = ""
         if error:
             if clean_error == "__sent__":
                 if had_new_text:

@@ -1164,7 +1164,12 @@ class ChatbotWidget(QtWidgets.QWidget):
         val = self._resolve_prompt_inputs(prompt_node)
         model_raw = (val("model") or "").strip()
         provider = gpt_spec._normalize_provider(val("provider"), model_raw)
-        model = model_raw or (gpt_spec.DEFAULT_OLLAMA_MODEL if provider == "ollama" else gpt_spec.DEFAULT_MODEL)
+        if provider == "ollama":
+            model = model_raw or gpt_spec.DEFAULT_OLLAMA_MODEL
+        elif provider == "deepseek":
+            model = model_raw or "deepseek-chat"
+        else:
+            model = model_raw or gpt_spec.DEFAULT_MODEL
         temperature = gpt_spec.DEFAULT_TEMPERATURE
         try:
             temperature = float((val("temperature") or "").strip() or gpt_spec.DEFAULT_TEMPERATURE)
@@ -1173,10 +1178,12 @@ class ChatbotWidget(QtWidgets.QWidget):
 
         api_key = ""
         ollama_url = ""
-        if provider == "openai":
-            api_key = (val("api_key") or "").strip() or (os.environ.get("OPENAI_API_KEY") or "").strip()
+        if provider in {"openai", "deepseek"}:
+            env_key = "DEEPSEEK_API_KEY" if provider == "deepseek" else "OPENAI_API_KEY"
+            provider_label = "DeepSeek" if provider == "deepseek" else "OpenAI"
+            api_key = (val("api_key") or "").strip() or (os.environ.get(env_key) or "").strip()
             if not api_key:
-                QtWidgets.QMessageBox.warning(self, "Chatbot", "Provide an API key for the connected LLM Prompt node.")
+                QtWidgets.QMessageBox.warning(self, "Chatbot", f"Provide a {provider_label} API key for the connected LLM Prompt node.")
                 return
         else:
             ollama_url = gpt_spec._normalize_ollama_url(val("ollama_url"))
@@ -1219,6 +1226,8 @@ class ChatbotWidget(QtWidgets.QWidget):
             try:
                 if provider == "openai":
                     raw_response_text, raw_payload = gpt_spec._call_openai(api_key, model, temperature, combined_prompt)
+                elif provider == "deepseek":
+                    raw_response_text, raw_payload = gpt_spec._call_deepseek(api_key, model, temperature, combined_prompt)
                 else:
                     raw_response_text, raw_payload = gpt_spec._call_ollama(ollama_url, model, temperature, combined_prompt)
                 raw_response_text = (raw_response_text or "").strip()

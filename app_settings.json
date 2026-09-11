@@ -8,7 +8,7 @@
   },
   "view_mode": "2d",
   "voice_audio_mode": "bilateral",
-  "voice_mic_device_index": 23,
+  "voice_mic_device_index": 1,
   "shadow_quality": "high",
   "cast_shadows": true,
   "self_shadows": true,

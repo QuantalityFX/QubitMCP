@@ -27,6 +27,8 @@ MODEL_PRESETS = [
     ("OpenAI: gpt-5.1", "openai", "gpt-5.1"),
     ("OpenAI: gpt-4.1", "openai", "gpt-4.1"),
     ("OpenAI: gpt-4.1-mini", "openai", "gpt-4.1-mini"),
+    ("DeepSeek: deepseek-chat", "deepseek", "deepseek-chat"),
+    ("DeepSeek: deepseek-reasoner", "deepseek", "deepseek-reasoner"),
     ("Ollama: deepseek-r1:14b", "ollama", "deepseek-r1:14b"),
     ("Ollama: deepseek-r1:1.5b", "ollama", "deepseek-r1:1.5b"),
 ]
@@ -144,15 +146,25 @@ def build_ports(node_item) -> None:
 
 def _normalize_provider(raw: str, model: str) -> str:
     val = (raw or "").strip().lower()
+    model_lower = (model or "").strip().lower()
+    if "deepseek-r1" in model_lower or "ollama" in model_lower:
+        return "ollama"
+    if "deepseek" in model_lower:
+        return "deepseek"
     if val in {"openai", "oa", "gpt"}:
         return "openai"
-    if val in {"ollama", "local", "deepseek"}:
+    if val in {"deepseek", "deep seek", "ds"}:
+        return "deepseek"
+    if val in {"ollama", "local"}:
         return "ollama"
-    if not val:
-        model_lower = (model or "").strip().lower()
-        if "deepseek" in model_lower or "ollama" in model_lower:
-            return "ollama"
     return "openai"
+
+def _provider_label(provider: str) -> str:
+    if provider == "deepseek":
+        return "DeepSeek"
+    if provider == "ollama":
+        return "Ollama"
+    return "OpenAI"
 
 def _normalize_ollama_url(raw: str) -> str:
     val = (raw or "").strip()
@@ -477,6 +489,34 @@ def _call_openai(api_key: str, model: str, temperature: float, prompt_text: str)
         raise RuntimeError(f"OpenAI request failed: {err.reason}") from err
     return _extract_response_text(payload), payload
 
+def _call_deepseek(api_key: str, model: str, temperature: float, prompt_text: str) -> tuple[str, dict]:
+    body = {
+        "model": model or "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt_text}],
+        "temperature": max(0.0, min(2.0, temperature)),
+        "max_tokens": 2048,
+        "stream": False,
+    }
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.deepseek.com/chat/completions",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", "ignore")
+        raise RuntimeError(f"DeepSeek request failed: {err.code} {err.reason}\n{detail}") from err
+    except urllib.error.URLError as err:
+        raise RuntimeError(f"DeepSeek request failed: {err.reason}") from err
+    return _extract_response_text(payload), payload
+
 def _parse_ollama_payload(raw: str) -> dict:
     try:
         payload = json.loads(raw)
@@ -702,6 +742,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         wired = _val("api_key").strip()
         if wired:
             return wired
+        provider = _normalize_provider(_val("provider"), _val("model"))
+        if provider == "deepseek":
+            return os.environ.get("DEEPSEEK_API_KEY", "").strip()
         return os.environ.get("OPENAI_API_KEY", "").strip()
 
     def _ollama_url() -> str:
@@ -715,18 +758,23 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
         model_raw = (_val("model") or "").strip()
         provider = _normalize_provider(_val("provider"), model_raw)
-        model = model_raw or (DEFAULT_OLLAMA_MODEL if provider == "ollama" else DEFAULT_MODEL)
-        provider_label = "OpenAI" if provider == "openai" else "Ollama"
+        if provider == "ollama":
+            model = model_raw or DEFAULT_OLLAMA_MODEL
+        elif provider == "deepseek":
+            model = model_raw or "deepseek-chat"
+        else:
+            model = model_raw or DEFAULT_MODEL
+        provider_label = _provider_label(provider)
 
         api_key = ""
         ollama_url = ""
-        if provider == "openai":
+        if provider in {"openai", "deepseek"}:
             api_key = _api_key()
             if not api_key:
                 QtWidgets.QMessageBox.warning(
                     card,
                     APP_TITLE,
-                    "Provide an API key (input port, param, or OPENAI_API_KEY env var).",
+                    f"Provide a {provider_label} API key (input port, param, or environment variable).",
                 )
                 return
         else:
@@ -784,6 +832,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             try:
                 if provider == "openai":
                     response_text, raw_payload = _call_openai(api_key, model, temperature, combined_prompt)
+                elif provider == "deepseek":
+                    response_text, raw_payload = _call_deepseek(api_key, model, temperature, combined_prompt)
                 else:
                     response_text, raw_payload = _call_ollama(ollama_url, model, temperature, combined_prompt)
                 response_text = (response_text or "").strip()
@@ -822,26 +872,63 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _set_busy(True, "sending")
         threading.Thread(target=_worker, daemon=True).start()
 
-    current_model = (_param_value("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    def _default_model_for_provider(provider: str) -> str:
+        if provider == "ollama":
+            return DEFAULT_OLLAMA_MODEL
+        if provider == "deepseek":
+            return "deepseek-chat"
+        return DEFAULT_MODEL
+
+    current_model = (_param_value("model") or "").strip()
     current_provider = _normalize_provider(_param_value("provider"), current_model)
+    if not current_model:
+        current_model = _default_model_for_provider(current_provider)
+
+    provider_combo = QtWidgets.QComboBox()
+    for label, provider in (("OpenAI", "openai"), ("DeepSeek", "deepseek"), ("Ollama", "ollama")):
+        provider_combo.addItem(label, provider)
+    provider_idx = provider_combo.findData(current_provider)
+    provider_combo.setCurrentIndex(max(0, provider_idx))
 
     model_combo = QtWidgets.QComboBox()
-    for label, provider, model_name in MODEL_PRESETS:
-        model_combo.addItem(label, {"provider": provider, "model": model_name})
+    model_combo.setEditable(True)
 
-    def _find_model_index(provider: str, model_name: str) -> int:
-        for i in range(model_combo.count()):
-            data = model_combo.itemData(i) or {}
-            if data.get("provider") == provider and data.get("model") == model_name:
-                return i
-        return -1
+    def _model_presets_for_provider(provider: str) -> list[tuple[str, str]]:
+        return [
+            (label, model_name)
+            for label, preset_provider, model_name in MODEL_PRESETS
+            if preset_provider == provider
+        ]
 
-    idx = _find_model_index(current_provider, current_model)
-    if idx < 0:
-        label_prefix = "OpenAI" if current_provider == "openai" else "Ollama"
-        model_combo.addItem(f"{label_prefix}: {current_model}", {"provider": current_provider, "model": current_model})
-        idx = model_combo.count() - 1
-    model_combo.setCurrentIndex(idx)
+    def _populate_model_combo(provider: str, selected_model: str) -> None:
+        model_combo.blockSignals(True)
+        try:
+            model_combo.clear()
+            presets = _model_presets_for_provider(provider)
+            for label, model_name in presets:
+                model_combo.addItem(label, {"model": model_name})
+            clean_model = (selected_model or "").strip() or _default_model_for_provider(provider)
+            idx = -1
+            for i in range(model_combo.count()):
+                data = model_combo.itemData(i) or {}
+                if data.get("model") == clean_model:
+                    idx = i
+                    break
+            if idx < 0:
+                model_combo.addItem(clean_model, {"model": clean_model})
+                idx = model_combo.count() - 1
+            model_combo.setCurrentIndex(max(0, idx))
+            model_combo.setEditText(clean_model)
+        finally:
+            model_combo.blockSignals(False)
+
+    _populate_model_combo(current_provider, current_model)
+
+    temperature_edit = QtWidgets.QLineEdit((_param_value("temperature") or str(DEFAULT_TEMPERATURE)).strip())
+    temperature_edit.setPlaceholderText(str(DEFAULT_TEMPERATURE))
+    temperature_edit.editingFinished.connect(
+        lambda: _set_param("temperature", temperature_edit.text().strip() or str(DEFAULT_TEMPERATURE))
+    )
 
     api_key_edit = QtWidgets.QLineEdit(_param_value("api_key"))
     api_key_edit.setPlaceholderText("sk-...")
@@ -851,30 +938,48 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     ollama_url_edit.setPlaceholderText(DEFAULT_OLLAMA_URL)
     ollama_url_edit.editingFinished.connect(lambda: _set_param("ollama_url", ollama_url_edit.text().strip()))
 
-    api_label = QtWidgets.QLabel("OpenAI API Key")
+    api_label = QtWidgets.QLabel("API Key")
     ollama_label = QtWidgets.QLabel("Ollama URL")
 
     form = QtWidgets.QFormLayout()
+    form.addRow("Provider", provider_combo)
     form.addRow("Model", model_combo)
+    form.addRow("Temperature", temperature_edit)
     form.addRow(api_label, api_key_edit)
     form.addRow(ollama_label, ollama_url_edit)
 
     def _apply_provider_ui(provider: str) -> None:
-        is_openai = provider == "openai"
-        api_label.setVisible(is_openai)
-        api_key_edit.setVisible(is_openai)
-        ollama_label.setVisible(not is_openai)
-        ollama_url_edit.setVisible(not is_openai)
+        provider_label = _provider_label(provider)
+        uses_api_key = provider in {"openai", "deepseek"}
+        api_label.setText(f"{provider_label} API Key" if uses_api_key else "API Key")
+        api_key_edit.setEnabled(uses_api_key)
+        ollama_url_edit.setEnabled(provider == "ollama")
+
+    def _commit_model(provider: str | None = None) -> None:
+        clean_provider = provider or str(provider_combo.currentData() or "openai")
+        data = model_combo.currentData() or {}
+        model_name = str(data.get("model") or model_combo.currentText() or "").strip()
+        if not model_name:
+            model_name = _default_model_for_provider(clean_provider)
+            model_combo.setEditText(model_name)
+        _set_param("provider", clean_provider)
+        _set_param("model", model_name)
+        _apply_provider_ui(clean_provider)
+
+    def _select_provider(_idx: int) -> None:
+        provider = str(provider_combo.currentData() or "openai")
+        model_name = _default_model_for_provider(provider)
+        _populate_model_combo(provider, model_name)
+        _commit_model(provider)
 
     def _select_model(_idx: int) -> None:
-        data = model_combo.currentData() or {}
-        provider = _normalize_provider(data.get("provider"), data.get("model") or "")
-        model_name = (data.get("model") or model_combo.currentText()).strip()
-        _set_param("provider", provider)
-        _set_param("model", model_name)
-        _apply_provider_ui(provider)
+        _commit_model()
 
+    provider_combo.currentIndexChanged.connect(_select_provider)
     model_combo.currentIndexChanged.connect(_select_model)
+    line_edit = model_combo.lineEdit()
+    if line_edit is not None:
+        line_edit.editingFinished.connect(lambda: _commit_model())
     _apply_provider_ui(current_provider)
 
     controls = QtWidgets.QWidget()

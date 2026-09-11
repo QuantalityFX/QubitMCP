@@ -35,7 +35,7 @@ AUDIO_CAPTURE_NODE_ALIASES = ["audio capture", "audiocapture"]
 AUDIO_CAPTURE_NODE_KINDS = {AUDIO_CAPTURE_NODE_KIND, *AUDIO_CAPTURE_NODE_ALIASES}
 
 AUDIO_CAPTURE_BODY_W = 420
-AUDIO_CAPTURE_BODY_H = 172
+AUDIO_CAPTURE_BODY_H = 196
 
 SOURCE_OUTPUT_DEVICE = "output_device"
 SOURCE_INPUT_DEVICE = "input_device"
@@ -50,13 +50,17 @@ _PARAM_THRESHOLD = "threshold"
 _PARAM_SILENCE_MS = "silence_ms"
 _PARAM_PHRASE_MS = "phrase_ms"
 _PARAM_BACKEND = "backend"
+_PARAM_LIVE_MODE = "live_mode"
 _HIDDEN_PARAM = "__ui_hidden_params"
 
 _DEFAULT_SAMPLE_RATE = 16000
 _DEFAULT_THRESHOLD = 0.012
 _DEFAULT_SILENCE_MS = 850
 _DEFAULT_PHRASE_MS = 20000
-_BLOCK_MS = 100
+_DEFAULT_LIVE_MODE = True
+_LIVE_PHRASE_MS = 2500
+_LISTEN_WAIT_TIMEOUT_SECONDS = 1.2
+_BLOCK_MS = 50
 
 _PARAM_DEFAULTS = {
     _PARAM_SOURCE_MODE: SOURCE_OUTPUT_DEVICE,
@@ -68,6 +72,7 @@ _PARAM_DEFAULTS = {
     _PARAM_SILENCE_MS: str(_DEFAULT_SILENCE_MS),
     _PARAM_PHRASE_MS: str(_DEFAULT_PHRASE_MS),
     _PARAM_BACKEND: "auto",
+    _PARAM_LIVE_MODE: "1",
 }
 
 
@@ -111,6 +116,21 @@ def _coerce_float(value: Any, default: float, *, minimum: float | None = None, m
     if maximum is not None:
         out = min(float(maximum), out)
     return out
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    text = str(value).strip().lower()
+    if not text:
+        return bool(default)
+    if text in {"1", "true", "yes", "y", "on", "enabled", "live"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "disabled"}:
+        return False
+    return bool(default)
 
 
 def _normalize_source_mode(value: str) -> str:
@@ -383,6 +403,7 @@ def config_from_node_item(node_item) -> dict:
         "silence_ms": _coerce_int(_param_value(model, _PARAM_SILENCE_MS, _DEFAULT_SILENCE_MS), _DEFAULT_SILENCE_MS, minimum=150, maximum=5000),
         "phrase_ms": _coerce_int(_param_value(model, _PARAM_PHRASE_MS, _DEFAULT_PHRASE_MS), _DEFAULT_PHRASE_MS, minimum=1000, maximum=120000),
         "backend": _param_value(model, _PARAM_BACKEND, "auto") or "auto",
+        "live_mode": _coerce_bool(_param_value(model, _PARAM_LIVE_MODE, "1"), _DEFAULT_LIVE_MODE),
     }
 
 
@@ -485,6 +506,21 @@ def _pyaudio_to_mono(pcm: bytes, channels: int) -> bytes:
         return pcm or b""
 
 
+def _live_mode_enabled(config: dict) -> bool:
+    return _coerce_bool((config or {}).get("live_mode"), _DEFAULT_LIVE_MODE)
+
+
+def _phrase_ms_for_config(config: dict) -> int:
+    phrase_ms = _coerce_int((config or {}).get("phrase_ms"), _DEFAULT_PHRASE_MS, minimum=1000, maximum=120000)
+    if _live_mode_enabled(config):
+        return min(phrase_ms, _LIVE_PHRASE_MS)
+    return phrase_ms
+
+
+def _wait_timeout_for_config(config: dict) -> float | None:
+    return None if _live_mode_enabled(config) else _LISTEN_WAIT_TIMEOUT_SECONDS
+
+
 def _record_phrase(
     read_block: Callable[[], bytes],
     *,
@@ -492,6 +528,7 @@ def _record_phrase(
     threshold: float,
     silence_ms: int,
     phrase_ms: int,
+    wait_timeout_seconds: float | None = 1.2,
     should_stop: Callable[[], bool] | None = None,
     is_paused: Callable[[], bool] | None = None,
     source_label: str = "",
@@ -503,6 +540,7 @@ def _record_phrase(
     phrase_started_at = wait_started_at
     silence_seconds = max(0.15, float(silence_ms or _DEFAULT_SILENCE_MS) / 1000.0)
     phrase_seconds = max(1.0, float(phrase_ms or _DEFAULT_PHRASE_MS) / 1000.0)
+    wait_timeout = None if wait_timeout_seconds is None else max(0.1, float(wait_timeout_seconds or 0.0))
 
     while True:
         if should_stop and should_stop():
@@ -510,7 +548,7 @@ def _record_phrase(
         if is_paused and is_paused():
             return None, ""
         now = time.monotonic()
-        if not started and (now - wait_started_at) >= 1.2:
+        if not started and wait_timeout is not None and (now - wait_started_at) >= wait_timeout:
             return None, ""
         if started and (now - phrase_started_at) >= phrase_seconds:
             break
@@ -564,7 +602,8 @@ def _capture_next_phrase_soundcard(
                 sample_rate=sample_rate,
                 threshold=_coerce_float(config.get("threshold"), _DEFAULT_THRESHOLD, minimum=0.001, maximum=0.5),
                 silence_ms=_coerce_int(config.get("silence_ms"), _DEFAULT_SILENCE_MS, minimum=150, maximum=5000),
-                phrase_ms=_coerce_int(config.get("phrase_ms"), _DEFAULT_PHRASE_MS, minimum=1000, maximum=120000),
+                phrase_ms=_phrase_ms_for_config(config),
+                wait_timeout_seconds=_wait_timeout_for_config(config),
                 should_stop=should_stop,
                 is_paused=is_paused,
                 source_label=source_label,
@@ -613,7 +652,8 @@ def _capture_next_phrase_pyaudio(
             sample_rate=sample_rate,
             threshold=_coerce_float(config.get("threshold"), _DEFAULT_THRESHOLD, minimum=0.001, maximum=0.5),
             silence_ms=_coerce_int(config.get("silence_ms"), _DEFAULT_SILENCE_MS, minimum=150, maximum=5000),
-            phrase_ms=_coerce_int(config.get("phrase_ms"), _DEFAULT_PHRASE_MS, minimum=1000, maximum=120000),
+            phrase_ms=_phrase_ms_for_config(config),
+            wait_timeout_seconds=_wait_timeout_for_config(config),
             should_stop=should_stop,
             is_paused=is_paused,
             source_label=str(entry.get("name", "") or "Input device"),
@@ -709,6 +749,8 @@ class AudioCaptureWidget(QtWidgets.QWidget):
 
         self._refresh_btn = QtWidgets.QPushButton("Refresh")
         self._test_btn = QtWidgets.QPushButton("Test")
+        self._live_check = QtWidgets.QCheckBox("Live")
+        self._live_check.setToolTip("Keep the capture stream waiting for random speech and split long speech into short live chunks.")
         self._level = QtWidgets.QProgressBar()
         self._level.setRange(0, 100)
         self._level.setTextVisible(False)
@@ -730,6 +772,7 @@ class AudioCaptureWidget(QtWidgets.QWidget):
         )
         self._refresh_btn.setStyleSheet(button_style)
         self._test_btn.setStyleSheet(button_style)
+        self._live_check.setStyleSheet("QCheckBox{color:#cbd5e1;font-size:11px;}")
         self._level.setStyleSheet(
             "QProgressBar{background:#0f1216;border:1px solid #334155;border-radius:4px;}"
             "QProgressBar::chunk{background:#14b8a6;border-radius:3px;}"
@@ -742,6 +785,7 @@ class AudioCaptureWidget(QtWidgets.QWidget):
         top.addWidget(self._mode_combo, 0)
         top.addWidget(self._refresh_btn, 0)
         top.addWidget(self._test_btn, 0)
+        top.addWidget(self._live_check, 0)
 
         device_row = QtWidgets.QHBoxLayout()
         device_row.setContentsMargins(0, 0, 0, 0)
@@ -764,6 +808,15 @@ class AudioCaptureWidget(QtWidgets.QWidget):
         self._level_done.connect(self._on_level_done)
 
         mode = _normalize_source_mode(_param_value(getattr(node_item, "model", None), _PARAM_SOURCE_MODE, SOURCE_OUTPUT_DEVICE))
+        self._live_check.blockSignals(True)
+        self._live_check.setChecked(
+            _coerce_bool(
+                _param_value(getattr(node_item, "model", None), _PARAM_LIVE_MODE, "1"),
+                _DEFAULT_LIVE_MODE,
+            )
+        )
+        self._live_check.blockSignals(False)
+        self._live_check.toggled.connect(self._on_live_changed)
         for idx in range(self._mode_combo.count()):
             if str(self._mode_combo.itemData(idx) or "") == mode:
                 self._mode_combo.setCurrentIndex(idx)
@@ -829,6 +882,15 @@ class AudioCaptureWidget(QtWidgets.QWidget):
         if self._syncing:
             return
         self._persist_selected_target()
+
+    def _on_live_changed(self, checked: bool) -> None:
+        if self._syncing:
+            return
+        _set_node_param(self._node_item, _PARAM_LIVE_MODE, "1" if checked else "0")
+        if checked:
+            self._set_status("Live capture enabled. Long speech is split into short chunks.")
+        else:
+            self._set_status("Live capture disabled. Capture waits for phrase endings.")
 
     def _test_level(self) -> None:
         if self._testing:

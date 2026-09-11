@@ -3346,6 +3346,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = max(node_w, int(getattr(_audio_capture_spec, "AUDIO_CAPTURE_BODY_W", node_w)))
             except Exception:
                 pass
+        elif kind in ("translator", "translate", "translation", "direct_translator", "direct translator", "voice_translator", "voice translator"):
+            body_h = 224
+            node_w = max(self._BASE_W, 430)
+            try:
+                from nodes.translator import spec as _translator_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_translator_spec, "TRANSLATOR_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_translator_spec, "TRANSLATOR_BODY_W", node_w)))
+            except Exception:
+                pass
         elif kind in ("qubit_deck_controller", "qubit deck controller", "qubitdeckcontroller"):
             # Keep lower frame space for the last invoked deck button thumbnail.
             qdeck_thumb = (self._param_value("__qdeck_last_thumbnail_source") or "").strip()
@@ -10146,6 +10155,8 @@ body {
                 icon_pm = node_icons._voice_actor_icon() or node_icons._audio_capture_icon() or node_icons._output_icon()
             elif kind_lower in ("audio_capture", "audio capture", "audiocapture"):
                 icon_pm = node_icons._audio_capture_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
+            elif kind_lower in ("translator", "translate", "translation", "direct_translator", "direct translator", "voice_translator", "voice translator"):
+                icon_pm = node_icons._llm_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
             elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
                 icon_pm = node_icons._mediator_icon() or node_icons._python_icon() or node_icons._output_icon()
             elif kind_lower in ("data_nexus", "data nexus", "data_graph", "data graph", "nexus"):

@@ -249,6 +249,8 @@ def _kind_label(kind: str) -> str:
         return "MiniMax H3 API Video"
     if key in ("minimax_tts_api", "minimax text to speech", "minimax speech api", "minimax tts", "minimax_speech", "minimax_text_to_speech"):
         return "MiniMax TTS API"
+    if key in ("translator", "translate", "translation", "direct_translator", "direct translator", "voice_translator", "voice translator"):
+        return "Translator"
     if key in ("wan22_video", "wan22", "wan 2.2 video", "wan2.2 video", "wan_video", "wan ti2v", "wan2.2 ti2v", "wan22_ti2v"):
         return "Wan 2.2 TI2V Video"
     if key in ("llm", "local_server", "localserver"):
@@ -342,6 +344,7 @@ _NODE_KIND_SEARCH_HINTS = {
     "llm_prompt": "ai llm prompt text",
     "chatbot": "chat conversation ai llm",
     "voice_actor": "voice speech tts audio actor",
+    "translator": "translator translate translation voice language chinese english direct low latency",
     "mediator_agent": "agent ai mediator assistant",
     "codex_sandbox": "codex sandbox cli agent workspace approval model config terminal login status",
     "librarian": "library search documents assets",
@@ -557,6 +560,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._voice_actor_icon() or node_icons._output_icon()
     elif key in ("audio_capture", "audio capture", "audiocapture"):
         icon_pm = node_icons._audio_capture_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
+    elif key in ("translator", "translate", "translation", "direct_translator", "direct translator", "voice_translator", "voice translator"):
+        icon_pm = node_icons._llm_icon() or node_icons._voice_actor_icon() or node_icons._output_icon()
     elif key in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
         icon_pm = node_icons._mediator_icon() or node_icons._python_icon() or node_icons._output_icon()
     elif key in ("codex_sandbox", "codex sandbox", "sandbox"):
@@ -772,6 +777,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "audio_capture",
+            "translator",
             "qubit_deck_controller",
             "data_nexus","skills","task",
             "llm_prompt","chatbot","voice_actor","mediator_agent","codex_sandbox","librarian","note","append","image_collection","database"

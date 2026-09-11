@@ -117,6 +117,7 @@ def register_defaults() -> None:
     register("workflow_task", stripe_color="#0f766e")
     register("codex_sandbox", stripe_color="#475569")
     register("audio_capture", stripe_color="#14b8a6")
+    register("translator", stripe_color="#22c55e")
     register("youtube_downloader", stripe_color="#dc2626")
     register("minimax_h3_video", stripe_color="#4f46e5")
     register("minimax_h3_api_video", stripe_color="#06b6d4")
@@ -149,6 +150,14 @@ def register_defaults() -> None:
             _chatbot.register(core=sys.modules[__name__])
     except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Chatbot auto-register failed:", exc)
+
+    # Auto-register Translator so direct voice translation graphs rebuild early.
+    try:
+        from nodes import translator as _translator  # type: ignore
+        if hasattr(_translator, "register"):
+            _translator.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Translator auto-register failed:", exc)
 
     # Auto-register Image Collection so its render hook is present even if loader plugins fail later
     try:

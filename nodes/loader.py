@@ -439,7 +439,18 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Voice Actor plugin import failed:", e)
 
-    # 11.6) Mediator Agent
+    # 11.6) Translator
+    try:
+        from nodes import translator
+        if hasattr(translator, "register"):
+            translator.register()
+            _safe_probe("translator")
+        else:
+            print("[EchoGraph] Translator module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Translator plugin import failed:", e)
+
+    # 11.7) Mediator Agent
     try:
         from nodes import mediator_agent
         if hasattr(mediator_agent, "register"):
@@ -450,7 +461,7 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Mediator Agent plugin import failed:", e)
 
-    # 11.7) Data Nexus
+    # 11.8) Data Nexus
     try:
         from nodes import data_nexus
         if hasattr(data_nexus, "register"):
@@ -461,7 +472,7 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Data Nexus plugin import failed:", e)
 
-    # 11.8) Task
+    # 11.9) Task
     try:
         from nodes import task
         if hasattr(task, "register"):
