@@ -24096,6 +24096,20 @@ void main() {
                     grid_offset_x = math.floor(grid_offset_x / spacing) * spacing
                     grid_offset_z = math.floor(grid_offset_z / spacing) * spacing
 
+                # Orbit/pan mode uses a world-anchored grid so it moves with the
+                # origin lines and scene objects. Fly mode retains its camera-
+                # centered grid behavior.
+                try:
+                    fly_mode = bool(getattr(self, "_fly_mode_enabled", False))
+                except Exception:
+                    fly_mode = False
+                world_anchored_grid = not fly_mode
+                if world_anchored_grid:
+                    grid_offset_x = 0.0
+                    grid_offset_z = 0.0
+                    fade_origin_x = 0.0
+                    fade_origin_z = 0.0
+
                 self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
                 try:
                     self._mgl_apply_shadow_uniforms(self._mgl_grid_prog)
@@ -24141,18 +24155,24 @@ void main() {
                     skip_x = None
                     skip_z = None
                     if spacing > 1e-6 and render_size > 0.0:
-                        try:
-                            skip_x = int(round((render_size - grid_offset_x) / spacing))
-                            if skip_x < 0 or skip_x >= steps:
+                        if world_anchored_grid:
+                            # The thick origin lines are drawn separately over
+                            # the center grid lines; do not remove an edge line.
+                            skip_x = steps // 2
+                            skip_z = steps // 2
+                        else:
+                            try:
+                                skip_x = int(round((render_size - grid_offset_x) / spacing))
+                                if skip_x < 0 or skip_x >= steps:
+                                    skip_x = None
+                            except Exception:
                                 skip_x = None
-                        except Exception:
-                            skip_x = None
-                        try:
-                            skip_z = int(round((render_size - grid_offset_z) / spacing))
-                            if skip_z < 0 or skip_z >= steps:
+                            try:
+                                skip_z = int(round((render_size - grid_offset_z) / spacing))
+                                if skip_z < 0 or skip_z >= steps:
+                                    skip_z = None
+                            except Exception:
                                 skip_z = None
-                        except Exception:
-                            skip_z = None
 
                     block_verts = steps * 2
                     if skip_x is None:

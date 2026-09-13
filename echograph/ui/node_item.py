@@ -9683,6 +9683,9 @@ body {
             elif kind_lower in ("codex_sandbox", "codex sandbox", "sandbox"):
                 # Sandbox icon floats above the node body and grows while zoomed out.
                 extra_top = 120.0
+            elif kind_lower in ("translator", "translate", "translation", "direct_translator", "direct translator", "voice_translator", "voice translator"):
+                # Translator icon floats above the node body.
+                extra_top = 120.0
             elif kind_lower in (
                 "database",
                 "llm",
