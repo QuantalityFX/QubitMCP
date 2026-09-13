@@ -450,6 +450,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Translator plugin import failed:", e)
 
+    # 11.65) OpenAI Realtime Translate
+    try:
+        from nodes import openai_realtime_translate
+        if hasattr(openai_realtime_translate, "register"):
+            openai_realtime_translate.register()
+            _safe_probe("openai_realtime_translate")
+        else:
+            print("[EchoGraph] OpenAI Realtime Translate module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] OpenAI Realtime Translate plugin import failed:", e)
+
     # 11.7) Mediator Agent
     try:
         from nodes import mediator_agent

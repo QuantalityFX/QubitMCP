@@ -778,6 +778,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
             "serial_com",
             "audio_capture",
             "translator",
+            "openai_realtime_translate",
             "qubit_deck_controller",
             "data_nexus","skills","task",
             "llm_prompt","chatbot","voice_actor","mediator_agent","codex_sandbox","librarian","note","append","image_collection","database"
