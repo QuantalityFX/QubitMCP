@@ -555,6 +555,12 @@ code {
   color: var(--accent);
 }
 
+.node-nav a,
+.node-catalog-link,
+.catalog-section .card {
+  overflow-wrap: anywhere;
+}
+
 .node-inline-icon {
   width: 20px;
   height: 20px;
