@@ -564,10 +564,104 @@ class GraphGLTimelineIOMixin:
             if frame < 0 or not isinstance(entry, dict):
                 continue
             item = dict(entry)
-            item.pop("fbx_clip_key", None)
-            item.pop("joint_key", None)
             staged[int(frame)] = item
         return staged
+
+    @staticmethod
+    def _timeline_scene_joint_entry_matches_fbx_seed(
+        entry: Dict[str, object],
+        seed: Dict[str, object],
+    ) -> bool:
+        """Return whether a legacy persisted row is just an untouched FBX key."""
+        if not isinstance(entry, dict) or not isinstance(seed, dict):
+            return False
+        if bool(entry.get("scene_skeleton_authored", False)):
+            return False
+        if entry.get("curve_handles"):
+            return False
+
+        compared = False
+        for channel in ("xyz", "rxyz"):
+            value = entry.get(channel, None)
+            if not (isinstance(value, (list, tuple)) and len(value) >= 3):
+                continue
+            source = seed.get(channel, None)
+            if not (isinstance(source, (list, tuple)) and len(source) >= 3):
+                return False
+            compared = True
+            try:
+                if any(
+                    not math.isclose(float(value[i]), float(source[i]), rel_tol=1.0e-7, abs_tol=1.0e-5)
+                    for i in range(3)
+                ):
+                    return False
+            except Exception:
+                return False
+        return bool(compared)
+
+    def _timeline_scene_joint_merge_fbx_seed_keys(
+        self,
+        owner: str,
+        data: Dict[int, Dict[str, object]],
+        *,
+        persisted_as_seeded: bool,
+    ) -> tuple[Dict[int, Dict[str, object]], bool]:
+        """Overlay saved edits onto virtual FBX keys without rebaking source keys."""
+        virtual_map = self._timeline_scene_joint_virtual_keys_map(owner)
+        if not isinstance(virtual_map, dict) or not virtual_map:
+            return (data if isinstance(data, dict) else {}, False)
+
+        merged = {
+            int(frame): dict(entry)
+            for frame, entry in virtual_map.items()
+            if isinstance(entry, dict)
+        }
+        virtual_by_source_frame = {}
+        for virtual_frame, virtual_entry in merged.items():
+            try:
+                source_frame = float(virtual_entry.get("source_frame"))
+                if math.isfinite(source_frame):
+                    virtual_by_source_frame[round(source_frame, 6)] = (
+                        int(virtual_frame),
+                        virtual_entry,
+                    )
+            except Exception:
+                continue
+        changed = False
+        for frame_raw, entry in (data or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                frame = int(frame_raw)
+            except Exception:
+                continue
+            seed = merged.get(frame)
+            try:
+                source_frame = float(entry.get("source_frame"))
+                source_match = virtual_by_source_frame.get(round(source_frame, 6))
+                if source_match is not None:
+                    seed = source_match[1]
+            except Exception:
+                pass
+            is_seed = bool(
+                persisted_as_seeded
+                and isinstance(seed, dict)
+                and self._timeline_scene_joint_entry_matches_fbx_seed(entry, seed)
+            )
+            if is_seed:
+                # The current virtual map already contains this key, possibly
+                # at a retimed frame. Do not duplicate the legacy saved row.
+                changed = True
+                continue
+            base = dict(seed or {})
+            base.update(dict(entry))
+            base.pop("fbx_clip_key", None)
+            base.pop("joint_key", None)
+            base["scene_skeleton_authored"] = True
+            if not bool(entry.get("scene_skeleton_authored", False)):
+                changed = True
+            merged[frame] = base
+        return merged, changed
 
     def _timeline_migrate_scene_joint_keys_to_timeline_frames(
         self,
@@ -757,6 +851,8 @@ class GraphGLTimelineIOMixin:
                             row["source_frame"] = float(value)
                     except Exception:
                         pass
+                if bool(entry.get("scene_skeleton_authored", False)):
+                    row["scene_skeleton_authored"] = True
             if len(row) <= 1:
                 continue
             keys_out.append(row)
@@ -1005,6 +1101,8 @@ class GraphGLTimelineIOMixin:
                         item["source_frame"] = float(value)
                 except Exception:
                     pass
+            if bool(row.get("scene_skeleton_authored", False)):
+                item["scene_skeleton_authored"] = True
             if item:
                 data[int(frame)] = item
         seeded_from_fbx = False
@@ -1030,24 +1128,17 @@ class GraphGLTimelineIOMixin:
         except Exception:
             pass
         try:
-            virtual_map = self._timeline_scene_joint_virtual_keys_map(owner_for_virtual)
-            if (
-                isinstance(virtual_map, dict)
-                and virtual_map
-                and not bool(getattr(self, "_timeline_scene_skeleton_fbx_seeded", False))
-            ):
-                merged = self._timeline_editable_scene_joint_keys(virtual_map)
-                for frame, entry in data.items():
-                    if not isinstance(entry, dict):
-                        continue
-                    base = dict(merged.get(int(frame), {}) or {})
-                    base.update(dict(entry))
-                    base.pop("fbx_clip_key", None)
-                    base.pop("joint_key", None)
-                    merged[int(frame)] = base
+            was_seeded = bool(getattr(self, "_timeline_scene_skeleton_fbx_seeded", False))
+            merged, changed = self._timeline_scene_joint_merge_fbx_seed_keys(
+                owner_for_virtual,
+                data,
+                persisted_as_seeded=was_seeded,
+            )
+            if merged is not data:
                 data = merged
                 self._timeline_scene_skeleton_fbx_seeded = True
-                seeded_from_fbx = True
+                if bool(changed) or not was_seeded:
+                    seeded_from_fbx = True
         except Exception:
             pass
         self._timeline_keys = data

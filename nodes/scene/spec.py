@@ -584,6 +584,31 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
     }
 
 
+def _ensure_fbx_import_rig_context(node_item, model) -> Dict[str, Any] | None:
+    """Build the same validated rig context used by the FBX node View action."""
+    context = _fbx_import_rig_context(model)
+    bind_ready = bool(getattr(model, "_fbx_bind_validation_enabled", False)) if model is not None else False
+    animation_ready = bool(getattr(model, "_fbx_anim_validation_enabled", False)) if model is not None else False
+    if isinstance(context, dict) and bind_ready and animation_ready:
+        return context
+    if node_item is None or model is None:
+        return context
+    try:
+        from nodes.fbx_import import spec as _fbx_import_spec  # type: ignore
+
+        resolve_fn = getattr(_fbx_import_spec, "resolve_fbx_import_sources", None)
+        if callable(resolve_fn):
+            resolve_fn(
+                node_item,
+                persist=True,
+                validate_bind_data=True,
+                validate_animation_data=True,
+            )
+    except Exception:
+        return context
+    return _fbx_import_rig_context(model) or context
+
+
 def _mocap_import_resolved_path(model) -> str:
     if model is None:
         return ""
@@ -2665,10 +2690,11 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
 
         path = _param_value(model, "path")
         modeler_hidden: List[str] = []
+        fbx_rig_source_item = src_item if kind in _FBX_KIND_ALIASES else None
         fbx_rig_source_model = model if kind in _FBX_KIND_ALIASES else None
         mocap_rig_source_model = model if kind in _MOCAP_KIND_ALIASES else None
         if kind in _FBX_KIND_ALIASES:
-            fbx_rig_context = _fbx_import_rig_context(model)
+            fbx_rig_context = _ensure_fbx_import_rig_context(src_item, model)
         elif kind in _MOCAP_KIND_ALIASES:
             fbx_rig_context = _mocap_import_rig_context(model)
         else:
@@ -2701,8 +2727,9 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             if upstream_path:
                 path = upstream_path
             if (upstream_kind or "").strip().lower() in _FBX_KIND_ALIASES:
+                fbx_rig_source_item = upstream_item
                 fbx_rig_source_model = upstream_model
-                fbx_rig_context = _fbx_import_rig_context(upstream_model)
+                fbx_rig_context = _ensure_fbx_import_rig_context(upstream_item, upstream_model)
             elif (upstream_kind or "").strip().lower() in _MOCAP_KIND_ALIASES:
                 mocap_rig_source_model = upstream_model
                 fbx_rig_context = _mocap_import_rig_context(upstream_model)
@@ -2944,11 +2971,15 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             if upstream_path:
                 path = upstream_path
             if (upstream_kind or "").strip().lower() in _FBX_KIND_ALIASES:
+                fbx_rig_source_item = upstream_item
                 fbx_rig_source_model = (
                     getattr(upstream_item, "model", None) if upstream_item is not None else None
                 )
                 if fbx_rig_context is None:
-                    fbx_rig_context = _fbx_import_rig_context(fbx_rig_source_model)
+                    fbx_rig_context = _ensure_fbx_import_rig_context(
+                        fbx_rig_source_item,
+                        fbx_rig_source_model,
+                    )
             if (upstream_kind or "").strip().lower() in _MOCAP_KIND_ALIASES:
                 mocap_rig_source_model = (
                     getattr(upstream_item, "model", None) if upstream_item is not None else None
@@ -3005,20 +3036,25 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             if upstream_path:
                 path = upstream_path
             if (upstream_kind or "").strip().lower() in _FBX_KIND_ALIASES:
+                fbx_rig_source_item = upstream_item
                 fbx_rig_source_model = upstream_model
                 if fbx_rig_context is None:
-                    fbx_rig_context = _fbx_import_rig_context(upstream_model)
+                    fbx_rig_context = _ensure_fbx_import_rig_context(upstream_item, upstream_model)
             elif (upstream_kind or "").strip().lower() in _MOCAP_KIND_ALIASES:
                 mocap_rig_source_model = upstream_model
                 if fbx_rig_context is None:
                     fbx_rig_context = _mocap_import_rig_context(upstream_model)
 
         if fbx_rig_source_model is None and (owner_kind or "").strip().lower() in _FBX_KIND_ALIASES:
+            fbx_rig_source_item = owner_item
             fbx_rig_source_model = owner_model
         if mocap_rig_source_model is None and (owner_kind or "").strip().lower() in _MOCAP_KIND_ALIASES:
             mocap_rig_source_model = owner_model
         if fbx_rig_context is None and fbx_rig_source_model is not None:
-            fbx_rig_context = _fbx_import_rig_context(fbx_rig_source_model)
+            fbx_rig_context = _ensure_fbx_import_rig_context(
+                fbx_rig_source_item,
+                fbx_rig_source_model,
+            )
         if fbx_rig_context is None and mocap_rig_source_model is not None:
             fbx_rig_context = _mocap_import_rig_context(mocap_rig_source_model)
         if fbx_rig_source_model is not None:

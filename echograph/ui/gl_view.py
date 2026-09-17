@@ -7821,9 +7821,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         try:
             owner = getattr(self, "_xform_gizmo_owner", None)
             if owner:
-                pose_q = self._rot_shared_target_pose_global_q(owner)
-                if pose_q is not None:
-                    R = self._rot_shared_matrix4_from_q(pose_q)
+                joint_q = self._rot_shared_owner_global_q(owner)
+                if joint_q is not None:
+                    R = self._rot_shared_matrix4_from_q(joint_q)
                 else:
                     is_splat = False
                     try:
@@ -8264,6 +8264,103 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
         return False
 
+    def _rot_shared_owner_is_scene_skeleton_joint(self, owner: str) -> bool:
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        try:
+            decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            return bool(callable(decode_joint) and decode_joint(owner))
+        except Exception:
+            return False
+
+    def _rot_shared_scene_skeleton_global_q(self, owner: str):
+        if not self._rot_shared_owner_is_scene_skeleton_joint(owner):
+            return None
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        try:
+            get_global = getattr(renderer, "_mgl_scene_skeleton_get_joint_global_rotation", None)
+            if callable(get_global):
+                return self._rot_shared_qt_from_xyzw(get_global(owner))
+        except Exception:
+            pass
+        return None
+
+    def _rot_shared_owner_global_q(self, owner: str):
+        pose_q = self._rot_shared_target_pose_global_q(owner)
+        if pose_q is not None:
+            return pose_q
+        return self._rot_shared_scene_skeleton_global_q(owner)
+
+    def _rot_shared_apply_scene_skeleton_global_q(
+        self,
+        owner: str,
+        q: QtGui.QQuaternion,
+    ) -> bool:
+        if not self._rot_shared_owner_is_scene_skeleton_joint(owner):
+            return False
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        try:
+            local_for_global = getattr(renderer, "_mgl_scene_skeleton_local_rotation_for_global", None)
+            if not callable(local_for_global):
+                return False
+            local_euler = local_for_global(owner, self._rot_shared_qt_to_xyzw(q))
+            if not isinstance(local_euler, (list, tuple)) or len(local_euler) < 3:
+                return False
+            self._set_owner_rot_deg(
+                owner,
+                (float(local_euler[0]), float(local_euler[1]), float(local_euler[2])),
+                False,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _rot_shared_apply_owner_global_q(
+        self,
+        owner: str,
+        q: QtGui.QQuaternion,
+        *,
+        notify_scene: bool = False,
+    ) -> bool:
+        if self._rot_shared_apply_target_pose_global_q(owner, q, notify_scene=notify_scene):
+            return True
+        return self._rot_shared_apply_scene_skeleton_global_q(owner, q)
+
+    def _rot_shared_adjust_scene_skeleton_drag_q(
+        self,
+        owner: str,
+        q: QtGui.QQuaternion,
+        base_q: QtGui.QQuaternion | None,
+    ) -> QtGui.QQuaternion:
+        """Increase Scene-joint drag response while preserving the picked axis."""
+        if base_q is None or not self._rot_shared_owner_is_scene_skeleton_joint(owner):
+            return q
+        gain = 1.75
+        try:
+            base = base_q.normalized()
+            desired = q.normalized()
+            delta = (desired * base.conjugated()).normalized()
+            w = float(delta.scalar())
+            x = float(delta.x())
+            y = float(delta.y())
+            z = float(delta.z())
+            if w < 0.0:
+                w, x, y, z = -w, -x, -y, -z
+            vector_length = math.sqrt((x * x) + (y * y) + (z * z))
+            if vector_length <= 1.0e-10:
+                return desired
+            angle = 2.0 * math.atan2(vector_length, max(-1.0, min(1.0, w)))
+            half = 0.5 * angle * gain
+            scale = math.sin(half) / vector_length
+            amplified = QtGui.QQuaternion(
+                math.cos(half),
+                x * scale,
+                y * scale,
+                z * scale,
+            ).normalized()
+            return (amplified * base).normalized()
+        except Exception:
+            return q
+
     def _rot_shared_matrix4_from_q(self, q: QtGui.QQuaternion):
         try:
             qn = q.normalized() if hasattr(q, "normalized") else q
@@ -8288,13 +8385,13 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._rot_shared_start_rot = start_rot_deg
         self._rot_shared_is_splat = bool(is_splat)
 
-        pose_q = self._rot_shared_target_pose_global_q(owner)
-        if pose_q is not None:
+        joint_q = self._rot_shared_owner_global_q(owner)
+        if joint_q is not None:
             try:
-                self._rot_owner_quat[owner] = pose_q
+                self._rot_owner_quat[owner] = joint_q
             except Exception:
                 pass
-            return pose_q
+            return joint_q
 
         try:
             rx = float(start_rot_deg[0])
@@ -8365,16 +8462,21 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         keys = {}
                     entry = keys.get(int(frame))
                     entry = dict(entry) if isinstance(entry, dict) else {}
+                    was_fbx_source_key = bool(entry.get("fbx_clip_key", False))
                     entry.pop("fbx_clip_key", None)
                     entry.pop("joint_key", None)
+                    entry["scene_skeleton_authored"] = True
                     try:
                         entry["rxyz"] = [float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])]
                     except Exception:
                         entry["rxyz"] = [0.0, 0.0, 0.0]
-                    try:
-                        mask = self._timeline_entry_axis_mask(entry)
-                    except Exception:
+                    if was_fbx_source_key:
                         mask = [False, False, False, False, False, False]
+                    else:
+                        try:
+                            mask = self._timeline_entry_axis_mask(entry)
+                        except Exception:
+                            mask = [False, False, False, False, False, False]
                     while len(mask) < 6:
                         mask.append(False)
                     mask[3] = mask[4] = mask[5] = True
@@ -8470,13 +8572,13 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._rot_shared_start_rot = start_rot_deg
         self._rot_shared_is_splat = bool(is_splat)
 
-        pose_q = self._rot_shared_target_pose_global_q(owner)
-        if pose_q is not None:
+        joint_q = self._rot_shared_owner_global_q(owner)
+        if joint_q is not None:
             try:
-                self._rot_owner_quat[owner] = pose_q
+                self._rot_owner_quat[owner] = joint_q
             except Exception:
                 pass
-            return pose_q
+            return joint_q
 
         q0 = self._rot_shared_q_from_euler_deg(
             (float(start_rot_deg[0]), float(start_rot_deg[1]), float(start_rot_deg[2]))

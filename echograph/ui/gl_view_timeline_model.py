@@ -1620,6 +1620,8 @@ class GraphGLTimelineModelMixin:
                         item["source_frame"] = float(value)
                 except Exception:
                     pass
+            if bool(row.get("scene_skeleton_authored", False)):
+                item["scene_skeleton_authored"] = True
             if item:
                 data[int(frame)] = item
         return data
@@ -1636,6 +1638,22 @@ class GraphGLTimelineModelMixin:
             return ("", {})
         rows = raw.get("keys", []) or []
         data = self._timeline_parse_keys_rows(rows)
+        if bool(raw.get("scene_skeleton_fbx_seeded", False)):
+            try:
+                merged, _changed = self._timeline_scene_joint_merge_fbx_seed_keys(
+                    owner,
+                    data,
+                    persisted_as_seeded=True,
+                )
+                # Other-owner playback needs only authored edits. Including
+                # the virtual FBX rows here would rebake the imported clip.
+                data = {
+                    int(frame): dict(entry)
+                    for frame, entry in merged.items()
+                    if isinstance(entry, dict) and not bool(entry.get("fbx_clip_key", False))
+                }
+            except Exception:
+                pass
         return (owner, data)
 
     def _timeline_collect_other_owner_keys(self) -> List[Tuple[str, Dict[int, Dict[str, object]]]]:
@@ -1914,6 +1932,8 @@ class GraphGLTimelineModelMixin:
                         row["source_frame"] = float(value)
                 except Exception:
                     pass
+            if bool(entry.get("scene_skeleton_authored", False)):
+                row["scene_skeleton_authored"] = True
             if len(row) > 1:
                 rows.append(row)
         return rows
@@ -3462,8 +3482,12 @@ class GraphGLTimelineModelMixin:
             return
         if idx < 0 or idx > 5:
             return
+        was_fbx_source_key = bool(entry.get("fbx_clip_key", False))
         entry.pop("fbx_clip_key", None)
         entry.pop("joint_key", None)
+        entry["scene_skeleton_authored"] = True
+        if was_fbx_source_key:
+            entry["axis_mask"] = [False, False, False, False, False, False]
         try:
             owner = self._timeline_target_owner()
             asset_owner = self._timeline_scene_joint_asset_owner(owner)

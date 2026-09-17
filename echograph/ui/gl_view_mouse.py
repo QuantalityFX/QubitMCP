@@ -3308,11 +3308,16 @@ def _handle_mouse_move_moderngl_rot_shared_view_drag_qcur(self, *, owner):
 
 def _handle_mouse_move_moderngl_rot_shared_view_drag_apply(self, *, e, owner, qnew):
     try:
+        base_q = self._rot_owner_quat.get(owner)
+    except Exception:
+        base_q = None
+    qnew = self._rot_shared_adjust_scene_skeleton_drag_q(owner, qnew, base_q)
+    try:
         self._rot_owner_quat[owner] = qnew
     except Exception:
         pass
 
-    if self._rot_shared_apply_target_pose_global_q(owner, qnew):
+    if self._rot_shared_apply_owner_global_q(owner, qnew):
         self.update()
         e.accept()
         return
@@ -3439,13 +3444,18 @@ def _handle_mouse_move_moderngl_rot_shared_arc_drag_prepare_qnew(
     return qnew
 
 def _handle_mouse_move_moderngl_rot_shared_arc_drag_apply(self, *, e, owner, qnew):
+    qnew = self._rot_shared_adjust_scene_skeleton_drag_q(
+        owner,
+        qnew,
+        getattr(self, "_rot_shared_arc_start_q", None),
+    )
     # persist quaternion cache (arcball uses qnew directly)
     try:
         self._rot_owner_quat[owner] = qnew
     except Exception:
         pass
 
-    if self._rot_shared_apply_target_pose_global_q(owner, qnew):
+    if self._rot_shared_apply_owner_global_q(owner, qnew):
         self.update()
         e.accept()
         return
@@ -3731,8 +3741,13 @@ def _handle_mouse_move_moderngl_rot_shared_axis_apply(self, owner, rot_shared, q
     # APPLY: use quaternion result so rings stay constrained (no wobble)
     try:
         qapply = self._handle_mouse_move_moderngl_rot_shared_axis_apply_qapply(rot_shared=rot_shared, qnew=qnew)
+        qapply = self._rot_shared_adjust_scene_skeleton_drag_q(
+            owner,
+            qapply,
+            getattr(rot_shared.drag_axis, "start_rot", None),
+        )
         self._handle_mouse_move_moderngl_rot_shared_axis_apply_cache_quat(owner=owner, qapply=qapply)
-        if self._rot_shared_apply_target_pose_global_q(owner, qapply):
+        if self._rot_shared_apply_owner_global_q(owner, qapply):
             self.update()
             return
         rx0, ry0, rz0, candidates = self._handle_mouse_move_moderngl_rot_shared_axis_apply_candidates(qapply=qapply)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import count
 from typing import Dict, List, Sequence, Tuple
 import math
 
@@ -38,6 +39,49 @@ _IDENTITY_MATRIX_4X4: Tuple[float, ...] = (
 _VALIDATED_SKELETON_IDS: set[int] = set()
 _VALIDATED_CLIP_SKELETON_IDS: set[tuple[int, int]] = set()
 _TRACKS_FOR_SKELETON_CACHE: Dict[tuple[int, int], Dict[str, object]] = {}
+_EVALUATION_CACHE_TOKEN_COUNTER = count(1)
+
+
+def evaluation_cache_token(value: object | None) -> int:
+    """Return a stable identity token that cannot collide after ``id`` reuse.
+
+    Scene joint dragging creates a short-lived AnimationClip on every update.
+    CPython can immediately reuse the address of a discarded clip, so using
+    ``id(clip)`` as a persistent cache key can return another clip's tracks.
+    Canonical rig objects are mutable dataclasses and can safely carry this
+    private, non-serialized runtime token.
+    """
+    if value is None:
+        return 0
+    try:
+        token = getattr(value, "_fbx_evaluation_cache_token", None)
+    except Exception:
+        token = None
+    if token is not None:
+        try:
+            return int(token)
+        except Exception:
+            pass
+    token = int(next(_EVALUATION_CACHE_TOKEN_COUNTER))
+    try:
+        setattr(value, "_fbx_evaluation_cache_token", token)
+    except Exception:
+        # Canonical SkeletonAsset/AnimationClip instances accept attributes.
+        # Keep a defensive fallback for third-party immutable stand-ins.
+        return int(id(value))
+    return token
+
+
+def _trim_runtime_caches() -> None:
+    # Interactive posing can generate hundreds of immutable override clips.
+    # Bound these process-wide caches while retaining a generous working set.
+    if len(_TRACKS_FOR_SKELETON_CACHE) > 512:
+        for stale_key in list(_TRACKS_FOR_SKELETON_CACHE.keys())[:-384]:
+            _TRACKS_FOR_SKELETON_CACHE.pop(stale_key, None)
+    if len(_VALIDATED_CLIP_SKELETON_IDS) > 2048:
+        _VALIDATED_CLIP_SKELETON_IDS.clear()
+    if len(_VALIDATED_SKELETON_IDS) > 512:
+        _VALIDATED_SKELETON_IDS.clear()
 
 
 class FBXEvaluatorError(RuntimeError):
@@ -275,7 +319,7 @@ def _validated_joint_tracks_for_skeleton(
 ) -> List[JointAnimationTrack | None]:
     if clip is None:
         return [None] * int(len(skeleton.joints))
-    key = (id(skeleton), id(clip))
+    key = (evaluation_cache_token(skeleton), evaluation_cache_token(clip))
     joint_count = int(len(skeleton.joints))
     tracks_obj = list(getattr(clip, "tracks", []) or [])
     tracks_id = id(getattr(clip, "tracks", None))
@@ -301,6 +345,7 @@ def _validated_joint_tracks_for_skeleton(
         "tracks_id": tracks_id,
         "tracks": tracks_for_joints,
     }
+    _trim_runtime_caches()
     return tracks_for_joints
 
 
@@ -312,15 +357,16 @@ def evaluate_rig_at_time(
     loop: bool = False,
     include_debug_data: bool = True,
 ) -> RigEvaluationResult:
-    skeleton_id = id(skeleton)
+    skeleton_id = evaluation_cache_token(skeleton)
     if skeleton_id not in _VALIDATED_SKELETON_IDS:
         skeleton.validate()
         _VALIDATED_SKELETON_IDS.add(skeleton_id)
     if clip is not None:
-        clip_key = (id(clip), skeleton_id)
+        clip_key = (evaluation_cache_token(clip), skeleton_id)
         if clip_key not in _VALIDATED_CLIP_SKELETON_IDS:
             clip.validate(skeleton=skeleton)
             _VALIDATED_CLIP_SKELETON_IDS.add(clip_key)
+            _trim_runtime_caches()
     t = _resolve_sample_time(clip, float(time_seconds), loop=bool(loop))
 
     tracks_for_joints = _validated_joint_tracks_for_skeleton(skeleton, clip)
@@ -377,5 +423,6 @@ def evaluate_rig_at_time(
 __all__ = [
     "FBXEvaluatorError",
     "RigEvaluationResult",
+    "evaluation_cache_token",
     "evaluate_rig_at_time",
 ]

@@ -12,7 +12,10 @@ from echograph.rigging.fbx_canonical import (
     SkeletonAsset,
     Vec3Keyframe,
 )
-from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
+from echograph.rigging.fbx_stage5_evaluator import (
+    evaluate_rig_at_time,
+    evaluation_cache_token,
+)
 
 
 def _translation_matrix(tx: float, ty: float, tz: float):
@@ -93,6 +96,20 @@ def _make_clip() -> AnimationClip:
 
 
 class FbxStage5EvaluatorTests(unittest.TestCase):
+    def test_temporary_clips_receive_non_reusable_cache_tokens(self) -> None:
+        clip_a = _make_clip()
+        token_a = evaluation_cache_token(clip_a)
+        self.assertEqual(evaluation_cache_token(clip_a), token_a)
+
+        # Let each temporary clip go out of scope immediately.  Its Python
+        # memory address may be reused, but its evaluation token must not be.
+        temporary_tokens = {
+            evaluation_cache_token(_make_clip())
+            for _ in range(256)
+        }
+        self.assertEqual(len(temporary_tokens), 256)
+        self.assertNotIn(token_a, temporary_tokens)
+
     def test_bind_pose_without_clip(self) -> None:
         skeleton = _make_skeleton()
         result = evaluate_rig_at_time(skeleton, None, time_seconds=1.25)

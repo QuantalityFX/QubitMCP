@@ -60,7 +60,10 @@ from echograph.services.profiler import profile_scope
 from echograph.rigging.fbx_stage3_ingest import ingest_fbx_bind_data
 from echograph.rigging.fbx_stage4_animation import ingest_fbx_animation_data
 from echograph.rigging.bvh_ingest import ingest_bvh_animation_data
-from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
+from echograph.rigging.fbx_stage5_evaluator import (
+    evaluate_rig_at_time,
+    evaluation_cache_token,
+)
 from echograph.rigging.fbx_stage6_debug import evaluate_skeleton_line_points
 from echograph.rigging.fbx_stage7_timeline import (
     clip_marker_frames,
@@ -310,7 +313,13 @@ class MGLRendererMixin:
 
     def _mgl_scene_skeleton_context_log_fields(self, context: dict | None) -> dict:
         if not isinstance(context, dict):
-            return {"has_context": False, "has_skeleton": False, "joint_count": 0, "has_clip": False, "track_count": 0}
+            return {
+                "has_context": False,
+                "has_skeleton": False,
+                "joint_count": 0,
+                "has_clip": False,
+                "track_count": 0,
+            }
         skeleton = context.get("skeleton")
         clip = context.get("clip")
         try:
@@ -323,9 +332,18 @@ class MGLRendererMixin:
             track_count = 0
         return {
             "has_context": True,
+            "context_id": int(id(context)),
             "has_skeleton": bool(skeleton is not None),
+            "skeleton_id": int(id(skeleton)) if skeleton is not None else 0,
             "joint_count": joint_count,
             "has_clip": bool(clip is not None),
+            "clip_id": int(id(clip)) if clip is not None else 0,
+            "base_clip_id": int(id(context.get("_scene_skeleton_original_clip")))
+            if context.get("_scene_skeleton_original_clip") is not None
+            else 0,
+            "override_clip_id": int(id(context.get("_scene_skeleton_override_clip")))
+            if context.get("_scene_skeleton_override_clip") is not None
+            else 0,
             "track_count": track_count,
         }
 
@@ -1938,8 +1956,8 @@ void main() {
             items = {}
             cache["items"] = items
         key = (
-            id(skeleton),
-            id(clip),
+            evaluation_cache_token(skeleton),
+            evaluation_cache_token(clip),
             round(float(sample_seconds), 6),
             bool(loop),
             bool(include_debug_data),
@@ -2053,6 +2071,24 @@ void main() {
         if not owner_key:
             return None
         owner_key_norm = owner_key.lower()
+        # While a Scene skeleton is active, every edit and refresh must use
+        # the exact context selected with its overlay.  A Scene may contain
+        # several items for one FBX owner; resolving them again mid-drag can
+        # select a raw fallback context and rotate the whole rig into FBX
+        # source space.
+        pinned_contexts = getattr(self, "_mgl_scene_skeleton_context_by_owner", None)
+        active_scene_owner = str(
+            getattr(self, "_mgl_scene_skeleton_active_owner", "") or ""
+        ).strip().lower()
+        retarget_preview_active = bool(getattr(self, "_mgl_retarget_preview_active", False))
+        if (
+            isinstance(pinned_contexts, dict)
+            and active_scene_owner == owner_key_norm
+            and not retarget_preview_active
+        ):
+            pinned = pinned_contexts.get(owner_key_norm)
+            if isinstance(pinned, dict) and pinned.get("skeleton") is not None:
+                return pinned
         if scene is not None:
             for tag in ("scene-model", "scene-wire", "scene-rig-joints", "model"):
                 try:
@@ -2112,7 +2148,7 @@ void main() {
 
         cache_key = (
             owner_key,
-            id(clip),
+            evaluation_cache_token(clip),
             round(float(fps_value), 6),
             _safe_clip_signature(clip),
         )
@@ -3298,6 +3334,51 @@ void main() {
         mat[2, 3] = float(coeff[3, 2])
         return mat
 
+    @staticmethod
+    def _mgl_fbx_skin_context_signature(context: dict | None):
+        if not isinstance(context, dict):
+            return None
+        meshes_obj = context.get("meshes")
+        try:
+            mesh_count = len(list(meshes_obj or []))
+        except Exception:
+            mesh_count = 0
+        # A clip is pose data, not skin topology.  Scene joint edits replace
+        # the override clip repeatedly while dragging; including id(clip)
+        # here would rebuild the bind-to-render mapping from already-deformed
+        # vertices and can squash the mesh.  The live clip is synchronized in
+        # _mgl_refresh_fbx_rig_mesh_item instead.
+        return (
+            id(context.get("skeleton")),
+            id(meshes_obj),
+            int(mesh_count),
+            bool(context.get("retarget_result", False)),
+            str(context.get("retarget_clip_name") or ""),
+            int(context.get("retarget_track_count") or 0),
+            int(context.get("retarget_target_pose_offset_count") or 0),
+            bool(context.get("retarget_target_pose_rebind_inverse_bind", True)),
+        )
+
+    @staticmethod
+    def _mgl_fbx_bind_render_points_for_entry(entry: dict) -> Optional[NDArray]:
+        if np is None or not isinstance(entry, dict):
+            return None
+        cached = entry.get("_fbx_skin_bind_render_points")
+        if cached is not None:
+            try:
+                return np.asarray(cached, dtype="f4").reshape(-1, 3)
+            except Exception:
+                entry.pop("_fbx_skin_bind_render_points", None)
+        raw = entry.get("points")
+        if raw is None:
+            return None
+        try:
+            points = np.asarray(raw, dtype="f4").reshape(-1, 3).copy()
+        except Exception:
+            return None
+        entry["_fbx_skin_bind_render_points"] = points
+        return points
+
     def _mgl_prepare_fbx_rig_mesh_item(self, item: MGLSceneItem) -> None:
         if np is None:
             return
@@ -3313,24 +3394,7 @@ void main() {
             payload.pop("_fbx_skin_weight_colors_applied", None)
             payload["_fbx_skin_prepare_done"] = False
         payload["_fbx_skin_settings_sig"] = settings_sig
-        context_sig = None
-        if isinstance(context_dict, dict):
-            meshes_obj = context_dict.get("meshes")
-            try:
-                mesh_count = len(list(meshes_obj or []))
-            except Exception:
-                mesh_count = 0
-            context_sig = (
-                id(context_dict.get("skeleton")),
-                id(context_dict.get("clip")),
-                id(meshes_obj),
-                int(mesh_count),
-                bool(context_dict.get("retarget_result", False)),
-                str(context_dict.get("retarget_clip_name") or ""),
-                int(context_dict.get("retarget_track_count") or 0),
-                int(context_dict.get("retarget_target_pose_offset_count") or 0),
-                bool(context_dict.get("retarget_target_pose_rebind_inverse_bind", True)),
-            )
+        context_sig = self._mgl_fbx_skin_context_signature(context_dict)
         if payload.get("_fbx_skin_context_sig", None) != context_sig:
             payload.pop("_fbx_skin_runtime", None)
             payload.pop("_fbx_skin_frame", None)
@@ -3457,10 +3521,9 @@ void main() {
 
         for entry in existing_submeshes:
             entry_name_key = str(entry.get("name", "") or "").strip().lower()
-            render_points_raw = entry.get("points")
-            if render_points_raw is None:
+            render_points = self._mgl_fbx_bind_render_points_for_entry(entry)
+            if render_points is None:
                 continue
-            render_points = np.asarray(render_points_raw, dtype="f4").reshape(-1, 3)
             if entry.get("vbo") is None or entry.get("nbo") is None:
                 continue
 
@@ -3696,21 +3759,31 @@ void main() {
         skeleton = runtime.get("skeleton")
         if skeleton is None:
             return
-        clip = runtime.get("clip")
-        loop = bool(runtime.get("loop", True))
+        context = payload.get("fbx_rig_context")
+        clip = context.get("clip") if isinstance(context, dict) else runtime.get("clip")
+        loop = (
+            bool(context.get("loop", runtime.get("loop", True)))
+            if isinstance(context, dict)
+            else bool(runtime.get("loop", True))
+        )
+        runtime["clip"] = clip
+        runtime["loop"] = loop
         meshes = list(runtime.get("meshes") or [])
         needs_mesh_inverse_binds = any(
             mesh.get("inverse_bind_matrices") is not None
             for mesh in meshes
             if isinstance(mesh, dict)
         )
-        context = payload.get("fbx_rig_context")
         frame = self._mgl_timeline_frame_index()
         sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(
             context if isinstance(context, dict) else None,
             payload.get("fbx_sample_owner") or payload.get("owner"),
         )
-        skin_frame_key = (int(frame), round(float(sample_seconds), 6))
+        skin_frame_key = (
+            evaluation_cache_token(clip),
+            int(frame),
+            round(float(sample_seconds), 6),
+        )
         if payload.get("_fbx_skin_frame", None) == skin_frame_key:
             return
         try:
@@ -5927,7 +6000,8 @@ void main() {
                 int(frame),
                 round(float(sample_seconds), 6),
                 _safe_clip_signature(clip),
-                id(skeleton),
+                evaluation_cache_token(skeleton),
+                evaluation_cache_token(clip),
                 bool(timeline_fx_enabled),
             )
             if not force and proxy.get("last_signature") == signature:
@@ -6116,8 +6190,8 @@ void main() {
             int(self._mgl_timeline_frame_index()),
             round(float(sample_seconds), 6),
             str(sample_owner or ""),
-            id(skeleton),
-            id(clip),
+            evaluation_cache_token(skeleton),
+            evaluation_cache_token(clip),
             int(len(bind_curves)),
             str(cfg.get("mode") or "skinned_cv"),
             int(selection_active),
@@ -9968,7 +10042,11 @@ void main() {
         payload["fbx_rig_context"] = context
         payload["fbx_rig_pose_mode"] = mode
         payload["_fbx_rig_frame"] = (
-            ("capture_animation", id(clip), round(float(sample_time), 6))
+            (
+                "capture_animation",
+                evaluation_cache_token(clip),
+                round(float(sample_time), 6),
+            )
             if mode == "capture" and clip is not None
             else ("capture", 0)
             if mode == "capture"
@@ -10983,6 +11061,170 @@ void main() {
             return (0.0, 0.0, 0.0, 1.0)
         return (x / n, y / n, z / n, w / n)
 
+    @staticmethod
+    def _mgl_scene_skeleton_quat_normalize(q) -> Tuple[float, float, float, float]:
+        try:
+            x, y, z, w = (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+        except Exception:
+            return (0.0, 0.0, 0.0, 1.0)
+        n = math.sqrt((x * x) + (y * y) + (z * z) + (w * w))
+        if n <= 1.0e-12:
+            return (0.0, 0.0, 0.0, 1.0)
+        return (x / n, y / n, z / n, w / n)
+
+    @classmethod
+    def _mgl_scene_skeleton_quat_mul(cls, a, b) -> Tuple[float, float, float, float]:
+        ax, ay, az, aw = cls._mgl_scene_skeleton_quat_normalize(a)
+        bx, by, bz, bw = cls._mgl_scene_skeleton_quat_normalize(b)
+        return cls._mgl_scene_skeleton_quat_normalize(
+            (
+                (aw * bx) + (ax * bw) + (ay * bz) - (az * by),
+                (aw * by) - (ax * bz) + (ay * bw) + (az * bx),
+                (aw * bz) + (ax * by) - (ay * bx) + (az * bw),
+                (aw * bw) - (ax * bx) - (ay * by) - (az * bz),
+            )
+        )
+
+    @classmethod
+    def _mgl_scene_skeleton_quat_inverse(cls, q) -> Tuple[float, float, float, float]:
+        x, y, z, w = cls._mgl_scene_skeleton_quat_normalize(q)
+        return (-x, -y, -z, w)
+
+    @classmethod
+    def _mgl_scene_skeleton_euler_from_quat_continuous(cls, q, current_xyz) -> Tuple[float, float, float]:
+        rx0, ry0, rz0 = cls._mgl_scene_skeleton_quat_to_euler_deg(q)
+        try:
+            current = (float(current_xyz[0]), float(current_xyz[1]), float(current_xyz[2]))
+        except Exception:
+            return (rx0, ry0, rz0)
+
+        def _unwrap(previous: float, wrapped: float) -> float:
+            value = float(wrapped)
+            while value - previous > 180.0:
+                value -= 360.0
+            while value - previous < -180.0:
+                value += 360.0
+            return value
+
+        def _score(candidate):
+            values = tuple(_unwrap(current[i], float(candidate[i])) for i in range(3))
+            error = sum((values[i] - current[i]) ** 2 for i in range(3))
+            return error, values
+
+        candidates = (
+            (rx0, ry0, rz0),
+            (rx0 + 180.0, 180.0 - ry0, rz0 + 180.0),
+            (rx0 - 180.0, 180.0 - ry0, rz0 - 180.0),
+        )
+        return min((_score(candidate) for candidate in candidates), key=lambda row: row[0])[1]
+
+    def _mgl_scene_skeleton_rotation_context(self, owner: str):
+        """Return canonical local/global joint rotations at the displayed frame.
+
+        Scene animation tracks remain local-space FBX data.  The rotate gizmo,
+        however, operates on the joint's composed orientation, so callers use
+        this context to convert between the two without changing clip storage.
+        """
+        decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
+        if not decoded:
+            return None
+        asset_owner, joint_name = decoded
+        context = self._mgl_scene_owner_fbx_rig_context(asset_owner)
+        if not isinstance(context, dict):
+            return None
+        skeleton = context.get("skeleton")
+        if skeleton is None:
+            return None
+        joints = list(getattr(skeleton, "joints", []) or [])
+        joint_index = next(
+            (
+                index
+                for index, joint in enumerate(joints)
+                if str(getattr(joint, "name", "") or "").strip() == joint_name
+            ),
+            -1,
+        )
+        if joint_index < 0:
+            return None
+        try:
+            sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(context, asset_owner)
+            evaluation = evaluate_rig_at_time(
+                skeleton=skeleton,
+                clip=context.get("clip"),
+                time_seconds=float(sample_seconds),
+                loop=bool(context.get("loop", True)),
+            )
+            local_transforms = list(getattr(evaluation, "local_transforms", []) or [])
+        except Exception:
+            return None
+        if len(local_transforms) < len(joints):
+            return None
+
+        local_rotations = [
+            self._mgl_scene_skeleton_quat_normalize(
+                getattr(local, "rotation", (0.0, 0.0, 0.0, 1.0))
+            )
+            for local in local_transforms
+        ]
+        global_rotations: List[Tuple[float, float, float, float]] = []
+        for index, joint in enumerate(joints):
+            try:
+                parent_index = int(getattr(joint, "parent_index", -1))
+            except Exception:
+                parent_index = -1
+            local_q = local_rotations[index]
+            if 0 <= parent_index < index and parent_index < len(global_rotations):
+                global_rotations.append(
+                    self._mgl_scene_skeleton_quat_mul(global_rotations[parent_index], local_q)
+                )
+            else:
+                global_rotations.append(local_q)
+
+        try:
+            parent_index = int(getattr(joints[joint_index], "parent_index", -1))
+        except Exception:
+            parent_index = -1
+        parent_global = (
+            global_rotations[parent_index]
+            if 0 <= parent_index < len(global_rotations)
+            else (0.0, 0.0, 0.0, 1.0)
+        )
+        return {
+            "asset_owner": asset_owner,
+            "joint_name": joint_name,
+            "joint_index": int(joint_index),
+            "parent_global": parent_global,
+            "current_local": local_rotations[joint_index],
+            "current_global": global_rotations[joint_index],
+        }
+
+    def _mgl_scene_skeleton_get_joint_global_rotation(self, owner: str) -> Tuple[float, float, float, float]:
+        rotation_context = self._mgl_scene_skeleton_rotation_context(owner)
+        if isinstance(rotation_context, dict):
+            return self._mgl_scene_skeleton_quat_normalize(rotation_context.get("current_global"))
+        values = self._mgl_scene_skeleton_joint_values(owner)
+        if isinstance(values, (list, tuple)) and len(values) >= 2:
+            return self._mgl_scene_skeleton_quat_from_euler_deg(values[1])
+        return (0.0, 0.0, 0.0, 1.0)
+
+    def _mgl_scene_skeleton_local_rotation_for_global(self, owner: str, quat_xyzw):
+        rotation_context = self._mgl_scene_skeleton_rotation_context(owner)
+        if not isinstance(rotation_context, dict):
+            return None
+        desired_global = self._mgl_scene_skeleton_quat_normalize(quat_xyzw)
+        parent_global = self._mgl_scene_skeleton_quat_normalize(rotation_context.get("parent_global"))
+        desired_local = self._mgl_scene_skeleton_quat_mul(
+            self._mgl_scene_skeleton_quat_inverse(parent_global),
+            desired_global,
+        )
+        current_local_euler = self._mgl_scene_skeleton_quat_to_euler_deg(
+            rotation_context.get("current_local")
+        )
+        return self._mgl_scene_skeleton_euler_from_quat_continuous(
+            desired_local,
+            current_local_euler,
+        )
+
     def _mgl_scene_skeleton_track_for_joint(self, context: dict, joint_name: str):
         clip = context.get("clip") if isinstance(context, dict) else None
         target = str(joint_name or "").strip()
@@ -11046,6 +11288,32 @@ void main() {
         except Exception:
             return None
 
+    def _mgl_scene_skeleton_base_clip_for_context(self, context: dict | None):
+        """Return the live non-override clip and discard a stale cached base."""
+        if not isinstance(context, dict):
+            return None
+        current_clip = context.get("clip")
+        override_clip = context.get("_scene_skeleton_override_clip")
+        original_clip = context.get("_scene_skeleton_original_clip")
+
+        # Scene refresh/import can replace the canonical clip object.  If the
+        # live clip is not the override we built, it is the new source of truth.
+        # Keeping the former base here can swap coordinate conventions (for
+        # example Y-up back to raw FBX Z-up) on the next timeline scrub.
+        if current_clip is not None and current_clip is not override_clip:
+            if current_clip is not original_clip:
+                context["_scene_skeleton_original_clip"] = current_clip
+                try:
+                    self._mgl_scene_skeleton_log(
+                        "base_clip_refreshed",
+                        previous_clip=str(getattr(original_clip, "name", "") or ""),
+                        current_clip=str(getattr(current_clip, "name", "") or ""),
+                    )
+                except Exception:
+                    pass
+            return current_clip
+        return original_clip or current_clip
+
     def _mgl_scene_skeleton_joint_keys_map(self, owner: str, *, timeline_space: bool = True):
         decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
         if not decoded:
@@ -11054,7 +11322,7 @@ void main() {
         context = self._mgl_scene_owner_fbx_rig_context(asset_owner)
         if not isinstance(context, dict):
             return {}
-        clip = context.get("_scene_skeleton_original_clip") or context.get("clip")
+        clip = self._mgl_scene_skeleton_base_clip_for_context(context)
         if clip is None:
             return {}
         track = None
@@ -11162,6 +11430,16 @@ void main() {
         frame_keys = getattr(self, "_mgl_scene_skeleton_handle_frame_keys", None)
         if isinstance(frame_keys, dict):
             frame_keys.pop(str(owner or "").strip(), None)
+        # The clip changes while the timeline frame can remain constant during
+        # a gizmo drag.  Drop the per-frame rig evaluation cache immediately.
+        self._mgl_rig_eval_frame_cache = None
+        # Joint edits can occur without any camera movement.  Schedule a paint
+        # immediately so invalidated skin buffers do not wait for an unrelated
+        # mouse/camera event before showing the complete deformation.
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def _mgl_scene_skeleton_owner_uses_splat_xform(self, owner: str) -> bool:
         owner_key = str(owner or "").strip()
@@ -11282,9 +11560,7 @@ void main() {
         context = self._mgl_scene_owner_fbx_rig_context(asset_owner)
         if not isinstance(context, dict):
             return False
-        original_clip = context.get("_scene_skeleton_original_clip")
-        if original_clip is None:
-            original_clip = context.get("clip")
+        original_clip = self._mgl_scene_skeleton_base_clip_for_context(context)
         if original_clip is None:
             return False
         authored_entries = {
@@ -11305,16 +11581,21 @@ void main() {
             start_time = float(getattr(original_clip, "start_time", 0.0) or 0.0)
         except Exception:
             start_time = 0.0
+        override_end_time = float(getattr(original_clip, "end_time", start_time))
         overrides = context.get("_scene_skeleton_joint_overrides")
         if not isinstance(overrides, dict):
             overrides = {}
         else:
             overrides = dict(overrides)
-        overrides[joint_name] = authored_entries
+        if authored_entries:
+            overrides[joint_name] = authored_entries
+        else:
+            overrides.pop(joint_name, None)
         if not overrides:
             context["_scene_skeleton_original_clip"] = original_clip
             context["_scene_skeleton_joint_overrides"] = {}
             context["clip"] = original_clip
+            context.pop("_scene_skeleton_override_clip", None)
             self._mgl_scene_skeleton_invalidate_owner(asset_owner)
             return True
 
@@ -11348,6 +11629,7 @@ void main() {
                 return None
 
         def _build_track_for_joint(source_track, override_joint: str, override_entries: dict):
+            nonlocal override_end_time
             merged = {}
             for frame, entry in (override_entries or {}).items():
                 try:
@@ -11361,8 +11643,13 @@ void main() {
                 base.pop("fbx_clip_key", None)
                 base.pop("joint_key", None)
                 merged[frame_i] = base
-            translation_keys = []
-            rotation_keys = []
+            # Overrides are sparse edits.  Preserve every untouched source
+            # channel/key so posing one joint cannot discard its animated
+            # translation or collapse the rest of its rotation curve.
+            source_translation_keys = list(getattr(source_track, "translation_keys", []) or []) if source_track is not None else []
+            source_rotation_keys = list(getattr(source_track, "rotation_keys", []) or []) if source_track is not None else []
+            authored_translation_keys = []
+            authored_rotation_keys = []
             for frame in sorted(merged.keys()):
                 entry = merged.get(frame)
                 if not isinstance(entry, dict):
@@ -11379,27 +11666,44 @@ void main() {
                 xyz = entry.get("xyz")
                 if isinstance(xyz, (list, tuple)) and len(xyz) >= 3 and any(axis_mask[:3]):
                     try:
-                        translation_keys.append(
+                        authored_translation_keys.append(
                             Vec3Keyframe(
                                 time=float(t),
                                 value=(float(xyz[0]), float(xyz[1]), float(xyz[2])),
                                 interpolation="linear",
                             )
                         )
+                        override_end_time = max(override_end_time, t + (1.0 / fps_value))
                     except Exception:
                         pass
                 rxyz = entry.get("rxyz")
                 if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3 and any(axis_mask[3:6]):
                     try:
-                        rotation_keys.append(
+                        authored_rotation_keys.append(
                             QuatKeyframe(
                                 time=float(t),
                                 value=self._mgl_scene_skeleton_quat_from_euler_deg(rxyz),
                                 interpolation="linear",
                             )
                         )
+                        override_end_time = max(override_end_time, t + (1.0 / fps_value))
                     except Exception:
                         pass
+            def _merge_channel(source_keys, authored_keys):
+                # Quantizing only the lookup key handles harmless float noise
+                # when an authored frame lands on an existing FBX key time.
+                # Authored keys are inserted last and therefore win.
+                by_time = {}
+                for key in list(source_keys or []) + list(authored_keys or []):
+                    try:
+                        time_key = round(float(getattr(key, "time")), 9)
+                    except Exception:
+                        continue
+                    by_time[time_key] = key
+                return [by_time[key] for key in sorted(by_time.keys())]
+
+            translation_keys = _merge_channel(source_translation_keys, authored_translation_keys)
+            rotation_keys = _merge_channel(source_rotation_keys, authored_rotation_keys)
             if not translation_keys and not rotation_keys:
                 return None
             return JointAnimationTrack(
@@ -11427,10 +11731,14 @@ void main() {
             if rebuilt is not None:
                 tracks.append(rebuilt)
         try:
+            # Imported poses can be only one frame long. Authored keys must
+            # extend that range or validation fails on the next evaluation.
+            # Include the last keyed frame in full: looping uses a half-open
+            # time range and would otherwise wrap that key to the first pose.
             override_clip = AnimationClip(
                 name=f"{getattr(original_clip, 'name', 'clip')}_{joint_name}_override",
                 start_time=float(getattr(original_clip, "start_time", 0.0) or 0.0),
-                end_time=float(getattr(original_clip, "end_time", 0.0) or 0.0),
+                end_time=override_end_time,
                 sample_rate_hz=float(getattr(original_clip, "sample_rate_hz", fps_value) or fps_value),
                 tracks=tracks,
                 metadata=dict(getattr(original_clip, "metadata", {}) or {}),
@@ -11439,7 +11747,16 @@ void main() {
             return False
         context["_scene_skeleton_original_clip"] = original_clip
         context["_scene_skeleton_joint_overrides"] = overrides
+        context["_scene_skeleton_override_clip"] = override_clip
         context["clip"] = override_clip
+        self._mgl_scene_skeleton_log(
+            "timeline_override_applied",
+            owner=asset_owner,
+            joint=joint_name,
+            authored_frame_count=int(len(authored_entries)),
+            override_joint_count=int(len(overrides)),
+            **self._mgl_scene_skeleton_context_log_fields(context),
+        )
         self._mgl_scene_skeleton_invalidate_owner(asset_owner)
         return True
 
@@ -11618,7 +11935,6 @@ void main() {
             owner=owner_key,
             frame=int(frame_index),
             force=bool(force),
-            joint_count=int(len(joints)),
             position_count=int(len(list(positions or []))),
             handle_count=int(len(handles)),
             radius=float(radius),
@@ -11633,6 +11949,7 @@ void main() {
             display_rot=[round(float(v), 6) for v in (display_info.get("display_rot") or [])],
             display_pivot=[round(float(v), 6) for v in (display_info.get("display_pivot") or [])],
             display_transform=str(display_info.get("display_transform") or "scale_only_no_translation"),
+            **self._mgl_scene_skeleton_context_log_fields(context),
         )
         return True
 
@@ -11731,10 +12048,17 @@ void main() {
         )
         if previous and previous.lower() != owner_key.lower():
             self._mgl_scene_skeleton_remove_active_items(previous)
+            try:
+                pinned_contexts = getattr(self, "_mgl_scene_skeleton_context_by_owner", None)
+                if isinstance(pinned_contexts, dict):
+                    pinned_contexts.pop(previous.lower(), None)
+            except Exception:
+                pass
         if not owner_key:
             self._mgl_scene_skeleton_active_owner = ""
             self._mgl_scene_skeleton_selected_joint = ""
             self._mgl_scene_skeleton_remove_active_items(None)
+            self._mgl_scene_skeleton_context_by_owner = {}
             self._mgl_scene_skeleton_log("set_active_clear", previous=previous)
             return True
         self._mgl_scene_skeleton_active_owner = owner_key
@@ -11745,6 +12069,12 @@ void main() {
             self._mgl_scene_skeleton_log("set_active_no_context", owner=owner_key)
             return False
         context = context_info.get("context")
+        if isinstance(context, dict):
+            pinned_contexts = getattr(self, "_mgl_scene_skeleton_context_by_owner", None)
+            if not isinstance(pinned_contexts, dict):
+                pinned_contexts = {}
+                self._mgl_scene_skeleton_context_by_owner = pinned_contexts
+            pinned_contexts[owner_key.lower()] = context
         path_text = str(context_info.get("path") or "").strip()
         path = Path(path_text) if path_text else Path(f"{owner_key}.fbx")
         scene = getattr(self, "_mgl_scene", None)
@@ -13220,6 +13550,7 @@ void main() {
             rows = self._mgl_retarget_inverse_bind_positions(skeleton)
             if rows and self._mgl_retarget_positions_diag(rows) > 1.0e-7:
                 return rows
+        sample_time = 0.0
         try:
             clip = context.get("clip") if (role_key == "source" or target_animated) else None
             sample_time = (
@@ -13243,27 +13574,39 @@ void main() {
                 rows_trow.append((float(values[12]), float(values[13]), float(values[14])))
             if rows_tcol or rows_trow:
                 return rows_trow if self._mgl_retarget_positions_diag(rows_trow) > self._mgl_retarget_positions_diag(rows_tcol) else rows_tcol
-        except Exception:
-            pass
-        joints = list(getattr(skeleton, "joints", []) or [])
-        positions = []
-        for joint in joints:
+        except Exception as exc:
+            self._mgl_scene_skeleton_log_throttled(
+                f"joint_pose_evaluation_failed:{owner}:{role_key}",
+                "joint_pose_evaluation_failed",
+                interval=1.0,
+                owner=str(owner or ""),
+                role=role_key,
+                sample_time=float(sample_time),
+                error=str(exc),
+            )
+        # A malformed clip must not flatten the skeleton. Summing local
+        # translations loses parent rotations (including FBX up-axis
+        # conversion) and scales. Evaluate the source or bind pose through
+        # the same hierarchy used for skinning instead.
+        fallback_clips = [None]
+        original_clip = context.get("_scene_skeleton_original_clip")
+        if original_clip is not None and original_clip is not context.get("clip"):
+            fallback_clips.insert(0, original_clip)
+        for fallback_clip in fallback_clips:
             try:
-                tx, ty, tz = getattr(getattr(joint, "local_bind", None), "translation", (0.0, 0.0, 0.0))
-                local = (float(tx), float(ty), float(tz))
+                evaluation = evaluate_rig_at_time(
+                    skeleton=skeleton,
+                    clip=fallback_clip,
+                    time_seconds=float(sample_time),
+                    loop=bool(context.get("loop", True)),
+                )
+                return [
+                    (float(matrix[3]), float(matrix[7]), float(matrix[11]))
+                    for matrix in evaluation.global_matrices
+                ]
             except Exception:
-                local = (0.0, 0.0, 0.0)
-            try:
-                raw_parent = getattr(joint, "parent_index", -1)
-                parent_index = int(raw_parent) if raw_parent is not None else -1
-            except Exception:
-                parent_index = -1
-            if 0 <= parent_index < len(positions):
-                parent = positions[parent_index]
-                positions.append((parent[0] + local[0], parent[1] + local[1], parent[2] + local[2]))
-            else:
-                positions.append(local)
-        return positions
+                continue
+        return []
 
     def _mgl_retarget_update_owner_handles(self, owner: str, role: str, *, force: bool = False) -> bool:
         owner_key = str(owner or "").strip()
