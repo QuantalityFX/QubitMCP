@@ -10325,15 +10325,8 @@ void main() {
                 scene.set_visible_by_tag("grid-model", False)
             except Exception:
                 pass
-            try:
-                scene.remove_by_tag("grid-model")
-            except Exception:
-                pass
-
-        try:
-            self._mgl_clear_grid_model()
-        except Exception:
-            pass
+        # GPU resources are released in the viewport's render context.
+        self._mgl_grid_model_clear_pending = True
 
         self.update()
 
@@ -10779,6 +10772,11 @@ void main() {
         if not isinstance(owners, dict) or not isinstance(handles_by_owner, dict):
             return
         rebuild: list[tuple[str, str]] = []
+        if getattr(self, "_mgl_retarget_pose_mesh_dirty", False):
+            target_owner = str(owners.get("target") or "").strip()
+            if target_owner:
+                rebuild.append((target_owner, "target"))
+            self._mgl_retarget_pose_mesh_dirty = False
         prev_owner = str(getattr(self, "_mgl_retarget_selection_mesh_owner", "") or "").strip()
         prev_role = str(getattr(self, "_mgl_retarget_selection_mesh_role", "") or "").strip().lower()
         if prev_owner and prev_role in {"source", "target"}:
@@ -13608,7 +13606,7 @@ void main() {
                 continue
         return []
 
-    def _mgl_retarget_update_owner_handles(self, owner: str, role: str, *, force: bool = False) -> bool:
+    def _mgl_retarget_update_owner_handles(self, owner: str, role: str, *, force: bool = False, upload: bool = True) -> bool:
         owner_key = str(owner or "").strip()
         role_key = str(role or "").strip().lower()
         if not owner_key or role_key not in {"source", "target"}:
@@ -13647,7 +13645,7 @@ void main() {
         rows = []
         for handle in handles:
             try:
-                idx = int(handle.get("index", -1) or -1)
+                idx = int(handle.get("index", -1))
             except Exception:
                 idx = -1
             if idx < 0 or idx >= len(positions):
@@ -13687,7 +13685,8 @@ void main() {
             self._mgl_splats_visibility_dirty = True
         except Exception:
             pass
-        self._mgl_retarget_rebuild_handle_mesh_for_owner(owner_key, handles, role_key)
+        if upload:
+            self._mgl_retarget_rebuild_handle_mesh_for_owner(owner_key, handles, role_key)
         frame_keys[owner_key] = frame_key
         return True
 
@@ -13718,15 +13717,22 @@ void main() {
             self._mgl_retarget_links_dirty = False
 
     def _mgl_retarget_pick_mode(self) -> str:
-        model = getattr(self, "_mgl_retarget_node_model", None)
+        node_item = getattr(self, "_mgl_retarget_node_item", None)
+        model = getattr(node_item, "model", None)
         if model is None:
-            node_item = getattr(self, "_mgl_retarget_node_item", None)
-            model = getattr(node_item, "model", None) if node_item is not None else None
+            model = getattr(self, "_mgl_retarget_node_model", None)
         mode = str(getattr(model, "_retarget_pick_mode", "") or "").strip().lower()
         mode = mode if mode in {"pelvis_constraint", "target_pose"} else ""
         previous = str(getattr(self, "_mgl_retarget_last_pick_mode", "") or "")
         if previous != mode:
             self._mgl_retarget_last_pick_mode = mode
+            if mode != "target_pose" and str(getattr(self, "_xform_gizmo_owner", "") or "").startswith("retarget-target-pose::"):
+                self._xform_gizmo_owner = ""
+                self._xform_gizmo_owner_kind = ""
+                self._xform_gizmo_pos_locked = False
+                clear_overlay = getattr(self, "_clear_xform_overlay_state", None)
+                if callable(clear_overlay):
+                    clear_overlay()
             self._mgl_retarget_selected_joint = None
             self._mgl_retarget_selection_dirty = True
         return mode
@@ -14126,12 +14132,12 @@ void main() {
         mapping = getattr(self, "_mgl_retarget_joint_map", None)
         if not isinstance(mapping, dict):
             return
-        if not mapping:
-            try:
-                scene.remove_by_tag("retarget-links")
-            except Exception:
-                pass
-            return
+        from nodes.anim_retarget import spec as anim_retarget_spec
+
+        node_item = getattr(self, "_mgl_retarget_node_item", None)
+        model = getattr(node_item, "model", None) or getattr(self, "_mgl_retarget_node_model", None)
+        constraint = anim_retarget_spec._pelvis_constraint_payload(model)
+        scene.remove_by_tag("retarget-links")
         source_positions = self._mgl_retarget_visible_position_map("source")
         target_positions = self._mgl_retarget_visible_position_map("target")
         if not source_positions or not target_positions:
@@ -14170,44 +14176,38 @@ void main() {
             link_diag = 1.0
         dash_length = max(0.04, min(12.0, float(link_diag) * 0.018))
 
-        rows = []
-        for source_name, target_name in mapping.items():
-            p0 = source_positions.get(str(source_name))
-            p1 = target_positions.get(str(target_name))
-            if p0 is None or p1 is None:
+        groups = [("links", list(mapping.items()), (0.25, 1.00, 0.45, 1.0))]
+        if constraint.get("mode") != "none":
+            groups.append(("constraints", [(constraint["source"], constraint["target"])],
+                           (1.00, 0.55, 0.12, 1.0)))
+        for kind, pairs, color in groups:
+            rows = []
+            for source_name, target_name in pairs:
+                p0 = source_positions.get(str(source_name))
+                p1 = target_positions.get(str(target_name))
+                if p0 is None or p1 is None:
+                    continue
+                rows.extend(self._mgl_retarget_link_points(p0, p1, dash_length))
+            if not rows:
                 continue
-            rows.extend(self._mgl_retarget_link_points(p0, p1, dash_length))
-        if not rows:
-            return
-        try:
-            line_points = np.asarray(rows, dtype="f4").reshape(-1, 3)
-        except Exception:
-            return
-        item = self._mgl_add_wire_item_from_points(
-            name="anim-retarget-links",
-            line_points=line_points,
-            visible=True,
-            tag="retarget-links",
-            owner=str(getattr(self, "_mgl_retarget_preview_owner", "") or "Anim Retarget Mapping"),
-            path_key="anim-retarget-links",
-        )
-        if item is None:
-            return
-        payload = dict(item.payload or {})
-        try:
-            line_width = float(getattr(self, "_mgl_retarget_curve_thickness", 2.4) or 2.4)
-        except Exception:
-            line_width = 2.4
-        payload["color"] = (0.25, 1.00, 0.45, 1.0)
-        payload["line_width"] = max(0.5, min(20.0, line_width))
-        payload["xray"] = False
-        item.payload = payload
-        item.order = 18
-        try:
-            scene.remove_by_tag("retarget-links")
-        except Exception:
-            pass
-        scene.add(item)
+            item = self._mgl_add_wire_item_from_points(
+                name=f"anim-retarget-{kind}",
+                line_points=np.asarray(rows, dtype="f4").reshape(-1, 3),
+                visible=True, tag="retarget-links",
+                owner=str(getattr(self, "_mgl_retarget_preview_owner", "") or "Anim Retarget Mapping"),
+                path_key=f"anim-retarget-{kind}",
+            )
+            if item is None:
+                continue
+            payload = dict(item.payload or {})
+            try:
+                line_width = float(getattr(self, "_mgl_retarget_curve_thickness", 2.4) or 2.4)
+            except Exception:
+                line_width = 2.4
+            payload.update(color=color, line_width=max(0.5, min(20.0, line_width)), xray=False)
+            item.payload = payload
+            item.order = 19 if kind == "constraints" else 18
+            scene.add(item)
         try:
             now = float(time.time())
             last = float(getattr(self, "_mgl_retarget_link_log_ts", 0.0) or 0.0)
@@ -14248,10 +14248,6 @@ void main() {
             mapping[source] = target
         self._mgl_retarget_joint_map = mapping
         self._mgl_retarget_links_dirty = True
-        try:
-            self._mgl_retarget_refresh_link_item()
-        except Exception:
-            pass
         self._mgl_retarget_notify_mapping_changed()
         try:
             self.update()
@@ -14555,19 +14551,14 @@ void main() {
             return
         self._mgl_retarget_refresh_target_pose_contexts(rebuild_clip=bool(rebuild_clip))
         try:
-            self._mgl_retarget_update_owner_handles(target_owner, "target", force=True)
+            # Mouse/gizmo callbacks need fresh CPU positions, but must not create
+            # or delete VAOs in whichever viewport context happens to be current.
+            self._mgl_retarget_update_owner_handles(target_owner, "target", force=True, upload=False)
         except Exception:
             pass
+        self._mgl_retarget_pose_mesh_dirty = True
         self._mgl_retarget_selection_dirty = True
         self._mgl_retarget_links_dirty = True
-        try:
-            self._mgl_retarget_refresh_selection_item()
-        except Exception:
-            pass
-        try:
-            self._mgl_retarget_refresh_link_item()
-        except Exception:
-            pass
 
     def _mgl_retarget_handle_target_pose_click(self, handle: dict) -> bool:
         role = str(handle.get("role") or "").strip().lower()
@@ -14991,20 +14982,11 @@ void main() {
         if not source or not target:
             return False
         node_item = getattr(self, "_mgl_retarget_node_item", None)
-        mapping = None
         payload = None
         if node_item is not None:
             try:
                 from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
 
-                set_link = getattr(anim_retarget_spec, "set_joint_map_link", None)
-                if callable(set_link):
-                    mapping = set_link(
-                        node_item,
-                        source,
-                        target,
-                        notify_scene=False,
-                    )
                 set_constraint = getattr(anim_retarget_spec, "set_pelvis_constraint_link", None)
                 if callable(set_constraint):
                     payload = set_constraint(
@@ -15017,15 +14999,7 @@ void main() {
                 payload = None
         if not isinstance(payload, dict):
             return False
-        if not isinstance(mapping, dict):
-            mapping = dict(getattr(self, "_mgl_retarget_joint_map", None) or {})
-            mapping[source] = target
-        self._mgl_retarget_joint_map = mapping
         self._mgl_retarget_links_dirty = True
-        try:
-            self._mgl_retarget_refresh_link_item()
-        except Exception:
-            pass
         self._mgl_retarget_notify_mapping_changed()
         try:
             self._mgl_retarget_log(
@@ -15067,10 +15041,6 @@ void main() {
             mapping.pop(source, None)
         self._mgl_retarget_joint_map = mapping
         self._mgl_retarget_links_dirty = True
-        try:
-            self._mgl_retarget_refresh_link_item()
-        except Exception:
-            pass
         self._mgl_retarget_notify_mapping_changed()
         try:
             self.update()
@@ -15297,6 +15267,35 @@ void main() {
         except Exception:
             pass
 
+    def _mgl_retarget_world_bounds(self, owner: str | None = None):
+        """Frame the same transformed joint positions used for drawing/picking.
+
+        Retarget marker rows also live in the legacy splat cache, whose bounds
+        can still be in rig-local units while an upload is pending.
+        """
+        if np is None or not bool(getattr(self, "_mgl_retarget_preview_active", False)):
+            return None
+        handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
+        if not isinstance(handles_by_owner, dict):
+            return None
+        visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
+        owner_key = str(owner or "").strip().lower()
+        chunks = []
+        for name, handles in handles_by_owner.items():
+            if owner_key and str(name).strip().lower() != owner_key:
+                continue
+            if not visibility.get(name, True) or not handles:
+                continue
+            points, _ = self._mgl_retarget_pick_positions_for_owner(name, handles)
+            points = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+            points = points[np.isfinite(points).all(axis=1)]
+            if points.size:
+                chunks.append(points)
+        if not chunks:
+            return None
+        points = np.concatenate(chunks, axis=0)
+        return points.min(axis=0), points.max(axis=0)
+
     def get_scene_owner_bounds(self, owner: str):
         key = str(owner or "").strip()
         if not key:
@@ -15304,6 +15303,10 @@ void main() {
                 return (None, None)
             z = np.array([0.0, 0.0, 0.0], dtype=np.float32)
             return (z, z)
+
+        retarget_bounds = self._mgl_retarget_world_bounds(key)
+        if retarget_bounds is not None:
+            return retarget_bounds
 
         # splat bounds (world)
         try:
@@ -24210,6 +24213,9 @@ void main() {
         return False
 
     def _paint_mgl_draw_grid_pass(self, *, mvp) -> None:
+        if bool(getattr(self, "_mgl_grid_model_clear_pending", False)):
+            self._mgl_clear_grid_model()
+            self._mgl_grid_model_clear_pending = False
         retarget_grid_size = 0.0
         try:
             retarget_grid_size = float(self._mgl_retarget_grid_min_render_size())
@@ -29798,6 +29804,19 @@ void main() {
         self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov) * max(0.01, self._mgl_scale_multiplier)
 
     def _mgl_frame_camera(self) -> None:
+        bounds = self._mgl_retarget_world_bounds()
+        if bounds is not None:
+            mins, maxs = bounds
+            self._mgl_center = ((mins + maxs) * 0.5).astype("f4")
+            self._mgl_base_center = self._mgl_center.copy()
+            radius = max(float(np.max((maxs - mins) * 0.5)), 1.0e-6)
+            arc = getattr(self, "_mgl_arcball", None)
+            transform = np.asarray(getattr(arc, "Transform", np.eye(4)), dtype=np.float32)
+            view_scale = float(np.linalg.norm(transform[:3, :3], axis=1).mean())
+            distance = radius * view_scale / max(1.0e-6, math.tan(math.radians(self._mgl_fov * 0.5)))
+            self._mgl_base_zoom = max(0.1, distance * 1.2)
+            self._mgl_camera_zoom = self._mgl_base_zoom * max(0.01, self._mgl_scale_multiplier)
+            return
         if bool(getattr(self, "_mgl_render_splats", False)) and np is not None:
             cpu = getattr(self, "_mgl_splats15_cpu", None)
             if cpu is not None and getattr(cpu, "size", 0) > 0:
@@ -30320,6 +30339,18 @@ void main() {
                 pass
 
     def _mgl_load_scene_assets(self, assets: List[Dict[str, str]], frame: bool = True) -> None:
+        # Scene cleanup also deletes VAOs. Make this viewport current before
+        # cleanup, not only later when uploading the replacement scene.
+        if self._mgl_ctx is None:
+            self._mgl_error = "ModernGL context not ready"
+            return
+        self.makeCurrent()
+        try:
+            self._mgl_load_scene_assets_current(assets, frame=frame)
+        finally:
+            self.doneCurrent()
+
+    def _mgl_load_scene_assets_current(self, assets: List[Dict[str, str]], frame: bool = True) -> None:
         if self._mgl_ctx is None:
             self._mgl_error = "ModernGL context not ready"
             return
@@ -33537,7 +33568,10 @@ void main() {
                 try:
                     frame_min = None
                     frame_max = None
-                    if isinstance(mesh_owner_names, set) and mesh_owner_names:
+                    retarget_bounds = self._mgl_retarget_world_bounds()
+                    if retarget_bounds is not None:
+                        frame_min, frame_max = retarget_bounds
+                    if frame_min is None and isinstance(mesh_owner_names, set) and mesh_owner_names:
                         for owner_name in mesh_owner_names:
                             owner_text = str(owner_name or "").strip()
                             if not owner_text:

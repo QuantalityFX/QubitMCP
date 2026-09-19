@@ -1,0 +1,13 @@
+# Minimal stock inference dependencies; separate from Qubit Field's environment.
+# PyTorch / torchvision are selected by the adjacent installer.py module.
+numpy==1.23.5
+scipy==1.10.1
+einops==0.6.0
+tqdm==4.66.5
+ftfy==6.1.1
+regex==2024.7.24
+blobfile==2.1.1
+chumpy==0.70
+gdown==5.2.0
+git+https://github.com/openai/CLIP.git
+git+https://github.com/GuyTevet/smplx.git

@@ -37,12 +37,14 @@ AGENTS.md
 
 # Script workspace (local/scratch)
 /scripts/*
+!/scripts/extract_pdf_reference.py
 
 # External/vendor trees
 /echograph/QOpenGLWidget_example-main/
 /echograph/repos/
 /third_party/image-gs/
 /third_party/Wan2.2/
+/third_party/PriorMDM/
 /vcpkg/
 /Unreal/UnrealEnviroment/
 /Unreal/UnrealEnvironment/
@@ -69,6 +71,9 @@ AGENTS.md
 # tanya voice
 /tanya/
 /tests/
+!/tests/
+/tests/*
+!/tests/motion/
 
 /Unreal/Plugins/KeyboardActionRunner/
 /app_settings.json

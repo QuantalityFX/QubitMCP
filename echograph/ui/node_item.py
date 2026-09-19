@@ -998,6 +998,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _mocap_import.register()
             except Exception:
                 pass
+        if (self.model.kind or "").strip().lower() == "priormdm":
+            from nodes import priormdm as _priormdm
+            _priormdm.register()
         # Ensure GEN-X Video Mocap spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in (
             "gen-x-videomocap",

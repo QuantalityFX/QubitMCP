@@ -241,6 +241,8 @@ def _kind_label(kind: str) -> str:
         return "FX Music Visualizer"
     if key in ("gen-x-videomocap", "gen-x_video_mocap", "genx_video_mocap", "genx_videomocap", "gemx_video_mocap"):
         return "GEN-X Video Mocap"
+    if key == "priormdm":
+        return "PriorMDM Text to Motion"
     if key in ("youtube_downloader", "youtube downloader", "youtube", "yt_downloader", "yt downloader", "youtube_to_mp4", "youtube to mp4"):
         return "YouTube Downloader"
     if key in ("minimax_h3_video", "minimax h3 video", "minimax_h3", "minimax h3", "h3_video", "h3 video"):
@@ -284,6 +286,7 @@ _NODE_KIND_SEARCH_HINTS = {
     "fbx_import": "fbx animation mesh import",
     "fbx_animation": "fbx animation import mocap",
     "mocap_import": "mocap bvh motion capture animation",
+    "priormdm": "priormdm mdm text prompt motion generation humanoid animation",
     "gen_x_videomocap": "video mocap gen-x motion capture animation",
     "anim_retarget": "animation retarget rig skeleton",
     "skinned_splat_proxy": "fbx skinned splat proxy ply gaussian",
@@ -774,6 +777,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit.setView(kind_popup_view)
         self._kinds = [
             "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","fbx_animation","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","image_gs_splat","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","youtube_downloader","minimax_h3_video","minimax_h3_api_video","minimax_tts_api","wan22_video","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
+            "priormdm",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "audio_capture",

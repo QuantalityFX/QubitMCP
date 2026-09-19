@@ -575,7 +575,7 @@ def _handle_mouse_press_moderngl(self, e):
             try:
                 owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
                 owner_kind = str(getattr(self, "_xform_gizmo_owner_kind", "") or "").strip().lower()
-                if owner and owner_kind == "scene_skeleton_joint":
+                if owner and owner_kind in {"scene_skeleton_joint", "retarget_target_joint"}:
                     prefer_gizmo = True
                 elif owner:
                     renderer = getattr(self, "_mgl_renderer", None) or self

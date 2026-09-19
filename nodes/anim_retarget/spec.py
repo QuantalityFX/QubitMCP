@@ -3242,6 +3242,31 @@ def build_anim_retarget_clip(
         )
         used_targets.add(target_name)
 
+    if pelvis_constraint.get("mode") != "none":
+        source_name = pelvis_constraint.get("source", "")
+        target_name = pelvis_constraint.get("target", "")
+        si, ti = source_index.get(source_name), target_index.get(target_name)
+        source_track = source_tracks.get(source_name)
+        if si is not None and ti is not None and source_track is not None:
+            if pelvis_constraint["mode"] == "snap":
+                translation_keys = _snap_translation_keys(
+                    source_track, translation_scale, source_basis, target_basis,
+                )
+            else:
+                translation_keys = _copy_translation_keys(
+                    source_track, source_joints[si].local_bind, target_joints[ti].local_bind,
+                    translation_scale, source_basis, target_basis,
+                )
+            if translation_keys:
+                constraint_track = next((track for track in tracks if track.joint_name == target_name), None)
+                if constraint_track is None:
+                    tracks.append(JointAnimationTrack(
+                        joint_name=target_name, translation_keys=translation_keys,
+                        rotation_keys=[], scale_keys=[],
+                    ))
+                else:
+                    constraint_track.translation_keys = translation_keys
+
     if not tracks:
         _retarget_debug_log("build_retarget_clip_empty", _model=model, skipped=skipped, mapping=mapping)
         return None
@@ -3982,7 +4007,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     pelvis_link_label.setStyleSheet("color:#cbd5e1;")
     pelvis_link_label.setWordWrap(True)
     pelvis_link_table = QtWidgets.QTableWidget(0, 3)
-    pelvis_link_table.setHorizontalHeaderLabels(["Source Pelvis", "Target Pelvis", "Constraint"])
+    pelvis_link_table.setHorizontalHeaderLabels(["Source Joint", "Target Joint", "Constraint"])
+    pelvis_link_table.setToolTip("Click a source and target joint in this tab to create an orange constraint link. Green joint mappings are preserved.")
     pelvis_link_table.setMinimumHeight(76)
     try:
         try:
@@ -4020,7 +4046,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     pelvis_mode_combo.addItem("None", "none")
     pelvis_mode_combo.addItem("Position Offset", "position_offset")
     pelvis_mode_combo.addItem("Snap", "snap")
-    pelvis_mode_combo.setToolTip("Choose how the target pelvis translation follows the source pelvis.")
+    pelvis_mode_combo.setToolTip("Choose how the target joint translation follows the source joint.")
     try:
         pelvis_mode_combo.setMinimumWidth(150)
     except Exception:
@@ -4199,7 +4225,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     report_holder: Dict[str, str] = {"value": ""}
     settings_syncing: Dict[str, bool] = {"value": False}
     target_pose_table_syncing: Dict[str, bool] = {"value": False}
-    view_state: Dict[str, bool] = {"opened": False}
+    pick_mode_owner = object()
 
     def _node_item():
         try:
@@ -4215,9 +4241,24 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         if model_obj is None:
             return
         try:
+            setattr(model_obj, "_retarget_pick_mode_owner", pick_mode_owner)
             setattr(model_obj, "_retarget_pick_mode", normalized)
+            active_item, glv = _active_target_pose_edit_context()
+            if glv is not None:
+                renderer = getattr(glv, "_mgl_renderer", None) or glv
+                renderer._mgl_retarget_node_item = active_item
+                renderer._mgl_retarget_node_model = model_obj
+                renderer._mgl_retarget_pick_mode()
+                renderer._mgl_retarget_refresh_target_pose_handles()
+                glv.update()
         except Exception:
             pass
+
+    def _clear_retarget_pick_mode() -> None:
+        item = _node_item()
+        model_obj = getattr(item, "model", None) if item is not None else node
+        if getattr(model_obj, "_retarget_pick_mode_owner", None) is pick_mode_owner:
+            _set_retarget_pick_mode("")
 
     def _on_retarget_tab_changed(index: int) -> None:
         try:
@@ -4469,7 +4510,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     def _target_pose_gl_view():
         try:
-            win = card.window()
+            win = _resolve_window(_node_item(), card)
             return getattr(win, "gl_view", None) if win is not None else None
         except Exception:
             return None
@@ -4481,7 +4522,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             return item, None
 
         active_retarget = False
-        target_owner = getattr(glv, "_mgl_retarget_target_owner", None)
+        renderer = getattr(glv, "_mgl_renderer", None) or glv
+        target_owner = getattr(renderer, "_mgl_retarget_target_owner", None)
         if callable(target_owner):
             try:
                 active_retarget = bool(str(target_owner() or "").strip())
@@ -4490,7 +4532,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         if not bool(active_retarget):
             return item, None
 
-        active_item = getattr(glv, "_mgl_retarget_node_item", None)
+        active_item = getattr(renderer, "_mgl_retarget_node_item", None)
         if active_item is None:
             return item, None
 
@@ -4695,7 +4737,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _refresh_target_pose_table_only(model_obj)
 
     def _refresh_retarget_view_from_settings() -> None:
-        if not bool(view_state.get("opened", False)):
+        _item, glv = _active_target_pose_edit_context()
+        if glv is None:
             return
         try:
             _on_view_clicked(frame=False, quiet=True)
@@ -4925,8 +4968,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         result = _refresh(persist=True, toast=False)
         if result is None:
             return
-        if open_anim_retarget_preview(item, frame=bool(frame), quiet=bool(quiet), parent=card, result=result):
-            view_state["opened"] = True
+        open_anim_retarget_preview(item, frame=bool(frame), quiet=bool(quiet), parent=card, result=result)
 
     view_button.clicked.connect(lambda: _on_view_clicked(frame=True, quiet=False))
     joint_handle_slider.valueChanged.connect(_on_joint_handle_changed)
@@ -4944,7 +4986,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     try:
         container.destroyed.connect(
             lambda *_args: (
-                _set_retarget_pick_mode(""),
+                _clear_retarget_pick_mode(),
                 _clear_mapping_refresh_callback(),
                 _clear_target_pose_refresh_callback(),
             )
