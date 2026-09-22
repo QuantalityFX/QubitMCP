@@ -46,8 +46,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         try: sc._refresh_switch_widget(it)
         except Exception: pass
         try:
-            if sc._current_output_name:
-                sc.recompute_active_path(sc._current_output_name)
+            sc._on_switch_index_changed(it, it.model.switch_index)
         except Exception:
             pass
         _update_label()

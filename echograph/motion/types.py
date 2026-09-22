@@ -30,6 +30,7 @@ class GenerationPlan:
     cwd: Path
     run_dir: Path
     environment: dict[str, str] = field(default_factory=dict)
+    stages: tuple[GenerationPlan, ...] = ()
 
 
 @dataclass

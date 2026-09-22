@@ -53,10 +53,11 @@ TRANSFORM_KIND_ALIASES: Tuple[str, ...] = (
     "transform node",
 )
 
-VISIBLE_PORTS: Tuple[str, str] = ("source", "target")
+VISIBLE_PORTS: Tuple[str, ...] = ("source", "target", "animation")
 HIDDEN_PARAMS: Tuple[str, ...] = (
     "joint_map",
     "joint_handle_scale",
+    "target_joint_handle_scale",
     "joint_curve_thickness",
     "display_params_version",
     "preview_target_mesh",
@@ -74,6 +75,7 @@ HIDDEN_PARAMS: Tuple[str, ...] = (
 )
 
 JOINT_HANDLE_SCALE_PARAM = "joint_handle_scale"
+TARGET_JOINT_HANDLE_SCALE_PARAM = "target_joint_handle_scale"
 JOINT_CURVE_THICKNESS_PARAM = "joint_curve_thickness"
 DISPLAY_PARAMS_VERSION_PARAM = "display_params_version"
 PREVIEW_TARGET_MESH_PARAM = "preview_target_mesh"
@@ -85,7 +87,7 @@ TARGET_POSE_OFFSETS_PARAM = "target_pose_offsets"
 TARGET_POSE_SELECTED_JOINT_PARAM = "target_pose_selected_joint"
 JOINT_HANDLE_SCALE_DEFAULT = 1.0
 JOINT_CURVE_THICKNESS_DEFAULT = 2.4
-JOINT_HANDLE_SCALE_MIN = 0.05
+JOINT_HANDLE_SCALE_MIN = 0.001
 JOINT_HANDLE_SCALE_MAX = 25.0
 JOINT_CURVE_THICKNESS_MIN = 0.5
 JOINT_CURVE_THICKNESS_MAX = 10.0
@@ -154,6 +156,9 @@ class RetargetSourceTargetResult:
     joint_map_count: int = 0
     source_context: Dict[str, Any] | None = None
     target_context: Dict[str, Any] | None = None
+    animation_context: Dict[str, Any] | None = None
+    animation_connected: bool = False
+    animation_error: str = ""
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
@@ -378,12 +383,12 @@ def _ensure_display_params(node_item) -> None:
     if model is None:
         return
     version = _param_value(model, DISPLAY_PARAMS_VERSION_PARAM)
-    if version == "2":
-        return
-    raw_scale = _param_value(model, JOINT_HANDLE_SCALE_PARAM)
-    if raw_scale.strip() in {"", "0.45", "0.450", "0.4500"}:
-        _set_param_value(model, JOINT_HANDLE_SCALE_PARAM, f"{JOINT_HANDLE_SCALE_DEFAULT:.2f}")
-    _set_param_value(model, DISPLAY_PARAMS_VERSION_PARAM, "2")
+    if version != "2":
+        raw_scale = _param_value(model, JOINT_HANDLE_SCALE_PARAM)
+        if raw_scale.strip() in {"", "0.45", "0.450", "0.4500"}:
+            _set_param_value(model, JOINT_HANDLE_SCALE_PARAM, f"{JOINT_HANDLE_SCALE_DEFAULT:.2f}")
+        _set_param_value(model, DISPLAY_PARAMS_VERSION_PARAM, "2")
+    _ensure_param(node_item, TARGET_JOINT_HANDLE_SCALE_PARAM, _param_value(model, JOINT_HANDLE_SCALE_PARAM))
 
 
 def _ensure_input(node_item, name: str) -> None:
@@ -1069,6 +1074,8 @@ def _context_for_source_item(
     _depth: int = 0,
     _visited: set[int] | None = None,
 ) -> Dict[str, Any] | None:
+    if kind == "switch":
+        return _switch_context_from_item(node_item, errors, warnings, target=False, _depth=_depth, _visited=_visited)
     if kind in (
         "mocap_import",
         "mocap import",
@@ -1102,6 +1109,8 @@ def _context_for_target_item(
     _depth: int = 0,
     _visited: set[int] | None = None,
 ) -> Dict[str, Any] | None:
+    if kind == "switch":
+        return _switch_context_from_item(node_item, errors, warnings, target=True, _depth=_depth, _visited=_visited)
     if kind in TARGET_KIND_ALIASES:
         return _fbx_context_from_item(node_item, "target", errors, warnings, require_clip=False)
     if kind in TRANSFORM_KIND_ALIASES:
@@ -1115,6 +1124,27 @@ def _context_for_target_item(
             _visited=_visited,
         )
     return None
+
+
+def _switch_context_from_item(node_item, errors, warnings, *, target, _depth=0, _visited=None):
+    role = "target" if target else "source"
+    visited = set() if _visited is None else _visited
+    if id(node_item) in visited or _depth > 32:
+        errors.append(f"{role}: Switch input chain contains a cycle or is too deep.")
+        return None
+    visited.add(id(node_item))
+    # GraphScene orders switch inputs and returns only the selected branch.
+    edges = _ordered_in_edges(node_item.scene(), node_item)
+    selected = getattr(edges[0], "src", None) if edges else None
+    if selected is None:
+        errors.append(f"{role}: Switch has no connected input.")
+        return None
+    kind = str(getattr(selected.model, "kind", "") or "").strip().lower()
+    resolver = _context_for_target_item if target else _context_for_source_item
+    context = resolver(selected, kind, errors, warnings, _depth=_depth + 1, _visited=visited)
+    if context is None and not errors:
+        errors.append(f"{role}: Switch selected unsupported node kind '{kind}'.")
+    return context
 
 
 def build_ports(node_item) -> None:
@@ -1136,6 +1166,24 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, TARGET_POSE_SELECTED_JOINT_PARAM, "")
     _ensure_param(node_item, "debug_log", "0")
     _ensure_hidden_params(getattr(node_item, "model", None), HIDDEN_PARAMS)
+
+
+def _rig_structure(skeleton):
+    """Compare names and parent relationships, independent of joint ordering."""
+    joints = list(getattr(skeleton, "joints", []) or [])
+    names = [str(joint.name) for joint in joints]
+    if not names or len(set(names)) != len(names):
+        return None
+    return frozenset(
+        (joint.name, names[joint.parent_index] if 0 <= joint.parent_index < len(names) else None)
+        for joint in joints
+    )
+
+
+def _animation_clip(result):
+    if result.animation_connected:
+        return None if result.animation_error else (result.animation_context or {}).get("clip")
+    return (result.source_context or {}).get("clip")
 
 
 def resolve_anim_retarget_inputs(node_item, *, persist: bool = False) -> RetargetSourceTargetResult:
@@ -1166,12 +1214,12 @@ def resolve_anim_retarget_inputs(node_item, *, persist: bool = False) -> Retarge
 
     if source_model is None:
         errors.append("source: connect a Mocap Import, FBX Import, or Transform node.")
-    elif source_kind not in SOURCE_KIND_ALIASES and source_kind not in TRANSFORM_KIND_ALIASES:
+    elif source_kind not in SOURCE_KIND_ALIASES and source_kind not in TRANSFORM_KIND_ALIASES and source_kind != "switch":
         errors.append(f"source: unsupported node kind '{source_kind or '<none>'}'.")
 
     if target_model is None:
         errors.append("target: connect an FBX Import or Transform node.")
-    elif target_kind not in TARGET_KIND_ALIASES and target_kind not in TRANSFORM_KIND_ALIASES:
+    elif target_kind not in TARGET_KIND_ALIASES and target_kind not in TRANSFORM_KIND_ALIASES and target_kind != "switch":
         errors.append(f"target: unsupported node kind '{target_kind or '<none>'}'; expected FBX Import or Transform.")
 
     source_context = None
@@ -1187,15 +1235,33 @@ def resolve_anim_retarget_inputs(node_item, *, persist: bool = False) -> Retarge
     if persist:
         if (
             source_model is not None
-            and (source_kind in SOURCE_KIND_ALIASES or source_kind in TRANSFORM_KIND_ALIASES)
+            and (source_kind in SOURCE_KIND_ALIASES or source_kind in TRANSFORM_KIND_ALIASES or source_kind == "switch")
         ):
             source_context = _context_for_source_item(source_item, source_kind, errors, warnings)
         if (
             target_model is not None
-            and (target_kind in TARGET_KIND_ALIASES or target_kind in TRANSFORM_KIND_ALIASES)
+            and (target_kind in TARGET_KIND_ALIASES or target_kind in TRANSFORM_KIND_ALIASES or target_kind == "switch")
         ):
             target_context = _context_for_target_item(target_item, target_kind, errors, warnings)
 
+    animation_item, animation_issue = _connected_item_for_port(scene, node_item, "animation")
+    if animation_issue:
+        warnings.append(animation_issue)
+    animation_context = None
+    animation_errors = []
+    if animation_item is not None:
+        animation_kind = str(getattr(animation_item.model, "kind", "") or "").strip().lower()
+        animation_context = _context_for_source_item(animation_item, animation_kind, animation_errors, warnings)
+        animation_errors = [message.replace("source:", "animation:", 1) for message in animation_errors]
+        if not animation_context or animation_context.get("clip") is None:
+            animation_errors.append("animation: connect an import containing an animation clip.")
+        if source_context and animation_context:
+            source_structure = _rig_structure(source_context.get("skeleton"))
+            if source_structure is None or source_structure != _rig_structure(animation_context.get("skeleton")):
+                animation_errors.append("animation: rig differs from source; joint names and parent hierarchy must match.")
+    animation_error = "\n".join(animation_errors)
+    errors.extend(animation_errors)
+    node_item._retarget_animation_error = animation_error
     source_joint_count = int((source_context or {}).get("joint_count", 0) or 0)
     source_clip_count = int((source_context or {}).get("clip_count", 0) or 0)
     target_joint_count = int((target_context or {}).get("joint_count", 0) or 0)
@@ -1215,6 +1281,9 @@ def resolve_anim_retarget_inputs(node_item, *, persist: bool = False) -> Retarge
         joint_map_count=joint_map_count,
         source_context=source_context,
         target_context=target_context,
+        animation_context=animation_context,
+        animation_connected=animation_item is not None,
+        animation_error=animation_error,
         errors=errors,
         warnings=warnings,
     )
@@ -1396,6 +1465,8 @@ def _preview_rig_context(context: Dict[str, Any], role: str, *, curve_thickness:
     source_rest_pose = bool(is_source and context.get("retarget_source_rest_pose"))
     rig["skeleton"] = _preview_skeleton(context, role)
     rig["clip"] = None if source_rest_pose else (context.get("clip") if is_source else None)
+    if is_source:
+        rig["clips"] = [rig["clip"]] if rig["clip"] is not None else []
     if source_rest_pose:
         rig["clips"] = []
     rig["meshes"] = []
@@ -1581,31 +1652,39 @@ def build_anim_retarget_preview_assets(
         minimum=JOINT_CURVE_THICKNESS_MIN,
         maximum=JOINT_CURVE_THICKNESS_MAX,
     )
-    def _handle_radius_for_context(context: Dict[str, Any]) -> float:
+    target_handle_scale = _param_float(
+        model, TARGET_JOINT_HANDLE_SCALE_PARAM, handle_scale,
+        minimum=JOINT_HANDLE_SCALE_MIN, maximum=JOINT_HANDLE_SCALE_MAX,
+    )
+    def _handle_radius_for_context(context: Dict[str, Any], scale: float) -> float:
         extent = max(1.0, float(_skeleton_extent(context)))
         base_radius = max(0.05, extent * 0.012)
         max_radius = max(base_radius, min(120.0, extent * 0.10))
-        return max(0.02, min(max_radius, base_radius * handle_scale))
+        return max(0.000001, min(max_radius, base_radius * scale))
 
     target_pose_context = dict(target_context)
     target_pose_context["skeleton"] = target_pose_skeleton_for_model(
         model,
         _retarget_eval_target_skeleton(target_context.get("skeleton"), model=model),
     )
-    source_handle_radius = _handle_radius_for_context(source_context)
-    target_handle_radius = _handle_radius_for_context(target_pose_context)
+    source_handle_radius = _handle_radius_for_context(source_context, handle_scale)
+    target_handle_radius = _handle_radius_for_context(target_pose_context, target_handle_scale)
     handle_radius = max(source_handle_radius, target_handle_radius)
     base_name = str(getattr(model, "name", "") or "").strip() or "Anim Retarget"
     source_owner = f"{base_name} Source"
     target_owner = f"{base_name} Target"
-    source_rest_pose = _param_bool(model, SOURCE_REST_POSE_PARAM, False)
     preview_target_animation = _param_bool(model, PREVIEW_TARGET_MESH_PARAM, False)
+    source_rest_pose = not preview_target_animation or _animation_clip(result) is None
     retarget_preview_clip = build_anim_retarget_clip(node_item, result) if preview_target_animation else None
     source_preview_context = _source_preview_context(
         source_context,
         rest_pose=bool(source_rest_pose),
         model=model,
     )
+    if not source_rest_pose:
+        source_preview_context = dict(source_context)
+        source_preview_context["clip"] = _animation_clip(result)
+        source_preview_context["clips"] = [source_preview_context["clip"]]
     source_asset = _preview_asset_for_context(
         source_preview_context,
         owner=source_owner,
@@ -1710,6 +1789,7 @@ def build_anim_retarget_preview_assets(
         target_joint_count=result.target_joint_count,
         source_clip_count=result.source_clip_count,
         handle_scale=round(handle_scale, 6),
+        target_handle_scale=round(target_handle_scale, 6),
         handle_radius=round(handle_radius, 6),
         source_handle_radius=round(source_handle_radius, 6),
         target_handle_radius=round(target_handle_radius, 6),
@@ -1858,6 +1938,26 @@ class AnimRetargetNodeViewButton(QtWidgets.QWidget if QtWidgets is not None else
         self._view_btn.clicked.connect(self._on_view_clicked)
         layout.addWidget(self._view_btn, 0, QtCore.Qt.AlignLeft)
         layout.addStretch(1)
+        self._validation_timer = QtCore.QTimer(self)
+        self._validation_timer.setSingleShot(True)
+        self._validation_timer.setInterval(100)
+        self._validation_timer.timeout.connect(self._validate_animation)
+        QtCore.QTimer.singleShot(0, self._connect_validation)
+
+    def _connect_validation(self):
+        scene = self._node_item.scene()
+        if scene is not None:
+            scene.linksChanged.connect(self._schedule_validation)
+            scene.paramChanged.connect(self._schedule_validation)
+            self._schedule_validation()
+
+    def _schedule_validation(self, *_args):
+        self._validation_timer.start()
+
+    def _validate_animation(self):
+        result = resolve_anim_retarget_inputs(self._node_item, persist=True)
+        self._view_btn.setToolTip(result.animation_error or "Open the source and target skeleton preview in the 3D viewport.")
+        self._node_item.update()
 
     def sizeHint(self):
         return QtCore.QSize(88, 36)
@@ -2685,6 +2785,7 @@ def _build_global_rotation_key_sets(
     target_index: Dict[str, int],
     source_basis: Tuple[float, float, float, float] | None = None,
     target_basis: Tuple[float, float, float, float] | None = None,
+    reference_clip=None,
 ) -> Dict[str, List[Any]]:
     try:
         from echograph.rigging.fbx_canonical import QuatKeyframe
@@ -2697,13 +2798,14 @@ def _build_global_rotation_key_sets(
 
     source_bind_global = _global_bind_rotations(source_skeleton)
     target_bind_global = _global_bind_rotations(target_skeleton)
+    reference_clip = source_clip if reference_clip is None else reference_clip
     try:
-        source_reference_time = float(getattr(source_clip, "start_time", 0.0) or 0.0)
+        source_reference_time = float(getattr(reference_clip, "start_time", 0.0) or 0.0)
     except Exception:
         source_reference_time = 0.0
     source_reference_global = _global_sample_rotations(
         source_skeleton,
-        source_tracks,
+        _track_lookup(reference_clip),
         source_reference_time,
     )
     source_basis_q = _quat_normalize(source_basis or (0.0, 0.0, 0.0, 1.0))
@@ -3091,6 +3193,7 @@ def _retarget_clip_cache_key(
         id(source_skeleton),
         id(target_skeleton),
         id(source_clip),
+        id(source_context.get("clip")),
         _freeze_cache_value(source_context.get("transform_xform")),
         _freeze_cache_value(target_context.get("transform_xform")),
         _retarget_model_clip_signature(model),
@@ -3114,7 +3217,7 @@ def build_anim_retarget_clip(
         model,
         _retarget_eval_target_skeleton(target_context.get("skeleton"), model=model),
     )
-    source_clip = source_context.get("clip")
+    source_clip = _animation_clip(result)
     if source_skeleton is None or target_skeleton is None or source_clip is None:
         return None
     mapping = _joint_map_payload(model)
@@ -3160,6 +3263,7 @@ def build_anim_retarget_clip(
         target_index,
         source_basis,
         target_basis,
+        reference_clip=source_context.get("clip"),
     )
     pelvis_constraint = _pelvis_constraint_payload(model)
     tracks = []
@@ -3651,7 +3755,7 @@ def write_anim_retarget_joint_debug_snapshot(
         model,
         _retarget_eval_target_skeleton(target_skeleton_original, model=model),
     )
-    source_clip = source_context.get("clip")
+    source_clip = _animation_clip(result)
     if source_skeleton is None or target_skeleton is None or source_clip is None:
         raise RuntimeError("Anim Retarget source skeleton, target skeleton, or source clip is unavailable.")
     retarget_clip = build_anim_retarget_clip(node_item, result)
@@ -4153,6 +4257,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         minimum=JOINT_HANDLE_SCALE_MIN,
         maximum=JOINT_HANDLE_SCALE_MAX,
     )
+    initial_target_handle_scale = _param_float(
+        node,
+        TARGET_JOINT_HANDLE_SCALE_PARAM,
+        initial_handle_scale,
+        minimum=JOINT_HANDLE_SCALE_MIN,
+        maximum=JOINT_HANDLE_SCALE_MAX,
+    )
     initial_curve_thickness = _param_float(
         node,
         JOINT_CURVE_THICKNESS_PARAM,
@@ -4160,14 +4271,20 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         minimum=JOINT_CURVE_THICKNESS_MIN,
         maximum=JOINT_CURVE_THICKNESS_MAX,
     )
-    initial_source_rest_pose = _param_bool(node, SOURCE_REST_POSE_PARAM, False)
     initial_preview_target_animation = _param_bool(node, PREVIEW_TARGET_MESH_PARAM, False)
     joint_handle_slider, joint_handle_value = _slider_row(
-        "Joint Points",
-        f"{initial_handle_scale:.2f}x",
-        int(JOINT_HANDLE_SCALE_MIN * 100.0),
-        int(JOINT_HANDLE_SCALE_MAX * 100.0),
-        int(round(initial_handle_scale * 100.0)),
+        "Source Joint Points",
+        f"{initial_handle_scale:.3f}x",
+        int(JOINT_HANDLE_SCALE_MIN * 1000.0),
+        int(JOINT_HANDLE_SCALE_MAX * 1000.0),
+        int(round(initial_handle_scale * 1000.0)),
+    )
+    target_joint_handle_slider, target_joint_handle_value = _slider_row(
+        "Target Joint Points",
+        f"{initial_target_handle_scale:.3f}x",
+        int(JOINT_HANDLE_SCALE_MIN * 1000.0),
+        int(JOINT_HANDLE_SCALE_MAX * 1000.0),
+        int(round(initial_target_handle_scale * 1000.0)),
     )
     joint_curve_slider, joint_curve_value = _slider_row(
         "Curve Thickness",
@@ -4176,16 +4293,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         int(JOINT_CURVE_THICKNESS_MAX * 10.0),
         int(round(initial_curve_thickness * 10.0)),
     )
-    source_rest_pose_checkbox = QtWidgets.QCheckBox("Source Reference Pose")
-    source_rest_pose_checkbox.setChecked(bool(initial_source_rest_pose))
-    source_rest_pose_checkbox.setToolTip(
-        "Use the source clip start pose as a static reference pose for the mapping preview."
-    )
-    source_rest_pose_checkbox.setStyleSheet("color:#cbd5e1;")
-    settings_layout.addWidget(source_rest_pose_checkbox, 0)
-    preview_target_animation_checkbox = QtWidgets.QCheckBox("Animate Target Skeleton")
+    preview_target_animation_checkbox = QtWidgets.QCheckBox("Animate Source and Target Skeletons")
     preview_target_animation_checkbox.setChecked(bool(initial_preview_target_animation))
-    preview_target_animation_checkbox.setToolTip("Use the generated retarget clip on the target skeleton in this preview.")
+    preview_target_animation_checkbox.setToolTip("Preview the selected animation on the source and its retargeted motion on the target. Uncheck to show the reference poses.")
     preview_target_animation_checkbox.setStyleSheet("color:#cbd5e1;")
     settings_layout.addWidget(preview_target_animation_checkbox, 0)
     settings_layout.addStretch(1)
@@ -4685,6 +4795,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             minimum=JOINT_HANDLE_SCALE_MIN,
             maximum=JOINT_HANDLE_SCALE_MAX,
         )
+        target_handle_value = _param_float(
+            model_obj,
+            TARGET_JOINT_HANDLE_SCALE_PARAM,
+            handle_value,
+            minimum=JOINT_HANDLE_SCALE_MIN,
+            maximum=JOINT_HANDLE_SCALE_MAX,
+        )
         curve_value = _param_float(
             model_obj,
             JOINT_CURVE_THICKNESS_PARAM,
@@ -4692,7 +4809,6 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             minimum=JOINT_CURVE_THICKNESS_MIN,
             maximum=JOINT_CURVE_THICKNESS_MAX,
         )
-        source_rest_pose = _param_bool(model_obj, SOURCE_REST_POSE_PARAM, False)
         preview_target_animation = _param_bool(model_obj, PREVIEW_TARGET_MESH_PARAM, False)
         pelvis_source = _param_value(model_obj, PELVIS_CONSTRAINT_SOURCE_PARAM)
         pelvis_target = _param_value(model_obj, PELVIS_CONSTRAINT_TARGET_PARAM)
@@ -4700,17 +4816,18 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         settings_syncing["value"] = True
         try:
             joint_handle_slider.blockSignals(True)
+            target_joint_handle_slider.blockSignals(True)
             joint_curve_slider.blockSignals(True)
-            source_rest_pose_checkbox.blockSignals(True)
             preview_target_animation_checkbox.blockSignals(True)
             pelvis_mode_combo.blockSignals(True)
-            joint_handle_slider.setValue(int(round(handle_value * 100.0)))
+            joint_handle_slider.setValue(int(round(handle_value * 1000.0)))
+            target_joint_handle_slider.setValue(int(round(target_handle_value * 1000.0)))
             joint_curve_slider.setValue(int(round(curve_value * 10.0)))
-            source_rest_pose_checkbox.setChecked(bool(source_rest_pose))
             preview_target_animation_checkbox.setChecked(bool(preview_target_animation))
             _set_pelvis_mode_combo(pelvis_mode)
             _set_pelvis_link_label(pelvis_source, pelvis_target, pelvis_mode)
-            joint_handle_value.setText(f"{handle_value:.2f}x")
+            joint_handle_value.setText(f"{handle_value:.3f}x")
+            target_joint_handle_value.setText(f"{target_handle_value:.3f}x")
             joint_curve_value.setText(f"{curve_value:.1f}px")
         finally:
             try:
@@ -4718,11 +4835,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             except Exception:
                 pass
             try:
-                joint_curve_slider.blockSignals(False)
+                target_joint_handle_slider.blockSignals(False)
             except Exception:
                 pass
             try:
-                source_rest_pose_checkbox.blockSignals(False)
+                joint_curve_slider.blockSignals(False)
             except Exception:
                 pass
             try:
@@ -4746,11 +4863,18 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             pass
 
     def _on_joint_handle_changed(raw_value: int) -> None:
-        value = max(JOINT_HANDLE_SCALE_MIN, min(JOINT_HANDLE_SCALE_MAX, float(raw_value) / 100.0))
-        joint_handle_value.setText(f"{value:.2f}x")
+        value = max(JOINT_HANDLE_SCALE_MIN, min(JOINT_HANDLE_SCALE_MAX, float(raw_value) / 1000.0))
+        joint_handle_value.setText(f"{value:.3f}x")
         if bool(settings_syncing.get("value", False)):
             return
-        _set_node_param(JOINT_HANDLE_SCALE_PARAM, f"{value:.2f}", notify_scene=False)
+        _set_node_param(JOINT_HANDLE_SCALE_PARAM, f"{value:.3f}", notify_scene=False)
+
+    def _on_target_joint_handle_changed(raw_value: int) -> None:
+        value = max(JOINT_HANDLE_SCALE_MIN, min(JOINT_HANDLE_SCALE_MAX, float(raw_value) / 1000.0))
+        target_joint_handle_value.setText(f"{value:.3f}x")
+        if bool(settings_syncing.get("value", False)):
+            return
+        _set_node_param(TARGET_JOINT_HANDLE_SCALE_PARAM, f"{value:.3f}", notify_scene=False)
 
     def _on_joint_curve_changed(raw_value: int) -> None:
         value = max(JOINT_CURVE_THICKNESS_MIN, min(JOINT_CURVE_THICKNESS_MAX, float(raw_value) / 10.0))
@@ -4760,8 +4884,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _set_node_param(JOINT_CURVE_THICKNESS_PARAM, f"{value:.1f}", notify_scene=False)
 
     def _on_joint_handle_released() -> None:
-        value = max(JOINT_HANDLE_SCALE_MIN, min(JOINT_HANDLE_SCALE_MAX, float(joint_handle_slider.value()) / 100.0))
-        _set_node_param(JOINT_HANDLE_SCALE_PARAM, f"{value:.2f}", notify_scene=True)
+        value = max(JOINT_HANDLE_SCALE_MIN, min(JOINT_HANDLE_SCALE_MAX, float(joint_handle_slider.value()) / 1000.0))
+        _set_node_param(JOINT_HANDLE_SCALE_PARAM, f"{value:.3f}", notify_scene=True)
+        _refresh_retarget_view_from_settings()
+
+    def _on_target_joint_handle_released() -> None:
+        value = max(JOINT_HANDLE_SCALE_MIN, min(JOINT_HANDLE_SCALE_MAX, float(target_joint_handle_slider.value()) / 1000.0))
+        _set_node_param(TARGET_JOINT_HANDLE_SCALE_PARAM, f"{value:.3f}", notify_scene=True)
         _refresh_retarget_view_from_settings()
 
     def _on_joint_curve_released() -> None:
@@ -4781,17 +4910,6 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         except Exception:
             pass
         _set_node_param(PREVIEW_TARGET_MESH_PARAM, "1" if checked else "0", notify_scene=True)
-        _refresh_retarget_view_from_settings()
-
-    def _on_source_rest_pose_changed(raw_state: int) -> None:
-        if bool(settings_syncing.get("value", False)):
-            return
-        checked = bool(raw_state)
-        try:
-            checked = bool(source_rest_pose_checkbox.isChecked())
-        except Exception:
-            pass
-        _set_node_param(SOURCE_REST_POSE_PARAM, "1" if checked else "0", notify_scene=True)
         _refresh_retarget_view_from_settings()
 
     def _selected_mapping_link() -> Tuple[str, str]:
@@ -4972,10 +5090,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     view_button.clicked.connect(lambda: _on_view_clicked(frame=True, quiet=False))
     joint_handle_slider.valueChanged.connect(_on_joint_handle_changed)
+    target_joint_handle_slider.valueChanged.connect(_on_target_joint_handle_changed)
     joint_curve_slider.valueChanged.connect(_on_joint_curve_changed)
     joint_handle_slider.sliderReleased.connect(_on_joint_handle_released)
+    target_joint_handle_slider.sliderReleased.connect(_on_target_joint_handle_released)
     joint_curve_slider.sliderReleased.connect(_on_joint_curve_released)
-    source_rest_pose_checkbox.stateChanged.connect(_on_source_rest_pose_changed)
     preview_target_animation_checkbox.stateChanged.connect(_on_preview_target_animation_changed)
     pelvis_select_button.clicked.connect(_on_pelvis_select_clicked)
     pelvis_mode_combo.currentIndexChanged.connect(_on_pelvis_mode_changed)

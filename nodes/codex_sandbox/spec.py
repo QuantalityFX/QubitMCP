@@ -22,6 +22,7 @@ DEFAULT_CODEX_EXECUTABLE = ""
 DEFAULT_RUNNER_MODE = "installed_cli"
 DEFAULT_MODEL = codex_cli_runner.DEFAULT_MODEL
 DEFAULT_MODEL_REASONING_EFFORT = codex_cli_runner.DEFAULT_MODEL_REASONING_EFFORT
+CODEX_MODEL_OPTIONS = tuple(dict.fromkeys(("gpt-5.5", DEFAULT_MODEL)))
 DEFAULT_SANDBOX_MODE = codex_cli_runner.DEFAULT_SANDBOX_MODE
 DEFAULT_APPROVAL_POLICY = codex_cli_runner.DEFAULT_APPROVAL_POLICY
 DEFAULT_CODEX_HOME = ""
@@ -418,6 +419,20 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             combo.setCurrentIndex(idx)
         return combo
 
+    def _editable_combo(options, current, placeholder: str = ""):
+        combo = _combo(options, current)
+        combo.setEditable(True)
+        combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+        clean_current = str(current or "").strip()
+        if clean_current:
+            if combo.findText(clean_current) < 0:
+                combo.addItem(clean_current)
+            combo.setCurrentText(clean_current)
+        line_edit = combo.lineEdit()
+        if line_edit is not None and placeholder:
+            line_edit.setPlaceholderText(placeholder)
+        return combo
+
     def _line_edit(key: str, placeholder: str = ""):
         edit = QtWidgets.QLineEdit(_param_val(key))
         edit.setPlaceholderText(placeholder)
@@ -598,12 +613,23 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     form = QtWidgets.QFormLayout()
     _configure_form(form)
 
-    model_edit = _line_edit("model", DEFAULT_MODEL)
+    model_combo = _editable_combo(CODEX_MODEL_OPTIONS, _param_val("model") or DEFAULT_MODEL, DEFAULT_MODEL)
+
+    def _commit_model() -> None:
+        value = str(model_combo.currentText() or "").strip() or DEFAULT_MODEL
+        if value != model_combo.currentText():
+            model_combo.setEditText(value)
+        _set_param("model", value)
+
+    model_combo.currentIndexChanged.connect(lambda _idx: _commit_model())
+    model_line_edit = model_combo.lineEdit()
+    if model_line_edit is not None:
+        model_line_edit.editingFinished.connect(_commit_model)
     _add_row(
         form,
         "Model",
-        "Codex model used for sandbox runs. Leave the default unless you need a specific installed Codex model.",
-        model_edit,
+        "Codex model used for sandbox runs. Choose a known model or type any model available to your Codex account.",
+        model_combo,
     )
 
     reasoning_combo = _combo(REASONING_EFFORTS, _param_val("model_reasoning_effort") or DEFAULT_MODEL_REASONING_EFFORT)

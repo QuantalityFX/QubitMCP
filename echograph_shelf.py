@@ -2423,6 +2423,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 e.updatePath()
 
     def _on_switch_index_changed(self, item: 'NodeItem', idx: int):
+        self.linksChanged.emit()
         if self._current_output_name:
             self.recompute_active_path(self._current_output_name)
 

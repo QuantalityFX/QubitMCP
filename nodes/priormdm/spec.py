@@ -8,10 +8,12 @@ from shiboken6 import isValid
 from echograph.motion import MotionGenerationService, MotionRequest
 from echograph.motion.backends.priormdm import PriorMDMBackend, PriorMDMConfig
 from echograph.motion.backends.priormdm.preferences import default_paths
+from echograph.motion.backends.handmdm import HandMDMConfig
 from echograph.motion.qt_job import MotionJob
 from nodes.core import Spec
 
 _CONFIG = PriorMDMConfig()
+_HAND_CONFIG = HandMDMConfig()
 DEFAULTS = {
     "prompt": "A person walks forward, turns left, and stops.",
     "duration": "5.0", "seed": "42", "guidance": "2.5", "device": "cuda:0",
@@ -19,6 +21,11 @@ DEFAULTS = {
     "checkpoint": "", "dataset": str(_CONFIG.dataset), "output_root": str(_CONFIG.output_root),
     "download_cache": str(_CONFIG.cache_directory),
     "last_bvh": "", "last_archive": "", "last_status": "Ready to configure",
+    "animate_hands": "false", "hand_side": "auto", "hand_description": "",
+    "preview_profile": "model",
+    "hand_start": "0", "hand_end": "0", "hand_blend": "0.15",
+    "hand_repository": str(_HAND_CONFIG.repository), "hand_python": str(_HAND_CONFIG.python),
+    "hand_checkpoint": str(_HAND_CONFIG.checkpoint),
 }
 
 
@@ -93,6 +100,23 @@ class MotionControls(QtWidgets.QWidget):
         super().__init__(parent)
         self.node, self.graph_scene = node, scene
         layout = QtWidgets.QVBoxLayout(self)
+        setup_group = QtWidgets.QGroupBox("Model setup")
+        setup_layout = QtWidgets.QVBoxLayout(setup_group)
+        setup_row = QtWidgets.QHBoxLayout()
+        self.check_button = QtWidgets.QPushButton("Setup PriorMDM")
+        self.hand_setup_button = QtWidgets.QPushButton("Setup HandMDM")
+        for button, tip in ((self.check_button, "Body motion model: manage its environment and checkpoint."),
+                            (self.hand_setup_button, "Finger motion model: manage its separate environment and checkpoint.")):
+            button.setAutoDefault(False)
+            button.setDefault(False)
+            button.setStyleSheet("QPushButton { background-color: palette(button); color: palette(button-text); border: 1px solid palette(mid); border-radius: 4px; padding: 6px; } QPushButton:focus { border: 1px solid palette(highlight); } QPushButton:disabled { color: palette(mid); }")
+            button.setToolTip(tip)
+            setup_row.addWidget(button)
+        setup_layout.addLayout(setup_row)
+        self.hands_enabled = QtWidgets.QCheckBox("Add hand articulation")
+        self.hands_enabled.setChecked(value(node, "animate_hands").lower() == "true")
+        setup_layout.addWidget(self.hands_enabled)
+        layout.addWidget(setup_group)
         self.prompt = QtWidgets.QPlainTextEdit(value(node, "prompt"))
         self.prompt.setPlaceholderText("Describe one character's motion")
         self.prompt.setFixedHeight(80)
@@ -118,6 +142,49 @@ class MotionControls(QtWidgets.QWidget):
         for label, widget in (("Duration", self.duration), ("Seed", self.seed), ("Guidance", self.guidance), ("Device", self.device)):
             form.addRow(label, widget)
         layout.addLayout(form)
+        self.proportions = QtWidgets.QComboBox()
+        self.proportions.addItem("Original model proportions", "model")
+        self.proportions.addItem("StandardMan reference — basic body joints", "standardman")
+        self.proportions.setCurrentIndex(max(0, self.proportions.findData(value(node, "preview_profile"))))
+        self.proportions.setToolTip("Changes the exported preview's proportions. Original motion data is preserved. Reference proportions may need foot/contact cleanup.")
+        form.addRow("Preview proportions", self.proportions)
+        self.proportions.currentIndexChanged.connect(lambda: self._persist("preview_profile", self.proportions.currentData()))
+        self.hand_mode = QtWidgets.QLabel()
+        self.hand_mode.setWordWrap(True)
+        layout.addWidget(self.hand_mode)
+        self.hand_options = QtWidgets.QWidget()
+        hand_form = QtWidgets.QFormLayout(self.hand_options)
+        hand_form.setContentsMargins(0, 0, 0, 0)
+        self.hand_side = QtWidgets.QComboBox()
+        self.hand_side.addItems(["auto", "right", "left", "both"])
+        self.hand_side.setCurrentText(value(node, "hand_side"))
+        self.hand_description = QtWidgets.QLineEdit(value(node, "hand_description"))
+        self.hand_description.setPlaceholderText("Optional: describe the fingers; leave blank for point, fist, open palm, peace or thumbs-up")
+        hand_form.addRow("Hand", self.hand_side)
+        hand_form.addRow("Hand description", self.hand_description)
+        self.hand_times = {}
+        for key, label in (("hand_start", "Gesture start"), ("hand_end", "Gesture end"), ("hand_blend", "Blend")):
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(0, 9.8)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.05)
+            spin.setSuffix(" s")
+            spin.setValue(float(value(node, key)))
+            if key == "hand_end":
+                spin.setSpecialValueText("End of body clip")
+            self.hand_times[key] = spin
+            hand_form.addRow(label, spin)
+            spin.valueChanged.connect(lambda number, k=key: self._persist(k, number))
+        hand_note = QtWidgets.QLabel("Hands play a short gesture, hold, then blend out. The finger skeleton is a preview; precise palm orientation and character retargeting need refinement.")
+        hand_note.setWordWrap(True)
+        hand_form.addRow(hand_note)
+        self.hand_options.setVisible(self.hands_enabled.isChecked())
+        self.hands_enabled.toggled.connect(self.hand_options.setVisible)
+        self.hands_enabled.toggled.connect(lambda checked: self._persist("animate_hands", str(checked).lower()))
+        self.hand_side.currentTextChanged.connect(lambda text: self._persist("hand_side", text))
+        self.hand_description.textChanged.connect(lambda text: self._persist("hand_description", text))
+        layout.addWidget(self.hand_options)
+        self.hand_setup_button.clicked.connect(self._hand_setup)
         self.advanced_button = QtWidgets.QToolButton()
         self.advanced_button.setText("Advanced paths")
         self.advanced_button.setCheckable(True)
@@ -133,12 +200,15 @@ class MotionControls(QtWidgets.QWidget):
                                        ("python", "Inference Python", False),
                                        ("dataset", "Normalization folder", True),
                                        ("download_cache", "Download cache", True),
-                                       ("output_root", "Output folder", True)):
+                                       ("output_root", "Output folder", True),
+                                       ("hand_repository", "HandMDM folder", True),
+                                       ("hand_python", "Hand inference Python", False),
+                                       ("hand_checkpoint", "Hand checkpoint (.ckpt)", False)):
             row = QtWidgets.QWidget()
             row_layout = QtWidgets.QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
             edit = QtWidgets.QLineEdit(value(node, key))
-            edit.setPlaceholderText(default_paths()[key] if key != "checkpoint" else "Selected automatically during setup")
+            edit.setPlaceholderText(default_paths().get(key, DEFAULTS.get(key, "")) if key != "checkpoint" else "Selected automatically during setup")
             self.paths[key] = edit
             browse = QtWidgets.QPushButton("Browse")
             browse.clicked.connect(lambda checked=False, k=key, d=directory: self._browse(k, d))
@@ -155,14 +225,31 @@ class MotionControls(QtWidgets.QWidget):
         note.setWordWrap(True)
         layout.addWidget(note)
         buttons = QtWidgets.QHBoxLayout()
-        self.check_button = QtWidgets.QPushButton("Setup / dependencies")
         self.generate_button = QtWidgets.QPushButton("Generate")
-        self.cancel_button = QtWidgets.QPushButton("Cancel")
+        self.generate_button.setStyleSheet(
+            "QPushButton { background: #27834a; color: #ffffff; border: 1px solid #34995a; border-radius: 4px; padding: 8px 12px; }"
+            "QPushButton:hover:enabled { background: #319b58; }"
+            'QPushButton[cancelling="true"] { background: #b91c1c; color: #ffffff; border-color: #ef4444; }'
+            'QPushButton[cancelling="true"]:hover { background: #dc2626; }'
+            "QPushButton:disabled { background: #374151; color: #d1d5db; border-color: #4b5563; }"
+        )
         self.preview_button = QtWidgets.QPushButton("Create MocapBVH")
+        self.tpose_button = QtWidgets.QPushButton("Create T-pose BVH")
+        self.apose_button = QtWidgets.QPushButton("Create A-pose BVH")
+        self.apose_button.setToolTip("Create a separate, single-frame rig with arms lowered 45 degrees, using the last generated skeleton.")
+        self.tpose_button.setToolTip("Create a separate, single-frame T-pose rig from the last generated skeleton, preserving its proportions and finger joints.")
         self.open_button = QtWidgets.QPushButton("Open result folder")
-        for button in (self.check_button, self.generate_button, self.cancel_button, self.preview_button, self.open_button):
-            buttons.addWidget(button)
+        self.generate_button.setAutoDefault(False)
+        buttons.addWidget(self.generate_button)
         layout.addLayout(buttons)
+        exports = QtWidgets.QHBoxLayout()
+        for button in (self.preview_button, self.tpose_button, self.apose_button, self.open_button):
+            button.setAutoDefault(False)
+            exports.addWidget(button)
+        layout.addLayout(exports)
+        for button in self.findChildren(QtWidgets.QPushButton):
+            button.setMinimumHeight(max(36, button.sizeHint().height()))
+        self.advanced_button.setMinimumHeight(32)
         self.status = QtWidgets.QLabel(value(node, "last_status"))
         self.status.setWordWrap(True)
         self.log = QtWidgets.QPlainTextEdit()
@@ -177,9 +264,11 @@ class MotionControls(QtWidgets.QWidget):
         self.guidance.valueChanged.connect(lambda v: self._persist("guidance", v))
         self.device.currentTextChanged.connect(lambda v: self._persist("device", v))
         self.generate_button.clicked.connect(self._generate)
+        self.hands_enabled.toggled.connect(self._refresh_buttons)
         self.check_button.clicked.connect(self._check)
-        self.cancel_button.clicked.connect(self._cancel)
         self.preview_button.clicked.connect(self._preview)
+        self.tpose_button.clicked.connect(self._tpose)
+        self.apose_button.clicked.connect(lambda: self._static_pose("apose"))
         self.open_button.clicked.connect(self._open_result)
         job = getattr(node, "_motion_job", None)
         if job and job.running:
@@ -190,6 +279,10 @@ class MotionControls(QtWidgets.QWidget):
         if session is not None:
             self._connect_setup(session)
         self._refresh()
+        from .hand_setup_ui import hand_setup_session, register_node
+        register_node(node)
+        hand_setup_session().changed.connect(self._refresh_buttons)
+        self.prompt.setFocus(QtCore.Qt.OtherFocusReason)
 
     def _persist(self, key, text):
         set_value(self.node, self.graph_scene, key, text)
@@ -199,7 +292,8 @@ class MotionControls(QtWidgets.QWidget):
         if directory:
             selected = QtWidgets.QFileDialog.getExistingDirectory(self, "Select folder", current)
         else:
-            filter_text = "Checkpoint (*.pt)" if key == "checkpoint" else "Python executable (python.exe python);;All files (*)"
+            filter_text = ("Checkpoint (*.pt *.ckpt)" if key in ("checkpoint", "hand_checkpoint")
+                           else "Python executable (python.exe python);;All files (*)")
             selected, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select file", current, filter_text)
         if selected:
             self.paths[key].setText(selected)
@@ -207,7 +301,22 @@ class MotionControls(QtWidgets.QWidget):
 
     def _service(self):
         config = config_from_paths({key: edit.text() for key, edit in self.paths.items()}, self.device.currentText())
-        return MotionGenerationService(PriorMDMBackend(config))
+        backend = PriorMDMBackend(config, preview_profile=self.proportions.currentData())
+        if self.hands_enabled.isChecked():
+            from echograph.motion.combined import BodyHandBackend
+            hand = HandMDMConfig(**{key: Path(self.paths['hand_' + key].text().strip().strip('"')
+                                            or str(getattr(_HAND_CONFIG, key))).expanduser().resolve()
+                                   for key in ("repository", "python", "checkpoint")}, device=config.device)
+            backend = BodyHandBackend(backend, hand, side=self.hand_side.currentText(),
+                                      description=self.hand_description.text(),
+                                      start=self.hand_times["hand_start"].value(),
+                                      end=self.hand_times["hand_end"].value() or None,
+                                      blend=self.hand_times["hand_blend"].value())
+        return MotionGenerationService(backend)
+
+    def _hand_setup(self):
+        from .hand_setup_ui import show_hand_setup
+        show_hand_setup(self.node, self.graph_scene)
 
     def _check(self):
         try:
@@ -249,11 +358,16 @@ class MotionControls(QtWidgets.QWidget):
 
     def _generate(self):
         if getattr(self.node, "_motion_job", None) and self.node._motion_job.running:
+            self._cancel()
             return
         try:
             from .setup_ui import active_installation
             if active_installation(self._service().backend.config.repository):
                 self.status.setText("Wait for PriorMDM setup to finish before generating.")
+                return
+            from .hand_setup_ui import hand_setup_session
+            if self.hands_enabled.isChecked() and hand_setup_session().running:
+                self.status.setText("Wait for HandMDM setup to finish before generating hands.")
                 return
             for key, edit in self.paths.items():
                 self._persist(key, edit.text())
@@ -270,7 +384,8 @@ class MotionControls(QtWidgets.QWidget):
             def done(result):
                 set_value(node, scene, "last_bvh", str(result.bvh_path))
                 set_value(node, scene, "last_archive", str(result.archive_path))
-                set_value(node, scene, "last_status", "Complete — create a MocapBVH node to preview the motion.")
+                mode = "body + fingers" if result.bvh_path.name == "preview_hands.bvh" else "body only (no fingers)"
+                set_value(node, scene, "last_status", f"Complete: {mode}. Create a new MocapBVH node to preview this result.")
             job.completed.connect(done)
             job.failed.connect(lambda message: set_value(node, scene, "last_status", message))
             self._connect_job(job)
@@ -303,18 +418,41 @@ class MotionControls(QtWidgets.QWidget):
         self._refresh()
 
     def _refresh_buttons(self):
+        enabled = self.hands_enabled.isChecked()
+        self.hand_setup_button.setVisible(enabled)
+        self.hand_mode.setText(
+            "Hand generation enabled. For dancing or other custom actions, enter a hand description below."
+            if enabled else "Body only: enable Add hand articulation to generate fingers. HandMDM setup installs resources; it does not enable this option.")
         job = getattr(self.node, "_motion_job", None)
         running = bool(job and job.running)
         setup = getattr(self.node, "_prior_setup_session", None)
         setup_running = bool(setup and setup.running)
-        self.generate_button.setEnabled(not running and not setup_running)
+        from .hand_setup_ui import hand_setup_session
+        setup_running = setup_running or (self.hands_enabled.isChecked() and hand_setup_session().running)
+        self.generate_button.setText("Cancel generation" if running else (
+            "Generate body + hands" if enabled else "Generate body only"))
+        self.generate_button.setToolTip("Stop the current generation." if running else "Generate motion from the prompt.")
+        if self.generate_button.property("cancelling") != running:
+            self.generate_button.setProperty("cancelling", running)
+            self.generate_button.style().unpolish(self.generate_button)
+            self.generate_button.style().polish(self.generate_button)
+            self.generate_button.update()
+        self.generate_button.setEnabled(running or not setup_running)
         self.check_button.setEnabled(not running)
+        self.hand_setup_button.setEnabled(not running)
+        self.hands_enabled.setEnabled(not running)
+        self.proportions.setEnabled(not running)
+        self.hand_options.setEnabled(not running)
         for edit in self.paths.values():
             edit.parentWidget().setEnabled(not setup_running)
         self.device.setEnabled(not setup_running)
-        self.cancel_button.setEnabled(running)
         available = bool(value(self.node, "last_bvh")) and Path(value(self.node, "last_bvh")).is_file()
         self.preview_button.setEnabled(available)
+        self.tpose_button.setEnabled(available)
+        self.apose_button.setEnabled(available)
+        last_has_hands = Path(value(self.node, "last_bvh")).name == "preview_hands.bvh"
+        self.preview_button.setText("Create MocapBVH" + (" (hands)" if last_has_hands else " (body only)") if available else "Create MocapBVH")
+        self.preview_button.setToolTip("Loads the last completed result. Changing hand options requires generating again; existing MocapBVH nodes keep their previous file.")
         self.open_button.setEnabled(available)
 
     def _refresh(self):
@@ -333,6 +471,19 @@ class MotionControls(QtWidgets.QWidget):
         except Exception as exc:
             self.status.setText(f"Could not create preview: {exc}")
 
+    def _tpose(self):
+        self._static_pose("tpose")
+
+    def _static_pose(self, pose):
+        label = "A-pose" if pose == "apose" else "T-pose"
+        try:
+            from echograph.motion.conversion import create_static_pose_bvh
+            path = create_static_pose_bvh(Path(value(self.node, "last_bvh")), pose)
+            create_preview_node(self.node, self.graph_scene, path)
+            self.status.setText(f"Static {label} rig created: {path}")
+        except Exception as exc:
+            self.status.setText(f"Could not create {label}: {exc}")
+
     def _open_result(self):
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(Path(value(self.node, "last_bvh")).parent)))
 
@@ -341,11 +492,23 @@ def open_controls(item):
     node = item.model
     dialog = getattr(node, "_motion_dialog", None)
     if dialog is None:
-        dialog = QtWidgets.QDialog()
+        views = item.scene().views() if item.scene() is not None else []
+        owner = views[0].window() if views else QtWidgets.QApplication.activeWindow()
+        dialog = QtWidgets.QDialog(owner)
+        dialog.setWindowModality(QtCore.Qt.NonModal)
+        # This auxiliary window must not keep the application alive after its
+        # main window closes. Also close hidden/reopened instances on shutdown.
+        dialog.setAttribute(QtCore.Qt.WA_QuitOnClose, False)
+        QtWidgets.QApplication.instance().aboutToQuit.connect(dialog.close)
         dialog.setWindowTitle("PriorMDM — Text to Motion")
-        dialog.resize(800, 720)
+        screen = QtWidgets.QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else QtCore.QRect(0, 0, 1100, 1100)
+        dialog.resize(min(960, available.width() - 40), min(1020, available.height() - 60))
         layout = QtWidgets.QVBoxLayout(dialog)
-        layout.addWidget(MotionControls(node, item.scene(), dialog))
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(MotionControls(node, item.scene(), scroll))
+        layout.addWidget(scroll)
         node._motion_dialog = dialog
     dialog.show()
     dialog.raise_()
@@ -360,7 +523,8 @@ def render_node_body(item, y_cursor):
     label.setWordWrap(True)
     button = QtWidgets.QPushButton("Open PriorMDM")
     button.clicked.connect(lambda: open_controls(item))
-    setup_button = QtWidgets.QPushButton("Setup / dependencies")
+    setup_button = QtWidgets.QPushButton("Setup PriorMDM")
+    setup_button.setAutoDefault(False)
     def open_setup():
         from .setup_ui import show_setup
         show_setup(item.model, item.scene())
@@ -368,6 +532,13 @@ def render_node_body(item, y_cursor):
     layout.addWidget(label)
     layout.addWidget(button)
     layout.addWidget(setup_button)
+    hand_setup = QtWidgets.QPushButton("Setup HandMDM")
+    hand_setup.setAutoDefault(False)
+    def open_hand_setup():
+        from .hand_setup_ui import show_hand_setup
+        show_hand_setup(item.model, item.scene())
+    hand_setup.clicked.connect(open_hand_setup)
+    layout.addWidget(hand_setup)
     body.setFixedWidth(int(item.width))
     body.ensurePolished()
     height = max(body.sizeHint().height(), body.minimumSizeHint().height())

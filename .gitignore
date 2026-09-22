@@ -38,6 +38,7 @@ AGENTS.md
 # Script workspace (local/scratch)
 /scripts/*
 !/scripts/extract_pdf_reference.py
+!/scripts/setup_handmdm.py
 
 # External/vendor trees
 /echograph/QOpenGLWidget_example-main/
@@ -45,6 +46,8 @@ AGENTS.md
 /third_party/image-gs/
 /third_party/Wan2.2/
 /third_party/PriorMDM/
+/third_party/HandMDM/
+/third_party/motion_research/
 /vcpkg/
 /Unreal/UnrealEnviroment/
 /Unreal/UnrealEnvironment/

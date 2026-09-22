@@ -141,7 +141,7 @@ class RetargetInteractionTests(unittest.TestCase):
             self.assertEqual(spec._joint_map_payload(self.model), {"root": "tip"})
             self.assertEqual(spec._pelvis_constraint_payload(self.model)["target"], "root")
             checkbox = next(c for c in card.findChildren(QtWidgets.QCheckBox)
-                            if "Animate Target" in c.text())
+                            if c.text() == "Animate Source and Target Skeletons")
             checkbox.setChecked(not checkbox.isChecked())
             preview.assert_called_once()
             self.assertFalse(preview.call_args.kwargs["frame"])

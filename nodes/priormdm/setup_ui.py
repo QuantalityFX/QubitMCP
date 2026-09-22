@@ -51,6 +51,7 @@ def bootstrap_python() -> Path:
 
 
 class SetupSession(QtCore.QObject):
+    log_directory = PROJECT_ROOT / "logs/motion/priormdm/setup"
     changed = QtCore.Signal()
     output = QtCore.Signal(str)
     finished = QtCore.Signal(object)
@@ -97,7 +98,7 @@ class SetupSession(QtCore.QObject):
         other = conflicting_installation(self.config)
         if other is not None and other is not self:
             raise ValueError("PriorMDM setup is already running for these folders. Open the active Setup window.")
-        run_dir = PROJECT_ROOT / "logs/motion/priormdm/setup" / uuid.uuid4().hex
+        run_dir = self.log_directory / uuid.uuid4().hex
         self.report_path = run_dir / "report.json"
         command = self.command(self.report_path, install)
         run_dir.mkdir(parents=True, exist_ok=False)

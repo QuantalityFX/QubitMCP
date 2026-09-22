@@ -24,6 +24,8 @@ class MotionJob(QtCore.QObject):
         self._settled = False
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._log = None
+        self._stages = plan.stages or (plan,)
+        self._stage_index = 0
         self.process = QtCore.QProcess(self)
         self.process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
         self.process.setWorkingDirectory(str(plan.cwd))
@@ -46,7 +48,18 @@ class MotionJob(QtCore.QObject):
             raise RuntimeError("A motion job can only be started once.")
         self._log = (self.plan.run_dir / "process.log").open("x", encoding="utf-8")
         self.running = True
-        self.process.start(self.plan.command[0], list(self.plan.command[1:]))
+        self._start_stage()
+
+    def _start_stage(self):
+        stage = self._stages[self._stage_index]
+        self.process.setWorkingDirectory(str(stage.cwd))
+        environment = QtCore.QProcessEnvironment.systemEnvironment()
+        environment.remove("PYTHONPATH")
+        environment.remove("PYTHONHOME")
+        for key, value in stage.environment.items():
+            environment.insert(key, value)
+        self.process.setProcessEnvironment(environment)
+        self.process.start(stage.command[0], list(stage.command[1:]))
 
     def cancel(self) -> None:
         if self.running:
@@ -100,6 +113,11 @@ class MotionJob(QtCore.QObject):
             return
         if code != 0 or status != QtCore.QProcess.NormalExit:
             self._fail(f"Inference failed (exit {code}). See the log: {self.plan.run_dir / 'process.log'}")
+            return
+        if self._stage_index + 1 < len(self._stages):
+            self._stage_index += 1
+            self.output.emit("Body motion complete; generating hand articulation…\n")
+            self._start_stage()
             return
         try:
             result = self.service.collect(self.plan)

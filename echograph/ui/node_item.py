@@ -4733,7 +4733,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     input_label_only = (
                         (
                             kind in ("anim_retarget", "anim retarget", "animretarget", "retarget")
-                            and pname_key in ("source", "target")
+                            and pname_key in ("source", "target", "animation")
                         )
                         or
                         (
@@ -10489,6 +10489,8 @@ body {
                     p.drawEllipse(QtCore.QRectF(-dot_r, self._BASE_H / 2.0 - dot_r, dot_d, dot_d))
                 for key, (pos, _) in entries:
                     color = QtGui.QColor("#facc15" if key in wired else "#cbd5e1")
+                    if key == "animation" and key in wired and getattr(self, "_retarget_animation_error", ""):
+                        color = QtGui.QColor("#ef4444")
                     p.setBrush(color)
                     p.drawEllipse(QtCore.QRectF(float(pos.x()) - dot_r, float(pos.y()) - dot_r, dot_d, dot_d))
             else:

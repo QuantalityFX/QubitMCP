@@ -45,8 +45,11 @@ def checkpoint_settings(path: Path) -> dict:
 
 
 class PriorMDMBackend:
-    def __init__(self, config: PriorMDMConfig):
+    def __init__(self, config: PriorMDMConfig, *, preview_profile="model"):
         self.config = config
+        if preview_profile not in ("model", "standardman"):
+            raise ValueError("Unknown preview proportions.")
+        self.preview_profile = preview_profile
 
     def check(self) -> list[str]:
         cfg = self.config
@@ -98,7 +101,8 @@ class PriorMDMBackend:
                    "repository": str(cfg.repository.resolve()), "checkpoint": str(cfg.checkpoint.resolve()),
                    "dataset": str(cfg.dataset.resolve()), "device": cfg.device,
                    "frames": int(round(request.duration * FPS)), "fps": FPS,
-                   "diffusion_steps": settings["diffusion_steps"], "revision": revision}
+                   "diffusion_steps": settings["diffusion_steps"], "revision": revision,
+                   "preview_profile": self.preview_profile}
         request_file = run_dir / "request.json"
         request_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         worker = Path(__file__).with_name("worker.py")
@@ -110,4 +114,4 @@ class PriorMDMBackend:
 
     def collect(self, plan: GenerationPlan) -> GeneratedMotion:
         from ...conversion import save_generated_motion
-        return save_generated_motion(plan.run_dir)
+        return save_generated_motion(plan.run_dir, self.preview_profile)

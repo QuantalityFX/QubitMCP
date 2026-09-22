@@ -3,13 +3,13 @@
   "shelf_visible": true,
   "panel_layout": {
     "timeline": true,
-    "audio": false,
+    "audio": true,
     "profiler": false
   },
   "view_mode": "2d",
   "voice_audio_mode": "bilateral",
   "voice_mic_device_index": 23,
-  "shadow_quality": "high",
+  "shadow_quality": "ultra",
   "cast_shadows": true,
   "self_shadows": true,
   "two_sided_shadows": true,

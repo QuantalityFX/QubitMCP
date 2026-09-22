@@ -13664,7 +13664,7 @@ void main() {
             except Exception:
                 radius = 0.05
             color = (0.10, 0.75, 1.00) if role_key == "source" else (1.00, 0.45, 0.15)
-            rows.append([px, py, pz, color[0], color[1], color[2], 0.0, max(0.002, min(120.0, radius))])
+            rows.append([px, py, pz, color[0], color[1], color[2], 0.0, max(0.000001, min(120.0, radius))])
         if not rows:
             return False
         positions_by_role = getattr(self, "_mgl_retarget_joint_positions", None)
@@ -13887,7 +13887,7 @@ void main() {
             handle_radius = float(asset.get("handle_radius", 0.008) or 0.008)
         except Exception:
             handle_radius = 0.008
-        handle_radius = max(0.002, min(120.0, handle_radius))
+        handle_radius = max(0.000001, min(120.0, handle_radius))
         try:
             curve_thickness = float(asset.get("curve_thickness", 2.4) or 2.4)
         except Exception:
@@ -13957,7 +13957,7 @@ void main() {
                     raw_radius = float(raw.get("radius", handle_radius) or handle_radius)
                 except Exception:
                     raw_radius = handle_radius
-                raw_radius = max(0.002, min(120.0, raw_radius))
+                raw_radius = max(0.000001, min(120.0, raw_radius))
                 rgba = color_by_role[role]
                 rows.append([px, py, pz, rgba[0], rgba[1], rgba[2], 0.0, raw_radius])
                 meta = {

@@ -99,6 +99,7 @@ TEACHER_AGENT_PROMPT_PROFILE = "teacher_agent"
 SALES_AGENT_PROMPT_PROFILE = "sales_agent"
 WEB_DESIGNER_PROMPT_PROFILE = "web_designer"
 TRANSLATOR_PROMPT_PROFILE = "translator"
+INTERPRETER_PROMPT_PROFILE = "interpreter"
 MEDIATOR_PLANNER_PROMPT_PROFILE = "mediator_planner"
 JAPANESE_READER_PROMPT_PROFILE = "japanese_reader"
 KOREAN_READER_PROMPT_PROFILE = "korean_reader"
@@ -143,6 +144,10 @@ MEDIGATOR_PROMPT_PROFILE_ALIASES = {
     "html_editor": WEB_DESIGNER_PROMPT_PROFILE,
     "translator_agent": TRANSLATOR_PROMPT_PROFILE,
     "translation_agent": TRANSLATOR_PROMPT_PROFILE,
+    "interpreter_agent": INTERPRETER_PROMPT_PROFILE,
+    "creative_translator": INTERPRETER_PROMPT_PROFILE,
+    "creative_translation": INTERPRETER_PROMPT_PROFILE,
+    "transcreator": INTERPRETER_PROMPT_PROFILE,
     "japanese_agent": JAPANESE_READER_PROMPT_PROFILE,
     "japanese_speaker": JAPANESE_READER_PROMPT_PROFILE,
     "japanese_interpreter": JAPANESE_READER_PROMPT_PROFILE,
@@ -2374,6 +2379,10 @@ def chatbot_agent_context_from_item(scene, node_item) -> str:
     ]
     if profile_prompt:
         parts.append(f"Profile instructions:\n{profile_prompt}")
+    if profile == INTERPRETER_PROMPT_PROFILE:
+        output_context = _translator_output_context(scene, node_item)
+        if output_context:
+            parts.append(f"Output context:\n{output_context}")
     sandbox_context = _codex_sandbox_context_text(scene, node_item)
     if sandbox_context:
         parts.append(f"Sandbox policy:\n{sandbox_context}")
@@ -5151,7 +5160,7 @@ class MediatorConsoleWidget(QtWidgets.QWidget):
             prompt_voice_input = _normalize_qdeck_voice_input(clean_voice_input)
 
         output_context = ""
-        if profile == TRANSLATOR_PROMPT_PROFILE:
+        if profile in {TRANSLATOR_PROMPT_PROFILE, INTERPRETER_PROMPT_PROFILE}:
             output_context = _translator_output_context(scene, self._node_item)
 
         prompt, signature = _compose_mediator_prompt(
