@@ -71,6 +71,7 @@ class MotionConversionTests(unittest.TestCase):
             root = Path(folder)
             np.savez(root / "motion.npz", positions=positions, fps=20.0, metadata=json.dumps({"prompt": "turn"}))
             result = save_generated_motion(root)
+            self.assertEqual(list(root.rglob("*.bvh")), [root / "preview.bvh"])
             imported = ingest_bvh_animation_data(result.bvh_path)
             mapping = [JOINT_NAMES.index(name) for name in imported.skeleton.joint_names]
             for frame in range(len(positions)):

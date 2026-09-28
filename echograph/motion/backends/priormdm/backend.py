@@ -112,6 +112,10 @@ class PriorMDMBackend:
             environment={"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONNOUSERSITE": "1"},
         )
 
+    def collect_animation(self, plan: GenerationPlan):
+        from ...conversion import save_generated_animation
+        return save_generated_animation(plan.run_dir, self.preview_profile)
+
     def collect(self, plan: GenerationPlan) -> GeneratedMotion:
         from ...conversion import save_generated_motion
         return save_generated_motion(plan.run_dir, self.preview_profile)

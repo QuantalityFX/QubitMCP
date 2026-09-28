@@ -353,6 +353,10 @@ def resolve_mocap_import_source(
     if base_dir is None:
         base_dir = _workflow_dir_for_node(node_item)
 
+    if str(getattr(model, "kind", "")).strip().lower() == "mocap_collection":
+        from nodes.mocap_collection.spec import sync_output
+        sync_output(model, node_item.scene())
+
     requested_path = _param_value(model, "path")
     errors: List[str] = []
     warnings: List[str] = []

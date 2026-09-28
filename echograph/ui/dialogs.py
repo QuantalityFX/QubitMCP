@@ -286,6 +286,8 @@ _NODE_KIND_SEARCH_HINTS = {
     "fbx_import": "fbx animation mesh import",
     "fbx_animation": "fbx animation import mocap",
     "mocap_import": "mocap bvh motion capture animation",
+    "mocap_collection": "mocap bvh collection multiple files animation batch list",
+    "delete_joint": "delete joint remove root bone skeleton rig fbx bvh",
     "priormdm": "priormdm mdm text prompt motion generation humanoid animation",
     "gen_x_videomocap": "video mocap gen-x motion capture animation",
     "anim_retarget": "animation retarget rig skeleton",
@@ -543,7 +545,7 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
     elif key in ("fbx_animation", "fbx animation", "fbxanimation", "fbx_animation_import", "fbx animation import", "fbxanimationimport"):
         icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
-    elif key in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
+    elif key in ("mocap_collection", "mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
         icon_pm = node_icons._mocap_import_icon() or node_icons._import_icon()
     elif key in ("gen-x-videomocap", "gen-x video mocap", "genx_video_mocap", "genx video mocap", "genx_videomocap", "genx videomocap", "gemx_video_mocap", "gemx video mocap"):
         icon_pm = node_icons._genx_icon() or node_icons._mocap_import_icon() or node_icons._import_icon()
@@ -777,7 +779,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit.setView(kind_popup_view)
         self._kinds = [
             "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","fbx_animation","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","image_gs_splat","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","youtube_downloader","minimax_h3_video","minimax_h3_api_video","minimax_tts_api","wan22_video","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
-            "priormdm",
+            "priormdm", "mocap_collection", "delete_joint",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "audio_capture",

@@ -81,6 +81,8 @@ def register_defaults() -> None:
     register("fbx_import", stripe_color="#2563eb")
     register("fbx_animation", stripe_color="#38bdf8")
     register("mocap_import", stripe_color="#7c3aed")
+    register("mocap_collection", stripe_color="#7c3aed")
+    register("delete_joint", stripe_color="#ef6464")
     register("genx_video_mocap", stripe_color="#14b8a6")
     register("GEN-X-VideoMocap", stripe_color="#14b8a6")
     register("priormdm", stripe_color="#a78bfa")

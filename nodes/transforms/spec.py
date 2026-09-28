@@ -20,7 +20,7 @@ from nodes.util_graph import param_change_relevant as _param_change_relevant
 SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb", ".stl", ".ply", ".off", ".om", ".bvh"}
 RIG_PASSTHROUGH_EXTS = {".bvh"}
 FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
-MOCAP_KIND_ALIASES = {"mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"}
+MOCAP_KIND_ALIASES = {"mocap_collection", "mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"}
 
 
 def _sanitize_name(name: str) -> str:

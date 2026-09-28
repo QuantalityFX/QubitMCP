@@ -218,7 +218,7 @@ def apply_preview_proportions(positions, profile):
                              "proportion_note": "Basic reference proportions; no foot/object contact IK; native model positions retained in motion.npz."}
 
 
-def save_generated_motion(run_dir: Path, preview_profile="model") -> GeneratedMotion:
+def _load_generated_motion(run_dir: Path, preview_profile):
     archive = run_dir / "motion.npz"
     positions, fps, metadata = load_motion_archive(archive)
     rest_offsets = None
@@ -226,11 +226,31 @@ def save_generated_motion(run_dir: Path, preview_profile="model") -> GeneratedMo
         positions, rest_offsets, details = apply_preview_proportions(positions, preview_profile)
         metadata = {**metadata, **details}
     skeleton, clip, rotations, offsets = reconstruct_animation(positions, fps, metadata, rest_offsets=rest_offsets)
+    return positions, fps, skeleton, clip, rotations, offsets
+
+
+def _write_animation(animation, skeleton, clip):
+    with animation.open("x", encoding="utf-8") as stream:
+        json.dump({"schema_version": 1, "skeleton": skeleton.to_dict(), "clip": clip.to_dict()}, stream, ensure_ascii=False)
+
+
+def save_generated_animation(run_dir: Path, preview_profile="model"):
+    """Save the body intermediate for hand merging without exporting a body BVH."""
+    animation = run_dir / "animation.json"
+    if animation.exists():
+        raise FileExistsError("Converted output already exists; load the saved result instead.")
+    _, _, skeleton, clip, _, _ = _load_generated_motion(run_dir, preview_profile)
+    _write_animation(animation, skeleton, clip)
+    return skeleton, clip
+
+
+def save_generated_motion(run_dir: Path, preview_profile="model") -> GeneratedMotion:
+    archive = run_dir / "motion.npz"
     animation = run_dir / "animation.json"
     bvh = run_dir / "preview.bvh"
     if animation.exists() or bvh.exists():
         raise FileExistsError("Converted output already exists; load the saved result instead.")
+    positions, fps, skeleton, clip, rotations, offsets = _load_generated_motion(run_dir, preview_profile)
     write_bvh(bvh, positions, fps, rotations, offsets)
-    with animation.open("x", encoding="utf-8") as stream:
-        json.dump({"schema_version": 1, "skeleton": skeleton.to_dict(), "clip": clip.to_dict()}, stream, ensure_ascii=False)
+    _write_animation(animation, skeleton, clip)
     return GeneratedMotion(run_dir, archive, animation, bvh, clip.metadata)

@@ -7,7 +7,6 @@ import json
 from .backends.handmdm import HandMDMBackend, HandMotionRequest
 from .director import HandIntent, direct_hands
 from .hands import add_preview_hands, export_preview_bvh, load_hand_archive, merge_hand_layer
-from .storage import load_animation
 from .types import GeneratedMotion, GenerationPlan
 
 
@@ -41,12 +40,12 @@ class BodyHandBackend:
         manifest = json.loads((plan.run_dir / "body_hands.json").read_text(encoding="utf-8"))
         # Decode/validate hands before writing any derived body files.
         hands = load_hand_archive(plan.run_dir / manifest["hand_archive"])
-        body_result = self.body.collect(plan)
-        skeleton, body_clip = load_animation(body_result.animation_path)
+        skeleton, body_clip = self.body.collect_animation(plan)
+        body_archive = plan.run_dir / "motion.npz"
         skeleton = add_preview_hands(skeleton)
         clip = merge_hand_layer(skeleton, body_clip, hands, HandIntent(**manifest["intent"]))
         clip.metadata.update(hand_geometry=skeleton.metadata["hand_geometry"],
-                             body_archive=str(body_result.archive_path), hand_archive=manifest["hand_archive"])
+                             body_archive=str(body_archive), hand_archive=manifest["hand_archive"])
         animation = plan.run_dir / "animation_hands.json"
         bvh = plan.run_dir / "preview_hands.bvh"
         if animation.exists() or bvh.exists():
@@ -54,4 +53,4 @@ class BodyHandBackend:
         export_preview_bvh(bvh, skeleton, clip)
         with animation.open("x", encoding="utf-8") as stream:
             json.dump({"schema_version": 1, "skeleton": skeleton.to_dict(), "clip": clip.to_dict()}, stream)
-        return GeneratedMotion(plan.run_dir, body_result.archive_path, animation, bvh, clip.metadata)
+        return GeneratedMotion(plan.run_dir, body_archive, animation, bvh, clip.metadata)

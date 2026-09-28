@@ -237,6 +237,7 @@ def _is_legacy_default_light_xform(xf) -> bool:
     except Exception:
         return False
 _MOCAP_KIND_ALIASES = {
+    "mocap_collection",
     "mocap_import",
     "mocap import",
     "mocapimport",
@@ -612,6 +613,9 @@ def _ensure_fbx_import_rig_context(node_item, model) -> Dict[str, Any] | None:
 def _mocap_import_resolved_path(model) -> str:
     if model is None:
         return ""
+    if str(getattr(model, "kind", "")).strip().lower() == "mocap_collection":
+        from nodes.mocap_collection.spec import sync_output
+        sync_output(model)
     for raw in (
         getattr(model, "_mocap_resolved_path", None),
         _param_value(model, "resolved_path"),
@@ -2702,7 +2706,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         fbx_debug_on = _fbx_debug_enabled(model) if kind in (_FBX_KIND_ALIASES | _MOCAP_KIND_ALIASES) else False
         if kind in _FBX_KIND_ALIASES and not path:
             path = _fbx_import_resolved_rest_path(model)
-        if kind in _MOCAP_KIND_ALIASES and not path:
+        if kind == "mocap_collection" or (kind in _MOCAP_KIND_ALIASES and not path):
             path = _mocap_import_resolved_path(model)
         if kind in _GEOMETRY_PROCESS_KINDS:
             path = _geometry_process_output_path(src_item, kind, path)

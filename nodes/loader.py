@@ -571,6 +571,20 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Mocap Import plugin import failed:", e)
 
+    # Mocap Collection
+    try:
+        from nodes import mocap_collection
+        mocap_collection.register()
+        _safe_probe("mocap_collection")
+    except Exception as e:
+        print("[EchoGraph] Mocap Collection plugin import failed:", e)
+
+    try:
+        from nodes import delete_joint
+        delete_joint.register()
+    except Exception as e:
+        print("[EchoGraph] Delete Joint plugin import failed:", e)
+
     # 13.85) GEN-X Video Mocap
     try:
         from nodes import genx_video_mocap

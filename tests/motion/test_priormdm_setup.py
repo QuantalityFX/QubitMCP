@@ -200,7 +200,9 @@ class SetupUITests(unittest.TestCase):
             def command(path, install):
                 script = "import json,sys; from pathlib import Path; Path(sys.argv[1]).write_text(sys.argv[2]); print('setup progress'); sys.exit(1)"
                 return [sys.executable, "-u", "-c", script, str(path), json.dumps(report)]
-            with patch("nodes.priormdm.setup_ui.PROJECT_ROOT", root), patch.object(session, "command", side_effect=command):
+            with patch("nodes.priormdm.setup_ui.PROJECT_ROOT", root), \
+                 patch.object(session, "log_directory", root / "logs"), \
+                 patch.object(session, "command", side_effect=command):
                 spy = QtTest.QSignalSpy(session.finished)
                 session.start(install=True)
                 self.assertIs(active_installation(root), session)
@@ -245,6 +247,7 @@ class SetupUITests(unittest.TestCase):
             root = Path(folder)
             session = SetupSession(PriorMDMConfig(repository=root))
             with patch("nodes.priormdm.setup_ui.PROJECT_ROOT", root), \
+                 patch.object(session, "log_directory", root / "logs"), \
                  patch.object(session, "command", return_value=[str(root / "missing.exe")]):
                 spy = QtTest.QSignalSpy(session.finished)
                 session.start(install=True)
@@ -254,6 +257,90 @@ class SetupUITests(unittest.TestCase):
                 self.assertTrue(session.report["failed"])
                 self.assertFalse(session.running)
                 self.assertIsNone(active_installation(root))
+
+
+class SetupLoggingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.log_directory = self.root / "setup"
+
+    def session(self, marker="checked", delay=0):
+        session = SetupSession(PriorMDMConfig(repository=self.root))
+        session.log_directory = self.log_directory
+        script = ("import json,sys,time; from pathlib import Path; time.sleep(float(sys.argv[3])); "
+                  "Path(sys.argv[1]).write_text(json.dumps({'schema_version':1,'ready':True,'marker':sys.argv[2]})); "
+                  "print(sys.argv[2])")
+        session.command = lambda path, install: [sys.executable, "-u", "-c", script, str(path), marker, str(delay)]
+        self.addCleanup(session.shutdown)
+        return session
+
+    def finish(self, session, spy):
+        if spy.count() == 0:
+            spy.wait(7000)
+        self.assertEqual(spy.count(), 1)
+        self.assertFalse(session.running)
+
+    def test_repeated_checks_reuse_two_files_without_creating_run_folders(self):
+        for index in range(4):
+            session = self.session(str(index))
+            spy = QtTest.QSignalSpy(session.finished)
+            session.start()
+            self.finish(session, spy)
+            self.assertEqual(session.report["marker"], str(index))
+            self.assertEqual(session.log_path.read_text().strip(), str(index))
+            self.assertEqual({path.name for path in self.log_directory.iterdir()}, {"check.log", "check-report.json"})
+
+    def test_concurrent_checks_use_separate_reusable_slots(self):
+        first, second = self.session("first", 0.2), self.session("second", 0.2)
+        spies = [QtTest.QSignalSpy(session.finished) for session in (first, second)]
+        first.start()
+        second.start()
+        self.assertNotEqual(first.report_path, second.report_path)
+        for session, spy, marker in zip((first, second), spies, ("first", "second")):
+            self.finish(session, spy)
+            self.assertEqual(session.report["marker"], marker)
+        third = self.session("third")
+        spy = QtTest.QSignalSpy(third.finished)
+        third.start()
+        self.finish(third, spy)
+        self.assertEqual(third.report_path, first.report_path)
+        self.assertEqual(len(list(self.log_directory.iterdir())), 4)
+        self.assertFalse(any(path.is_dir() for path in self.log_directory.iterdir()))
+
+    def test_failed_check_does_not_reuse_previous_success_and_releases_slot(self):
+        first = self.session()
+        spy = QtTest.QSignalSpy(first.finished)
+        first.start()
+        self.finish(first, spy)
+        failed = self.session()
+        failed.command = lambda path, install: [sys.executable, "-c", "pass"]
+        spy = QtTest.QSignalSpy(failed.finished)
+        failed.start()
+        self.finish(failed, spy)
+        self.assertTrue(failed.report["failed"])
+        self.assertFalse(failed.report["ready"])
+        retry = self.session()
+        retry.command = lambda path, install: [str(self.root / "missing.exe")]
+        spy = QtTest.QSignalSpy(retry.finished)
+        retry.start()
+        self.finish(retry, spy)
+        self.assertTrue(retry.report["failed"])
+        self.assertEqual(retry.report_path, first.report_path)
+        self.assertFalse(list(self.log_directory.glob("*.lock")))
+
+    def test_explicit_installs_keep_separate_history(self):
+        paths = []
+        for marker in ("first install", "second install"):
+            session = self.session(marker)
+            spy = QtTest.QSignalSpy(session.finished)
+            session.start(install=True)
+            self.finish(session, spy)
+            self.assertTrue(session.log_path.parent.name.startswith("install_"))
+            paths.append(session.log_path)
+        self.assertNotEqual(*paths)
+        self.assertEqual(paths[0].read_text().strip(), "first install")
 
 
 if __name__ == "__main__":

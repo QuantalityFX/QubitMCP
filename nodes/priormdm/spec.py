@@ -95,6 +95,38 @@ def create_preview_node(node, scene, bvh: Path):
     return True
 
 
+def add_to_collection(node, scene):
+    """Add the latest completed BVH to downstream collections, creating one if needed."""
+    bvh = Path(value(node, "last_bvh"))
+    if not bvh.is_file() or bvh.suffix.lower() != ".bvh":
+        raise ValueError("Generate an animation first. The last completed BVH must still exist.")
+    if scene is None or node.name not in getattr(scene, "_node_items", {}):
+        raise ValueError("Open PriorMDM from a graph to add an animation to a collection.")
+    from echograph.model import GraphNode
+    from nodes import mocap_collection
+    from nodes.mocap_collection.spec import add_paths
+
+    collections = []
+    for edge in scene._edges:
+        if edge.src.model is node and edge.dst.model.kind.lower() == "mocap_collection":
+            if all(existing is not edge.dst.model for existing in collections):
+                collections.append(edge.dst.model)
+    if not collections:
+        mocap_collection.register()
+        source = scene._node_items[node.name]
+        pos = source.scenePos() + QtCore.QPointF(source.width + 90, 0)
+        collection = GraphNode(name=scene._unique_node_name("Mocap_Collection", "mocap_collection"),
+                               kind="mocap_collection", pos_xy=(pos.x(), pos.y()))
+        add_paths(collection, [bvh])
+        scene.add_node(collection, pos)
+        scene.add_edge(node.name, collection.name)
+        collections.append(collection)
+    else:
+        for collection in collections:
+            add_paths(collection, [bvh], scene)
+    return collections
+
+
 class MotionControls(QtWidgets.QWidget):
     def __init__(self, node, scene=None, parent=None):
         super().__init__(parent)
@@ -234,6 +266,8 @@ class MotionControls(QtWidgets.QWidget):
             "QPushButton:disabled { background: #374151; color: #d1d5db; border-color: #4b5563; }"
         )
         self.preview_button = QtWidgets.QPushButton("Create MocapBVH")
+        self.collection_button = QtWidgets.QPushButton("Add to Collection")
+        self.collection_button.setToolTip("Add the last completed animation to connected Mocap Collections, or create and connect a new collection.")
         self.tpose_button = QtWidgets.QPushButton("Create T-pose BVH")
         self.apose_button = QtWidgets.QPushButton("Create A-pose BVH")
         self.apose_button.setToolTip("Create a separate, single-frame rig with arms lowered 45 degrees, using the last generated skeleton.")
@@ -243,7 +277,7 @@ class MotionControls(QtWidgets.QWidget):
         buttons.addWidget(self.generate_button)
         layout.addLayout(buttons)
         exports = QtWidgets.QHBoxLayout()
-        for button in (self.preview_button, self.tpose_button, self.apose_button, self.open_button):
+        for button in (self.preview_button, self.collection_button, self.tpose_button, self.apose_button, self.open_button):
             button.setAutoDefault(False)
             exports.addWidget(button)
         layout.addLayout(exports)
@@ -267,6 +301,7 @@ class MotionControls(QtWidgets.QWidget):
         self.hands_enabled.toggled.connect(self._refresh_buttons)
         self.check_button.clicked.connect(self._check)
         self.preview_button.clicked.connect(self._preview)
+        self.collection_button.clicked.connect(self._add_to_collection)
         self.tpose_button.clicked.connect(self._tpose)
         self.apose_button.clicked.connect(lambda: self._static_pose("apose"))
         self.open_button.clicked.connect(self._open_result)
@@ -385,7 +420,7 @@ class MotionControls(QtWidgets.QWidget):
                 set_value(node, scene, "last_bvh", str(result.bvh_path))
                 set_value(node, scene, "last_archive", str(result.archive_path))
                 mode = "body + fingers" if result.bvh_path.name == "preview_hands.bvh" else "body only (no fingers)"
-                set_value(node, scene, "last_status", f"Complete: {mode}. Create a new MocapBVH node to preview this result.")
+                set_value(node, scene, "last_status", f"Complete: {mode}. Add to Collection or create a MocapBVH preview.")
             job.completed.connect(done)
             job.failed.connect(lambda message: set_value(node, scene, "last_status", message))
             self._connect_job(job)
@@ -448,10 +483,9 @@ class MotionControls(QtWidgets.QWidget):
         self.device.setEnabled(not setup_running)
         available = bool(value(self.node, "last_bvh")) and Path(value(self.node, "last_bvh")).is_file()
         self.preview_button.setEnabled(available)
+        self.collection_button.setEnabled(available and not running and self.graph_scene is not None)
         self.tpose_button.setEnabled(available)
         self.apose_button.setEnabled(available)
-        last_has_hands = Path(value(self.node, "last_bvh")).name == "preview_hands.bvh"
-        self.preview_button.setText("Create MocapBVH" + (" (hands)" if last_has_hands else " (body only)") if available else "Create MocapBVH")
         self.preview_button.setToolTip("Loads the last completed result. Changing hand options requires generating again; existing MocapBVH nodes keep their previous file.")
         self.open_button.setEnabled(available)
 
@@ -473,6 +507,13 @@ class MotionControls(QtWidgets.QWidget):
 
     def _tpose(self):
         self._static_pose("tpose")
+
+    def _add_to_collection(self):
+        try:
+            collections = add_to_collection(self.node, self.graph_scene)
+            self.status.setText("Animation added to " + ", ".join(node.name for node in collections))
+        except Exception as exc:
+            self.status.setText(f"Could not add to collection: {exc}")
 
     def _static_pose(self, pose):
         label = "A-pose" if pose == "apose" else "T-pose"

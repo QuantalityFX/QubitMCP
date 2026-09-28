@@ -998,6 +998,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _mocap_import.register()
             except Exception:
                 pass
+        if (self.model.kind or "").strip().lower() == "mocap_collection":
+            from nodes import mocap_collection as _mocap_collection
+            _mocap_collection.register()
         if (self.model.kind or "").strip().lower() == "priormdm":
             from nodes import priormdm as _priormdm
             _priormdm.register()
@@ -3163,6 +3166,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             count = max(1, len(self.model.switch_inputs or []))
             body_h = 6 + count * self._PARAM_ROW_H
             node_w = self._BASE_W
+        elif kind == "mocap_collection":
+            body_h = 300  # The body renderer measures the final height from Qt.
+            node_w = max(self._BASE_W, 460)
         elif kind == "import":
             node_w = self._BASE_W  # define first
 
@@ -3759,6 +3765,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 if custom_h is not None and custom_h > 0:
                     new_h = max(new_h, max(self._BASE_H, custom_h))
 
+        if kind == "mocap_collection":
+            custom_size = self._size_tuple_from_param("__mocap_collection_size")
+            if custom_size is not None:
+                new_w = max(float(getattr(self, "_mocap_collection_min_w", 460)), custom_size[0])
+                new_h = max(float(getattr(self, "_mocap_collection_min_h", self._BASE_H)), custom_size[1])
+
         if new_w != getattr(self, "width", 0) or new_h != getattr(self, "height", 0):
             try:
                 self.prepareGeometryChange()
@@ -4296,6 +4308,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if kind_lower in _LIGHT_NODE_KINDS:
                 self._sync_light_param_visibility()
             defer_plugin = kind_lower in (
+                "delete_joint",
                 "chatbot",
                 "chat bot",
                 "chat_bot",
@@ -4731,6 +4744,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         and pname_key in ("type", "light_type")
                     )
                     input_label_only = (
+                        (kind == "delete_joint" and pname_key == "rig")
+                        or
                         (
                             kind in ("anim_retarget", "anim retarget", "animretarget", "retarget")
                             and pname_key in ("source", "target", "animation")
@@ -9298,6 +9313,7 @@ body {
     def _note_resize_available(self) -> bool:
         kind = (self.model.kind or "").lower()
         if kind not in (
+            "mocap_collection",
             "note",
             "chatbot",
             "chat bot",
@@ -9418,7 +9434,10 @@ body {
         new_rect = QtCore.QRectF(rect)
         new_pos = QtCore.QPointF(self._note_initial_pos)
         kind = (self.model.kind or "").lower()
-        if kind in ("chatbot", "chat bot", "chat_bot"):
+        if kind == "mocap_collection":
+            min_w = float(getattr(self, "_mocap_collection_min_w", 460))
+            min_h = float(getattr(self, "_mocap_collection_min_h", self._BASE_H))
+        elif kind in ("chatbot", "chat bot", "chat_bot"):
             min_w = float(getattr(self, "_chatbot_min_w", self._BASE_W))
             min_h = float(getattr(self, "_chatbot_min_h", self._BASE_H))
         elif kind in ("voice_actor", "voice actor", "voiceactor"):
@@ -9489,6 +9508,9 @@ body {
         try:
             if kind == "note":
                 self.model._note_size = (float(self.width), float(self.height))
+            elif kind == "mocap_collection":
+                self._set_param_value("__mocap_collection_size", f"{self.width:.3f},{self.height:.3f}",
+                                      rebuild=False, notify_scene=False)
             elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
                 self.model._gantt_chart_size = (float(self.width), float(self.height))
             elif kind in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
@@ -9530,6 +9552,9 @@ body {
                 kind = (self.model.kind or "").lower()
                 if kind == "note":
                     self.model._note_size = (float(self.width), float(self.height))
+                elif kind == "mocap_collection":
+                    self._set_param_value("__mocap_collection_size", f"{self.width:.3f},{self.height:.3f}",
+                                          rebuild=False, notify_scene=True)
                 elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
                     self.model._gantt_chart_size = (float(self.width), float(self.height))
                 elif kind in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
@@ -10122,7 +10147,7 @@ body {
                 "fbxanimationimport",
             ):
                 icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
-            elif kind_lower in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
+            elif kind_lower in ("mocap_collection", "mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
                 icon_pm = node_icons._mocap_import_icon() or node_icons._import_icon()
             elif kind_lower in (
                 "gen-x-videomocap",

@@ -29,6 +29,8 @@ ANIM_RETARGET_KIND_ALIASES: Tuple[str, ...] = (
 )
 
 SOURCE_KIND_ALIASES: Tuple[str, ...] = (
+    "delete_joint",
+    "mocap_collection",
     "mocap_import",
     "mocap import",
     "mocapimport",
@@ -41,6 +43,10 @@ SOURCE_KIND_ALIASES: Tuple[str, ...] = (
 )
 
 TARGET_KIND_ALIASES: Tuple[str, ...] = (
+    "delete_joint",
+    "mocap_import",
+    "mocap_collection",
+    "bvh_import",
     "fbx_import",
     "fbx import",
     "fbximport",
@@ -1074,10 +1080,14 @@ def _context_for_source_item(
     _depth: int = 0,
     _visited: set[int] | None = None,
 ) -> Dict[str, Any] | None:
+    if kind == "delete_joint":
+        from nodes.delete_joint.spec import resolve_context
+        return resolve_context(node_item, errors, warnings, target=False, _depth=_depth, _visited=_visited)
     if kind == "switch":
         return _switch_context_from_item(node_item, errors, warnings, target=False, _depth=_depth, _visited=_visited)
     if kind in (
         "mocap_import",
+        "mocap_collection",
         "mocap import",
         "mocapimport",
         "bvh_import",
@@ -1109,6 +1119,11 @@ def _context_for_target_item(
     _depth: int = 0,
     _visited: set[int] | None = None,
 ) -> Dict[str, Any] | None:
+    if kind == "delete_joint":
+        from nodes.delete_joint.spec import resolve_context
+        return resolve_context(node_item, errors, warnings, target=True, _depth=_depth, _visited=_visited)
+    if kind in ("mocap_import", "mocap_collection", "bvh_import", "mocap import", "mocapimport", "bvh import", "bvhimport"):
+        return _mocap_context_from_item(node_item, "target", errors, warnings)
     if kind == "switch":
         return _switch_context_from_item(node_item, errors, warnings, target=True, _depth=_depth, _visited=_visited)
     if kind in TARGET_KIND_ALIASES:
@@ -1858,6 +1873,18 @@ def _resolve_window(node_item, parent=None):
     return None
 
 
+def _show_retarget_warning(node_item, parent, title: str, message: str) -> None:
+    # A dialog parented to a node's embedded widget is automatically proxied
+    # into the graphics scene, producing an extra native/blank window on Windows.
+    # Only use a real application window as the message-box owner.
+    owner = _resolve_window(node_item, parent)
+    if not isinstance(owner, QtWidgets.QWidget) or owner.graphicsProxyWidget() is not None:
+        owner = parent.window() if isinstance(parent, QtWidgets.QWidget) else None
+    if owner is not None and owner.graphicsProxyWidget() is not None:
+        owner = None
+    QtWidgets.QMessageBox.warning(owner, title, str(message))
+
+
 def open_anim_retarget_preview(
     node_item,
     *,
@@ -1870,7 +1897,7 @@ def open_anim_retarget_preview(
         if quiet or QtWidgets is None:
             return
         try:
-            QtWidgets.QMessageBox.warning(parent, "Anim Retarget View", str(message))
+            _show_retarget_warning(node_item, parent, "Anim Retarget View", message)
         except Exception:
             pass
 
@@ -1951,7 +1978,9 @@ class AnimRetargetNodeViewButton(QtWidgets.QWidget if QtWidgets is not None else
             scene.paramChanged.connect(self._schedule_validation)
             self._schedule_validation()
 
-    def _schedule_validation(self, *_args):
+    def _schedule_validation(self, *args):
+        if args and isinstance(args[0], str) and not _param_change_relevant(self._node_item, args[0]):
+            return
         self._validation_timer.start()
 
     def _validate_animation(self):
@@ -5048,7 +5077,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         detail_box.setToolTip(report)
         if toast:
             if result.status in ("error", "warning"):
-                QtWidgets.QMessageBox.warning(card, "Anim Retarget Validation", report)
+                _show_retarget_warning(item, card, "Anim Retarget Validation", report)
             else:
                 try:
                     QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), report, card)
@@ -5081,7 +5110,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         if item is None:
             if quiet:
                 return
-            QtWidgets.QMessageBox.warning(card, "Anim Retarget View", "Node item is not available.")
+            _show_retarget_warning(item, card, "Anim Retarget View", "Node item is not available.")
             return
         result = _refresh(persist=True, toast=False)
         if result is None:

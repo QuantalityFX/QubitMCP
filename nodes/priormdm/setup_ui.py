@@ -67,6 +67,7 @@ class SetupSession(QtCore.QObject):
         self.log_path = None
         self.dialog = None
         self._log = None
+        self._check_lock = None
         self._settled = True
         self.process = QtCore.QProcess(self)
         self.process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
@@ -98,12 +99,39 @@ class SetupSession(QtCore.QObject):
         other = conflicting_installation(self.config)
         if other is not None and other is not self:
             raise ValueError("PriorMDM setup is already running for these folders. Open the active Setup window.")
-        run_dir = self.log_directory / uuid.uuid4().hex
-        self.report_path = run_dir / "report.json"
-        command = self.command(self.report_path, install)
-        run_dir.mkdir(parents=True, exist_ok=False)
-        self.log_path = run_dir / "setup.log"
-        self._log = self.log_path.open("x", encoding="utf-8")
+        if install:
+            # Keep a separate history for explicit installations only.
+            run_dir = self.log_directory / ("install_" + uuid.uuid4().hex)
+            run_dir.mkdir(parents=True, exist_ok=False)
+            self.report_path = run_dir / "report.json"
+            self.log_path = run_dir / "setup.log"
+        else:
+            self.log_directory.mkdir(parents=True, exist_ok=True)
+            # Reuse flat files across checks and app restarts. Extra slots are
+            # needed only for simultaneous checks, including other app windows.
+            slot = 1
+            while True:
+                stem = "check" if slot == 1 else f"check-{slot}"
+                lock = QtCore.QLockFile(str(self.log_directory / f"{stem}.lock"))
+                lock.setStaleLockTime(0)
+                if lock.tryLock(0):
+                    self._check_lock = lock
+                    break
+                if lock.error() != QtCore.QLockFile.LockFailedError:
+                    raise OSError(f"Cannot write setup check logs in {self.log_directory}")
+                slot += 1
+            self.report_path = self.log_directory / f"{stem}-report.json"
+            self.log_path = self.log_directory / f"{stem}.log"
+        try:
+            command = self.command(self.report_path, install)
+            # A failed check must never read a previous successful report.
+            self.report_path.write_text("", encoding="utf-8")
+            self._log = self.log_path.open("x" if install else "w", encoding="utf-8")
+        except Exception:
+            if self._check_lock is not None:
+                self._check_lock.unlock()
+                self._check_lock = None
+            raise
         self.log_text = ""
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.running, self.installing, self.cancelled, self._settled = True, install, False, False
@@ -165,6 +193,9 @@ class SetupSession(QtCore.QObject):
         if self._log:
             self._log.close()
             self._log = None
+        if self._check_lock is not None:
+            self._check_lock.unlock()
+            self._check_lock = None
         self.report = report
         if not report.get("failed") and not report.get("cancelled"):
             paths = {key: Path(report[key]) for key in ("python", "dataset", "checkpoint", "download_cache") if report.get(key)}

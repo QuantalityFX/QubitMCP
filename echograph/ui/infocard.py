@@ -37,7 +37,7 @@ def _hash_to_links(text: str) -> str:
     )
 
 
-_MASKED_VALUE_TEXT = "******"
+_MASKED_VALUE_TEXT = "*******"
 _QUBIT_DECK_CONTROLLER_KINDS = {
     "qubit_deck_controller",
     "qubit deck controller",
@@ -52,10 +52,50 @@ _QUBIT_DECK_SENSITIVE_PARAMS = {
     "url",
     "endpoint",
 }
+_MINIMAX_H3_API_VIDEO_KINDS = {
+    "minimax_h3_api_video",
+    "minimax h3 api video",
+    "minimax_h3_api",
+    "minimax h3 api",
+    "minimax_api_video",
+    "minimax api video",
+    "minimax_api",
+    "minimax api",
+    "hailuo_h3_api_video",
+    "hailuo h3 api video",
+    "hailuo_api_video",
+    "hailuo api video",
+}
+_MINIMAX_H3_API_SENSITIVE_PARAMS = {
+    "__minimax_h3_api_key",
+}
+_MINIMAX_TTS_API_KINDS = {
+    "minimax_tts_api",
+    "minimax text to speech",
+    "minimax speech api",
+    "minimax tts",
+    "minimax_speech",
+    "minimax_text_to_speech",
+}
+_MINIMAX_TTS_API_SENSITIVE_PARAMS = {
+    "__minimax_tts_api_key",
+}
 
 
 def _is_qubit_deck_controller_kind(kind: str) -> bool:
     return str(kind or "").strip().lower() in _QUBIT_DECK_CONTROLLER_KINDS
+
+
+def _masked_param_names_for_kind(kind: str) -> set[str]:
+    kind_key = str(kind or "").strip().lower()
+    names: set[str] = set()
+    if _is_qubit_deck_controller_kind(kind_key):
+        names.update(_QUBIT_DECK_SENSITIVE_PARAMS)
+    if kind_key in _MINIMAX_H3_API_VIDEO_KINDS:
+        names.update(_MINIMAX_H3_API_SENSITIVE_PARAMS)
+    if kind_key in _MINIMAX_TTS_API_KINDS:
+        names.update(_MINIMAX_TTS_API_SENSITIVE_PARAMS)
+    return names
 
 
 class _SensitiveParamValueDelegate(QtWidgets.QStyledItemDelegate):
@@ -214,6 +254,7 @@ class InfoCard(QtWidgets.QFrame):
 
         # Scene footer wants full-width (outliner), so don't add the trailing stretch spacer
         if (node.kind or "").lower() not in (
+            "mocap_collection",
             "scene",
             "scene_assembly",
             "scene_outliner",
@@ -480,17 +521,19 @@ class InfoCard(QtWidgets.QFrame):
                 return False
 
             tbl.blockSignals(True)
+            masked_value_names = set(getattr(tbl, "_masked_value_param_names", set()) or set())
             for r, pname in enumerate(visible):
                 val = values.get(pname, "")
+                is_masked = str(pname or "").strip().lower() in masked_value_names and bool(val)
                 item = tbl.item(r, 2)
                 if item is None:
                     item = QtWidgets.QTableWidgetItem(val)
-                    item.setToolTip(val)
+                    item.setToolTip(_MASKED_VALUE_TEXT if is_masked else val)
                     tbl.setItem(r, 2, item)
                 else:
                     if item.text() != val:
                         item.setText(val)
-                    item.setToolTip(val)
+                    item.setToolTip(_MASKED_VALUE_TEXT if is_masked else val)
             return True
         finally:
             try:
@@ -1183,9 +1226,14 @@ class InfoCard(QtWidgets.QFrame):
             QtWidgets.QAbstractItemView.EditKeyPressed |
             QtWidgets.QAbstractItemView.SelectedClicked
         )
-        if _is_qubit_deck_controller_kind(getattr(self._node_ref, "kind", "")):
-            tbl._masked_value_param_names = set(_QUBIT_DECK_SENSITIVE_PARAMS)
+        masked_value_names = _masked_param_names_for_kind(getattr(self._node_ref, "kind", ""))
+        if masked_value_names:
+            tbl._masked_value_param_names = set(masked_value_names)
             tbl.setItemDelegate(_SensitiveParamValueDelegate(tbl))
+            tbl.setEditTriggers(
+                QtWidgets.QAbstractItemView.DoubleClicked |
+                QtWidgets.QAbstractItemView.EditKeyPressed
+            )
 
         # The resize handler gives most available width to Value so paths
         # show as much text as the current InfoCard width allows.
@@ -1288,7 +1336,7 @@ class InfoCard(QtWidgets.QFrame):
             name_item.setToolTip(pname)
             value_text = p.get("value", "") or ""
             value_item = QtWidgets.QTableWidgetItem(value_text)
-            value_item.setToolTip(value_text)
+            value_item.setToolTip(_MASKED_VALUE_TEXT if key in masked_value_names and value_text else value_text)
             value_item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
             tbl.setItem(r, 1, name_item)
             tbl.setItem(r, 2, value_item)

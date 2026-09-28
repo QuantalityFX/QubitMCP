@@ -120,6 +120,23 @@ class AnimationInputTests(unittest.TestCase):
         self.assertTrue(result.animation_error)
         self.assertIsNone(spec.build_anim_retarget_clip(self.item, result))
 
+    def test_unrelated_changes_do_not_schedule_retarget_validation(self):
+        source = SimpleNamespace(model=SimpleNamespace(name="Source"))
+        scene = SimpleNamespace(_ordered_in_edges=lambda item: [SimpleNamespace(src=source)] if item is self.item else [])
+        self.item.scene = lambda: scene
+        button = spec.AnimRetargetNodeViewButton(self.item)
+        button._validation_timer.stop()
+        button._schedule_validation("Unrelated Collection", [])
+        self.assertFalse(button._validation_timer.isActive())
+        button._schedule_validation("Source", [])
+        self.assertTrue(button._validation_timer.isActive())
+        button._validation_timer.stop()
+        button._schedule_validation()  # Wiring changes still require validation.
+        self.assertTrue(button._validation_timer.isActive())
+        button._validation_timer.stop()
+        button.deleteLater()
+        self.item.scene = lambda: None
+
     def preview_source_rig(self, connected=True):
         self.source.update(path=__file__, source_format="bvh",
                            rig_context={"clips": [self.reference]})

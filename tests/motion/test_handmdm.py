@@ -122,6 +122,8 @@ class HandConversionTests(unittest.TestCase):
             self.assertEqual(len(skeleton.joints), 62)
             self.assertEqual(clip.metadata["hand_source"]["seed"], 7)
             self.assertEqual(result.bvh_path.name, "preview_hands.bvh")
+            self.assertEqual(list(root.rglob("*.bvh")), [result.bvh_path])
+            self.assertEqual(len(ingest_bvh_animation_data(result.bvh_path).skeleton.joints), 62)
             self.assertTrue((root / "animation.json").is_file())
             self.assertTrue((root / "hands.npz").is_file())
 
@@ -326,7 +328,7 @@ class HandUITests(unittest.TestCase):
             set_value(node, None, "last_bvh", str(path))
             controls = MotionControls(node)
             controls.hands_enabled.setChecked(True)
-            self.assertEqual(controls.preview_button.text(), "Create MocapBVH (body only)")
+            self.assertEqual(controls.preview_button.text(), "Create MocapBVH")
             self.assertIn("generating again", controls.preview_button.toolTip())
             controls.deleteLater()
 
