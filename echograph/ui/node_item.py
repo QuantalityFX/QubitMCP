@@ -1001,6 +1001,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if (self.model.kind or "").strip().lower() == "mocap_collection":
             from nodes import mocap_collection as _mocap_collection
             _mocap_collection.register()
+        if (self.model.kind or "").strip().lower() in ("for_each", "for_each_end"):
+            from nodes import for_each as _for_each
+            _for_each.register()
         if (self.model.kind or "").strip().lower() == "priormdm":
             from nodes import priormdm as _priormdm
             _priormdm.register()
@@ -4308,6 +4311,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if kind_lower in _LIGHT_NODE_KINDS:
                 self._sync_light_param_visibility()
             defer_plugin = kind_lower in (
+                "for_each", "for_each_end",
                 "delete_joint",
                 "chatbot",
                 "chat bot",
@@ -4672,7 +4676,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         lab.setToolTip("Double-click to rename")
                     else:
                         display_pname = pname
-                        if kind in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"):
+                        if kind == "for_each" and pname_key == "source":
+                            # Keep the saved port key stable; this is the loop
+                            # collection, not Animation Retarget's source rig.
+                            display_pname = "collection"
+                        elif kind in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"):
                             if pname_key == "guides":
                                 display_pname = "Guides"
                             elif pname_key == "rig":
@@ -4692,6 +4700,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             elif pname_key == "collider":
                                 display_pname = "Collider"
                         lab = QtWidgets.QLabel(display_pname)
+                        if kind == "for_each" and pname_key == "source":
+                            lab.setToolTip("Connect Mocap Collection OUT here. Connect this node's OUT to Animation Retarget's animation IN. The T-pose rig connects to Retarget's source IN.")
                     if kind == "note":
                         lab.setStyleSheet(self._note_param_label_style(completed=is_completed))
                         try:
@@ -4744,6 +4754,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         and pname_key in ("type", "light_type")
                     )
                     input_label_only = (
+                        (kind == "for_each" and pname_key == "source")
+                        or (kind == "for_each_end" and pname_key == "render")
+                        or
                         (kind == "delete_joint" and pname_key == "rig")
                         or
                         (
@@ -9720,6 +9733,8 @@ body {
                 "llm_prompt",
                 "append",
                 "note",
+                "for_each",
+                "for_each_end",
                 "librarian",
                 "qubit_deck_controller",
                 "import",
@@ -10149,6 +10164,8 @@ body {
                 icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
             elif kind_lower in ("mocap_collection", "mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
                 icon_pm = node_icons._mocap_import_icon() or node_icons._import_icon()
+            elif kind_lower in ("for_each", "for_each_end"):
+                icon_pm = node_icons._for_each_icon()
             elif kind_lower in (
                 "gen-x-videomocap",
                 "gen-x video mocap",

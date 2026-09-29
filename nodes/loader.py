@@ -585,6 +585,12 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Delete Joint plugin import failed:", e)
 
+    try:
+        from nodes import for_each
+        for_each.register()
+    except Exception as e:
+        print("[EchoGraph] For Each plugin import failed:", e)
+
     # 13.85) GEN-X Video Mocap
     try:
         from nodes import genx_video_mocap

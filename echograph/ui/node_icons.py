@@ -12,6 +12,7 @@ _LLM_ICON = None
 _LLM_SERVER_ICON = None
 _APPEND_ICON = None
 _NOTE_ICON = None
+_FOR_EACH_ICON = None
 _LIBRARIAN_ICON = None
 _IMPORT_ICON = None
 _FBX_ICON = None
@@ -104,6 +105,13 @@ def _append_icon():
         return _APPEND_ICON
     _APPEND_ICON = _load_pm("append_icon.png")
     return _APPEND_ICON
+
+
+def _for_each_icon():
+    global _FOR_EACH_ICON
+    if _FOR_EACH_ICON is None:
+        _FOR_EACH_ICON = _load_pm("LoopArrows_Icon_s.png")
+    return _FOR_EACH_ICON
 
 
 def _note_icon():

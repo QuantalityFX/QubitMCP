@@ -288,6 +288,8 @@ _NODE_KIND_SEARCH_HINTS = {
     "mocap_import": "mocap bvh motion capture animation",
     "mocap_collection": "mocap bvh collection multiple files animation batch list",
     "delete_joint": "delete joint remove root bone skeleton rig fbx bvh",
+    "for_each": "for each foreach start loop batch takes wrapper iteration",
+    "for_each_end": "for each foreach end loop batch takes wrapper render completion",
     "priormdm": "priormdm mdm text prompt motion generation humanoid animation",
     "gen_x_videomocap": "video mocap gen-x motion capture animation",
     "anim_retarget": "animation retarget rig skeleton",
@@ -537,6 +539,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._append_icon()
     elif key == "note":
         icon_pm = node_icons._note_icon()
+    elif key in ("for_each", "for_each_end"):
+        icon_pm = node_icons._for_each_icon()
     elif key == "librarian":
         icon_pm = node_icons._librarian_icon()
     elif key == "import":
@@ -779,7 +783,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit.setView(kind_popup_view)
         self._kinds = [
             "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","fbx_animation","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","image_gs_splat","skinned_volume_mesh","instance","copy_to_points","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","youtube_downloader","minimax_h3_video","minimax_h3_api_video","minimax_tts_api","wan22_video","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
-            "priormdm", "mocap_collection", "delete_joint",
+            "priormdm", "mocap_collection", "delete_joint", "for_each", "for_each_end",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "audio_capture",

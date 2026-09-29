@@ -15,6 +15,7 @@ except Exception:
 
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
+from .takes import RenderResult, reserve_take_folder
 
 
 _FORMAT_EXT = {"png": ".png", "jpg": ".jpg", "tiff": ".tiff", "exr": ".exr"}
@@ -351,6 +352,17 @@ def _sequence_frame_path(template_path: Path, frame: int) -> Path:
     return template_path.with_name(rendered)
 
 
+def _animation_max_frame_from_assets(assets, fps):
+    maximum = 0
+    for asset in assets:
+        context = asset.get("fbx_rig_context") or {}
+        clip = context.get("clip")
+        if clip is not None:
+            duration = max(0.0, float(clip.end_time) - float(clip.start_time))
+            maximum = max(maximum, int(math.ceil(duration * fps - 1e-8)))
+    return maximum
+
+
 def _read_timeline_max_frame(path: Path) -> int | None:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -497,21 +509,30 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "format", "png")
     _ensure_param(node_item, "start_frame", "0")
     _ensure_param(node_item, "end_frame", "-1")
+    _ensure_param(node_item, "take_folders", "0")
+    _ensure_param(node_item, "take_number", "1")
     _ensure_hidden_params(
         getattr(node_item, "model", None),
-        ["output", "camera", "frame_rate", "format", "start_frame", "end_frame"],
+        ["output", "camera", "frame_rate", "format", "start_frame", "end_frame", "take_folders", "take_number"],
     )
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("scene")
 
 
 class RenderNodeWidget(QtWidgets.QWidget):
+    renderFinished = QtCore.Signal(object)
+
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
         self._node_item = node_item
         self._scene = None
         self._scene_connected = False
         self._busy = False
+        self._executing = False
+        self._batch = False
+        self._cancel_check = lambda: False
+        self._output_override = None
+        self._result = None
         self._camera_meta: Dict[str, Dict[str, object]] = {}
         self._camera_preferred = ""
 
@@ -582,6 +603,19 @@ class RenderNodeWidget(QtWidgets.QWidget):
         row3.addWidget(browse_btn, 0)
         layout.addLayout(row3, 0)
 
+        take_row = QtWidgets.QHBoxLayout()
+        self._take_folders = QtWidgets.QCheckBox("Take folders")
+        self._take_folders.setToolTip("Render into a separate take folder. For Each always supplies its own take folder and number.")
+        self._take_number = QtWidgets.QSpinBox()
+        self._take_number.setRange(1, 1_000_000)
+        take_row.addWidget(self._take_folders)
+        take_row.addWidget(QtWidgets.QLabel("Take"))
+        take_row.addWidget(self._take_number)
+        take_row.addStretch(1)
+        self._take_folders.toggled.connect(lambda enabled: _set_param_value(self._node_item, "take_folders", "1" if enabled else "0", notify_scene=False))
+        self._take_number.valueChanged.connect(lambda number: _set_param_value(self._node_item, "take_number", str(number), notify_scene=False))
+        layout.addLayout(take_row)
+
         self._render_btn = QtWidgets.QPushButton("Render Sequence")
         self._render_btn.clicked.connect(self._on_render_clicked)
         layout.addWidget(self._render_btn, 0)
@@ -595,7 +629,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
             pass
 
     def sizeHint(self):
-        return QtCore.QSize(240, 198)
+        return super().sizeHint().expandedTo(QtCore.QSize(260, 230))
 
     def _ensure_scene(self):
         if self._scene is None:
@@ -637,6 +671,8 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._refresh_status()
 
     def _on_scene_param_changed(self, name=None, _params=None):
+        if self._executing:
+            return
         if _param_change_relevant(self._node_item, name):
             self._sync_controls_from_params()
             self._refresh_status()
@@ -647,6 +683,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._render_btn.setText("Rendering..." if self._busy else "Render Sequence")
 
     def _show_popup(self, icon, text: str, details: str = "") -> None:
+        if self._batch:
+            if self._result is None:
+                self._result = RenderResult("error", str(text) + ("\n" + details if details else ""))
+            return
         parent = _dialog_parent(self._node_item) or self
         box = QtWidgets.QMessageBox(parent)
         box.setWindowTitle("Render Sequence")
@@ -666,6 +706,12 @@ class RenderNodeWidget(QtWidgets.QWidget):
         model = getattr(self._node_item, "model", None)
         if model is None:
             return
+        with QtCore.QSignalBlocker(self._take_folders), QtCore.QSignalBlocker(self._take_number):
+            self._take_folders.setChecked(_bool_value(_param_value(model, "take_folders"), False))
+            try:
+                self._take_number.setValue(int(_param_value(model, "take_number") or "1"))
+            except ValueError:
+                self._take_number.setValue(1)
         raw_output = (_param_value(model, "output") or "").strip()
         fmt = _norm_fmt(_param_value(model, "format") or "png")
         if not raw_output:
@@ -1142,6 +1188,38 @@ class RenderNodeWidget(QtWidgets.QWidget):
         return max_frame if any_keys else 0
 
     def _on_render_clicked(self):
+        return self.render_sequence()
+
+    def render_sequence(self, *, output_template=None, cancel_requested=None, batch=False):
+        """Return only after the sequence has completed, failed, or been cancelled."""
+        if self._executing:
+            return RenderResult("error", "This Render node is already rendering.")
+        scene = self._node_item.scene()
+        if not batch and getattr(scene, "_foreach_active_session", None) is not None:
+            self._show_popup(QtWidgets.QMessageBox.Warning, "Stop the active For Each run before rendering manually.")
+            return RenderResult("error", "For Each is running.")
+        self._executing, self._batch = True, batch
+        self._output_override = Path(output_template) if output_template is not None else None
+        self._cancel_check = cancel_requested or (lambda: False)
+        self._result = None
+        try:
+            self._run_sequence()
+        except Exception as exc:
+            self._result = RenderResult("error", str(exc))
+            self._show_popup(QtWidgets.QMessageBox.Critical, f"Render failed: {exc}")
+        finally:
+            self._executing = False
+            self._batch = False
+            self._output_override = None
+            self._cancel_check = lambda: False
+        result = self._result or RenderResult("error", "Render did not complete.")
+        self.renderFinished.emit(result)
+        return result
+
+    def _run_sequence(self):
+        if self._cancel_check():
+            self._result = RenderResult("cancelled", "Render cancelled before starting.")
+            return
         cams, cam_err = _collect_scene_cameras(self._node_item)
         if cam_err:
             self._show_popup(QtWidgets.QMessageBox.Warning, cam_err)
@@ -1154,6 +1232,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
             return
 
         out_template, fmt = self._resolved_template()
+        if self._output_override is not None:
+            out_template = self._output_override
+        elif self._take_folders.isChecked():
+            out_template = reserve_take_folder(out_template.parent, self._take_number.value()) / out_template.name
         try:
             out_template.parent.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -1179,9 +1261,15 @@ class RenderNodeWidget(QtWidgets.QWidget):
         open_scene = getattr(win, "open_scene_assets", None) if win is not None else None
         if callable(open_scene):
             try:
-                open_scene(assets, frame=False)
-            except Exception:
-                pass
+                loaded = open_scene(assets, frame=False)
+                if loaded is False:
+                    raise RuntimeError("The viewport could not load the scene for this take.")
+            except Exception as exc:
+                self._show_popup(QtWidgets.QMessageBox.Critical, f"Could not update the render scene: {exc}")
+                return
+        else:
+            self._show_popup(QtWidgets.QMessageBox.Warning, "Scene loading is not available.")
+            return
 
         scene_item = _resolve_scene_input_item(self._node_item)
         scene_name = str(getattr(getattr(scene_item, "model", None), "name", "") or "scene").strip() or "scene"
@@ -1341,6 +1429,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
             timeline_end = max(
                 self._timeline_max_frame(glv, scene_name, project_path),
                 _music_effects_max_frame_from_assets(assets, render_fps),
+                _animation_max_frame_from_assets(assets, render_fps),
             )
             render_start, render_end = self._resolved_frame_range(timeline_end)
             total_frames = max(1, int(render_end) - int(render_start) + 1)
@@ -1351,7 +1440,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
             self._process_ui_events(12)
             for idx, frame in enumerate(range(int(render_start), int(render_end) + 1), start=1):
                 self._process_ui_events(8)
-                if progress_dialog is not None and bool(progress_dialog.cancel_requested):
+                if self._cancel_check() or (progress_dialog is not None and bool(progress_dialog.cancel_requested)):
                     cancelled = True
                     break
                 self._status.setText(
@@ -1369,7 +1458,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
                     pass
                 image = None
                 for _capture_attempt in range(3):
-                    if progress_dialog is not None and bool(progress_dialog.cancel_requested):
+                    if self._cancel_check() or (progress_dialog is not None and bool(progress_dialog.cancel_requested)):
                         cancelled = True
                         break
                     image = self._grab_frame_supersampled(glv, target_w, target_h)
@@ -1528,7 +1617,9 @@ class RenderNodeWidget(QtWidgets.QWidget):
             self._set_busy(False)
             self._refresh_status()
 
-        _set_param_value(self._node_item, "output", str(out_template), notify_scene=True)
+        # Keep the configured base path, not the generated take subfolder.
+        if not self._batch and not self._take_folders.isChecked():
+            _set_param_value(self._node_item, "output", str(out_template), notify_scene=True)
         _set_param_value(self._node_item, "camera", owner, notify_scene=True)
         _set_param_value(self._node_item, "format", _norm_fmt(fmt), notify_scene=True)
         _set_param_value(
@@ -1550,6 +1641,8 @@ class RenderNodeWidget(QtWidgets.QWidget):
             notify_scene=True,
         )
 
+        self._result = RenderResult("cancelled" if cancelled else "error" if failures else "completed",
+                                    "\n".join(failures[:120]), str(out_template), written, render_start, render_end)
         if cancelled:
             self._show_popup(
                 QtWidgets.QMessageBox.Information,
@@ -1582,7 +1675,10 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setWidget(body)
     proxy.setZValue(node_item.zValue() + 0.1)
     proxy.setPos(0, y_cursor)
-    w = int(getattr(node_item, "width", 220))
+    body.ensurePolished()
+    node_item.prepareGeometryChange()
+    w = max(int(getattr(node_item, "width", 220)), body.minimumSizeHint().width() + 12)
+    node_item.width = w
     try:
         body.setMinimumWidth(w)
         body.setMaximumWidth(w)
@@ -1590,13 +1686,14 @@ def render_node_body(node_item, y_cursor: int) -> int:
         proxy.setMaximumWidth(w)
     except Exception:
         pass
-    h = body.sizeHint().height()
+    h = max(body.sizeHint().height(), body.minimumSizeHint().height())
     proxy.resize(w, h)
     try:
         node_item._plugin_proxies.append(proxy)
     except Exception:
         pass
-    return y_cursor + h
+    node_item.height = y_cursor + h + 10
+    return node_item.height
 
 
 RENDER_SPEC = Spec(

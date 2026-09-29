@@ -30,6 +30,7 @@ ANIM_RETARGET_KIND_ALIASES: Tuple[str, ...] = (
 
 SOURCE_KIND_ALIASES: Tuple[str, ...] = (
     "delete_joint",
+    "for_each",
     "mocap_collection",
     "mocap_import",
     "mocap import",
@@ -44,6 +45,7 @@ SOURCE_KIND_ALIASES: Tuple[str, ...] = (
 
 TARGET_KIND_ALIASES: Tuple[str, ...] = (
     "delete_joint",
+    "for_each",
     "mocap_import",
     "mocap_collection",
     "bvh_import",
@@ -1080,6 +1082,9 @@ def _context_for_source_item(
     _depth: int = 0,
     _visited: set[int] | None = None,
 ) -> Dict[str, Any] | None:
+    if kind == "for_each":
+        from nodes.for_each.runtime import resolve_context
+        return resolve_context(node_item, errors, warnings, target=False, _depth=_depth, _visited=_visited)
     if kind == "delete_joint":
         from nodes.delete_joint.spec import resolve_context
         return resolve_context(node_item, errors, warnings, target=False, _depth=_depth, _visited=_visited)
@@ -1119,6 +1124,9 @@ def _context_for_target_item(
     _depth: int = 0,
     _visited: set[int] | None = None,
 ) -> Dict[str, Any] | None:
+    if kind == "for_each":
+        from nodes.for_each.runtime import resolve_context
+        return resolve_context(node_item, errors, warnings, target=True, _depth=_depth, _visited=_visited)
     if kind == "delete_joint":
         from nodes.delete_joint.spec import resolve_context
         return resolve_context(node_item, errors, warnings, target=True, _depth=_depth, _visited=_visited)

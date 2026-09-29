@@ -83,6 +83,8 @@ def register_defaults() -> None:
     register("mocap_import", stripe_color="#7c3aed")
     register("mocap_collection", stripe_color="#7c3aed")
     register("delete_joint", stripe_color="#ef6464")
+    register("for_each", stripe_color="#7c3aed")
+    register("for_each_end", stripe_color="#7c3aed")
     register("genx_video_mocap", stripe_color="#14b8a6")
     register("GEN-X-VideoMocap", stripe_color="#14b8a6")
     register("priormdm", stripe_color="#a78bfa")
