@@ -561,6 +561,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         layout.addWidget(self._preview, 1)
 
         row2 = QtWidgets.QHBoxLayout()
+        self._transport_layout = row2
         row2.setContentsMargins(0, 0, 0, 0)
         self._play_btn = QtWidgets.QToolButton()
         self._play_btn.setFixedSize(28, 28)

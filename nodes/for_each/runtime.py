@@ -245,6 +245,7 @@ class ForEachSession(QtCore.QObject):
                 self.manifest_path = self.template.parent / f"{folder.name}_manifest.json"
             record = dict(entry, take_number=number, take_folder=str(folder),
                           output_template=str(folder / self.template.name), status="rendering",
+                          frame_rate=self.renderer._fps_spin.value(),
                           started_at=datetime.now(timezone.utc).isoformat())
             self.records.append(record)
             self._write_manifest("running")

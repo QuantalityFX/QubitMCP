@@ -20,8 +20,17 @@ def entries(model) -> list[dict]:
         return []
     if not isinstance(rows, list):
         return []
-    return [{"path": str(row["path"]), "checked": row.get("checked", True) is True}
-            for row in rows if isinstance(row, dict) and row.get("path")]
+    result = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("path"):
+            continue
+        entry = {"path": str(row["path"]), "checked": row.get("checked", True) is True}
+        if "approved" in row:
+            entry["approved"] = row["approved"] is True
+        if isinstance(row.get("render"), dict):
+            entry["render"] = dict(row["render"])
+        result.append(entry)
+    return result
 
 
 def output_rows(model) -> list[int]:
@@ -72,6 +81,15 @@ def save_state(model, rows, number, scene=None):
     sync_output(model, scene)
     if scene is not None:
         scene.set_node_params(model.name, list(model.params), rebuild=False, emit=True)
+
+
+def schedule_live_preview(model, scene):
+    item = getattr(scene, "_node_items", {}).get(model.name)
+    for proxy in getattr(item, "_plugin_proxies", []):
+        widget = proxy.widget()
+        if isinstance(widget, MocapCollectionWidget) and widget.live_view.isChecked():
+            widget._live_timer.start()
+            break
 
 
 def add_paths(model, paths, scene=None) -> int:
@@ -146,8 +164,17 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         toolbar.addWidget(self.load_folder_button)
         toolbar.addWidget(self.remove_button)
         layout.addLayout(toolbar)
-        self.table = QtWidgets.QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Use", "#", "BVH path"])
+        reviews = QtWidgets.QHBoxLayout()
+        self.load_renders_button = QtWidgets.QPushButton("Load renders")
+        self.review_button = QtWidgets.QPushButton("Review renders")
+        self.rename_button = QtWidgets.QPushButton("Rename active")
+        for button in (self.load_renders_button, self.review_button, self.rename_button):
+            reviews.addWidget(button)
+        layout.addLayout(reviews)
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Use", "#", "Render", "BVH path"])
+        self.table.setIconSize(QtCore.QSize(52, 32))
+        self.table.verticalHeader().setDefaultSectionSize(38)
         self.table.verticalHeader().hide()
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -155,6 +182,8 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         self.table.setTextElideMode(QtCore.Qt.ElideNone)
         self.table.setFixedHeight(190)
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
+        self.table.setColumnWidth(2, 64)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setToolTip("Check files for batch use or Checked only output. Click an eligible number or path to make it active.")
         layout.addWidget(self.table)
@@ -187,6 +216,9 @@ class MocapCollectionWidget(QtWidgets.QWidget):
             button.setAutoDefault(False)
         self.load_button.clicked.connect(self._browse)
         self.load_folder_button.clicked.connect(self._browse_folder)
+        self.load_renders_button.clicked.connect(self._load_renders)
+        self.review_button.clicked.connect(lambda: self._review())
+        self.rename_button.clicked.connect(lambda: self._rename())
         self.remove_button.clicked.connect(self._remove)
         self.all_button.clicked.connect(lambda: self._check_all(True))
         self.none_button.clicked.connect(lambda: self._check_all(False))
@@ -200,6 +232,13 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         self.checked_only.toggled.connect(self._toggle_checked_only)
         self.table.itemChanged.connect(self._checked)
         self.table.cellClicked.connect(self._clicked)
+        self.table.cellDoubleClicked.connect(lambda row, column: self._rename(row + 1) if column == 3 else None)
+        self._thumbnail_cache = {}
+        self._thumbnail_queue = []
+        self._thumbnail_timer = QtCore.QTimer(self)
+        self._thumbnail_timer.setSingleShot(True)
+        self._thumbnail_timer.timeout.connect(self._load_thumbnail)
+        self.table.verticalScrollBar().valueChanged.connect(self._queue_thumbnails)
         self.slider.valueChanged.connect(self._select)
         self.number.valueChanged.connect(self._select)
         if scene is not None:
@@ -210,6 +249,11 @@ class MocapCollectionWidget(QtWidgets.QWidget):
     def _params_changed(self, name, _params):
         if name == self.model.name:
             self.refresh()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_thumbnail_timer"):
+            self._queue_thumbnails()
 
     def refresh(self):
         sync_output(self.model, self.graph_scene)
@@ -235,21 +279,30 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                     check.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
                     check.setCheckState(QtCore.Qt.Checked if row["checked"] else QtCore.Qt.Unchecked)
                     check.setToolTip("Include this path in future batch processing")
-                    cells = (check, QtWidgets.QTableWidgetItem(str(i + 1)), QtWidgets.QTableWidgetItem(row["path"]))
+                    thumbnail = QtWidgets.QTableWidgetItem("▶" if row.get("render") else "")
+                    thumbnail.setTextAlignment(QtCore.Qt.AlignCenter)
+                    thumbnail.setToolTip("Click to review the assigned render" if row.get("render") else "No render assigned")
+                    cells = (check, QtWidgets.QTableWidgetItem(str(i + 1)), thumbnail, QtWidgets.QTableWidgetItem(row["path"]))
                     for column, cell in enumerate(cells):
-                        if column == 2:
-                            cell.setToolTip(row["path"])
+                        if column == 3:
+                            cell.setToolTip(row["path"] + "\nDouble-click to rename the BVH and assigned render folders.")
                         self.table.setItem(i, column, cell)
                 self._displayed_rows = rows
             # Moving the slider changes only two row highlights, not every cell.
-            for index in {getattr(self, "_displayed_number", 0) - 1, number - 1}:
+            for index in (range(len(rows)) if rows_changed else {getattr(self, "_displayed_number", 0) - 1, number - 1}):
                 if 0 <= index < len(rows):
-                    for column in range(3):
+                    for column in range(4):
                         cell = self.table.item(index, column)
                         active = index + 1 == number
-                        cell.setBackground(QtGui.QBrush(QtGui.QColor("#554080")) if active else QtGui.QBrush())
-                        cell.setForeground(QtGui.QBrush(QtGui.QColor("#ffffff")) if active else QtGui.QBrush())
+                        approved = rows[index].get("approved", False)
+                        color = ("#338253" if active else "#225c39") if approved else "#554080" if active else ""
+                        cell.setBackground(QtGui.QBrush(QtGui.QColor(color)) if color else QtGui.QBrush())
+                        cell.setForeground(QtGui.QBrush(QtGui.QColor("#ffffff")) if color else QtGui.QBrush())
+                        font = cell.font()
+                        font.setBold(active)
+                        cell.setFont(font)
             self._displayed_number = number
+            self._displayed_path = mocap._param_value(self.model, "path")
             for control in (self.slider, self.number):
                 control.setRange(1 if eligible else 0, len(eligible))
                 control.setValue(eligible.index(number) + 1 if number else 0)
@@ -258,12 +311,70 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                 self.table.scrollToItem(self.table.item(number - 1, 0))
         for button in (self.all_button, self.none_button):
             button.setEnabled(bool(rows))
-        for button in (self.remove_button, self.view_button):
+        self.review_button.setEnabled(bool(rows))
+        self.load_renders_button.setEnabled(bool(rows))
+        for button in (self.remove_button, self.view_button, self.rename_button):
             button.setEnabled(bool(eligible))
         self.status.setText(f"{len(rows)} files | {len(checked_paths(self.model))} checked" if rows
                             else "Load BVH files to start a collection.")
         if rows and not eligible:
             self.status.setText(f"{len(rows)} files | No checked files — output is empty.")
+        if rows_changed:
+            self._queue_thumbnails()
+
+    def _queue_thumbnails(self, *_args):
+        self._thumbnail_queue = []
+        for index, row in enumerate(getattr(self, "_displayed_rows", [])):
+            path = row.get("render", {}).get("first_frame", "")
+            key = (path, str(row.get("render", {}).get("frame_stamp", "")))
+            cell = self.table.item(index, 2)
+            if not path or cell is None:
+                continue
+            if key in self._thumbnail_cache:
+                cell.setIcon(self._thumbnail_cache[key])
+                cell.setText("")
+            elif self.table.visualItemRect(cell).intersects(self.table.viewport().rect()):
+                self._thumbnail_queue.append((index, key))
+        if self._thumbnail_queue:
+            self._thumbnail_timer.start(0)
+
+    def _load_thumbnail(self):
+        if not self._thumbnail_queue:
+            return
+        index, key = self._thumbnail_queue.pop(0)
+        path = key[0]
+        reader = QtGui.QImageReader(path)
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if size.isValid():
+            reader.setScaledSize(size.scaled(52, 32, QtCore.Qt.KeepAspectRatio))
+        image = reader.read()
+        cell = self.table.item(index, 2)
+        if cell is not None and not image.isNull():
+            icon = QtGui.QIcon(QtGui.QPixmap.fromImage(image))
+            self._thumbnail_cache[key] = icon
+            with QtCore.QSignalBlocker(self.table):
+                cell.setIcon(icon)
+                cell.setText("")
+        if self._thumbnail_queue:
+            self._thumbnail_timer.start(0)
+
+    def _load_renders(self):
+        from .review import load_render_folder
+        try:
+            load_render_folder(self.model, self.graph_scene, self._dialog_parent())
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self._dialog_parent(), "Load renders", str(exc))
+
+    def _review(self, number=None):
+        from .review import open_review
+        return open_review(self.model, self.graph_scene, self._dialog_parent(), number)
+
+    def _rename(self, number=None):
+        from .review import rename_with_dialog
+        rename_with_dialog(self.model, self.graph_scene, number or output_number(self.model), self._dialog_parent())
+        if isValid(self):
+            self.refresh()
 
     def _save(self, rows, number):
         previous_path = mocap._param_value(self.model, "path")
@@ -296,6 +407,9 @@ class MocapCollectionWidget(QtWidgets.QWidget):
             self._view(live=True, frame=frame)
 
     def _clicked(self, row, column):
+        if column == 2 and entries(self.model)[row].get("render"):
+            self._review(row + 1)
+            return
         eligible = output_rows(self.model)
         if column != 0 and row + 1 in eligible:
             self._select(eligible.index(row + 1) + 1)

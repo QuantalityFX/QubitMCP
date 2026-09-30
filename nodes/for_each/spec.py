@@ -89,6 +89,7 @@ class StartControls(QtWidgets.QWidget):
         self.parameter_box.setVisible(self.mode.currentData() == "parameter")
         self.status = QtWidgets.QLabel("Start OUT → Retarget animation IN. Render OUT → End render IN.")
         self.status.setWordWrap(True)
+        self.status.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
         self.setToolTip("Collection OUT → Start collection IN. Start OUT → Retarget animation IN.\nOUT always passes the active animation through; Run advances the collection after each render.")
         layout.addWidget(self.status)
         buttons = QtWidgets.QHBoxLayout()
@@ -119,6 +120,7 @@ class StartControls(QtWidgets.QWidget):
         ensure_wrapper(self.item)
         self.session = session_for(self.item)
         self.session.changed.connect(self.refresh)
+        self.item.scene().paramChanged.connect(self.params_changed)
         self.refresh()
 
     def save(self, name, raw):
@@ -129,8 +131,16 @@ class StartControls(QtWidgets.QWidget):
 
     def mode_changed(self):
         self.save("mode", self.mode.currentData())
-        # All modes reserve enough height, so changing modes cannot clip controls.
         self.parameter_box.setVisible(self.mode.currentData() == "parameter")
+        fit_body(self)
+
+    def params_changed(self, name, _params):
+        if name != self.item.model.name:
+            return
+        with QtCore.QSignalBlocker(self.mode):
+            self.mode.setCurrentIndex(max(0, self.mode.findData(value(self.item.model, "mode", "outputs"))))
+        self.parameter_box.setVisible(self.mode.currentData() == "parameter")
+        fit_body(self)
 
     def run(self):
         try:
@@ -139,6 +149,7 @@ class StartControls(QtWidgets.QWidget):
             self.session.begin()
         except Exception as exc:
             self.status.setText(str(exc))
+            fit_body(self)
 
     def refresh(self):
         if self.session is None:
@@ -153,6 +164,7 @@ class StartControls(QtWidgets.QWidget):
         self.limit.setEnabled(not running)
         self.parameter_box.setEnabled(not running)
         self.wrapper_button.setEnabled(not running)
+        fit_body(self)
 
 
 class EndControls(QtWidgets.QWidget):
@@ -172,21 +184,42 @@ class EndControls(QtWidgets.QWidget):
         session = getattr(self.item.model, "_foreach_session", None)
         if session is not None and isValid(session):
             self.status.setText(session.status)
+            fit_body(self)
+
+
+def body_height(body):
+    body.layout().invalidate()
+    height = max(body.sizeHint().height(), body.minimumSizeHint().height())
+    if body.layout().hasHeightForWidth():
+        height = max(body.minimumSizeHint().height(), body.layout().totalHeightForWidth(body.width()))
+    return height
+
+
+def fit_body(body):
+    """Keep the node border fitted to the controls that are currently visible."""
+    body.updateGeometry()
+    proxy = body.graphicsProxyWidget()
+    if proxy is None:  # Info-card layouts manage their own widget height.
+        return
+    item = body.item
+    height = body_height(body)
+    bottom = proxy.pos().y() + height + 10
+    if body.height() != height or item.height != bottom:
+        item.prepareGeometryChange()
+        body.setFixedHeight(height)
+        proxy.resize(body.width(), height)
+        item.height = bottom
+        item.update()
 
 
 def render_body(item, y_cursor):
     start = item.model.kind == "for_each"
     body = StartControls(item) if start else EndControls(item)
-    # Measure the largest mode once so parameter-range controls fit when enabled.
-    if start:
-        body.parameter_box.show()
     body.ensurePolished()
     item.prepareGeometryChange()
     item.width = max(item.width, 340, body.minimumSizeHint().width() + 16)
     body.setFixedWidth(int(item.width - 16))
-    height = max(body.sizeHint().height(), body.minimumSizeHint().height())
-    if start:
-        body.parameter_box.setVisible(body.mode.currentData() == "parameter")
+    height = body_height(body)
     body.setFixedHeight(height)
     proxy = QtWidgets.QGraphicsProxyWidget(item)
     proxy.setWidget(body)
