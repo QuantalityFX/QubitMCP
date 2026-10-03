@@ -317,6 +317,7 @@ def _ray_from_mouse(self, pos: QtCore.QPoint):
         return None
 
 def mousePressEvent(self, e):
+    self._scene_joint_overlap_press = None
     # Keep branch order stable so press behavior remains unchanged.
     if self._handle_mouse_press_moderngl(e):
         return
@@ -572,6 +573,10 @@ def _handle_mouse_press_moderngl(self, e):
             return True
         prefer_gizmo = False
         if not mesh_element_mode:
+            # Shift-click must reach joints even where the active gizmo overlaps.
+            if e.modifiers() & QtCore.Qt.ShiftModifier:
+                if self._handle_mouse_press_moderngl_retarget_joint(e, alt_pressed):
+                    return True
             try:
                 owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
                 owner_kind = str(getattr(self, "_xform_gizmo_owner_kind", "") or "").strip().lower()
@@ -583,8 +588,10 @@ def _handle_mouse_press_moderngl(self, e):
                     prefer_gizmo = bool(callable(decode_joint) and decode_joint(owner))
             except Exception:
                 prefer_gizmo = False
-            if bool(prefer_gizmo) and self._handle_mouse_press_moderngl_left_gizmo(e):
-                return True
+            if bool(prefer_gizmo):
+                _remember_scene_joint_overlap_press(self, e, alt_pressed)
+                if self._handle_mouse_press_moderngl_left_gizmo(e):
+                    return True
             if self._handle_mouse_press_moderngl_retarget_joint(e, alt_pressed):
                 return True
             if (not bool(prefer_gizmo)) and self._handle_mouse_press_moderngl_left_gizmo(e):
@@ -663,6 +670,70 @@ def _handle_mouse_press_moderngl_mesh_box_select_start(self, e, alt_pressed):
     e.accept()
     return True
 
+def _remember_scene_joint_overlap_press(self, e, alt_pressed):
+    """A click on overlapping joints opens the picker; a gizmo drag still rotates."""
+    if alt_pressed or e.button() != QtCore.Qt.LeftButton:
+        return
+    renderer = getattr(self, "_mgl_renderer", None) or self
+    try:
+        px, py, vw, vh = self._handle_mouse_retarget_viewport(e)
+        handle = renderer.pick_retarget_joint_at(px, py, vw, vh)
+        if not isinstance(handle, dict) or handle.get("role") != "scene_skeleton":
+            return
+        choices = renderer._mgl_scene_skeleton_coincident_handles(handle)
+        if len(choices) < 2:
+            return
+        position = e.position() if hasattr(e, "position") else QtCore.QPointF(e.pos())
+        overlay = renderer._mgl_scene_skeleton_qt_overlay_data() or {}
+        # Limit this to the visible joint dot, not the surrounding gizmo rings.
+        for point in overlay.get("points", []):
+            if not isinstance(point, dict) or point.get("name") != handle.get("name"):
+                continue
+            if math.hypot(float(point["x"]) - position.x(), float(point["y"]) - position.y()) <= 12.0:
+                self._scene_joint_overlap_press = {
+                    "renderer": renderer, "handles": choices, "position": QtCore.QPointF(position),
+                    "additive": bool(e.modifiers() & QtCore.Qt.ShiftModifier),
+                }
+            break
+    except Exception:
+        return
+
+
+def _show_scene_joint_picker(self, renderer, handles, e, *, additive=False):
+    previous = getattr(self, "_scene_joint_pick_menu", None)
+    if previous is not None:
+        previous.close()
+    menu = QtWidgets.QMenu(self)
+    menu.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+    menu.setToolTipsVisible(True)
+    font = menu.font()
+    font.setPointSize(max(11, font.pointSize() + 2))
+    menu.setFont(font)
+    selected = set(getattr(renderer, "_mgl_scene_skeleton_selected_joints", []) or [])
+    selected.add(str(getattr(renderer, "_mgl_scene_skeleton_selected_joint", "") or ""))
+    asset_owner = str(handles[0].get("owner") or "")
+    for handle in handles:
+        action = menu.addAction(str(handle.get("name") or ""))
+        action.setCheckable(True)
+        action.setChecked(handle.get("name") in selected)
+        action.setToolTip("Select this joint. Shift-click adds it to the selection.")
+
+        def choose(_checked=False, joint=dict(handle)):
+            if str(getattr(renderer, "_mgl_scene_skeleton_active_owner", "") or "").lower() != asset_owner.lower():
+                return
+            extend = additive or bool(QtWidgets.QApplication.keyboardModifiers() & QtCore.Qt.ShiftModifier)
+            renderer._mgl_scene_skeleton_handle_click(joint, additive=extend)
+
+        action.triggered.connect(choose)
+    self._scene_joint_pick_menu = menu
+    def clear_menu():
+        if getattr(self, "_scene_joint_pick_menu", None) is menu:
+            self._scene_joint_pick_menu = None
+    menu.aboutToHide.connect(clear_menu)
+    position = e.globalPosition().toPoint() if hasattr(e, "globalPosition") else e.globalPos()
+    menu.popup(position + QtCore.QPoint(12, 12))
+
+
 def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
     if e.button() not in (QtCore.Qt.LeftButton, QtCore.Qt.RightButton) or bool(alt_pressed):
         return False
@@ -699,7 +770,17 @@ def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
     handled = False
     if callable(click):
         try:
-            if is_unlink_click:
+            if handle.get("role") == "scene_skeleton" and not is_unlink_click:
+                additive = bool(e.modifiers() & QtCore.Qt.ShiftModifier)
+                coincident = getattr(renderer, "_mgl_scene_skeleton_coincident_handles", None)
+                choices = coincident(handle) if callable(coincident) else [handle]
+                self._scene_joint_overlap_press = None
+                if len(choices) > 1:
+                    _show_scene_joint_picker(self, renderer, choices, e, additive=additive)
+                    handled = True
+                else:
+                    handled = bool(renderer._mgl_scene_skeleton_handle_click(dict(handle), additive=additive))
+            elif is_unlink_click:
                 handled = bool(click(dict(handle), unlink=True))
             else:
                 handled = bool(click(dict(handle)))
@@ -2961,6 +3042,11 @@ def _handle_mouse_press_legacy_right(self, e):
     return False
 
 def mouseMoveEvent(self, e):
+    pending = getattr(self, "_scene_joint_overlap_press", None)
+    if isinstance(pending, dict):
+        position = e.position() if hasattr(e, "position") else QtCore.QPointF(e.pos())
+        if (position - pending["position"]).manhattanLength() > 3.0:
+            self._scene_joint_overlap_press = None
     with profile_scope("input.mouse_move"):
         return _mouse_move_event_impl(self, e)
 
@@ -5503,6 +5589,23 @@ def _handle_mouse_release_legacy(self, e):
     _graph_gl_view_super(self).mouseReleaseEvent(e)
 
 def mouseReleaseEvent(self, e):
+    pending = getattr(self, "_scene_joint_overlap_press", None)
+    self._scene_joint_overlap_press = None
+    if isinstance(pending, dict):
+        position = e.position() if hasattr(e, "position") else QtCore.QPointF(e.pos())
+        if e.button() != QtCore.Qt.LeftButton or (position - pending["position"]).manhattanLength() > 3.0:
+            pending = None
+        data = getattr(self, "_xform_hist_start", None)
+        if isinstance(data, dict) and data.get("entry_type") in {"scene_joint_keys", "scene_joint_group"}:
+            after = data.get("joint_keys") if data.get("entry_type") == "scene_joint_group" else getattr(self, "_timeline_keys", {})
+            if data.get("before") != after:
+                pending = None
+    _mouse_release_event_impl(self, e)
+    if isinstance(pending, dict):
+        _show_scene_joint_picker(self, pending["renderer"], pending["handles"], e, additive=pending["additive"])
+
+
+def _mouse_release_event_impl(self, e):
     rot_shared = getattr(self, "_rot_shared", None)
 
     mask_paint_release = getattr(self, "_handle_mask_paint_release", None)

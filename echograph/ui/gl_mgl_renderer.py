@@ -10394,6 +10394,7 @@ void main() {
         self._mgl_scene_skeleton_requested_owner = None
         self._mgl_scene_skeleton_failed_owner = ""
         self._mgl_scene_skeleton_selected_joint = ""
+        self._mgl_scene_skeleton_selected_joints = []
         try:
             handles_by_owner = getattr(self, "_mgl_scene_skeleton_handles_by_owner", None)
             if isinstance(handles_by_owner, dict):
@@ -11116,12 +11117,35 @@ void main() {
         )
         return min((_score(candidate) for candidate in candidates), key=lambda row: row[0])[1]
 
+    def _mgl_scene_skeleton_asset_rotation(self, owner: str) -> Tuple[float, float, float, float]:
+        """Extract the character's parent rotation from its actual display matrix."""
+        identity = (0.0, 0.0, 0.0, 1.0)
+        if np is None:
+            return identity
+        try:
+            model = self._mgl_scene_skeleton_display_model_matrix(owner)
+            if model is None:
+                return identity
+            # Scene models use row vectors, canonical rig rotations use columns.
+            linear = np.asarray(model, dtype=np.float64).reshape(4, 4)[:3, :3].T
+            # Remove scale without assuming whether the scene uses S*R or R*S.
+            u, _scale, vt = np.linalg.svd(linear)
+            rotation = u @ vt
+            if float(np.linalg.det(rotation)) < 0.0:
+                u[:, -1] *= -1.0
+                rotation = u @ vt
+            q = QtGui.QQuaternion.fromRotationMatrix(QtGui.QMatrix3x3(rotation.reshape(-1).tolist()))
+            return self._mgl_scene_skeleton_quat_normalize((q.x(), q.y(), q.z(), q.scalar()))
+        except Exception:
+            return identity
+
     def _mgl_scene_skeleton_rotation_context(self, owner: str):
-        """Return canonical local/global joint rotations at the displayed frame.
+        """Return local joint channels and scene-space rotations at the displayed frame.
 
         Scene animation tracks remain local-space FBX data.  The rotate gizmo,
         however, operates on the joint's composed orientation, so callers use
         this context to convert between the two without changing clip storage.
+        The outliner character transform is the parent of the entire rig.
         """
         decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
         if not decoded:
@@ -11187,13 +11211,14 @@ void main() {
             if 0 <= parent_index < len(global_rotations)
             else (0.0, 0.0, 0.0, 1.0)
         )
+        asset_global = self._mgl_scene_skeleton_asset_rotation(asset_owner)
         return {
             "asset_owner": asset_owner,
             "joint_name": joint_name,
             "joint_index": int(joint_index),
-            "parent_global": parent_global,
+            "parent_global": self._mgl_scene_skeleton_quat_mul(asset_global, parent_global),
             "current_local": local_rotations[joint_index],
-            "current_global": global_rotations[joint_index],
+            "current_global": self._mgl_scene_skeleton_quat_mul(asset_global, global_rotations[joint_index]),
         }
 
     def _mgl_scene_skeleton_get_joint_global_rotation(self, owner: str) -> Tuple[float, float, float, float]:
@@ -11484,6 +11509,22 @@ void main() {
             scale = (1.0, 1.0, 1.0)
         return scale, xform, "splat" if use_splat_xform else "mesh"
 
+    def _mgl_scene_skeleton_display_model_matrix(self, owner: str, xform_kind: str | None = None):
+        """Use the same character transform for skeleton positions and rotations."""
+        if xform_kind is None:
+            _scale, _xform, xform_kind = self._mgl_scene_skeleton_display_xform(owner)
+        model = None
+        if xform_kind == "splat":
+            model_fn = getattr(self, "_mgl_scene_splat_display_model_matrix_for_owner", None)
+            model = model_fn(owner) if callable(model_fn) else None
+        if model is None:
+            model_fn = getattr(self, "_mgl_scene_model_matrix_for_owner", None)
+            model = model_fn(owner) if callable(model_fn) else None
+        if model is None:
+            model_fn = getattr(self, "_mgl_build_scene_asset_model_matrix", None)
+            model = model_fn(owner) if callable(model_fn) else None
+        return model
+
     def _mgl_scene_skeleton_display_positions(self, owner: str, positions):
         if np is None:
             return positions, {}
@@ -11515,16 +11556,7 @@ void main() {
         out = rows.astype(np.float32, copy=True)
         transform_label = "identity"
         try:
-            model = None
-            if xform_kind == "splat":
-                model_fn = getattr(self, "_mgl_scene_splat_display_model_matrix_for_owner", None)
-                model = model_fn(owner_key) if callable(model_fn) else None
-            if model is None:
-                model_fn = getattr(self, "_mgl_scene_model_matrix_for_owner", None)
-                model = model_fn(owner_key) if callable(model_fn) else None
-            if model is None:
-                model_fn = getattr(self, "_mgl_build_scene_asset_model_matrix", None)
-                model = model_fn(owner_key) if callable(model_fn) else None
+            model = self._mgl_scene_skeleton_display_model_matrix(owner_key, xform_kind)
             if model is not None:
                 matrix = np.asarray(model, dtype=np.float32).reshape(4, 4)
                 ones = np.ones((out.shape[0], 1), dtype=np.float32)
@@ -11782,6 +11814,37 @@ void main() {
         except Exception:
             pass
 
+    def _mgl_scene_skeleton_joint_display_axes(self, owner: str, context: dict) -> list:
+        """Return displayed local XYZ directions from the evaluated joint matrices."""
+        if np is None:
+            return []
+        sample_time = self._mgl_fbx_context_timeline_sample_seconds(context, owner)
+        clips = [context.get("clip")]
+        original = context.get("_scene_skeleton_original_clip")
+        if original is not None and original is not clips[0]:
+            clips.append(original)
+        clips.append(None)
+        for clip in clips:
+            try:
+                evaluation = evaluate_rig_at_time(
+                    skeleton=context["skeleton"], clip=clip,
+                    time_seconds=float(sample_time), loop=bool(context.get("loop", True)),
+                )
+                matrices = np.asarray(evaluation.global_matrices, dtype=np.float64).reshape(-1, 4, 4)
+                origins = matrices[:, :3, 3]
+                # The evaluator uses column vectors; each column is a local axis.
+                tips = origins[:, None, :] + matrices[:, :3, :3].transpose(0, 2, 1)
+                rows = np.concatenate((origins[:, None, :], tips), axis=1)
+                displayed, _info = self._mgl_scene_skeleton_display_positions(owner, rows.reshape(-1, 3))
+                displayed = np.asarray(displayed, dtype=np.float64).reshape(-1, 4, 3)
+                axes = displayed[:, 1:, :] - displayed[:, :1, :]
+                lengths = np.linalg.norm(axes, axis=2, keepdims=True)
+                axes = np.divide(axes, lengths, out=np.zeros_like(axes), where=lengths > 1.0e-8)
+                return axes.tolist()
+            except Exception:
+                continue
+        return []
+
     def _mgl_scene_skeleton_update_owner_handles(self, owner: str, *, force: bool = False) -> bool:
         owner_key = str(owner or "").strip()
         if not owner_key:
@@ -11878,6 +11941,7 @@ void main() {
             min(120.0, float(extent) * 0.012 * _SCENE_SKELETON_HANDLE_RADIUS_SCALE),
         )
         handles = []
+        joint_axes = self._mgl_scene_skeleton_joint_display_axes(owner_key, context)
         for idx in range(min(len(joints), len(display_positions))):
             name = str(getattr(joints[idx], "name", "") or "").strip()
             if not name:
@@ -11894,6 +11958,7 @@ void main() {
                     "index": int(idx),
                     "owner": owner_key,
                     "position": (px, py, pz),
+                    "axes": joint_axes[idx] if idx < len(joint_axes) else [],
                     "radius": float(radius),
                     "pick_radius": max(float(radius) * 2.5, 0.25),
                 }
@@ -12030,6 +12095,7 @@ void main() {
         self._mgl_scene_skeleton_failed_owner = ""
         if not owner_key or previous.lower() != owner_key.lower():
             self._mgl_scene_skeleton_selected_joint = ""
+            self._mgl_scene_skeleton_selected_joints = []
         try:
             self.update()
         except Exception:
@@ -12045,6 +12111,8 @@ void main() {
             previous=previous,
         )
         if previous and previous.lower() != owner_key.lower():
+            self._mgl_scene_skeleton_selected_joint = ""
+            self._mgl_scene_skeleton_selected_joints = []
             self._mgl_scene_skeleton_remove_active_items(previous)
             try:
                 pinned_contexts = getattr(self, "_mgl_scene_skeleton_context_by_owner", None)
@@ -12055,6 +12123,7 @@ void main() {
         if not owner_key:
             self._mgl_scene_skeleton_active_owner = ""
             self._mgl_scene_skeleton_selected_joint = ""
+            self._mgl_scene_skeleton_selected_joints = []
             self._mgl_scene_skeleton_remove_active_items(None)
             self._mgl_scene_skeleton_context_by_owner = {}
             self._mgl_scene_skeleton_log("set_active_clear", previous=previous)
@@ -12156,7 +12225,42 @@ void main() {
         )
         return True
 
-    def _mgl_scene_skeleton_handle_click(self, handle: dict) -> bool:
+    def _mgl_scene_skeleton_coincident_handles(self, handle: dict) -> list:
+        """Find distinct joints at the picked joint's displayed position."""
+        if np is None or handle.get("role") != "scene_skeleton":
+            return [handle]
+        owner = str(handle.get("owner") or "").strip()
+        position = np.asarray(handle.get("position", ()), dtype=np.float64)
+        if position.shape != (3,) or not np.all(np.isfinite(position)):
+            return [handle]
+        tolerance = max(1.0e-6, abs(float(handle.get("radius", 0.06))) * 1.0e-4)
+        matches = []
+        names = set()
+        for key, handles in (getattr(self, "_mgl_scene_skeleton_handles_by_owner", {}) or {}).items():
+            if str(key).strip().lower() != owner.lower():
+                continue
+            for candidate in handles:
+                name = str(candidate.get("name") or "").strip()
+                point = np.asarray(candidate.get("position", ()), dtype=np.float64)
+                if not name or name in names or point.shape != (3,):
+                    continue
+                if candidate.get("role") == "scene_skeleton" and np.allclose(point, position, rtol=0.0, atol=tolerance):
+                    matches.append(dict(candidate, owner=str(key)))
+                    names.add(name)
+        return matches or [handle]
+
+    def _mgl_scene_skeleton_selected_joint_owners(self, owner: str) -> list:
+        decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
+        if not decoded:
+            return []
+        asset_owner, joint_name = decoded
+        active = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "")
+        selected = list(getattr(self, "_mgl_scene_skeleton_selected_joints", []) or [])
+        if active.lower() != asset_owner.lower() or not selected or selected[-1] != joint_name:
+            return [owner]
+        return [self._mgl_scene_skeleton_joint_owner_token(asset_owner, name) for name in selected]
+
+    def _mgl_scene_skeleton_handle_click(self, handle: dict, *, additive: bool = False) -> bool:
         if not isinstance(handle, dict):
             self._mgl_scene_skeleton_log("handle_click_skip", reason="invalid_handle")
             return False
@@ -12170,6 +12274,15 @@ void main() {
                 joint=joint_name,
             )
             return False
+        previous = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "")
+        selected = []
+        if additive and previous.lower() == owner.lower():
+            selected = list(getattr(self, "_mgl_scene_skeleton_selected_joints", []) or [])
+            if not selected and getattr(self, "_mgl_scene_skeleton_selected_joint", ""):
+                selected = [self._mgl_scene_skeleton_selected_joint]
+        # Clicking an existing selection makes it active without duplicating it.
+        selected = [name for name in selected if name != joint_name] + [joint_name]
+        self._mgl_scene_skeleton_selected_joints = selected
         self._mgl_scene_skeleton_active_owner = owner
         self._mgl_scene_skeleton_selected_joint = joint_name
         self._mgl_retarget_selected_joint = dict(handle)
@@ -12465,6 +12578,30 @@ void main() {
             except Exception:
                 pass
 
+    @staticmethod
+    def _mgl_scene_skeleton_project_joint_axes(position, axes, matrix, width, height, length=22.0):
+        """Project a small orientation triad, retaining perspective foreshortening."""
+        if np is None:
+            return []
+        try:
+            mat = np.asarray(matrix, dtype=np.float64).reshape(4, 4)
+            clip = mat @ np.asarray((*position, 1.0), dtype=np.float64)
+            w = float(clip[3])
+            if w <= 1.0e-8 or not np.all(np.isfinite(clip)):
+                return []
+            if abs(float(clip[2])) > w:
+                return []
+            directions = np.asarray(axes, dtype=np.float64).reshape(3, 3)
+            delta = directions @ mat[:, :3].T
+            projected = (delta[:, :2] * w - clip[:2] * delta[:, 3:4]) / (w * w)
+            projected *= np.asarray((float(width) * 0.5, -float(height) * 0.5))
+            longest = float(np.max(np.linalg.norm(projected, axis=1)))
+            if not np.all(np.isfinite(projected)) or longest < 1.0e-8:
+                return []
+            return (projected * (float(length) / longest)).tolist()
+        except (TypeError, ValueError):
+            return []
+
     def _mgl_scene_skeleton_qt_overlay_data(self) -> dict | None:
         if np is None:
             return None
@@ -12606,6 +12743,12 @@ void main() {
                         projected_rows.append(None)
                         continue
                     handle = handles[idx] if idx < len(handles) and isinstance(handles[idx], dict) else {}
+                    axes = []
+                    if getattr(self, "_mgl_scene_skeleton_selected_joint", ""):
+                        axes = self._mgl_scene_skeleton_project_joint_axes(
+                            pos, handle.get("axes", []), mat_np.T if row_vector else mat_np,
+                            aw / dpr, ah / dpr,
+                        )
                     projected_rows.append(
                         {
                             "x": x,
@@ -12613,6 +12756,7 @@ void main() {
                             "z": z_ndc,
                             "name": str(handle.get("name") or ""),
                             "index": int(handle.get("index", idx) or idx),
+                            "axes": axes,
                         }
                     )
                 except Exception:
@@ -12693,6 +12837,7 @@ void main() {
             "points": projected,
             "lines": lines,
             "selected": str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or "").strip(),
+            "selected_joints": list(getattr(self, "_mgl_scene_skeleton_selected_joints", []) or []),
             "show_names": bool(getattr(self, "_mgl_scene_skeleton_show_joint_names", False)),
         }
 
@@ -12703,6 +12848,7 @@ void main() {
             lines = list(data.get("lines") or [])
             if points:
                 selected = str(data.get("selected") or "").strip()
+                selected_joints = set(data.get("selected_joints") or []) | {selected}
                 show_names = bool(data.get("show_names", False))
                 try:
                     painter.save()
@@ -12730,19 +12876,43 @@ void main() {
                     except Exception:
                         pass
                     labels_to_draw = []
+                    selected_points = []
+                    axis_colors = (QtGui.QColor(255, 85, 85), QtGui.QColor(90, 235, 115), QtGui.QColor(90, 155, 255))
+                    # Orientation markers are visual only; joint picking and the
+                    # selected joint's transform gizmo retain their existing targets.
+                    for point in points:
+                        if not isinstance(point, dict):
+                            continue
+                        origin = QtCore.QPointF(float(point["x"]), float(point["y"]))
+                        for color, offset in zip(axis_colors, point.get("axes", [])):
+                            dx, dy = float(offset[0]), float(offset[1])
+                            tip = origin + QtCore.QPointF(dx, dy)
+                            painter.setPen(QtGui.QPen(color, 1.8))
+                            painter.drawLine(origin, tip)
                     for point in points:
                         if not isinstance(point, dict):
                             continue
                         x = float(point.get("x", 0.0))
                         y = float(point.get("y", 0.0))
                         name = str(point.get("name") or "")
-                        is_selected = bool(selected and name == selected)
-                        radius = (3.5 if is_selected else 2.45) * _SCENE_SKELETON_SCREEN_HANDLE_RADIUS_SCALE
+                        is_selected = name in selected_joints
+                        radius = (3.5 if name == selected else 2.45) * _SCENE_SKELETON_SCREEN_HANDLE_RADIUS_SCALE
                         painter.setPen(no_pen)
                         painter.setBrush(selected_brush if is_selected else base_brush)
                         painter.drawEllipse(QtCore.QPointF(x, y), radius, radius)
+                        if is_selected:
+                            selected_points.append(QtCore.QPointF(x, y))
                         if name and (show_names or is_selected):
                             labels_to_draw.append((x + radius + 3.0, y - radius - 2.0, name, is_selected))
+                    # Draw every selected joint's outline last. A coincident,
+                    # unselected joint must not paint green over the selection.
+                    selection_pen = QtGui.QPen(QtGui.QColor(255, 220, 0, 255), 2.0)
+                    selection_pen.setCosmetic(True)
+                    painter.setPen(selection_pen)
+                    painter.setBrush(QtCore.Qt.NoBrush)
+                    selection_radius = 3.5 * _SCENE_SKELETON_SCREEN_HANDLE_RADIUS_SCALE
+                    for point in selected_points:
+                        painter.drawEllipse(point, selection_radius, selection_radius)
                     for x, y, name, is_selected in labels_to_draw:
                         label_path = QtGui.QPainterPath()
                         label_path.addText(QtCore.QPointF(float(x), float(y)), painter.font(), str(name))

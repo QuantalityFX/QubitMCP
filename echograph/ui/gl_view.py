@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -2699,6 +2700,31 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if kind not in ("scene", "scene_assembly", "scene_outliner"):
             return
         renderer = getattr(self, "_mgl_renderer", None) or self
+        decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+        if callable(decode_joint) and decode_joint(owner):
+            selected_fn = getattr(renderer, "_mgl_scene_skeleton_selected_joint_owners", None)
+            selected = selected_fn(owner) if callable(selected_fn) else [owner]
+            if len(selected) > 1 and getattr(self, "_xform_gizmo_mode", "rotate") == "rotate":
+                contexts = {token: renderer._mgl_scene_skeleton_rotation_context(token) for token in selected}
+                if all(isinstance(context, dict) for context in contexts.values()):
+                    keys = {token: deepcopy(self._timeline_keys_map_for_owner(token)) for token in selected}
+                    self._xform_hist_start = {
+                        "owner": owner, "scene_node": scene_node,
+                        "entry_type": "scene_joint_group",
+                        "before": deepcopy(keys), "joint_keys": keys,
+                        "global_rotation": contexts[owner]["current_global"],
+                        "local_rotations": {token: context["current_local"] for token, context in contexts.items()},
+                        "fps": float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+                    }
+                    return
+            self._xform_hist_start = {
+                "owner": owner,
+                "scene_node": scene_node,
+                "entry_type": "scene_joint_keys",
+                "before": deepcopy(self._timeline_keys_map_for_owner(owner)),
+                "fps": float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+            }
+            return
         before = {}
         try:
             is_splat = False
@@ -2724,6 +2750,20 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         scene_node = data.get("scene_node")
         before = data.get("before") or {}
         if not owner or scene_node is None:
+            return
+        if data.get("entry_type") == "scene_joint_group":
+            after = data["joint_keys"]
+            if before != after:
+                self._timeline_restore_scene_joint_group(after, fps=data["fps"])
+                actions.record_scene_joint_keys(
+                    self.window(), scene_node, owner, before, after, fps=data["fps"], group=True,
+                )
+            return
+        if data.get("entry_type") == "scene_joint_keys":
+            actions.record_scene_joint_keys(
+                self.window(), scene_node, owner, before,
+                self._timeline_keys_map_for_owner(owner), fps=data["fps"],
+            )
             return
         renderer = getattr(self, "_mgl_renderer", None) or self
         after = {}
@@ -8299,6 +8339,21 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             return False
         renderer = getattr(self, "_mgl_renderer", None) or self
         try:
+            data = getattr(self, "_xform_hist_start", None)
+            if isinstance(data, dict) and data.get("entry_type") == "scene_joint_group" and data.get("owner") == owner:
+                # Express the drag in the active joint's starting local axes,
+                # then apply that same delta at each joint's own pivot and axes.
+                delta = renderer._mgl_scene_skeleton_quat_mul(
+                    renderer._mgl_scene_skeleton_quat_inverse(data["global_rotation"]),
+                    self._rot_shared_qt_to_xyzw(q),
+                )
+                for token, start_local in data["local_rotations"].items():
+                    local = renderer._mgl_scene_skeleton_quat_mul(start_local, delta)
+                    values = renderer._mgl_scene_skeleton_joint_values(token)
+                    previous = values[1] if values is not None else (0.0, 0.0, 0.0)
+                    euler = renderer._mgl_scene_skeleton_euler_from_quat_continuous(local, previous)
+                    self._set_owner_rot_deg(token, euler, False)
+                return True
             local_for_global = getattr(renderer, "_mgl_scene_skeleton_local_rotation_for_global", None)
             if not callable(local_for_global):
                 return False
@@ -8457,7 +8512,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         frame = max(0, int(round(float(self._timeline_current_frame()))))
                     except Exception:
                         frame = 0
-                    keys = getattr(self, "_timeline_keys", None)
+                    data = getattr(self, "_xform_hist_start", None)
+                    group_keys = data.get("joint_keys") if isinstance(data, dict) else None
+                    is_group = isinstance(group_keys, dict) and owner in group_keys
+                    keys = group_keys[owner] if is_group else getattr(self, "_timeline_keys", None)
                     if not isinstance(keys, dict):
                         keys = {}
                     entry = keys.get(int(frame))
@@ -8494,7 +8552,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         pass
                     entry["camera_state"] = {}
                     keys[int(frame)] = entry
-                    self._timeline_keys = keys
+                    is_active = not is_group or owner == data["owner"]
+                    if is_active:
+                        self._timeline_keys = keys
                     try:
                         self._timeline_scene_skeleton_dirty = True
                     except Exception:
@@ -8514,6 +8574,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         )
                     except Exception:
                         pass
+                    if not is_active:
+                        return
                     self._refresh_scene_skeleton_joint_gizmo_after_rotation(renderer, owner, asset_owner)
                     try:
                         self._timeline_update_key_markers()

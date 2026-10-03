@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import math
 import time
 from pathlib import Path
@@ -2231,6 +2232,72 @@ class GraphGLTimelineModelMixin:
             pass
         suffix = f" and deleted {deleted_files} timeline file(s)" if deleted_files else ""
         self._timeline_animation_clipboard_message(f"Removed track {owner or block_id}{suffix}.")
+        return True
+
+    def _timeline_restore_scene_joint_group(self, keys_by_owner: dict, *, fps: float) -> bool:
+        before = {owner: deepcopy(self._timeline_keys_map_for_owner(owner)) for owner in keys_by_owner}
+        restored = []
+        for owner, keys in keys_by_owner.items():
+            if not self._timeline_restore_scene_joint_keys(owner, keys, fps=fps):
+                for token in restored:
+                    self._timeline_restore_scene_joint_keys(token, before[token], fps=fps)
+                return False
+            restored.append(owner)
+        return True
+
+    def _timeline_restore_scene_joint_keys(self, owner: str, keys_map: dict, *, fps: float) -> bool:
+        """Restore a joint edit, including source keys and an empty authored pose."""
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        decode = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+        apply = getattr(renderer, "_mgl_scene_skeleton_apply_timeline_keys", None)
+        decoded = decode(owner) if callable(decode) else None
+        if not decoded or not callable(apply):
+            return False
+        keys = deepcopy(keys_map)
+        path = self._timeline_owner_animation_path(owner)
+        if path is None:
+            return False
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except Exception:
+            raw = {}
+        payload = dict(raw) if isinstance(raw, dict) else {}
+        payload.update({
+            "scene": str(getattr(self, "_timeline_scene_name", "scene") or "scene"),
+            "owner": owner,
+            "fps": float(fps),
+            "scene_skeleton_fbx_seeded": True,
+            "scene_skeleton_frame_space": "timeline",
+            # Virtual FBX keys must never become authored overrides on reload.
+            "keys": self._timeline_owner_keys_payload_rows({
+                frame: entry for frame, entry in keys.items()
+                if isinstance(entry, dict) and not entry.get("fbx_clip_key", False)
+            }),
+        })
+        try:
+            if not apply(owner, keys, float(fps)):
+                return False
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        except Exception:
+            return False
+        self._timeline_owner_keys_cache = {}
+        self._timeline_invalidate_owner_animation_cache(owner)
+        self._timeline_invalidate_owner_animation_cache(decoded[0])
+        if self._timeline_owner_norm(getattr(self, "_timeline_owner_name", "")) == self._timeline_owner_norm(owner):
+            self._timeline_keys = keys
+            self._timeline_scene_skeleton_dirty = False
+            self._timeline_curve_selected = set()
+            self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+            self._timeline_update_key_count_label()
+            self._timeline_refresh_coord_labels()
+        # Remove the cached drag quaternion so the next drag starts at this pose.
+        quats = getattr(self, "_rot_owner_quat", None)
+        if isinstance(quats, dict):
+            quats.pop(owner, None)
+        if getattr(self, "_xform_gizmo_owner", None) == owner:
+            self._refresh_scene_skeleton_joint_gizmo_after_rotation(renderer, owner, decoded[0])
+        self.update()
         return True
 
     def _timeline_replace_owner_animation_keys(

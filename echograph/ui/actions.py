@@ -1,6 +1,7 @@
 # echograph/ui/actions.py
 from __future__ import annotations
 import json
+from copy import deepcopy
 import time
 from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
@@ -312,6 +313,25 @@ def record_scene_xform(win, scene_node, owner: str, before: dict, after: dict) -
     )
 
 
+def record_scene_joint_keys(win, scene_node, owner: str, before: dict, after: dict, *, fps: float, group: bool = False) -> None:
+    if win is None or scene_node is None or not owner or before == after:
+        return
+    if getattr(win, "_xform_history_busy", False):
+        return
+    entry = {
+        "ts": time.time(),
+        "entry_type": "scene_joint_group" if group else "scene_joint_keys",
+        "scene_rev": _ensure_scene_rev(win, scene_node),
+        "scene_name": getattr(scene_node, "name", None),
+        "owner": str(owner),
+        "before": deepcopy(before),
+        "after": deepcopy(after),
+        "fps": float(fps),
+    }
+    _push_xform_history_entry(win, entry)
+    _log_history({"action": "record", **entry})
+
+
 def record_transforms_node_xform(win, transform_node, owner: str, before: dict, after: dict) -> None:
     _record_xform_entry(
         win,
@@ -454,6 +474,17 @@ def _apply_xform_entry(win, entry: dict, use_before: bool) -> bool:
     node = _find_scene_node_by_rev(win, scene_rev, scene_name)
     if node is None:
         return False
+
+    if entry_type in ("scene_joint_keys", "scene_joint_group"):
+        # Timeline paths and rig contexts belong to the currently active scene.
+        if getattr(win, "_active_scene_node", None) is not node:
+            return False
+        glv = getattr(win, "gl_view", None)
+        if entry_type == "scene_joint_group":
+            restore = getattr(glv, "_timeline_restore_scene_joint_group", None)
+            return bool(callable(restore) and restore(xf, fps=entry.get("fps", 24.0)))
+        restore = getattr(glv, "_timeline_restore_scene_joint_keys", None)
+        return bool(callable(restore) and restore(str(owner), xf, fps=entry.get("fps", 24.0)))
 
     if entry_type in ("transforms_node_xform", "transform_node_xform", "transforms_node"):
         return _apply_transforms_node_xform_entry(win, node, str(owner), xf)
@@ -600,6 +631,8 @@ def undo_scene_xform(win) -> bool:
         if len(redo) > _HISTORY_LIMIT:
             del redo[:-_HISTORY_LIMIT]
         _log_history({"action": "undo", **entry})
+    else:
+        undo.append(entry)
     return ok
 
 
@@ -626,4 +659,6 @@ def redo_scene_xform(win) -> bool:
         if len(undo) > _HISTORY_LIMIT:
             del undo[:-_HISTORY_LIMIT]
         _log_history({"action": "redo", **entry})
+    else:
+        redo.append(entry)
     return ok
