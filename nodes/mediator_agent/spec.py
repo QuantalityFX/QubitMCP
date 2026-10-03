@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import threading
+import uuid
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
@@ -426,16 +427,29 @@ def _format_ts() -> str:
 def _ordered_in_edges(scene, node_item) -> list:
     if not scene or not node_item:
         return []
+    ordered = []
     try:
         ordered = list(scene._ordered_in_edges(node_item))
-        if ordered:
-            return ordered
     except Exception:
         pass
-    try:
-        return list(scene._in_edges(node_item))
-    except Exception:
-        return []
+    if not ordered:
+        try:
+            ordered = list(scene._in_edges(node_item))
+        except Exception:
+            return []
+    # Older graphs can contain the same wire more than once. Voice Actor output
+    # is one transcript, even when wired through both its default and text pins.
+    seen_voice_inputs = set()
+    result = []
+    for edge in ordered:
+        src = getattr(edge, "src", None)
+        if _kind_of_item(src) in VOICE_ACTOR_KINDS:
+            key = (id(src), _edge_port_name(edge).strip().lower())
+            if key in seen_voice_inputs:
+                continue
+            seen_voice_inputs.add(key)
+        result.append(edge)
+    return result
 
 
 def _ordered_out_edges(scene, node_item) -> list:
@@ -1080,7 +1094,7 @@ def _set_node_info(node_item, text: str) -> None:
     params = list(getattr(model, "params", None) or [])
     token_key = MEDIGATOR_OUTPUT_TOKEN_PARAM.strip().lower()
     stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
-    token_value = f"{stamp}-{hashlib.sha1(value.encode('utf-8', errors='ignore')).hexdigest()[:12]}"
+    token_value = f"{stamp}-{uuid.uuid4().hex}"
     token_found = False
     for entry in params:
         if str(entry.get("name", "") or "").strip().lower() == token_key:

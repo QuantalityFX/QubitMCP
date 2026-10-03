@@ -8,10 +8,12 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from PySide6 import QtCore, QtTest, QtWidgets
 
 from echograph.model import GraphNode
+from echograph.persistence import _node_to_dict
 from echograph.motion.qt_job import MotionJob
 from echograph.motion.types import GenerationPlan
 from nodes.priormdm.spec import build_ports, render_node_body, MotionControls
@@ -34,6 +36,92 @@ def await_signal(spy, timeout=7000):
 
 
 class MotionUITests(unittest.TestCase):
+    def test_typing_with_pauses_waits_until_the_editor_loses_focus(self):
+        for field in ("prompt", "hand_description"):
+            with self.subTest(field=field):
+                node = GraphNode(name="Motion", kind="priormdm", params=[
+                    {"name": "animate_hands", "value": "true"},
+                ])
+                scene = SimpleNamespace(set_node_params=Mock())
+                controls = MotionControls(node, scene)
+                self.addCleanup(controls.deleteLater)
+                self.addCleanup(controls.close)
+                controls.show()
+                controls.activateWindow()
+                editor = getattr(controls, field)
+                editor.setFocus()
+                APP.processEvents()
+                self.assertTrue(editor.hasFocus())
+                editor.clear()
+
+                for text in ("Walk", " forward"):
+                    QtTest.QTest.keyClicks(editor, text)
+                    # A normal pause between words must not trigger a graph refresh.
+                    QtTest.QTest.qWait(450)
+                    scene.set_node_params.assert_not_called()
+                saved = {p["name"]: p["value"] for p in _node_to_dict(node)["params"]}
+                self.assertEqual(saved[field], "Walk forward")
+
+                controls.generate_button.setFocus()
+                QtTest.QTest.qWait(450)
+                scene.set_node_params.assert_called_once_with(node.name, node.params, rebuild=False, emit=True)
+                controls.close()
+
+    def test_closing_controls_flushes_pending_prompt_after_a_typing_pause(self):
+        node = GraphNode(name="Motion", kind="priormdm", params=[])
+        scene = SimpleNamespace(set_node_params=Mock())
+        controls = MotionControls(node, scene)
+        self.addCleanup(controls.deleteLater)
+        self.addCleanup(controls.close)
+        controls.show()
+        controls.activateWindow()
+        controls.prompt.setFocus()
+        APP.processEvents()
+        self.assertTrue(controls.prompt.hasFocus())
+        controls.prompt.setPlainText("Turn around")
+        QtTest.QTest.qWait(450)
+        scene.set_node_params.assert_not_called()
+
+        controls.close()
+        QtTest.QTest.qWait(450)
+        scene.set_node_params.assert_called_once_with(node.name, node.params, rebuild=False, emit=True)
+        self.assertIn({"name": "prompt", "value": "Turn around"}, node.params)
+
+    def test_typing_saves_immediately_but_batches_graph_updates(self):
+        node = GraphNode(name="Motion", kind="priormdm", params=[])
+        scene = SimpleNamespace(set_node_params=Mock())
+        controls = MotionControls(node, scene)
+        self.addCleanup(controls.deleteLater)
+        controls.prompt.clear()
+        prompt = "A person walks forward and turns left."
+        hands = "Slowly open both hands."
+        QtTest.QTest.keyClicks(controls.prompt, prompt)
+        QtTest.QTest.keyClicks(controls.hand_description, hands)
+
+        self.assertEqual(controls.prompt.toPlainText(), prompt)
+        saved = {p["name"]: p["value"] for p in _node_to_dict(node)["params"]}
+        self.assertEqual(saved["prompt"], prompt)
+        self.assertEqual(saved["hand_description"], hands)
+        scene.set_node_params.assert_not_called()
+
+        QtTest.QTest.qWait(450)
+        scene.set_node_params.assert_called_once_with(node.name, node.params, rebuild=False, emit=True)
+
+    def test_setting_change_includes_pending_text_without_duplicate_update(self):
+        node = GraphNode(name="Motion", kind="priormdm", params=[])
+        scene = SimpleNamespace(set_node_params=Mock())
+        controls = MotionControls(node, scene)
+        self.addCleanup(controls.deleteLater)
+        controls.prompt.setPlainText("Turn around")
+        controls.duration.setValue(4.0)
+
+        scene.set_node_params.assert_called_once_with(node.name, node.params, rebuild=False, emit=True)
+        params = {p["name"]: p["value"] for p in scene.set_node_params.call_args.args[1]}
+        self.assertEqual(params["prompt"], "Turn around")
+        self.assertEqual(float(params["duration"]), 4.0)
+        QtTest.QTest.qWait(450)
+        self.assertEqual(scene.set_node_params.call_count, 1)
+
     def test_compact_border_contains_entire_widget_and_padding(self):
         item = Item()
         build_ports(item)

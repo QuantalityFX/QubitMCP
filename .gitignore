@@ -77,6 +77,9 @@ AGENTS.md
 !/tests/
 /tests/*
 !/tests/motion/
+!/tests/voice/
+/tests/voice/*
+!/tests/voice/test_*.py
 
 /Unreal/Plugins/KeyboardActionRunner/
 /app_settings.json

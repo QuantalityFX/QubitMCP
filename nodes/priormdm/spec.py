@@ -44,10 +44,14 @@ def set_value(node, scene, key, text):
     else:
         entry["value"] = str(text)
     node.params = params
+    _notify_params_changed(node, scene)
+
+
+def _notify_params_changed(node, scene):
     if scene is not None and isinstance(scene, QtCore.QObject) and not isValid(scene):
         return
     if scene is not None and hasattr(scene, "set_node_params"):
-        scene.set_node_params(node.name, params, rebuild=False, emit=True)
+        scene.set_node_params(node.name, node.params, rebuild=False, emit=True)
 
 
 def build_ports(item):
@@ -131,6 +135,11 @@ class MotionControls(QtWidgets.QWidget):
     def __init__(self, node, scene=None, parent=None):
         super().__init__(parent)
         self.node, self.graph_scene = node, scene
+        self._text_changes_pending = False
+        self._text_change_timer = QtCore.QTimer(self)
+        self._text_change_timer.setSingleShot(True)
+        self._text_change_timer.setInterval(300)
+        self._text_change_timer.timeout.connect(self._flush_text_changes)
         layout = QtWidgets.QVBoxLayout(self)
         setup_group = QtWidgets.QGroupBox("Model setup")
         setup_layout = QtWidgets.QVBoxLayout(setup_group)
@@ -214,7 +223,7 @@ class MotionControls(QtWidgets.QWidget):
         self.hands_enabled.toggled.connect(self.hand_options.setVisible)
         self.hands_enabled.toggled.connect(lambda checked: self._persist("animate_hands", str(checked).lower()))
         self.hand_side.currentTextChanged.connect(lambda text: self._persist("hand_side", text))
-        self.hand_description.textChanged.connect(lambda text: self._persist("hand_description", text))
+        self.hand_description.textChanged.connect(lambda text: self._persist_text("hand_description", text))
         layout.addWidget(self.hand_options)
         self.hand_setup_button.clicked.connect(self._hand_setup)
         self.advanced_button = QtWidgets.QToolButton()
@@ -292,7 +301,9 @@ class MotionControls(QtWidgets.QWidget):
         self.log.setMinimumHeight(115)
         layout.addWidget(self.status)
         layout.addWidget(self.log)
-        self.prompt.textChanged.connect(lambda: self._persist("prompt", self.prompt.toPlainText()))
+        self.prompt.installEventFilter(self)
+        self.hand_description.installEventFilter(self)
+        self.prompt.textChanged.connect(lambda: self._persist_text("prompt", self.prompt.toPlainText()))
         self.duration.valueChanged.connect(lambda v: self._persist("duration", v))
         self.seed.editingFinished.connect(lambda: self._persist("seed", self.seed.text()))
         self.guidance.valueChanged.connect(lambda v: self._persist("guidance", v))
@@ -320,7 +331,40 @@ class MotionControls(QtWidgets.QWidget):
         self.prompt.setFocus(QtCore.Qt.OtherFocusReason)
 
     def _persist(self, key, text):
+        # This notification includes any pending text edits as well.
+        self._text_change_timer.stop()
+        self._text_changes_pending = False
         set_value(self.node, self.graph_scene, key, text)
+
+    def _persist_text(self, key, text):
+        # Save/generate always see the latest text, but graph/card/preview refreshes
+        # must not run synchronously for every keystroke.
+        set_value(self.node, None, key, text)
+        self._text_changes_pending = True
+        self._text_change_timer.start()
+
+    def _flush_text_changes(self):
+        if not self._text_changes_pending:
+            return
+        # Even a pause between words can outlast the debounce. Keep expensive
+        # scene notifications out of the entire editing session.
+        if self.isVisible() and (self.prompt.hasFocus() or self.hand_description.hasFocus()):
+            return
+        self._text_change_timer.stop()
+        self._text_changes_pending = False
+        _notify_params_changed(self.node, self.graph_scene)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QtCore.QEvent.FocusOut and self._text_changes_pending:
+            # Let focus settle first; moving between the two text fields should
+            # not refresh the graph in the middle of editing either one.
+            self._text_change_timer.start()
+        return super().eventFilter(watched, event)
+
+    def hideEvent(self, event):
+        if self._text_changes_pending:
+            self._text_change_timer.start()
+        super().hideEvent(event)
 
     def _browse(self, key, directory):
         current = self.paths[key].text()

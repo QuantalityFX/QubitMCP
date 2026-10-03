@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import audioop
 import io
+import math
+import threading
 import time
 import wave
 from dataclasses import dataclass
@@ -28,6 +30,7 @@ except Exception:
     np = None  # type: ignore
 
 from nodes.core import Spec
+from .windows_loopback import is_supported as _process_loopback_supported
 
 
 AUDIO_CAPTURE_NODE_KIND = "audio_capture"
@@ -51,6 +54,7 @@ _PARAM_SILENCE_MS = "silence_ms"
 _PARAM_PHRASE_MS = "phrase_ms"
 _PARAM_BACKEND = "backend"
 _PARAM_LIVE_MODE = "live_mode"
+_PARAM_EXCLUDE_APP_AUDIO = "exclude_app_audio"
 _HIDDEN_PARAM = "__ui_hidden_params"
 
 _DEFAULT_SAMPLE_RATE = 16000
@@ -58,6 +62,7 @@ _DEFAULT_THRESHOLD = 0.012
 _DEFAULT_SILENCE_MS = 850
 _DEFAULT_PHRASE_MS = 20000
 _DEFAULT_LIVE_MODE = True
+_DEFAULT_EXCLUDE_APP_AUDIO = _process_loopback_supported()
 _LIVE_PHRASE_MS = 2500
 _LISTEN_WAIT_TIMEOUT_SECONDS = 1.2
 _BLOCK_MS = 50
@@ -73,6 +78,7 @@ _PARAM_DEFAULTS = {
     _PARAM_PHRASE_MS: str(_DEFAULT_PHRASE_MS),
     _PARAM_BACKEND: "auto",
     _PARAM_LIVE_MODE: "1",
+    _PARAM_EXCLUDE_APP_AUDIO: "1" if _DEFAULT_EXCLUDE_APP_AUDIO else "0",
 }
 
 
@@ -404,6 +410,7 @@ def config_from_node_item(node_item) -> dict:
         "phrase_ms": _coerce_int(_param_value(model, _PARAM_PHRASE_MS, _DEFAULT_PHRASE_MS), _DEFAULT_PHRASE_MS, minimum=1000, maximum=120000),
         "backend": _param_value(model, _PARAM_BACKEND, "auto") or "auto",
         "live_mode": _coerce_bool(_param_value(model, _PARAM_LIVE_MODE, "1"), _DEFAULT_LIVE_MODE),
+        "exclude_app_audio": _coerce_bool(_param_value(model, _PARAM_EXCLUDE_APP_AUDIO, _PARAM_DEFAULTS[_PARAM_EXCLUDE_APP_AUDIO]), _DEFAULT_EXCLUDE_APP_AUDIO),
     }
 
 
@@ -508,6 +515,11 @@ def _pyaudio_to_mono(pcm: bytes, channels: int) -> bytes:
 
 def _live_mode_enabled(config: dict) -> bool:
     return _coerce_bool((config or {}).get("live_mode"), _DEFAULT_LIVE_MODE)
+
+
+def _exclude_app_audio_enabled(config: dict) -> bool:
+    mode = _normalize_source_mode(config.get("source_mode", SOURCE_OUTPUT_DEVICE))
+    return mode == SOURCE_OUTPUT_DEVICE and _coerce_bool(config.get("exclude_app_audio"), _DEFAULT_EXCLUDE_APP_AUDIO)
 
 
 def _phrase_ms_for_config(config: dict) -> int:
@@ -683,6 +695,19 @@ def capture_next_phrase(
     should_stop: Callable[[], bool] | None = None,
     is_paused: Callable[[], bool] | None = None,
 ) -> tuple[CapturedAudioChunk | None, str]:
+    if _exclude_app_audio_enabled(config):
+        from .stream import open_audio_reader
+        try:
+            with open_audio_reader(config) as (read, rate, label):
+                return _record_phrase(
+                    read, sample_rate=rate,
+                    threshold=_coerce_float(config.get("threshold"), _DEFAULT_THRESHOLD, minimum=0.001, maximum=0.5),
+                    silence_ms=_coerce_int(config.get("silence_ms"), _DEFAULT_SILENCE_MS, minimum=150, maximum=5000),
+                    phrase_ms=_phrase_ms_for_config(config), wait_timeout_seconds=_wait_timeout_for_config(config),
+                    should_stop=should_stop, is_paused=is_paused, source_label=label,
+                )
+        except Exception as exc:
+            return None, f"Capture excluding QubitMCP failed: {exc}"
     mode = _normalize_source_mode(str(config.get("source_mode", "") or SOURCE_OUTPUT_DEVICE))
     if mode == SOURCE_APPLICATION:
         return None, "Application-specific capture is not available yet. Use Output Device capture."
@@ -699,16 +724,12 @@ def capture_next_phrase(
 
 
 def capture_level(config: dict, duration_seconds: float = 0.25) -> tuple[float, str]:
-    cfg = dict(config or {})
-    cfg["phrase_ms"] = max(1000, int(float(duration_seconds or 0.25) * 1000))
-    cfg["silence_ms"] = 5000
-    cfg["threshold"] = 0.001
-    chunk, err = capture_next_phrase(cfg)
-    if err:
-        return 0.0, err
-    if chunk is None:
-        return 0.0, ""
-    return _pcm_level(chunk.pcm, chunk.sample_width), ""
+    from .stream import record_sample
+    try:
+        chunk = record_sample(config, seconds=duration_seconds)
+        return _pcm_level(chunk.pcm, chunk.sample_width), ""
+    except Exception as exc:
+        return 0.0, str(exc)
 
 
 def build_ports(node_item) -> None:
@@ -720,13 +741,21 @@ def build_ports(node_item) -> None:
 
 
 class AudioCaptureWidget(QtWidgets.QWidget):
-    _level_done = QtCore.Signal(float, str)
+    _sample_level = QtCore.Signal(float)
+    _sample_done = QtCore.Signal(object, str)
 
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
         self._node_item = node_item
         self._syncing = False
         self._testing = False
+        self._test_stop = threading.Event()
+        self.destroyed.connect(self._test_stop.set)
+        self._test_player = None
+        self._test_file = None
+        self._test_peak = 0.0
+        self._test_summary = ""
+        self._test_play_started = False
         self.setMinimumSize(AUDIO_CAPTURE_BODY_W, AUDIO_CAPTURE_BODY_H)
         try:
             self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
@@ -748,13 +777,27 @@ class AudioCaptureWidget(QtWidgets.QWidget):
             self._device_combo.setSizeAdjustPolicy(size_policy)
 
         self._refresh_btn = QtWidgets.QPushButton("Refresh")
-        self._test_btn = QtWidgets.QPushButton("Test")
+        self._test_btn = QtWidgets.QPushButton("Test & Listen")
+        self._test_btn.setToolTip("Record three seconds from the selected source, show its level, then play the sample. Playback starts after recording stops.")
         self._live_check = QtWidgets.QCheckBox("Live")
         self._live_check.setToolTip("Keep the capture stream waiting for random speech and split long speech into short live chunks.")
+        self._exclude_app_check = QtWidgets.QCheckBox("Exclude QubitMCP audio (all outputs)")
+        self._exclude_app_check.setToolTip(
+            "Capture other apps, including YouTube, while excluding Voice Actor speech and test playback. "
+            "Windows applies this to all output devices, so the device selector is unused. "
+            "Restart listening after changing this setting. Requires Windows build 20348 or newer."
+        )
+        self._exclude_app_check.setChecked(_coerce_bool(
+            _param_value(getattr(node_item, "model", None), _PARAM_EXCLUDE_APP_AUDIO, _PARAM_DEFAULTS[_PARAM_EXCLUDE_APP_AUDIO]),
+            _DEFAULT_EXCLUDE_APP_AUDIO,
+        ))
+        self._exclude_app_check.toggled.connect(self._on_exclude_app_changed)
         self._level = QtWidgets.QProgressBar()
         self._level.setRange(0, 100)
-        self._level.setTextVisible(False)
-        self._level.setFixedHeight(10)
+        self._level.setTextVisible(True)
+        self._level.setFormat("No signal")
+        self._level.setFixedHeight(22)
+        self._level.setToolTip("Recorded level in dBFS. 0 dBFS is full scale; more negative values are quieter.")
         self._status = QtWidgets.QLabel("")
         self._status.setWordWrap(True)
         self._status.setStyleSheet("QLabel{color:#94a3b8;font-size:10px;}")
@@ -773,6 +816,7 @@ class AudioCaptureWidget(QtWidgets.QWidget):
         self._refresh_btn.setStyleSheet(button_style)
         self._test_btn.setStyleSheet(button_style)
         self._live_check.setStyleSheet("QCheckBox{color:#cbd5e1;font-size:11px;}")
+        self._exclude_app_check.setStyleSheet("QCheckBox{color:#cbd5e1;font-size:11px;}")
         self._level.setStyleSheet(
             "QProgressBar{background:#0f1216;border:1px solid #334155;border-radius:4px;}"
             "QProgressBar::chunk{background:#14b8a6;border-radius:3px;}"
@@ -784,7 +828,6 @@ class AudioCaptureWidget(QtWidgets.QWidget):
         top.addWidget(QtWidgets.QLabel("Source"), 0)
         top.addWidget(self._mode_combo, 0)
         top.addWidget(self._refresh_btn, 0)
-        top.addWidget(self._test_btn, 0)
         top.addWidget(self._live_check, 0)
 
         device_row = QtWidgets.QHBoxLayout()
@@ -798,14 +841,19 @@ class AudioCaptureWidget(QtWidgets.QWidget):
         layout.setSpacing(6)
         layout.addLayout(top, 0)
         layout.addLayout(device_row, 0)
-        layout.addWidget(self._level, 0)
+        layout.addWidget(self._exclude_app_check, 0)
+        test_row = QtWidgets.QHBoxLayout()
+        test_row.addWidget(self._test_btn, 0)
+        test_row.addWidget(self._level, 1)
+        layout.addLayout(test_row, 0)
         layout.addWidget(self._status, 0)
 
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self._device_combo.currentIndexChanged.connect(self._on_device_changed)
         self._refresh_btn.clicked.connect(self._refresh_targets)
         self._test_btn.clicked.connect(self._test_level)
-        self._level_done.connect(self._on_level_done)
+        self._sample_level.connect(self._on_sample_level)
+        self._sample_done.connect(self._on_sample_done)
 
         mode = _normalize_source_mode(_param_value(getattr(node_item, "model", None), _PARAM_SOURCE_MODE, SOURCE_OUTPUT_DEVICE))
         self._live_check.blockSignals(True)
@@ -860,7 +908,18 @@ class AudioCaptureWidget(QtWidgets.QWidget):
             self._device_combo.blockSignals(False)
             self._syncing = False
         self._persist_selected_target()
-        self._set_status(backend_status())
+        self._update_capture_source_ui()
+
+    def _update_capture_source_ui(self) -> None:
+        output = self._current_mode() == SOURCE_OUTPUT_DEVICE
+        protected = output and self._exclude_app_check.isChecked()
+        self._exclude_app_check.setEnabled(output and _process_loopback_supported() and not self._testing)
+        self._device_combo.setEnabled(not self._testing and not protected)
+        self._set_status("Captures other apps on all outputs. QubitMCP audio is excluded." if protected else backend_status())
+
+    def _on_exclude_app_changed(self, checked: bool) -> None:
+        _set_node_param(self._node_item, _PARAM_EXCLUDE_APP_AUDIO, "1" if checked else "0")
+        self._update_capture_source_ui()
 
     def _persist_selected_target(self) -> None:
         data = self._device_combo.currentData()
@@ -894,31 +953,119 @@ class AudioCaptureWidget(QtWidgets.QWidget):
 
     def _test_level(self) -> None:
         if self._testing:
+            if self._test_player is not None:
+                self._finish_test()
             return
+        config = self._config()
         self._testing = True
+        self._test_stop.clear()
+        self._test_peak = 0.0
+        self._test_summary = ""
+        self._level.setValue(0)
+        self._level.setFormat("Recording...")
         self._test_btn.setEnabled(False)
-        self._set_status("Testing capture...")
+        self._mode_combo.setEnabled(False)
+        self._device_combo.setEnabled(False)
+        self._exclude_app_check.setEnabled(False)
+        self._refresh_btn.setEnabled(False)
+        self._set_status("Recording 3 seconds. Speak or play audio on the selected device...")
 
         def _worker():
-            level, err = capture_level(self._config(), duration_seconds=0.35)
-            self._level_done.emit(float(level or 0.0), str(err or ""))
-
-        import threading
+            from .stream import record_sample
+            sample, err = None, ""
+            try:
+                sample = record_sample(config, seconds=3.0, on_level=self._sample_level.emit,
+                                       should_stop=self._test_stop.is_set)
+            except Exception as exc:
+                err = str(exc)
+            if not self._test_stop.is_set():
+                try:
+                    self._sample_done.emit(sample, err)
+                except RuntimeError:
+                    pass  # The node was removed while capture was finishing.
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    @QtCore.Slot(float, str)
-    def _on_level_done(self, level: float, err: str) -> None:
-        self._testing = False
-        self._test_btn.setEnabled(True)
-        value = max(0, min(100, int(float(level or 0.0) * 100.0)))
-        self._level.setValue(value)
-        if err:
-            self._set_status(err, error=True)
-        elif value <= 0:
-            self._set_status("No signal detected.")
+    @QtCore.Slot(float)
+    def _on_sample_level(self, level: float) -> None:
+        self._test_peak = max(self._test_peak, level)
+        db = 20.0 * math.log10(max(level, 0.000001))
+        self._level.setValue(max(0, min(100, round((db + 60.0) * 100.0 / 60.0))))
+        self._level.setFormat(f"{db:.0f} dBFS" if level > 0 else "No signal")
+
+    @QtCore.Slot(object, str)
+    def _on_sample_done(self, sample, err: str) -> None:
+        if err or sample is None:
+            self._finish_test(err or "No audio captured.", error=True)
+            return
+        peak_db = 20.0 * math.log10(max(self._test_peak, 0.000001))
+        if self._test_peak <= 0:
+            self._test_summary = "No signal detected. Check the selected device and source volume."
         else:
-            self._set_status(f"Signal detected: {value}%")
+            self._test_summary = f"Loudest recorded level: {peak_db:.0f} dBFS."
+            if peak_db < -45:
+                self._test_summary += " Signal is very quiet."
+        self._on_sample_level(self._test_peak)
+        self._play_test_sample(sample.wav_bytes())
+
+    def _play_test_sample(self, wav_bytes: bytes) -> None:
+        try:
+            try:
+                from PySide6.QtMultimedia import QSoundEffect
+            except ImportError:
+                from PySide2.QtMultimedia import QSoundEffect
+            sample_file = QtCore.QTemporaryFile(QtCore.QDir.tempPath() + "/qubit_audio_test_XXXXXX.wav", self)
+            self._test_file = sample_file
+            if not sample_file.open():
+                raise RuntimeError(sample_file.errorString())
+            if sample_file.write(wav_bytes) != len(wav_bytes):
+                raise RuntimeError("Could not write the audio test sample.")
+            sample_file.close()
+            player = QSoundEffect(self)
+            self._test_player = player
+            self._test_play_started = False
+            player.setVolume(1.0)
+            player.playingChanged.connect(self._on_test_playing_changed)
+            player.statusChanged.connect(self._on_test_playback_status)
+            self._test_btn.setText("Stop playback")
+            self._test_btn.setEnabled(True)
+            self._set_status(f"{self._test_summary} Playing recorded sample...")
+            player.setSource(QtCore.QUrl.fromLocalFile(sample_file.fileName()))
+            if self._test_player is player:
+                player.play()
+        except Exception as exc:
+            self._finish_test(f"{self._test_summary} Playback unavailable: {exc}", error=True)
+
+    def _on_test_playing_changed(self) -> None:
+        player = self._test_player
+        if player is None:
+            return
+        if player.isPlaying():
+            self._test_play_started = True
+        elif self._test_play_started:
+            self._finish_test()
+
+    def _on_test_playback_status(self) -> None:
+        player = self._test_player
+        if player is not None and player.status() == player.Error:
+            self._finish_test(f"{self._test_summary} Could not play the recorded sample.", error=True)
+
+    def _finish_test(self, message: str = "", *, error: bool = False) -> None:
+        player, self._test_player = self._test_player, None
+        if player is not None:
+            player.stop()
+            player.deleteLater()
+        if self._test_file is not None:
+            self._test_file.remove()
+            self._test_file.deleteLater()
+            self._test_file = None
+        self._testing = False
+        self._test_btn.setText("Test & Listen")
+        self._test_btn.setEnabled(True)
+        self._mode_combo.setEnabled(True)
+        self._refresh_btn.setEnabled(True)
+        self._update_capture_source_ui()
+        self._set_status(message or self._test_summary, error=error)
 
 
 def render_node_body(node_item, y_cursor: int) -> int:

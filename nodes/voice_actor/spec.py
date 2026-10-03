@@ -76,6 +76,7 @@ STT_METHOD_GOOGLE = "google"
 STT_SEND_MODE_AUTO_RESPOND = "auto_respond"
 STT_SEND_MODE_ASK_FIRST = "ask_first"
 STT_SEND_MODE_MANUAL = "manual"
+STT_SEND_MODE_AUDIO_STREAM = "audio_stream"
 VOICE_GENDER_FEMALE = "female"
 VOICE_GENDER_MALE = "male"
 LOCAL_WHISPER_MODEL_NAME = "base"
@@ -1580,6 +1581,8 @@ def _convert_korean_keyboard_runs(text: str) -> str:
 
 def _normalize_stt_send_mode(value: str) -> str:
     key = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if key in {"audio_stream", "stream", "streaming"}:
+        return STT_SEND_MODE_AUDIO_STREAM
     if key in {"ask", "ask_first", "ask_for_approval", "approval"}:
         return STT_SEND_MODE_ASK_FIRST
     if key in {"manual", "push_to_talk", "push_to_send", "stop_to_send"}:
@@ -1994,6 +1997,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._stt_last_pause_snapshot = ""
         self._stt_live_auto_publish = False
         self._stt_live_published_text = ""
+        self._stt_streaming = False
+        self._stt_abort_event = threading.Event()
+        self.destroyed.connect(self._stt_abort_event.set)
         self._stt_prompt_lock = threading.Lock()
         self._stt_prompt_stop_event = threading.Event()
         self._stt_prompt_thread = None
@@ -2270,6 +2276,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
     def _mark_inactive(self) -> None:
         self._widget_inactive = True
+        self._stt_abort_event.set()
         self._param_refresh_pending = False
         self._pending_chatbot_text = ""
         self._pending_chatbot_session_token = ""
@@ -2902,9 +2909,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
             {"id": STT_SEND_MODE_AUTO_RESPOND, "name": "Auto Respond"},
             {"id": STT_SEND_MODE_ASK_FIRST, "name": "Ask First"},
             {"id": STT_SEND_MODE_MANUAL, "name": "Manual"},
+            {"id": STT_SEND_MODE_AUDIO_STREAM, "name": "Audio Stream"},
         ]
         selected_key = _normalize_stt_send_mode(self._selected_send_mode)
-        if selected_key not in {STT_SEND_MODE_AUTO_RESPOND, STT_SEND_MODE_ASK_FIRST, STT_SEND_MODE_MANUAL}:
+        if selected_key not in {option["id"] for option in options}:
             selected_key = STT_SEND_MODE_AUTO_RESPOND
             self._selected_send_mode = selected_key
             _set_node_param(self._node_item, VOICE_ACTOR_SEND_MODE_KEY, selected_key)
@@ -2929,7 +2937,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._send_mode_combo.setEnabled(False)
         else:
             self._send_mode_combo.setEnabled(True)
-        if selected_key == STT_SEND_MODE_MANUAL:
+        if selected_key == STT_SEND_MODE_AUDIO_STREAM:
+            self._send_mode_combo.setToolTip("Continuously record a connected Audio Capture source and send each transcript in order. Stop finishes queued audio.")
+        elif selected_key == STT_SEND_MODE_MANUAL:
             self._send_mode_combo.setToolTip("Manual sends only when Stop is pressed.")
         elif selected_key == STT_SEND_MODE_ASK_FIRST:
             self._send_mode_combo.setToolTip("Ask First confirms before sending.")
@@ -3075,13 +3085,22 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return False
         return _clean_voice_text(blocks[-1]) == clean
 
-    def _auto_speech_text_already_handled(self, text: str) -> bool:
+    def _auto_speech_text_already_handled(self, text: str, *, session_token: str = "") -> bool:
         clean = _clean_voice_text(text)
         if not clean:
             return False
-        if _clean_voice_text(self._last_tts_text) == clean:
+        session = str(session_token or "").strip()
+        pending_session = str(self._pending_chatbot_session_token or "").strip()
+        if (
+            _clean_voice_text(self._pending_chatbot_text) == clean
+            and (not session or session == pending_session)
+        ):
             return True
-        if _clean_voice_text(self._pending_chatbot_text) == clean:
+        # Repeated wording in a new message must still be spoken. Only suppress
+        # repeated publications belonging to the same response/readout session.
+        if session and session != str(self._readout_session_token or "").strip():
+            return False
+        if _clean_voice_text(self._last_tts_text) == clean:
             return True
         return self._transcript_last_response_matches(clean)
 
@@ -3266,6 +3285,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._update_control_states()
             if _normalize_stt_send_mode(self._selected_send_mode) == STT_SEND_MODE_MANUAL and self._stt_session_has_new_text:
                 self._set_status("Stopping listening and sending...")
+            elif self._stt_streaming:
+                self._set_status("Recording stopped. Finishing queued audio...")
             else:
                 self._set_status("Stopping listening...")
             return
@@ -3332,6 +3353,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         stt_language = _normalize_stt_language(self._selected_stt_language)
         send_mode = _normalize_stt_send_mode(self._selected_send_mode)
+        capture_config, capture_label = self._connected_audio_capture_config()
+        if send_mode == STT_SEND_MODE_AUDIO_STREAM and not capture_config:
+            self._set_status(capture_label or "Connect an Audio Capture node to use Audio Stream.", error=True)
+            return
+        self._stt_abort_event.clear()
+        self._stt_streaming = send_mode == STT_SEND_MODE_AUDIO_STREAM
         self._stop_stt_send_confirmation_prompt()
         # Start each listen session as a fresh message transcription.
         self._set_transcript("", publish=True)
@@ -3343,15 +3370,16 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._pause_flash_state = False
         self._update_pause_button_ui()
         self._set_busy(True, "listening")
-        capture_config, capture_label = self._connected_audio_capture_config()
         if capture_config:
             capture_config = dict(capture_config)
             if str(capture_config.get("source_mode", "") or "").strip().lower() == "output_device":
                 capture_config["threshold"] = min(float(capture_config.get("threshold", 0.001) or 0.001), 0.001)
         live_capture = bool(capture_config and capture_config.get("live_mode"))
-        self._stt_live_auto_publish = bool(live_capture and send_mode == STT_SEND_MODE_AUTO_RESPOND)
+        self._stt_live_auto_publish = self._stt_streaming or bool(live_capture and send_mode == STT_SEND_MODE_AUTO_RESPOND)
         self._stt_live_published_text = ""
-        if send_mode == STT_SEND_MODE_MANUAL:
+        if self._stt_streaming:
+            send_hint = "Audio Stream keeps recording while transcribing. Stop finishes queued audio."
+        elif send_mode == STT_SEND_MODE_MANUAL:
             send_hint = "Press Stop to send."
         elif send_mode == STT_SEND_MODE_ASK_FIRST:
             send_hint = "Ask First confirms before sending."
@@ -3540,12 +3568,15 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return None, f"Audio Capture config failed: {exc}"
         model = getattr(source_item, "model", None)
         label = str(getattr(model, "name", "") or "Audio Capture").strip() or "Audio Capture"
-        device = str(config.get("device_name", "") or "").strip()
+        device = ("Other apps on all outputs (QubitMCP excluded)" if audio_capture_spec._exclude_app_audio_enabled(config)
+                  else str(config.get("device_name", "") or "").strip())
         if device:
             label = f"{label}: {device}"
         return config, label
 
     def _pause_listening_for_turn_taking(self) -> bool:
+        if self._stt_streaming:
+            return False
         listening, _paused, stop_requested = self._stt_state()
         if not listening or stop_requested:
             return False
@@ -3834,6 +3865,77 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 except Exception:
                     pass
 
+    def _stt_stream_worker(self, stt_method: str, language: str, config: dict) -> None:
+        from nodes.audio_capture.stream import BufferedAudioStream
+        from .stt_audio import duration_seconds, join_audio, prepare_speech_audio
+
+        failures, last_error, capture_error = 0, "", ""
+        pending_audio = None
+        abort = self._stt_abort_event
+
+        def should_stop():
+            listening, _paused, stopped = self._stt_state()
+            return abort.is_set() or stopped or not listening
+
+        try:
+            recognizer = sr.Recognizer() if stt_method != STT_METHOD_LOCAL_WHISPER else None
+            if recognizer is not None:
+                recognizer.operation_timeout = 15
+            with BufferedAudioStream(config, should_stop=should_stop,
+                                     is_paused=lambda: self._stt_state()[1]) as stream:
+                while not stream.finished and not abort.is_set():
+                    audio = stream.get()
+                    if audio is None:
+                        continue
+                    audio = prepare_speech_audio(audio)
+                    if audio is None:
+                        continue
+                    audio = join_audio(pending_audio, audio)
+                    pending_audio = None
+                    stopped = should_stop()
+                    self._stt_status.emit(
+                        f"{'Finishing queued audio' if stopped else 'Streaming and transcribing'}"
+                        f" ({stream.pending_seconds:.1f} s waiting)..."
+                    )
+                    try:
+                        if stt_method == STT_METHOD_LOCAL_WHISPER:
+                            text, err = _transcribe_local_whisper(audio.wav_bytes(), language)
+                        else:
+                            data = sr.AudioData(audio.pcm, audio.sample_rate, audio.sample_width)
+                            text = recognizer.recognize_google(data, language=_stt_google_language(language)) or ""
+                            err = "" if text.strip() else "Speech detected but transcript was empty."
+                    except Exception as exc:
+                        if sr is not None and isinstance(exc, sr.UnknownValueError):
+                            text, err = "", "Speech detected but transcript was empty."
+                        else:
+                            text, err = "", _format_stt_error(exc)
+                    if abort.is_set():
+                        break
+                    if err == "Speech detected but transcript was empty.":
+                        # Short/quiet fragments often need the next few words.
+                        # Retry unrecognized audio with context, up to 15 seconds,
+                        # without resending text that was already recognized.
+                        if duration_seconds(audio) < 15.0:
+                            pending_audio = audio
+                        self._stt_status.emit("Audio captured. Listening for more clear speech...")
+                        continue
+                    if err:
+                        failures += 1
+                        last_error = err
+                        self._stt_status.emit(f"Audio Stream: {failures} segment(s) could not be transcribed. {err}")
+                    if text.strip():
+                        # Conversation is content in stream mode, including phrases
+                        # like 'send' and 'stop speaking'; no command filtering.
+                        self._stt_chunk.emit(text.strip())
+                capture_error = stream.error
+        except Exception as exc:
+            capture_error = _format_stt_error(exc)
+        if not abort.is_set():
+            error = capture_error
+            if failures:
+                error = f"{error} {failures} segment(s) could not be transcribed. {last_error}".strip()
+            self._stt_done.emit("", error or "__stream_stopped__")
+
     def _stt_worker(
         self,
         stt_method: str,
@@ -3842,6 +3944,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         capture_config: dict | None = None,
         capture_label: str = "",
     ) -> None:
+        if _normalize_stt_send_mode(send_mode) == STT_SEND_MODE_AUDIO_STREAM:
+            self._stt_stream_worker(_normalize_stt_method(stt_method), _normalize_stt_language(stt_language), capture_config or {})
+            return
         transcript_parts = []
         error = ""
         selected_method = _normalize_stt_method(stt_method)
@@ -4014,6 +4119,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
                         if _maybe_handle_idle_send(time.monotonic()):
                             break
                         continue
+                    from .stt_audio import prepare_speech_audio
+                    audio_chunk = prepare_speech_audio(audio_chunk)
+                    if audio_chunk is None:
+                        continue
                     chunk = ""
                     if selected_method == STT_METHOD_LOCAL_WHISPER:
                         chunk, chunk_error = _transcribe_local_whisper(audio_chunk.wav_bytes(), selected_language)
@@ -4144,11 +4253,23 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(str)
     def _on_stt_chunk(self, chunk: str) -> None:
+        if self._stt_streaming and self._stt_abort_event.is_set():
+            return
         clean = (chunk or "").strip()
         if not clean:
             return
         self._stt_session_has_new_text = True
-        self._append_transcript(clean, publish=False)
+        if self._stt_streaming:
+            # Long conversations must not retain hundreds of full-text undo copies.
+            self._transcript.blockSignals(True)
+            try:
+                cursor = QtGui.QTextCursor(self._transcript.document())
+                cursor.movePosition(QtGui.QTextCursor.End)
+                cursor.insertText((" " if not self._transcript.document().isEmpty() else "") + clean)
+            finally:
+                self._transcript.blockSignals(False)
+        else:
+            self._append_transcript(clean, publish=False)
         if bool(getattr(self, "_stt_live_auto_publish", False)):
             _publish_voice_command(self._node_item, clean)
             self._stt_live_published_text = clean
@@ -4156,6 +4277,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(str, str)
     def _finish_stt(self, transcript: str, error: str) -> None:
+        if self._stt_streaming and self._stt_abort_event.is_set():
+            return
         had_new_text = bool(self._stt_session_has_new_text)
         self._stt_session_has_new_text = False
         # Chatbot handoff is done on stop; clear undo cache so it does not accumulate forever.
@@ -4164,6 +4287,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._pause_flash_state = False
         self._update_pause_button_ui()
         self._set_busy(False, "")
+        if self._stt_streaming:
+            self._stt_streaming = False
+            self._stt_live_auto_publish = False
+            self._stt_live_published_text = ""
+            # Each chunk has already been published. Keep the last output token
+            # paired with that chunk instead of republishing the full transcript.
+            if error and error != "__stream_stopped__":
+                self._set_status(error, error=True)
+            else:
+                self._set_status("Audio Stream stopped. Captured audio processed." if had_new_text else "Audio Stream stopped. No speech transcribed.")
+            return
         if transcript and not had_new_text:
             self._append_transcript(transcript, publish=False)
             had_new_text = True
@@ -4288,7 +4422,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 if token:
                     self._last_chatbot_token = token
                 return
-            if self._auto_speech_text_already_handled(text):
+            if self._auto_speech_text_already_handled(text, session_token=session_token):
                 if token:
                     self._last_chatbot_token = token
                 self._set_node_last_auto_speech_token(shared_token)
@@ -4632,7 +4766,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._pending_chatbot_text = ""
         self._pending_chatbot_session_token = ""
         if pending:
-            if self._auto_speech_text_already_handled(pending):
+            if self._auto_speech_text_already_handled(pending, session_token=pending_session):
                 return
             self._speak_text(pending, source="chatbot_auto", session_token=pending_session)
 
