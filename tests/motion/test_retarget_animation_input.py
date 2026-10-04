@@ -6,7 +6,7 @@ from unittest.mock import patch
 from PySide6 import QtWidgets
 from nodes.anim_retarget import spec
 from echograph.rigging.fbx_canonical import (
-    AnimationClip, Joint, JointAnimationTrack, QuatKeyframe, SkeletonAsset,
+    AnimationClip, Joint, JointAnimationTrack, JointTransform, QuatKeyframe, SkeletonAsset, Vec3Keyframe,
 )
 
 
@@ -57,6 +57,58 @@ class AnimationInputTests(unittest.TestCase):
         self.assertEqual(output.tracks[0].rotation_keys[0].value, (0, 0, 0, 1))
         self.assertEqual(self.item._retarget_animation_error, "")
 
+    def test_pelvis_modes_follow_motion_with_different_position_policies(self):
+        self.motion.tracks[0].translation_keys = [Vec3Keyframe(0, (2, 3, 4))]
+        spec.set_pelvis_constraint_link(self.item, "root", "root", mode="snap", notify_scene=False)
+        output = spec.build_anim_retarget_clip(self.item, self.resolve())
+        track = next(t for t in output.tracks if t.joint_name == "root")
+        self.assertEqual(track.translation_keys[0].value, (2, 3, 4))
+        self.assertAlmostEqual(abs(spec._quat_dot(track.rotation_keys[0].value,
+                                                self.motion.tracks[0].rotation_keys[0].value)), 1)
+        # Position Offset changes translation only; rotation must still match.
+        spec.set_pelvis_constraint_link(self.item, "root", "root", mode="position_offset", notify_scene=False)
+        output = spec.build_anim_retarget_clip(self.item, self.resolve())
+        self.assertEqual(output.tracks[0].translation_keys[0].value, (0, 0, 0))
+        self.assertAlmostEqual(abs(spec._quat_dot(output.tracks[0].rotation_keys[0].value,
+                                                self.motion.tracks[0].rotation_keys[0].value)), 1)
+        spec._set_param_value(self.model, spec.PELVIS_CONSTRAINT_MODE_PARAM, "none")
+        output = spec.build_anim_retarget_clip(self.item, self.resolve())
+        self.assertAlmostEqual(abs(spec._quat_dot(output.tracks[0].rotation_keys[0].value,
+                                                self.motion.tracks[0].rotation_keys[0].value)), 1)
+
+    def test_snap_without_mapping_or_local_track_inherits_source_parent_rotation(self):
+        spec.set_pelvis_constraint_link(self.item, "tip", "tip", mode="snap", notify_scene=False)
+        output = spec.build_anim_retarget_clip(self.item, self.resolve())
+        rotations = spec._global_sample_rotations(self.target["skeleton"], spec._track_lookup(output), 0)
+        self.assertAlmostEqual(abs(spec._quat_dot(rotations[1], self.motion.tracks[0].rotation_keys[0].value)), 1)
+
+    def test_constraint_world_rotation_accounts_for_rig_bases_and_animated_parents(self):
+        qx = (math.sqrt(0.5), 0, 0, math.sqrt(0.5))
+        qz = (0, 0, math.sqrt(0.5), math.sqrt(0.5))
+        self.skeleton.joints[1].local_bind.rotation = qx
+        self.target["skeleton"].joints[0].local_bind.rotation = qz
+        self.motion.tracks[0].rotation_keys.insert(1, QuatKeyframe(0.5, qx))
+        reference_source = spec._global_sample_rotations(self.skeleton, spec._track_lookup(self.motion), 0)
+        target_bind = spec._global_bind_rotations(self.target["skeleton"])
+        for mode in ("snap", "position_offset"):
+            with self.subTest(mode=mode):
+                keys = spec._build_global_rotation_key_sets(
+                    self.skeleton, self.target["skeleton"], self.motion, {"root": "root"},
+                    spec._track_lookup(self.motion), spec._joint_lookup(self.skeleton),
+                    spec._joint_lookup(self.target["skeleton"]), qx, qz,
+                    pelvis_constraint={"source": "tip", "target": "tip", "mode": mode},
+                )
+                tracks = {name: JointAnimationTrack(name, rotation_keys=rows) for name, rows in keys.items()}
+                for time in (0, 0.5, 1):
+                    source = spec._global_sample_rotations(self.skeleton, spec._track_lookup(self.motion), time)
+                    target = spec._global_sample_rotations(self.target["skeleton"], tracks, time)
+                    source_delta = spec._quat_mul(source[1], spec._quat_inverse(reference_source[1]))
+                    source_world_delta = spec._quat_mul(qx, spec._quat_mul(source_delta, spec._quat_inverse(qx)))
+                    target_world = spec._quat_mul(qz, target[1])
+                    target_world_reference = spec._quat_mul(qz, target_bind[1])
+                    target_world_delta = spec._quat_mul(target_world, spec._quat_inverse(target_world_reference))
+                    self.assertAlmostEqual(abs(spec._quat_dot(source_world_delta, target_world_delta)), 1)
+
     def test_mismatch_blocks_override_and_clears_on_reconnect(self):
         for joints in ([Joint("root", -1), Joint("other", 0)],
                        [Joint("root", -1), Joint("tip", -1)]):
@@ -67,6 +119,80 @@ class AnimationInputTests(unittest.TestCase):
             self.assertIsNone(spec.build_anim_retarget_clip(self.item, result))
         self.animation["skeleton"] = self.skeleton
         self.assertEqual(self.resolve().animation_error, "")
+
+    def test_position_offset_matches_rotation_and_preserves_position_offset(self):
+        qx = (math.sqrt(0.5), 0, 0, math.sqrt(0.5))
+        qz = (0, 0, math.sqrt(0.5), math.sqrt(0.5))
+        self.target["skeleton"].joints[1].local_bind.rotation = qz
+        self.target["skeleton"].joints[1].local_bind.translation = (0, 8, 0)
+        spec._set_param_value(self.model, "scale_mode", "none")
+        self.reference.tracks.append(JointAnimationTrack("tip", rotation_keys=[QuatKeyframe(0, qx)]))
+        self.motion.tracks = [JointAnimationTrack("tip",
+            rotation_keys=[QuatKeyframe(0, qx), QuatKeyframe(1, spec._quat_mul(qz, qx))],
+            translation_keys=[Vec3Keyframe(0, (2, 3, 4)), Vec3Keyframe(1, (3, 5, 4))])]
+        spec.set_pelvis_constraint_link(self.item, "tip", "tip", mode="position_offset", notify_scene=False)
+        for conflicting_mapping in (False, True):
+            with self.subTest(conflicting_mapping=conflicting_mapping):
+                if conflicting_mapping:
+                    spec.set_joint_map_link(self.item, "root", "tip", notify_scene=False)
+                output = spec.build_anim_retarget_clip(self.item, self.resolve())
+                track = next(t for t in output.tracks if t.joint_name == "tip")
+                self.assertTrue(track.rotation_keys)
+                self.assertEqual(track.translation_keys[0].value, (0, 8, 0))
+                self.assertEqual(track.translation_keys[-1].value, (1, 10, 0))
+                for time, expected in ((0, qz), (1, spec._quat_mul(qz, qz))):
+                    rotations = spec._global_sample_rotations(self.target["skeleton"], spec._track_lookup(output), time)
+                    self.assertAlmostEqual(abs(spec._quat_dot(rotations[1], expected)), 1)
+
+    def test_position_offset_constraint_alone_follows_inherited_rotation(self):
+        spec.remove_joint_map_link(self.item, "root", "root", notify_scene=False)
+        spec.set_pelvis_constraint_link(self.item, "tip", "tip", mode="position_offset", notify_scene=False)
+        output = spec.build_anim_retarget_clip(self.item, self.resolve())
+        self.assertIsNotNone(output)
+        rotations = spec._global_sample_rotations(self.target["skeleton"], spec._track_lookup(output), 0)
+        self.assertAlmostEqual(abs(spec._quat_dot(rotations[1], self.motion.tracks[0].rotation_keys[0].value)), 1)
+
+    def test_pelvis_body_axes_match_across_different_joint_axes_and_root_deletion(self):
+        import numpy as np
+        from scipy.spatial.transform import Rotation
+        from echograph.rigging.delete_joints import filter_joints
+        from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
+
+        parent = Rotation.from_euler('x', 90, degrees=True)
+        pelvis_axes = Rotation.from_euler('z', 90, degrees=True)
+        offsets = {'left_hip': (1, 0, 0), 'right_hip': (-1, 0, 0), 'spine': (0, 1, 0)}
+        source = SkeletonAsset('source', [Joint('pelvis', -1)] + [
+            Joint(name, 0, JointTransform(translation=offset)) for name, offset in offsets.items()])
+        target = SkeletonAsset('target', [
+            Joint('root', -1, JointTransform(rotation=tuple(parent.as_quat()))),
+            Joint('pelvis', 0, JointTransform(rotation=tuple((parent.inv() * pelvis_axes).as_quat()))),
+        ] + [Joint(name, 1, JointTransform(translation=tuple(pelvis_axes.inv().apply(offset))))
+             for name, offset in offsets.items()])
+        reference = AnimationClip('reference', 0, 1, 30, [])
+        motion = AnimationClip('turn', 0, 1, 30, [JointAnimationTrack('pelvis', rotation_keys=[
+            QuatKeyframe(t, tuple(Rotation.from_euler('y', angle, degrees=True).as_quat()))
+            for t, angle in ((0, 0), (0.5, 45), (1, 90))])])
+        for delete_root in (False, True):
+            rig = filter_joints(target, [], [], {'root'})[0] if delete_root else target
+            for mode in ('snap', 'position_offset'):
+                with self.subTest(delete_root=delete_root, mode=mode):
+                    model = SimpleNamespace(params=[])
+                    item = SimpleNamespace(model=model, scene=lambda: None)
+                    spec.set_pelvis_constraint_link(item, 'pelvis', 'pelvis', mode=mode, notify_scene=False)
+                    result = spec.RetargetSourceTargetResult('ok',
+                        source_context={'skeleton': source, 'clip': reference},
+                        target_context={'skeleton': rig},
+                        animation_context={'skeleton': source, 'clip': motion}, animation_connected=True)
+                    output = spec.build_anim_retarget_clip(item, result)
+                    for time in (0, 0.25, 0.5, 0.75, 1):
+                        source_world = np.array(evaluate_rig_at_time(source, motion, time).global_matrices).reshape(-1, 4, 4)
+                        target_world = np.array(evaluate_rig_at_time(rig, output, time).global_matrices).reshape(-1, 4, 4)
+                        # Joint quaternions differ, but the actual hip and spine directions must agree.
+                        for name in offsets:
+                            si, ti = spec._joint_lookup(source), spec._joint_lookup(rig)
+                            np.testing.assert_allclose(
+                                target_world[ti[name], :3, 3] - target_world[ti['pelvis'], :3, 3],
+                                source_world[si[name], :3, 3] - source_world[si['pelvis'], :3, 3], atol=1e-6)
 
     def test_joint_order_does_not_change_structure(self):
         reordered = SkeletonAsset("reordered", [Joint("tip", 1), Joint("root", -1)])

@@ -2823,6 +2823,7 @@ def _build_global_rotation_key_sets(
     source_basis: Tuple[float, float, float, float] | None = None,
     target_basis: Tuple[float, float, float, float] | None = None,
     reference_clip=None,
+    pelvis_constraint: Dict[str, str] | None = None,
 ) -> Dict[str, List[Any]]:
     try:
         from echograph.rigging.fbx_canonical import QuatKeyframe
@@ -2857,6 +2858,14 @@ def _build_global_rotation_key_sets(
             target_to_source[t_name] = s_name
 
     fallback_sample_times = _clip_rotation_sample_times(source_clip, source_tracks)
+    constraint_target = ""
+    constraint = pelvis_constraint or {}
+    if _normalize_pelvis_constraint_mode(constraint.get("mode", "none")) != "none":
+        constraint_source = constraint.get("source", "")
+        candidate_target = constraint.get("target", "")
+        if constraint_source in source_index and candidate_target in target_index:
+            constraint_target = candidate_target
+            target_to_source[constraint_target] = constraint_source
     sample_cache: Dict[float, Dict[str, Tuple[float, float, float, float]]] = {}
 
     def _target_locals_at(time_seconds: float) -> Dict[str, Tuple[float, float, float, float]]:
@@ -2899,6 +2908,11 @@ def _build_global_rotation_key_sets(
                         target_basis_inv,
                         _quat_mul(source_basis_q, _quat_mul(source_delta, _quat_mul(source_basis_inv, target_basis_q))),
                     )
+                    # Keep the target joint's reference axes, including for pelvis
+                    # constraints. A BVH pelvis and an FBX pelvis can describe the
+                    # same body orientation with different joint quaternions.
+                    # Copying the absolute quaternion turns the hip/spine offsets
+                    # sideways; the reference-relative world delta matches motion.
                     desired_global = _quat_mul(source_delta, target_bind_global[idx])
                     local = _quat_mul(_quat_inverse(parent_global), desired_global)
                     target_local_current[name] = local
@@ -2907,14 +2921,14 @@ def _build_global_rotation_key_sets(
         return target_local_current
 
     out: Dict[str, List[Any]] = {}
-    for source_name, target_name in mapping.items():
+    for target_name, source_name in target_to_source.items():
         s_name = str(source_name or "").strip()
         t_name = str(target_name or "").strip()
         if not s_name or not t_name or t_name in out:
             continue
         source_track = source_tracks.get(s_name)
         source_rotation_keys = list(getattr(source_track, "rotation_keys", []) or []) if source_track is not None else []
-        if source_rotation_keys:
+        if source_rotation_keys and not constraint_target:
             sample_rows = [
                 (
                     float(getattr(key, "time", 0.0) or 0.0),
@@ -3258,7 +3272,8 @@ def build_anim_retarget_clip(
     if source_skeleton is None or target_skeleton is None or source_clip is None:
         return None
     mapping = _joint_map_payload(model)
-    if not mapping:
+    pelvis_constraint = _pelvis_constraint_payload(model)
+    if not mapping and pelvis_constraint.get("mode") == "none":
         return None
     clip_cache_key = _retarget_clip_cache_key(
         model,
@@ -3301,8 +3316,8 @@ def build_anim_retarget_clip(
         source_basis,
         target_basis,
         reference_clip=source_context.get("clip"),
+        pelvis_constraint=pelvis_constraint,
     )
-    pelvis_constraint = _pelvis_constraint_payload(model)
     tracks = []
     used_targets = set()
     skipped: List[str] = []
@@ -3388,7 +3403,8 @@ def build_anim_retarget_clip(
         target_name = pelvis_constraint.get("target", "")
         si, ti = source_index.get(source_name), target_index.get(target_name)
         source_track = source_tracks.get(source_name)
-        if si is not None and ti is not None and source_track is not None:
+        if si is not None and ti is not None:
+            rotation_keys = list(rotation_key_sets.get(target_name) or [])
             if pelvis_constraint["mode"] == "snap":
                 translation_keys = _snap_translation_keys(
                     source_track, translation_scale, source_basis, target_basis,
@@ -3398,15 +3414,17 @@ def build_anim_retarget_clip(
                     source_track, source_joints[si].local_bind, target_joints[ti].local_bind,
                     translation_scale, source_basis, target_basis,
                 )
-            if translation_keys:
+            if translation_keys or rotation_keys:
                 constraint_track = next((track for track in tracks if track.joint_name == target_name), None)
                 if constraint_track is None:
                     tracks.append(JointAnimationTrack(
                         joint_name=target_name, translation_keys=translation_keys,
-                        rotation_keys=[], scale_keys=[],
+                        rotation_keys=rotation_keys, scale_keys=[],
                     ))
                 else:
                     constraint_track.translation_keys = translation_keys
+                    if rotation_keys:
+                        constraint_track.rotation_keys = rotation_keys
 
     if not tracks:
         _retarget_debug_log("build_retarget_clip_empty", _model=model, skipped=skipped, mapping=mapping)
@@ -3429,6 +3447,7 @@ def build_anim_retarget_clip(
             "rotation_space": "clip_start_world_delta",
             "source_reference_time": float(source_reference_time),
             "pelvis_constraint": dict(pelvis_constraint),
+            "pelvis_rotation_policy": "reference_aligned_world_delta",
         },
     )
     try:
@@ -3822,8 +3841,18 @@ def write_anim_retarget_joint_debug_snapshot(
         for t in sample_times
     }
 
+    # A constraint can exist without a green mapping link. Include it in the
+    # diagnostic rows so the pelvis driving the pose is never omitted.
+    diagnostic_links = list(mapping.items())
+    constraint = _pelvis_constraint_payload(model)
+    constraint_link = (constraint.get("source", ""), constraint.get("target", ""))
+    if constraint.get("mode") != "none" and constraint_link not in diagnostic_links:
+        diagnostic_links.append(constraint_link)
+    source_bind_rotations = _global_bind_rotations(source_skeleton)
+    target_bind_rotations = _global_bind_rotations(target_skeleton)
+
     mapped_rows: List[Dict[str, Any]] = []
-    for source_name, target_name in mapping.items():
+    for source_name, target_name in diagnostic_links:
         source_name = str(source_name or "").strip()
         target_name = str(target_name or "").strip()
         si = source_index.get(source_name, -1)
@@ -3837,6 +3866,9 @@ def write_anim_retarget_joint_debug_snapshot(
             "target_index": int(ti) if isinstance(ti, int) else -1,
             "source_parent": _joint_parent_index(source_joint) if source_joint is not None else -1,
             "target_parent": _joint_parent_index(target_joint) if target_joint is not None else -1,
+            "source_bind_global_rotation": _round_quat(source_bind_rotations[si]) if si >= 0 else None,
+            "target_bind_global_rotation": _round_quat(target_bind_rotations[ti]) if ti >= 0 else None,
+            "pelvis_constraint_mode": constraint.get("mode") if (source_name, target_name) == constraint_link else "none",
             "source_local_bind_translation": _round_vec3(
                 getattr(getattr(source_joint, "local_bind", None), "translation", (0.0, 0.0, 0.0))
                 if source_joint is not None
@@ -4187,7 +4219,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     pelvis_mode_combo.addItem("None", "none")
     pelvis_mode_combo.addItem("Position Offset", "position_offset")
     pelvis_mode_combo.addItem("Snap", "snap")
-    pelvis_mode_combo.setToolTip("Choose how the target joint translation follows the source joint.")
+    pelvis_mode_combo.setToolTip(
+        "Both modes follow source pelvis rotation using the rigs' reference-pose alignment. "
+        "Snap matches source position; Position Offset preserves the target position offset."
+    )
     try:
         pelvis_mode_combo.setMinimumWidth(150)
     except Exception:

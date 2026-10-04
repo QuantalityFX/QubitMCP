@@ -158,7 +158,10 @@ def _normalize_color(value: object) -> Optional[tuple]:
 def _pyassimp_texture_to_image(texture: object) -> Optional[object]:
     if PILImage is None or texture is None:
         return None
+    # pyassimp returns a pointer with convenience attributes; compressed data
+    # must be read from the native structure (its numpy data array is empty).
     try:
+        texture = getattr(texture, "contents", texture)
         width = int(texture.mWidth)
         height = int(texture.mHeight)
     except Exception:
@@ -178,10 +181,26 @@ def _pyassimp_texture_to_image(texture: object) -> Optional[object]:
     size = width * height * 4
     try:
         raw = ctypes.string_at(data_ptr, size)
-        img = PILImage.frombytes("RGBA", (width, height), raw, "raw", "ARGB")
+        img = PILImage.frombytes("RGBA", (width, height), raw, "raw", "BGRA")
         return img
     except Exception:
         return None
+
+
+def _resolve_fbx_texture_path(path: Path, reference: str) -> Optional[Path]:
+    reference = reference.replace("\\", "/")
+    candidate = Path(reference)
+    filename = candidate.name
+    for candidate in (
+        candidate if candidate.is_absolute() else path.parent / candidate,
+        path.with_suffix(".fbm") / filename,
+        path.parent / "textures" / filename,
+        path.parent / filename,
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
 
 def _is_ascii_fbx(path: Path) -> bool:
     try:
@@ -934,6 +953,7 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
             ai_post.aiProcess_Triangulate
             | ai_post.aiProcess_PreTransformVertices
             | ai_post.aiProcess_JoinIdenticalVertices
+            | ai_post.aiProcess_SortByPType
         )
         with pyassimp.load(str(path), file_type="fbx", processing=processing) as scene:
             points_all: List["np.ndarray"] = []
@@ -948,6 +968,10 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                 vertices = np.asarray(getattr(mesh, "vertices", []), dtype="f4")
                 faces = np.asarray(getattr(mesh, "faces", []), dtype=np.int64)
                 if vertices.size == 0 or faces.size == 0:
+                    continue
+                # Triangulate leaves line/point primitives intact (Nathan's
+                # skeleton helpers contain two-index faces).
+                if faces.ndim != 2 or faces.shape[1] != 3:
                     continue
                 tri_vertices = vertices[faces].reshape(-1, 3)
                 normals = getattr(mesh, "normals", None)
@@ -1009,36 +1033,34 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                             return text or None
                         return None
 
-                    tex_value = None
+                    # PropertyGetter.items() drops semantic IDs. Keep the native
+                    # dictionary keys so normal/opacity maps cannot become albedo.
+                    prop_items = list(dict.items(props)) if isinstance(props, dict) else list(props.items())
+                    texture_refs = []
+                    for prop_key, value in prop_items:
+                        if _prop_key_name(prop_key) in {"diffusecolor|file", "basecolor|file", "base_color|file"}:
+                            value = _prop_text(value)
+                            if value:
+                                texture_refs.append(value)
                     for semantic in (
+                        12,  # aiTextureType_BASE_COLOR (older pyassimp omits it)
                         ai_material.aiTextureType_DIFFUSE,
-                        ai_material.aiTextureType_UNKNOWN,
-                        ai_material.aiTextureType_EMISSIVE,
                     ):
-                        tex_value = props.get(("file", semantic))
-                        if isinstance(tex_value, str) and tex_value:
+                        value = _prop_text(props.get(("file", semantic)))
+                        if value:
+                            texture_refs.append(value)
+                    for tex_value in texture_refs:
+                        if tex_value.startswith("*"):
+                            try:
+                                tex_index = int(tex_value[1:])
+                                if 0 <= tex_index < len(scene.textures):
+                                    mesh_texture_image = _pyassimp_texture_to_image(scene.textures[tex_index])
+                            except Exception:
+                                mesh_texture_image = None
+                        else:
+                            mesh_texture_path = _resolve_fbx_texture_path(path, tex_value)
+                        if mesh_texture_image is not None or mesh_texture_path is not None:
                             break
-                        tex_value = None
-                    if tex_value is None:
-                        for prop_key, value in props.items():
-                            key = _prop_key_name(prop_key)
-                            text_value = _prop_text(value)
-                            if key == "file" and text_value:
-                                tex_value = text_value
-                                break
-                    if isinstance(tex_value, str) and tex_value.startswith("*"):
-                        try:
-                            tex_index = int(tex_value[1:])
-                            if 0 <= tex_index < len(scene.textures):
-                                mesh_texture_image = _pyassimp_texture_to_image(scene.textures[tex_index])
-                        except Exception:
-                            mesh_texture_image = None
-                    elif isinstance(tex_value, str) and tex_value:
-                        candidate = Path(tex_value)
-                        if not candidate.is_absolute():
-                            candidate = (path.parent / candidate).resolve()
-                        if candidate.exists():
-                            mesh_texture_path = candidate
 
                 if props:
                     color_val = props.get(("diffuse", ai_material.aiTextureType_NONE)) if props else None
@@ -1062,6 +1084,7 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                         texture_path=mesh_texture_path,
                         texture_image=mesh_texture_image,
                         base_color=mesh_color,
+                        material_name=str(props.get(("name", 0), "") or ""),
                     )
                 )
 

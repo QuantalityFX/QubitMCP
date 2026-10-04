@@ -18,7 +18,7 @@ from echograph.motion import MotionGenerationService, MotionRequest
 from echograph.motion.backends.priormdm.backend import PriorMDMBackend, PriorMDMConfig, checkpoint_settings
 from echograph.motion.conversion import (
     JOINT_NAMES, PARENTS, REST_DIRECTIONS, load_motion_archive, reconstruct_animation,
-    save_generated_motion,
+    save_generated_motion, rebuild_generated_motion,
 )
 from echograph.rigging.bvh_ingest import ingest_bvh_animation_data
 from echograph.rigging.fbx_canonical import AnimationClip, SkeletonAsset
@@ -81,6 +81,10 @@ class MotionConversionTests(unittest.TestCase):
             self.assertTrue(result.animation_path.is_file())
             loaded_skeleton, loaded_clip = load_animation(result.animation_path)
             np.testing.assert_allclose(evaluated_positions(loaded_skeleton, loaded_clip, 4), positions[4], atol=1e-6)
+            rebuilt = rebuild_generated_motion(root, root / "rebuilt")
+            self.assertEqual(rebuilt.bvh_path.name, "preview.bvh")
+            self.assertEqual(rebuilt.metadata["rotation_reconstruction_version"], 2)
+            self.assertEqual(result.bvh_path.read_bytes(), rebuilt.bvh_path.read_bytes())
 
     def test_invalid_archive_rejected(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -247,6 +247,16 @@ class FbxStage3IngestTests(unittest.TestCase):
         self.assertAlmostEqual(skin_vertex_1.influences[0].weight, 0.5)
         self.assertAlmostEqual(skin_vertex_1.influences[1].weight, 0.5)
 
+    def test_import_preserves_authored_corner_normals_through_triangulation(self) -> None:
+        scene = _make_scene_with_clamped_weights()
+        mesh = scene.meshes[0]
+        mesh.vertices.append((1, 1, 0))
+        mesh.faces = [[0, 1, 3, 2], [0, 2, 1]]
+        mesh.normal_faces = [[(0, 0.6, 0.8)] * 4, [(0, 0, -1)] * 3]
+        result = ingest_fbx_bind_data("V:/virtual/normals.fbx", scene=scene)
+        normals = result.meshes[0].metadata["triangle_normals"]
+        self.assertEqual(normals, [[0, 0.6, 0.8]] * 6 + [[0, 0, -1]] * 3)
+
     def test_missing_bone_node_creates_synthetic_joint(self) -> None:
         scene = _make_scene_with_missing_bone_node()
         result = ingest_fbx_bind_data("V:/virtual/missing.fbx", scene=scene)
@@ -257,6 +267,16 @@ class FbxStage3IngestTests(unittest.TestCase):
         self.assertTrue(
             any("synthetic root joint created" in msg.lower() for msg in result.warnings)
         )
+
+    def test_polygon_materials_follow_triangulation(self) -> None:
+        scene = _make_scene_with_clamped_weights()
+        mesh = scene.meshes[0]
+        mesh.vertices.append((1, 1, 0))
+        mesh.faces = [[0, 1, 3, 2], [0, 2, 1]]
+        mesh.face_materials = ["skin", "shirt"]
+        result = ingest_fbx_bind_data("V:/virtual/materials.fbx", scene=scene)
+        self.assertEqual(result.meshes[0].metadata["triangle_materials"], ["skin", "skin", "shirt"])
+        self.assertEqual(result.meshes[0].metadata["triangle_polygons"], [0, 0, 1])
 
     def test_joints_only_scene_uses_hierarchy_skeleton(self) -> None:
         scene = _make_joints_only_scene()

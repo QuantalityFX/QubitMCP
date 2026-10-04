@@ -2409,6 +2409,19 @@ void main() {
         n = (n.T / lengths).T
         return np.repeat(n[:, None, :], 3, axis=1).reshape(-1, 3).astype("f4", copy=False)
 
+    @staticmethod
+    def _mgl_fbx_smooth_bind_normals(positions: NDArray, indices: NDArray) -> NDArray:
+        """Generate missing normals using shared control points, not split draw vertices."""
+        triangles = indices.reshape(-1, 3)
+        points = positions[triangles]
+        face_normals = np.cross(points[:, 1] - points[:, 0], points[:, 2] - points[:, 0])
+        normals = np.zeros_like(positions, dtype="f4")
+        for corner in range(3):
+            np.add.at(normals, triangles[:, corner], face_normals)
+        lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+        normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 1.0e-8)
+        return normals[indices].astype("f4", copy=False)
+
     def _mgl_fbx_skin_specs_from_context(self, context: dict) -> List[Dict[str, Any]]:
         specs: List[Dict[str, Any]] = []
         if np is None or not isinstance(context, dict):
@@ -2466,7 +2479,14 @@ void main() {
                 except Exception:
                     tri_uvs = None
             if tri_normals is None:
-                tri_normals = self._mgl_fbx_triangle_normals(tri_points)
+                tri_normals = self._mgl_fbx_smooth_bind_normals(bind_positions, tri_indices)
+            else:
+                lengths = np.linalg.norm(tri_normals, axis=1, keepdims=True)
+                valid = np.isfinite(tri_normals).all(axis=1) & (lengths[:, 0] > 1.0e-8)
+                tri_normals = tri_normals.copy()
+                tri_normals[valid] /= lengths[valid]
+                if not np.all(valid):
+                    tri_normals[~valid] = self._mgl_fbx_smooth_bind_normals(bind_positions, tri_indices)[~valid]
             if tri_uvs is None:
                 tri_uvs = np.zeros((tri_points.shape[0], 2), dtype="f4")
             edge_idx_list: List[int] = []
@@ -2527,9 +2547,17 @@ void main() {
             if np.any(valid):
                 joint_weights[valid] = joint_weights[valid] / totals[valid]
 
+            try:
+                polygon_ids = np.asarray(metadata.get("triangle_polygons"), dtype=np.int64).reshape(-1)
+                if len(polygon_ids) != len(tri_indices) // 3:
+                    raise ValueError("polygon mapping does not match triangles")
+            except (TypeError, ValueError, AttributeError):
+                polygon_ids = np.arange(len(tri_indices) // 3, dtype=np.int64)
             specs.append(
                 {
                     "name": str(getattr(mesh_obj, "name", "") or ""),
+                    "topology_mesh": str(getattr(mesh_obj, "name", "") or ""),
+                    "triangle_polygons": polygon_ids,
                     "bind_positions": bind_positions,
                     "triangle_indices": tri_indices,
                     "edge_indices": edge_indices,
@@ -2541,7 +2569,28 @@ void main() {
                     "inverse_bind_matrices": inverse_bind_matrices,
                 }
             )
-        return specs
+        # Keep material subsets in canonical triangle order, sharing control
+        # points and weights so every subset follows the same rig deformation.
+        material_specs = []
+        meshes_by_name = {str(getattr(mesh, "name", "")): mesh for mesh in list(context.get("meshes") or [])}
+        for spec in specs:
+            mesh = meshes_by_name.get(spec["name"])
+            metadata = getattr(mesh, "metadata", {}) or {}
+            materials = list(metadata.get("triangle_materials") or [])
+            if len(materials) * 3 != len(spec["triangle_indices"]) or not any(materials):
+                material_specs.append(spec)
+                continue
+            materials = np.asarray(materials, dtype=object)
+            for material in dict.fromkeys(materials.tolist()):
+                corners = np.repeat(materials == material, 3)
+                subset = dict(spec)
+                subset["name"] = f"{spec['name']}::{material}"
+                subset["material_name"] = material
+                subset["triangle_polygons"] = spec["triangle_polygons"][materials == material]
+                for key in ("triangle_indices", "bind_tri_points", "bind_tri_normals", "bind_tri_uvs"):
+                    subset[key] = spec[key][corners]
+                material_specs.append(subset)
+        return material_specs
 
     @staticmethod
     def _mgl_uvs_have_signal(uvs: object) -> bool:
@@ -2586,11 +2635,16 @@ void main() {
                 source_by_name[key] = source_sub
         for key in duplicate_names:
             source_by_name.pop(key, None)
+        source_by_material = {
+            str(sub.material_name): sub for sub in source_submeshes if sub.material_name
+        }
 
         for idx, target_sub in enumerate(target_submeshes):
             key = str(getattr(target_sub, "name", "") or "").strip().lower()
-            source_sub = source_by_name.get(key) if key else None
-            if source_sub is None and idx < len(source_submeshes):
+            source_sub = source_by_material.get(str(target_sub.material_name or ""))
+            if source_sub is None:
+                source_sub = source_by_name.get(key) if key else None
+            if source_sub is None and target_sub.material_name is None and idx < len(source_submeshes):
                 source_sub = source_submeshes[idx]
             if source_sub is None:
                 continue
@@ -2669,6 +2723,10 @@ void main() {
                     normals=normals,
                     uvs=uvs,
                     name=str(spec.get("name", "") or "").strip() or None,
+                    material_name=spec.get("material_name"),
+                    topology_mesh=spec.get("topology_mesh"),
+                    vertex_ids=spec.get("triangle_indices"),
+                    triangle_polygons=spec.get("triangle_polygons"),
                 )
             )
             points_all.append(points)
@@ -3278,6 +3336,46 @@ void main() {
         except Exception:
             pass
 
+    def _mgl_fbx_deform_triangle_normals(self, mesh: dict, tri_points: NDArray, skin_mats=None) -> NDArray:
+        """Skin authored corner normals without welding hard edges or UV seams."""
+        try:
+            bind = np.asarray(mesh.get("bind_tri_normals"), dtype="f4").reshape(-1, 3)
+            indices = np.asarray(mesh.get("triangle_indices"), dtype=np.int64).ravel()
+            if bind.shape != tri_points.shape or bind.shape[0] != indices.size:
+                return self._mgl_fbx_triangle_normals(tri_points)
+        except (TypeError, ValueError):
+            return self._mgl_fbx_triangle_normals(tri_points)
+
+        def normal_matrices(linear):
+            try:
+                return np.linalg.inv(linear).swapaxes(-1, -2)
+            except np.linalg.LinAlgError:
+                return np.linalg.pinv(linear).swapaxes(-1, -2)
+
+        normals = bind.copy()
+        if skin_mats is not None:
+            transforms = normal_matrices(np.asarray(skin_mats, dtype="f4")[:, :3, :3])
+            joints = np.asarray(mesh["joint_indices"], dtype=np.int32)[indices]
+            weights = np.asarray(mesh["joint_weights"], dtype="f4")[indices]
+            normals.fill(0.0)
+            weighted = np.zeros(indices.size, dtype=bool)
+            for slot in range(joints.shape[1]):
+                js, ws = joints[:, slot], weights[:, slot]
+                valid = (js >= 0) & (js < len(transforms)) & (ws > 1.0e-8)
+                normals[valid] += np.einsum("nij,nj->ni", transforms[js[valid]], bind[valid]) * ws[valid, None]
+                weighted |= valid
+            normals[~weighted] = bind[~weighted]
+        affine = mesh.get("affine")
+        if affine is not None:
+            transform = normal_matrices(np.asarray(affine, dtype="f4").reshape(4, 4)[:3, :3])
+            normals = normals @ transform.T
+        lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+        valid = np.isfinite(normals).all(axis=1) & (lengths[:, 0] > 1.0e-8)
+        normals[valid] /= lengths[valid]
+        if not np.all(valid):
+            normals[~valid] = self._mgl_fbx_triangle_normals(tri_points)[~valid]
+        return normals.astype("f4", copy=False)
+
     @staticmethod
     def _mgl_fbx_transform_points_row_major(mats: NDArray, points: NDArray) -> NDArray:
         x = points[:, 0]
@@ -3311,6 +3409,10 @@ void main() {
             return np.eye(4, dtype="f4")
         src = src[:count]
         dst = dst[:count]
+        if np.array_equal(src, dst):
+            # A planar mesh cannot constrain the off-plane part of an affine fit.
+            # Canonical buffers already share the bind space: keep its normals too.
+            return np.eye(4, dtype="f4")
         ones = np.ones((count, 1), dtype="f4")
         lhs = np.concatenate((src, ones), axis=1)
         try:
@@ -3385,6 +3487,7 @@ void main() {
         payload = item.payload or {}
         context = payload.get("fbx_rig_context")
         context_dict = context if isinstance(context, dict) else None
+        previous_runtime = payload.get("_fbx_skin_runtime")
         skinning_enabled = self._mgl_fbx_mesh_skinning_enabled(context_dict)
         weight_debug = self._mgl_fbx_skin_weight_debug_enabled(context_dict)
         settings_sig = (1 if skinning_enabled else 0, 1 if weight_debug else 0)
@@ -3404,7 +3507,7 @@ void main() {
         payload["_fbx_skin_weight_debug"] = bool(weight_debug)
 
         if not skinning_enabled:
-            runtime = payload.get("_fbx_skin_runtime")
+            runtime = previous_runtime
             if isinstance(runtime, dict):
                 for mesh in list(runtime.get("meshes") or []):
                     try:
@@ -3416,13 +3519,17 @@ void main() {
                         affine = mesh.get("affine")
                         if affine is not None:
                             tri_points = self._mgl_fbx_apply_affine_row_major(affine, tri_points)
-                        tri_normals = self._mgl_fbx_triangle_normals(tri_points)
+                        tri_normals = self._mgl_fbx_deform_triangle_normals(mesh, tri_points)
                         vbo = mesh.get("vbo")
                         nbo = mesh.get("nbo")
                         if vbo is not None:
                             vbo.write(tri_points.tobytes())
                         if nbo is not None:
                             nbo.write(tri_normals.tobytes())
+                        entry = mesh.get("entry")
+                        if isinstance(entry, dict):
+                            entry["points"] = tri_points
+                            entry["normals"] = tri_normals
                     except Exception:
                         continue
             payload.pop("_fbx_skin_runtime", None)
@@ -3587,6 +3694,7 @@ void main() {
                     {
                         "bind_positions": bind_positions,
                         "triangle_indices": triangle_indices,
+                        "bind_tri_normals": np.asarray(spec["bind_tri_normals"], dtype="f4").copy(),
                         "joint_indices": spec_joint_indices,
                         "joint_weights": spec_joint_weights,
                         "influence_slots": influence_slots,
@@ -3674,6 +3782,7 @@ void main() {
                     {
                         "bind_positions": np.asarray(spec["bind_positions"], dtype="f4"),
                         "triangle_indices": np.asarray(spec["triangle_indices"], dtype=np.int64),
+                        "bind_tri_normals": tri_normals.copy(),
                         "joint_indices": spec_joint_indices,
                         "joint_weights": spec_joint_weights,
                         "influence_slots": influence_slots,
@@ -3883,7 +3992,7 @@ void main() {
                 except Exception:
                     deformed_for_render = deformed
             tri_points = deformed_for_render[triangle_indices].reshape(-1, 3).astype("f4", copy=False)
-            tri_normals = self._mgl_fbx_triangle_normals(tri_points)
+            tri_normals = self._mgl_fbx_deform_triangle_normals(mesh, tri_points, mesh_skin_mats)
             vbo = mesh.get("vbo")
             nbo = mesh.get("nbo")
             entry = mesh.get("entry")
@@ -3915,6 +4024,15 @@ void main() {
                 with profile_scope("render.3d.mgl.fbx_skin.selection_topology"):
                     self._mgl_store_mesh_topology_for_owner(owner, payload)
                     self._mgl_clear_mesh_selection_overlay_cache()
+            elif owner:
+                # A paused frame will skip the next skin upload. Discard the
+                # old positions now so enabling selection rebuilds from the
+                # current render buffers, even without advancing the timeline.
+                topo_map = getattr(self, "_mgl_scene_mesh_topology_by_owner", None)
+                if isinstance(topo_map, dict):
+                    for key in list(topo_map):
+                        if str(key).strip().lower() == owner.lower():
+                            topo_map.pop(key, None)
         except Exception:
             pass
         item.payload = payload
@@ -18282,6 +18400,7 @@ void main() {
                         sub
                         for sub in submeshes
                         if str((sub or {}).get("name") or "").strip().lower() not in hidden_submeshes
+                        and str((sub or {}).get("name") or "").partition("::")[0].strip().lower() not in hidden_submeshes
                     ]
             except Exception:
                 submeshes = payload.get("submeshes")
@@ -18402,6 +18521,9 @@ void main() {
                     proc_state = getattr(self, "_mgl_proc_gpu_state", None)
             except Exception:
                 proc_state = None
+        textures_enabled = bool(getattr(self, "_mgl_textures_enabled", True))
+        if not textures_enabled:
+            proc_state = None
         self._mgl_apply_procedural_uniforms(proc_state)
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
         weight_debug = bool(payload.get("_fbx_skin_weight_debug", False))
@@ -18963,7 +19085,7 @@ void main() {
             for sub in submeshes:
                 color = sub.get("color") or self._mgl_mesh_color
                 tex = manual_texture or sub.get("texture")
-                use_texture = (tex is not None) and (not use_vertex_color)
+                use_texture = textures_enabled and (tex is not None) and (not use_vertex_color)
                 try:
                     self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                     self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
@@ -18995,7 +19117,7 @@ void main() {
                 _apply_material_uniforms()
             color = payload.get("color") or self._mgl_mesh_color
             tex = manual_texture or payload.get("texture")
-            use_texture = (tex is not None) and (not use_vertex_color)
+            use_texture = textures_enabled and (tex is not None) and (not use_vertex_color)
             try:
                 self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                 self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
@@ -19040,14 +19162,14 @@ void main() {
                 overrides = getattr(self, "_mgl_scene_volume_overrides_by_owner", {}).get(owner)
             except Exception:
                 overrides = None
-        if overrides:
+        if overrides and textures_enabled:
 
             def _draw_override(tex_override):
                 if submeshes:
                     for sub in submeshes:
                         color = sub.get("color") or self._mgl_mesh_color
                         tex = tex_override
-                        use_texture = (tex is not None) and (not use_vertex_color)
+                        use_texture = textures_enabled and (tex is not None) and (not use_vertex_color)
                         try:
                             self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                             self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
@@ -19065,7 +19187,7 @@ void main() {
                 else:
                     color = payload.get("color") or self._mgl_mesh_color
                     tex = tex_override
-                    use_texture = (tex is not None) and (not use_vertex_color)
+                    use_texture = textures_enabled and (tex is not None) and (not use_vertex_color)
                     try:
                         self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                         self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
@@ -19797,6 +19919,12 @@ void main() {
             return
 
         if not is_volume and not xray:
+            surface_wire = tag in {"scene-wire", "model-wire"}
+            if surface_wire:
+                # Screen-width edge ribbons must remain visible from either side,
+                # and need a small depth bias against their own filled surface.
+                self._mgl_ctx.disable(moderngl.CULL_FACE)
+                wire_prog["DepthBias"].value = 1.0e-5
             try:
                 self._mgl_ctx.depth_func = "<="
             except Exception:
@@ -19834,6 +19962,10 @@ void main() {
                         + f"pass=front err={exc!r}"
                     )
             finally:
+                if surface_wire:
+                    wire_prog["DepthBias"].value = 0.0
+                    if bool(getattr(self, "_mgl_cull_enabled", False)):
+                        self._mgl_ctx.enable(moderngl.CULL_FACE)
                 if prev_depth_mask is not None:
                     try:
                         self._mgl_ctx.depth_mask = prev_depth_mask
@@ -20090,6 +20222,9 @@ void main() {
                     "uvs": uvs,
                     "colors": colors,
                     "name": sub_name,
+                    "topology_mesh": sub.topology_mesh,
+                    "vertex_ids": sub.vertex_ids,
+                    "triangle_polygons": sub.triangle_polygons,
                 }
             )
             total_indices += int(indices.size)
@@ -20160,9 +20295,19 @@ void main() {
     def _mgl_mesh_topology_from_entries(self, entries: List[Dict[str, object]]) -> Optional[Dict[str, object]]:
         if np is None:
             return None
+        # Skinning replaces positions every frame, but authored connectivity is
+        # immutable. Reuse it instead of rebuilding polygon adjacency each tick.
+        cache_key = None
+        cached_authored = None
+        topology_cache = getattr(self, "_mgl_authored_topology_cache", {})
+        if entries and all(isinstance(e, dict) and e.get("vertex_ids") is not None for e in entries):
+            cache_key = tuple((id(e), id(e.get("indices")), id(e.get("vertex_ids")),
+                               id(e.get("triangle_polygons"))) for e in entries)
+            cached_authored = topology_cache.get(cache_key, (None, None))[0]
         point_blocks: List[NDArray] = []
         uv_blocks: List[NDArray] = []
         index_blocks: List[NDArray] = []
+        vertex_keys, polygon_keys = [], []
         offset = 0
         for entry in list(entries or []):
             if not isinstance(entry, dict):
@@ -20203,6 +20348,18 @@ void main() {
             if triangles.size == 0:
                 continue
             point_blocks.append(points.astype("f4", copy=False))
+            if cached_authored is None:
+                mesh_key = entry.get("topology_mesh") or ("entry", len(point_blocks))
+                vertex_ids = entry.get("vertex_ids")
+                if vertex_ids is not None and len(vertex_ids) == len(points):
+                    vertex_keys.extend((mesh_key, int(i)) for i in vertex_ids)
+                else:
+                    vertex_keys.extend((mesh_key, tuple(p)) for p in points)
+                polygon_ids = entry.get("triangle_polygons")
+                if polygon_ids is not None and len(polygon_ids) == len(valid):
+                    polygon_keys.extend((mesh_key, int(i)) for i in np.asarray(polygon_ids)[valid])
+                else:
+                    polygon_keys.extend((("entry", len(point_blocks)), i) for i in range(len(triangles)))
             uv_blocks.append(uvs.astype("f4", copy=False))
             index_blocks.append((triangles + int(offset)).astype(np.int64, copy=False))
             offset += int(points.shape[0])
@@ -20217,37 +20374,28 @@ void main() {
         if points_all.size == 0 or triangles_all.size == 0:
             return None
         try:
-            edge_arr = np.concatenate(
-                (
-                    triangles_all[:, [0, 1]],
-                    triangles_all[:, [1, 2]],
-                    triangles_all[:, [2, 0]],
-                ),
-                axis=0,
-            ).astype(np.int64, copy=False)
-            edge_arr.sort(axis=1)
-            edge_arr = edge_arr[edge_arr[:, 0] != edge_arr[:, 1]]
-            edge_arr = np.unique(edge_arr, axis=0).reshape(-1, 2)
-        except Exception:
-            edge_arr = np.zeros((0, 2), dtype=np.int64)
-        try:
-            wire_points = self._mgl_edge_vertices_from_mesh(points_all, triangles_all.reshape(-1))
-        except Exception:
-            wire_points = None
-        try:
             bmin = points_all.min(axis=0).astype("f4")
             bmax = points_all.max(axis=0).astype("f4")
         except Exception:
             bmin = np.zeros(3, dtype="f4")
             bmax = np.zeros(3, dtype="f4")
+        from .mesh_polygons import polygon_topology
+        authored = cached_authored
+        if authored is None:
+            authored = polygon_topology(triangles_all, vertex_keys, polygon_keys)
+            if cache_key is not None:
+                if len(topology_cache) >= 32:
+                    topology_cache.pop(next(iter(topology_cache)))
+                topology_cache[cache_key] = (authored, tuple(entries))
+                self._mgl_authored_topology_cache = topology_cache
         return {
             "points": points_all,
             "uvs": uvs_all,
             "triangles": triangles_all,
-            "edges": edge_arr,
-            "wire_points": wire_points,
+            "wire_points": points_all[authored["edges"]].reshape(-1, 3),
             "bounds_min": bmin,
             "bounds_max": bmax,
+            **authored,
         }
 
     def _mgl_store_mesh_topology_for_owner(self, owner: str, payload: dict) -> None:
@@ -27566,7 +27714,10 @@ void main() {
         elif mode == "edge":
             self._mgl_draw_mesh_overlay_edge(elem, color, mvp)
         elif mode == "face":
-            self._mgl_draw_mesh_overlay_face(elem, color, mvp)
+            from .mesh_polygons import expand_face_elements
+            topo = self._mgl_mesh_topology_for_owner(str(elem.get("owner") or ""))
+            for triangle in expand_face_elements(topo, elem):
+                self._mgl_draw_mesh_overlay_face(triangle, color, mvp)
 
     def _mgl_draw_curve_control_points_overlay(self, *, mvp) -> bool:
         if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() != "point":
@@ -27580,8 +27731,6 @@ void main() {
         for owner, topo in list(topo_map.items()):
             owner_s = str(owner or "").strip()
             if not owner_s or not isinstance(topo, dict):
-                continue
-            if not bool(topo.get("curve_topology", False)):
                 continue
             if not self._mgl_scene_owner_visible(owner_s):
                 continue
@@ -27599,7 +27748,7 @@ void main() {
                     root_indices = {int(idx) for idx in (point_groups.get("root") or [])}
             except Exception:
                 root_indices = set()
-            all_indices = list(range(int(points.shape[0])))
+            all_indices = list(topo.get("point_indices", range(int(points.shape[0]))))
             regular_indices = [idx for idx in all_indices if idx not in root_indices]
             if not regular_indices and not root_indices:
                 regular_indices = all_indices

@@ -318,6 +318,30 @@ def _ray_from_mouse(self, pos: QtCore.QPoint):
 
 def mousePressEvent(self, e):
     self._scene_joint_overlap_press = None
+    if (getattr(self, "_mesh_select_mode", "") == "face"
+            and getattr(self, "_mesh_polygon_a_held", False)
+            and e.modifiers() & QtCore.Qt.ShiftModifier
+            and not e.modifiers() & QtCore.Qt.AltModifier
+            and e.button() in (QtCore.Qt.LeftButton, QtCore.Qt.MiddleButton)):
+        from .mesh_polygons import polygon_path
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        px, py, vw, vh = self._handle_mouse_release_moderngl_click_pick_viewport(e=e)
+        elem = renderer.pick_mesh_element_at(px, py, vw, vh, mode="face")
+        anchor = getattr(self, "_mesh_polygon_anchor", None)
+        if isinstance(elem, dict):
+            if isinstance(anchor, dict) and anchor.get("owner") == elem.get("owner"):
+                topo = renderer._mgl_mesh_topology_for_owner(elem["owner"])
+                indices = polygon_path(topo, int(anchor["face_index"]), int(elem["face_index"]),
+                                       loop=e.button() == QtCore.Qt.MiddleButton)
+                self._set_mesh_element_selection_many([
+                    dict(elem, face_index=i, indices=tuple(int(v) for v in topo["triangles"][i]))
+                    for i in indices], selection_op="add")
+            else:
+                self._set_mesh_element_selection(elem, selection_op="add")
+            self._mesh_polygon_anchor = dict(elem)
+        self._mgl_pick_press_pos = None
+        e.accept()
+        return
     # Keep branch order stable so press behavior remains unchanged.
     if self._handle_mouse_press_moderngl(e):
         return

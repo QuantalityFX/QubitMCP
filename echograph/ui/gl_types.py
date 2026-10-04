@@ -26,6 +26,10 @@ class SubMeshData:
     texture_path: Optional[Path] = None
     texture_image: Optional[object] = None
     base_color: Optional[Tuple[float, float, float, float]] = None
+    material_name: Optional[str] = None
+    topology_mesh: Optional[str] = None
+    vertex_ids: Optional["np.ndarray"] = None
+    triangle_polygons: Optional["np.ndarray"] = None
 
 
 @dataclass

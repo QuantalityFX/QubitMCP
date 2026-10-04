@@ -865,9 +865,11 @@ void main() {
     "wire_fragment": """
 #version 330
 uniform vec4 Color;
+uniform float DepthBias;
 out vec4 f_color;
 void main() {
     f_color = Color;
+    gl_FragDepth = clamp(gl_FragCoord.z - DepthBias, 0.0, 1.0);
 }
 """,
 

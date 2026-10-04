@@ -90,6 +90,7 @@ class _SimpleMesh:
     uv_faces: List[List[Tuple[float, float]]] = field(default_factory=list)
     uv_set_name: str = ""
     normal_faces: List[List[Tuple[float, float, float]]] = field(default_factory=list)
+    face_materials: List[str] = field(default_factory=list)
     bones: List[_SimpleBone] = field(default_factory=list)
 
 
@@ -1064,6 +1065,7 @@ def _build_mesh_assets(
         metadata = {
             "source_mesh_index": int(mesh_idx),
             "source_mesh_name": raw_mesh_name,
+            "triangle_polygons": [i for i, face in enumerate(faces) for _ in range(max(0, len(face) - 2))],
             "bind_positions": [list(v) for v in bind_positions],
             "edge_indices": [int(i) for i in edge_indices],
             "inverse_bind_matrices": mesh_inverse_bind_matrices,
@@ -1079,6 +1081,14 @@ def _build_mesh_assets(
                 [float(x), float(y), float(z)]
                 for x, y, z in triangle_normals
             ]
+        face_materials = list(getattr(mesh, "face_materials", []) or [])
+        if len(face_materials) == len(faces):
+            triangle_materials = [
+                str(material) for face, material in zip(faces, face_materials)
+                for _ in range(max(0, len(face) - 2))
+            ]
+            if len(triangle_materials) * 3 == len(triangle_indices):
+                metadata["triangle_materials"] = triangle_materials
 
         asset = SkeletalMeshAsset(
             name=mesh_name,
@@ -1314,6 +1324,12 @@ def _build_simple_mesh_from_fbxsdk(
             uv_set_name = ""
     out.uv_set_name = uv_set_name
 
+    material_element = None
+    try:
+        material_element = mesh_obj.GetElementMaterial(0)
+    except Exception:
+        pass
+
     has_normals = False
     try:
         has_normals = _to_int(getattr(mesh_obj, "GetElementNormalCount", lambda: 0)(), 0) > 0
@@ -1364,6 +1380,16 @@ def _build_simple_mesh_from_fbxsdk(
                         normal_face_valid = False
         if len(face) >= 3:
             out.faces.append(face)
+            material_name = ""
+            try:
+                mapping = material_element.GetMappingMode()
+                mapping_enum = getattr(fbx_mod.FbxLayerElement, "EMappingMode", fbx_mod.FbxLayerElement)
+                slot = pidx if mapping == mapping_enum.eByPolygon else 0
+                material_index = material_element.GetIndexArray().GetAt(slot)
+                material_name = str(node_obj.GetMaterial(material_index).GetName() or "")
+            except Exception:
+                pass
+            out.face_materials.append(material_name)
             out.uv_faces.append(uv_face if uv_face_valid and len(uv_face) == len(face) else [])
             out.normal_faces.append(
                 normal_face

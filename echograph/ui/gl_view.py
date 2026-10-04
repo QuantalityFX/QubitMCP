@@ -1073,6 +1073,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._build_mesh_selection_buttons()
         self._build_mesh_box_select_button()
         self._build_point_id_button()
+        self._build_texture_display_button()
         self._build_camera_orbit_button()
         self._build_fly_mode_button()
         self._build_grid_button()
@@ -1237,6 +1238,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             y += self._side_btn_size + self._side_btn_gap
         elif point_id_btn is not None:
             point_id_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        texture_frame = getattr(self, "_texture_display_btn_frame", None)
+        if texture_frame is not None:
+            texture_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
         grid_frame = getattr(self, "_grid_btn_frame", None)
         grid_btn = getattr(self, "_grid_btn", None)
@@ -1858,7 +1863,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     btn.blockSignals(False)
                 except Exception:
                     pass
-            btn.setToolTip(f"{tip}: {'On' if active else 'Off'}")
+            shortcut_tip = "\nShift+A + left-click: polygon path\nShift+A + middle-click: extend quad loop" if mode == "face" else ""
+            btn.setToolTip(f"{tip}: {'On' if active else 'Off'}{shortcut_tip}")
             self._apply_selection_tool_icon_style(btn, active=active)
 
     def _build_mesh_box_select_button(self) -> None:
@@ -2012,6 +2018,29 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             self._point_id_btn = None
             self._point_id_btn_frame = None
 
+    def _build_texture_display_button(self) -> None:
+        self._mgl_textures_enabled = True
+        btn = QtWidgets.QToolButton(self)
+        btn.setCursor(QtCore.Qt.PointingHandCursor)
+        btn.setCheckable(True)
+        btn.setChecked(True)
+        btn.setIconSize(QtCore.QSize(self._side_btn_icon, self._side_btn_icon))
+        btn.setFixedSize(self._side_btn_size, self._side_btn_size)
+        btn.setIcon(QtGui.QIcon(str(Path(__file__).resolve().parents[2] / "icons" / "TextureNode_Icon.png")))
+        btn.setToolTip("Viewport Textures: On")
+        btn.setAccessibleName("Viewport Textures")
+        btn.toggled.connect(self._on_texture_display_toggled)
+        self._texture_display_btn = btn
+        self._texture_display_btn_frame = self._wrap_side_button(btn, "_texture_display_btn_frame")
+        self._apply_selection_tool_icon_style(btn, active=True)
+        btn.show()
+
+    def _on_texture_display_toggled(self, checked: bool) -> None:
+        self._mgl_textures_enabled = bool(checked)
+        self._texture_display_btn.setToolTip(f"Viewport Textures: {'On' if checked else 'Off'}")
+        self._apply_selection_tool_icon_style(self._texture_display_btn, active=bool(checked))
+        self.update()
+
     def _load_point_id_icon(self) -> None:
         if getattr(self, "_point_id_icon", None) is not None:
             return
@@ -2047,6 +2076,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
 
     def _on_mesh_selection_mode_clicked(self, mode: str) -> None:
+        self._mesh_polygon_anchor = None
+        self._mesh_polygon_a_held = False
         mode = str(mode or "").strip().lower()
         valid = {spec[0] for spec in self._mesh_selection_mode_specs()}
         if mode not in valid:
@@ -2141,6 +2172,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
     def _set_mesh_element_selection(self, elem, *, additive: bool = False, selection_op: str | None = None) -> None:
         next_elem = dict(elem) if isinstance(elem, dict) else None
+        if next_elem is not None and next_elem.get("mode") == "face":
+            self._mesh_polygon_anchor = dict(next_elem)
         op = self._mesh_selection_operation(selection_op, additive=bool(additive))
         self._set_mesh_element_selection_many([next_elem] if next_elem is not None else [], selection_op=op)
 
@@ -2158,6 +2191,17 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
     def _mesh_selection_candidate_list_and_keys(self, elems) -> Tuple[List[dict], set]:
         clean = []
         seen = set()
+        if isinstance(elems, (list, tuple)):
+            from .mesh_polygons import expand_face_elements
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            expanded = []
+            for elem in elems:
+                if isinstance(elem, dict) and elem.get("mode") == "face":
+                    topo = renderer._mgl_mesh_topology_for_owner(str(elem.get("owner") or ""))
+                    expanded.extend(expand_face_elements(topo, elem))
+                else:
+                    expanded.append(elem)
+            elems = expanded
         if isinstance(elems, (list, tuple)):
             for elem in elems:
                 if not isinstance(elem, dict):
@@ -2347,6 +2391,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 pass
 
     def _clear_mesh_element_selection(self) -> None:
+        self._mesh_polygon_anchor = None
         had_state = bool(
             getattr(self, "_mesh_select_selected", None)
             or getattr(self, "_mesh_select_hover", None)
@@ -9523,6 +9568,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             key = e.key()
         except Exception:
             key = None
+        if key == QtCore.Qt.Key_A and getattr(self, "_mesh_select_mode", "") == "face" and not getattr(self, "_fly_mode_enabled", False):
+            self._mesh_polygon_a_held = True
+            e.accept()
+            return
         mask_key_press = getattr(self, "_handle_mask_paint_key_press", None)
         if callable(mask_key_press) and mask_key_press(e, key):
             return
@@ -9606,6 +9655,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             key = e.key()
         except Exception:
             key = None
+        if key == QtCore.Qt.Key_A:
+            self._mesh_polygon_a_held = False
         mask_key_release = getattr(self, "_handle_mask_paint_key_release", None)
         if callable(mask_key_release) and mask_key_release(e, key):
             return
@@ -9646,6 +9697,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         super().keyReleaseEvent(e)
 
     def focusOutEvent(self, e):
+        self._mesh_polygon_a_held = False
         try:
             self._mask_paint_b_held = False
             self._mask_paint_resize_active = False

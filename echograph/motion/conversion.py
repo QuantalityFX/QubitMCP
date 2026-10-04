@@ -18,6 +18,7 @@ from echograph.rigging.fbx_canonical import (
     QuatKeyframe, SkeletonAsset, Vec3Keyframe,
 )
 from .types import GeneratedMotion
+from .rotation_reconstruction import bend_frame, parent_swing, stabilize_joint
 
 JOINT_NAMES = ("pelvis", "left_hip", "right_hip", "spine1", "left_knee", "right_knee",
                "spine2", "left_ankle", "right_ankle", "spine3", "left_foot", "right_foot",
@@ -47,20 +48,6 @@ def load_motion_archive(path: Path) -> tuple[np.ndarray, float, dict]:
     return positions, fps, metadata
 
 
-def _align_vector(source: np.ndarray, target: np.ndarray) -> np.ndarray:
-    source = source / np.linalg.norm(source)
-    target = target / np.linalg.norm(target)
-    cross = np.cross(source, target)
-    dot = float(np.clip(source @ target, -1, 1))
-    if dot < -1 + 1e-8:
-        axis = np.cross(source, np.eye(3)[np.argmin(np.abs(source))])
-        return Rotation.from_rotvec(axis / np.linalg.norm(axis) * np.pi).as_matrix()
-    if np.linalg.norm(cross) < 1e-10:
-        return np.eye(3)
-    skew = np.array([[0, -cross[2], cross[1]], [cross[2], 0, -cross[0]], [-cross[1], cross[0], 0]])
-    return np.eye(3) + skew + skew @ skew / (1 + dot)
-
-
 def reconstruct_animation(positions: np.ndarray, fps: float, metadata: dict, *, rest_offsets=None):
     children = [[j for j, p in enumerate(PARENTS) if p == i] for i in range(22)]
     offsets = REST_DIRECTIONS.copy()
@@ -76,6 +63,12 @@ def reconstruct_animation(positions: np.ndarray, fps: float, metadata: dict, *, 
     global_rot = np.zeros((len(positions), 22, 3, 3))
     local_rot = np.zeros_like(global_rot)
     local_pos = np.zeros_like(positions)
+    bend_chains = {
+        1: (4, 7, np.array([0., 0., -1.])),
+        2: (5, 8, np.array([0., 0., -1.])),
+        16: (18, 20, np.array([0., 0., 1.])),
+        17: (19, 21, np.array([0., 0., 1.])),
+    }
     for frame, pose in enumerate(positions):
         for joint, parent in enumerate(PARENTS):
             parent_rotation = global_rot[frame, parent] if parent >= 0 else np.eye(3)
@@ -89,22 +82,36 @@ def reconstruct_animation(positions: np.ndarray, fps: float, metadata: dict, *, 
                     u, _, vt = np.linalg.svd(target.T @ source)
                     rotation = u @ np.diag([1, 1, np.linalg.det(u @ vt)]) @ vt
                 else:
-                    # Parallel transport the prior orientation to avoid arbitrary
-                    # twist flips along single-child limbs between frames.
-                    previous = global_rot[frame - 1, joint] if frame else parent_rotation
-                    rotation = _align_vector(previous @ source[0], target[0]) @ previous
+                    previous = local_rot[frame - 1, joint] if frame else None
+                    direction = parent_rotation.T @ target[0]
+                    if joint in bend_chains:
+                        middle, end, rest_pole = bend_chains[joint]
+                        local = bend_frame(source[0], direction,
+                                           parent_rotation.T @ (pose[end] - pose[middle]),
+                                           rest_pole, previous, fps=fps)
+                    else:
+                        local = parent_swing(source[0], direction, previous)
+                    local = stabilize_joint(joint, source[0], direction, local, previous, fps)
+                    rotation = parent_rotation @ local
             else:
                 rotation = parent_rotation
             global_rot[frame, joint] = rotation
             local_rot[frame, joint] = parent_rotation.T @ rotation
             local_pos[frame, joint] = parent_rotation.T @ (pose[joint] - pose[parent]) if parent >= 0 else pose[joint]
-    metadata = {**metadata, "rotation_method": "geometric XYZ reconstruction; twist is underdetermined",
+    metadata = {**metadata, "rotation_method": "parent-relative swing with limb bend-plane alignment",
+                "rotation_reconstruction_version": 2,
+                "twist_policy": "anatomical bend planes; unobserved neck/foot roll follows parent; wrists follow forearms",
+                "rotation_limits": {"knee_flex_degrees": 165, "elbow_flex_degrees": 155,
+                                    "neck_swing_degrees": 70, "ankle_swing_degrees": 85},
                 "bvh_note": "Fixed median bone lengths; skeleton preview/blocking, not a fitted production rig.",
                 "units": "metres", "up_axis": "Y", "frame_count": len(positions)}
     bind_globals = np.zeros((22, 3))
     joints = []
     tracks = []
     quaternions = Rotation.from_matrix(local_rot.reshape(-1, 3, 3)).as_quat().reshape(len(positions), 22, 4)
+    for frame in range(1, len(quaternions)):
+        flips = np.sum(quaternions[frame - 1] * quaternions[frame], axis=1) < 0
+        quaternions[frame, flips] *= -1
     for index, (name, parent) in enumerate(zip(JOINT_NAMES, PARENTS)):
         bind_globals[index] = offsets[index] + (bind_globals[parent] if parent >= 0 else 0)
         inverse_bind = np.eye(4)
@@ -242,6 +249,39 @@ def save_generated_animation(run_dir: Path, preview_profile="model"):
     _, _, skeleton, clip, _, _ = _load_generated_motion(run_dir, preview_profile)
     _write_animation(animation, skeleton, clip)
     return skeleton, clip
+
+
+def rebuild_generated_motion(run_dir: Path, output_dir: Path) -> GeneratedMotion:
+    """Reconstruct a saved generation (including hands) into a separate directory.
+
+    Reuses the original motion/hand archives without inference or modifying any
+    existing BVH, reference pose, or graph connection.
+    """
+    from .director import HandIntent
+    from .hands import add_preview_hands, export_preview_bvh, load_hand_archive, merge_hand_layer
+
+    run_dir, output_dir = Path(run_dir), Path(output_dir)
+    if run_dir.resolve() == output_dir.resolve():
+        raise ValueError("Choose a separate directory for the rebuilt animation.")
+    _, _, metadata = load_motion_archive(run_dir / "motion.npz")
+    manifest_path = run_dir / "body_hands.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else None
+    stem = "preview_hands" if manifest else "preview"
+    bvh, animation = output_dir / f"{stem}.bvh", output_dir / "animation.json"
+    if bvh.exists() or animation.exists():
+        raise FileExistsError("Rebuilt output already exists; choose a new directory.")
+    hands = load_hand_archive(run_dir / manifest["hand_archive"]) if manifest else None
+    _, _, skeleton, clip, _, _ = _load_generated_motion(run_dir, metadata.get("preview_profile") or "model")
+    if manifest:
+        skeleton = add_preview_hands(skeleton)
+        clip = merge_hand_layer(skeleton, clip, hands, HandIntent(**manifest["intent"]))
+        clip.metadata.update(hand_geometry=skeleton.metadata["hand_geometry"],
+                             hand_archive=str((run_dir / manifest["hand_archive"]).resolve()))
+    clip.metadata["body_archive"] = str((run_dir / "motion.npz").resolve())
+    output_dir.mkdir(parents=True, exist_ok=True)
+    export_preview_bvh(bvh, skeleton, clip)
+    _write_animation(animation, skeleton, clip)
+    return GeneratedMotion(output_dir, run_dir / "motion.npz", animation, bvh, clip.metadata)
 
 
 def save_generated_motion(run_dir: Path, preview_profile="model") -> GeneratedMotion:

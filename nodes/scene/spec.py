@@ -533,12 +533,16 @@ def _fbx_import_resolved_rest_path(model) -> str:
 def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
     if model is None:
         return None
+    rest_bind_result = getattr(model, "_fbx_bind_rest_result", None)
     bind_result = (
         getattr(model, "_fbx_bind_capture_result", None)
-        or getattr(model, "_fbx_bind_rest_result", None)
+        or rest_bind_result
     )
     skeleton = getattr(bind_result, "skeleton", None) if bind_result is not None else None
-    meshes = list(getattr(bind_result, "meshes", []) or []) if bind_result is not None else []
+    # Match the FBX node preview: capture supplies the skeleton, while the
+    # displayed geometry, polygon IDs, UVs and weights belong to the rest mesh.
+    mesh_source = rest_bind_result or bind_result
+    meshes = list(getattr(mesh_source, "meshes", []) or []) if mesh_source is not None else []
     if skeleton is None:
         return None
 

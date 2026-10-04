@@ -127,6 +127,21 @@ class HandConversionTests(unittest.TestCase):
             self.assertTrue((root / "animation.json").is_file())
             self.assertTrue((root / "hands.npz").is_file())
 
+            from echograph.motion.conversion import rebuild_generated_motion
+            original = {p: p.read_bytes() for p in root.iterdir() if p.is_file()}
+            rebuilt = rebuild_generated_motion(root, root / "rebuilt")
+            _, rebuilt_clip = load_animation(rebuilt.animation_path)
+            self.assertEqual(rebuilt.metadata["rotation_reconstruction_version"], 2)
+            self.assertEqual(
+                [t.to_dict() for t in clip.tracks if t.joint_name in FINGER_NAMES],
+                [t.to_dict() for t in rebuilt_clip.tracks if t.joint_name in FINGER_NAMES])
+            for path, data in original.items():
+                self.assertEqual(path.read_bytes(), data)
+            with self.assertRaises(FileExistsError):
+                rebuild_generated_motion(root, root / "rebuilt")
+            with self.assertRaises(ValueError):
+                rebuild_generated_motion(root, root)
+
 
 class HandBackendTests(unittest.TestCase):
     def test_missing_resources_never_installs_or_creates_run(self):
