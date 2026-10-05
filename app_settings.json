@@ -89,12 +89,12 @@
         "bend_min": 0.0,
         "bend_max": 60.0,
         "twist_min": -100.0,
-        "twist_max": 100.0
+        "twist_max": 60.0
       },
       "right_hip": {
         "bend_min": 0.0,
         "bend_max": 60.0,
-        "twist_min": -100.0,
+        "twist_min": -60.0,
         "twist_max": 100.0
       },
       "left_shoulder": {

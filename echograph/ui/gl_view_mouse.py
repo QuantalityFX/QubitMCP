@@ -318,27 +318,19 @@ def _ray_from_mouse(self, pos: QtCore.QPoint):
 
 def mousePressEvent(self, e):
     self._scene_joint_overlap_press = None
-    if (getattr(self, "_mesh_select_mode", "") == "face"
-            and getattr(self, "_mesh_polygon_a_held", False)
-            and e.modifiers() & QtCore.Qt.ShiftModifier
-            and not e.modifiers() & QtCore.Qt.AltModifier
-            and e.button() in (QtCore.Qt.LeftButton, QtCore.Qt.MiddleButton)):
-        from .mesh_polygons import polygon_path
+    from .mesh_polygons import component_gesture_operation, component_selection
+    operation = component_gesture_operation(self, e.modifiers())
+    if operation is not None and e.button() in (QtCore.Qt.LeftButton, QtCore.Qt.MiddleButton):
         renderer = getattr(self, "_mgl_renderer", None) or self
         px, py, vw, vh = self._handle_mouse_release_moderngl_click_pick_viewport(e=e)
-        elem = renderer.pick_mesh_element_at(px, py, vw, vh, mode="face")
+        elem = renderer.pick_mesh_element_at(px, py, vw, vh, mode=self._mesh_select_mode)
         anchor = getattr(self, "_mesh_polygon_anchor", None)
         if isinstance(elem, dict):
-            if isinstance(anchor, dict) and anchor.get("owner") == elem.get("owner"):
-                topo = renderer._mgl_mesh_topology_for_owner(elem["owner"])
-                indices = polygon_path(topo, int(anchor["face_index"]), int(elem["face_index"]),
-                                       loop=e.button() == QtCore.Qt.MiddleButton)
-                self._set_mesh_element_selection_many([
-                    dict(elem, face_index=i, indices=tuple(int(v) for v in topo["triangles"][i]))
-                    for i in indices], selection_op="add")
-            else:
-                self._set_mesh_element_selection(elem, selection_op="add")
+            topo = renderer._mgl_mesh_topology_for_owner(elem["owner"])
+            self._set_mesh_element_selection_many(component_selection(topo, anchor, elem,
+                loop=e.button() == QtCore.Qt.MiddleButton), selection_op=operation)
             self._mesh_polygon_anchor = dict(elem)
+            self._set_mesh_element_hover(None)
         self._mgl_pick_press_pos = None
         e.accept()
         return
@@ -397,7 +389,12 @@ def _handle_mouse_double_click_moderngl(self, e):
         selection_op = _mesh_selection_operation_from_mods(e.modifiers())
     except Exception:
         selection_op = "replace"
-    elems = self._mesh_connected_selection_elements(elem, mode=mode, renderer=renderer)
+    if mode == "edge":
+        from .mesh_polygons import edge_loop
+        topo = renderer._mgl_mesh_topology_for_owner(elem['owner'])
+        elems = [dict(elem, edge=edge) for edge in edge_loop(topo, elem['edge'])] if topo else [elem]
+    else:
+        elems = self._mesh_connected_selection_elements(elem, mode=mode, renderer=renderer)
     if not elems:
         elems = [elem]
     try:
@@ -837,7 +834,10 @@ def _handle_mouse_press_moderngl_left_gizmo(self, e):
     return False
 
 def _handle_mouse_press_moderngl_left_gizmo_build_context(self, e):
+    from .gizmo_visibility import sync_gizmo_visibility
     owner, pos = self._handle_mouse_press_moderngl_left_gizmo_owner_pos()
+    if not sync_gizmo_visibility(self):
+        return None
     if owner in (None, "") or pos is None or (np is None):
         return None
 
@@ -5569,6 +5569,8 @@ def _handle_mouse_release_moderngl_pick_empty(self):
     self._xform_gizmo_pos = (0.0, 0.0, 0.0)
 
     # Stop any active rotate drags safely
+    from .gizmo_visibility import sync_gizmo_visibility
+    sync_gizmo_visibility(self)
     try:
         rot_shared = getattr(self, "_rot_shared", None)
         if rot_shared is not None:

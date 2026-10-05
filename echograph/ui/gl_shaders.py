@@ -64,6 +64,7 @@ void main() {
 
     "mesh_fragment": """
 #version 330
+uniform int GhostMode;
 uniform vec4 Color;
 uniform vec3 Light;
 uniform vec3 LightDir;
@@ -595,6 +596,9 @@ void main() {
         discard;
     }
     f_color = vec4(clamp(base.rgb, 0.0, 1.0), base.a);
+    if (GhostMode != 0) {
+        f_color = vec4(mix(f_color.rgb, vec3(0.35, 0.55, 0.7), 0.55), 0.18);
+    }
 }
 """,
 
@@ -773,6 +777,8 @@ void main() {
 
     "wire_vertex": """
 #version 330
+uniform int AdaptiveWidth;
+out float wire_coverage;
 uniform mat4 Mvp;
 uniform vec2 Viewport;
 uniform float LineWidth;
@@ -807,7 +813,10 @@ void main() {
     float len = length(dir);
     vec2 perp = len > 1e-6 ? vec2(-dir.y, dir.x) / len : vec2(0.0, 1.0);
     vec2 pixel = vec2(2.0 / max(Viewport.x, 1.0), 2.0 / max(Viewport.y, 1.0));
-    vec2 offset = perp * (LineWidth * 0.5) * pixel;
+    float width = AdaptiveWidth != 0 ? min(LineWidth, length(dir * Viewport * 0.5) * 0.045) : LineWidth;
+    float raster_width = max(1.0, ceil(width));
+    wire_coverage = max(0.0, width) / raster_width;
+    vec2 offset = perp * (raster_width * 0.5) * pixel;
     float d0 = distance(in_pos, in_start);
     float d1 = distance(in_pos, in_end);
     vec4 clip_pos = (d0 <= d1) ? clip_start : clip_end;
@@ -820,6 +829,8 @@ void main() {
 
     "wire_instanced_vertex": """
 #version 330
+uniform int AdaptiveWidth;
+out float wire_coverage;
 uniform mat4 Mvp;
 uniform vec2 Viewport;
 uniform float LineWidth;
@@ -853,7 +864,10 @@ void main() {
     float len = length(dir);
     vec2 perp = len > 1e-6 ? vec2(-dir.y, dir.x) / len : vec2(0.0, 1.0);
     vec2 pixel = vec2(2.0 / max(Viewport.x, 1.0), 2.0 / max(Viewport.y, 1.0));
-    vec2 offset = perp * (LineWidth * 0.5) * pixel;
+    float width = AdaptiveWidth != 0 ? min(LineWidth, length(dir * Viewport * 0.5) * 0.045) : LineWidth;
+    float raster_width = max(1.0, ceil(width));
+    wire_coverage = max(0.0, width) / raster_width;
+    vec2 offset = perp * (raster_width * 0.5) * pixel;
     vec4 clip_pos = (in_corner.x < 0.5) ? clip_start : clip_end;
     float wp = max(1e-6, clip_pos.w);
     vec2 ndc_pos = clip_pos.xy / wp;
@@ -864,11 +878,12 @@ void main() {
 
     "wire_fragment": """
 #version 330
+in float wire_coverage;
 uniform vec4 Color;
 uniform float DepthBias;
 out vec4 f_color;
 void main() {
-    f_color = Color;
+    f_color = vec4(Color.rgb, Color.a * wire_coverage);
     gl_FragDepth = clamp(gl_FragCoord.z - DepthBias, 0.0, 1.0);
 }
 """,
@@ -897,6 +912,8 @@ void main() {
     if (r2 > 1.0) discard;
     float edge = 1.0 - smoothstep(0.72, 1.0, r2);
     f_color = vec4(v_color.rgb, v_color.a * edge);
+    // Visible points sit above the mesh wire, whose bias is 1e-5.
+    gl_FragDepth = max(0.0, gl_FragCoord.z - 5e-5);
 }
 """,
 

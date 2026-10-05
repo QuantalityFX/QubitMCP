@@ -13,6 +13,7 @@ from typing import  Dict, List, Optional, Tuple
 from .gl_shaders import SHADERS
 from .gl_scene import MGLScene
 from .gl_types import ModelData, MeshArrays, SubMeshData
+from .gizmo_visibility import sync_gizmo_visibility
 from .gl_glutils import build_qt_program
 from .gl_glutils import upload_scene_texture
 from .gl_glutils import update_quad_vbo
@@ -411,7 +412,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._xform_gizmo_owner = None
         self._xform_gizmo_owner_kind = None
         self._xform_gizmo_pos_locked = False
-        self._xform_gizmo_idle_visible = True
+        self._xform_gizmo_idle_visible = False
         self._xform_gizmo_mode = "translate"
         self._xform_mouse_px = None
         self._xform_hover_axis = None
@@ -790,7 +791,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_grid_fade_low_boost = 1.0
         self._mgl_grid_fade_zoom_exp = 1.1
         self._mgl_grid_fx_enabled = True
-        self._mgl_gizmo_visible = True
+        self._mgl_gizmo_enabled = True
+        self._mgl_gizmo_visible = False
         self._mgl_gizmo_tips_test_enabled = False
         self._mgl_gizmo_tips_size_scale = 1.0
         self._mgl_grid_visible = False
@@ -1628,6 +1630,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             self._draw_rotate_shared_overlay()
 
     def leaveEvent(self, event):
+        self._mesh_hover_pending_event = None
         if bool(getattr(self, "_mask_paint_enabled", False)):
             self._mask_paint_mouse_px = None
             try:
@@ -1756,6 +1759,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 layout.addWidget(self._mgl_clip_label, 0)
                 layout.addWidget(self._mgl_clip_input, 0)
                 self._mgl_wireframe_toggle = QtWidgets.QCheckBox("Wireframe")
+                self._mgl_wireframe_toggle.setToolTip('H: toggle solid wireframe\nShift+H: toggle ghosted X-ray wireframe')
                 self._mgl_wireframe_toggle.setChecked(bool(self._mgl_wireframe))
                 self._mgl_wireframe_toggle.toggled.connect(self._on_mgl_wireframe_toggled)
                 layout.addWidget(self._mgl_wireframe_toggle, 0)
@@ -1849,6 +1853,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mesh_select_icons = icons
 
     def _update_mesh_selection_buttons(self) -> None:
+        wire_toggle = getattr(self, '_mgl_wireframe_toggle', None)
+        if wire_toggle is not None:
+            wire = hotkeys_config.keyseq('gl_wireframe_toggle', 'H')
+            xray = hotkeys_config.keyseq('gl_xray_toggle', 'Shift+H')
+            wire_toggle.setToolTip(f'{wire}: toggle solid wireframe\n{xray}: toggle ghosted X-ray wireframe')
         mode_current = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
         for mode, tip, _icon_name in self._mesh_selection_mode_specs():
             btn = (getattr(self, "_mesh_select_buttons", None) or {}).get(mode)
@@ -1863,7 +1872,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     btn.blockSignals(False)
                 except Exception:
                     pass
-            shortcut_tip = "\nShift+A + left-click: polygon path\nShift+A + middle-click: extend quad loop" if mode == "face" else ""
+            shortcut_tip = ""
+            if mode in ('point', 'edge', 'face'):
+                add = hotkeys_config.keyseq("gl_mesh_select_path_loop", "Shift+A")
+                subtract = hotkeys_config.keyseq("gl_mesh_deselect_path_loop", "Ctrl+A")
+                shortcut_tip = (f"\nHold {add}: left-click adds path; middle-click adds full loop"
+                                f"\nHold {subtract}: left-click deselects path; middle-click deselects full loop")
+            if mode == 'edge':
+                shortcut_tip += '\nDouble-click: select edge loop'
             btn.setToolTip(f"{tip}: {'On' if active else 'Off'}{shortcut_tip}")
             self._apply_selection_tool_icon_style(btn, active=active)
 
@@ -2076,8 +2092,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
 
     def _on_mesh_selection_mode_clicked(self, mode: str) -> None:
+        self._mesh_polygon_preview = {}
+        self._mesh_polygon_hover_target = None
         self._mesh_polygon_anchor = None
         self._mesh_polygon_a_held = False
+        self._mesh_component_held_keys = set()
         mode = str(mode or "").strip().lower()
         valid = {spec[0] for spec in self._mesh_selection_mode_specs()}
         if mode not in valid:
@@ -2172,7 +2191,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
     def _set_mesh_element_selection(self, elem, *, additive: bool = False, selection_op: str | None = None) -> None:
         next_elem = dict(elem) if isinstance(elem, dict) else None
-        if next_elem is not None and next_elem.get("mode") == "face":
+        if next_elem is not None and next_elem.get("mode") in ("point", "edge", "face"):
             self._mesh_polygon_anchor = dict(next_elem)
         op = self._mesh_selection_operation(selection_op, additive=bool(additive))
         self._set_mesh_element_selection_many([next_elem] if next_elem is not None else [], selection_op=op)
@@ -2218,7 +2237,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mesh_select_selected = dict(clean[0]) if clean else None
         self._cache_mesh_selected_point_groups(clean)
         hover_key = self._mesh_element_key(getattr(self, "_mesh_select_hover", None))
-        if hover_key in new_keys:
+        if hover_key in new_keys and (getattr(self, "_mesh_select_hover", None) or {}).get("mode") not in ("point", "face"):
             self._mesh_select_hover = None
         try:
             self._sync_mesh_selection_gizmo_to_selection()
@@ -2378,8 +2397,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         return True
 
     def _set_mesh_element_hover(self, elem) -> None:
+        if elem is None:
+            self._mesh_hover_pending_event = None
+            self._mesh_polygon_preview = {}
+        self._mesh_polygon_hover_target = elem
         next_elem = dict(elem) if isinstance(elem, dict) else None
-        if self._mesh_element_is_selected(next_elem):
+        if self._mesh_element_is_selected(next_elem) and next_elem.get("mode") not in ("point", "face"):
             next_elem = None
         old_key = self._mesh_element_key(getattr(self, "_mesh_select_hover", None))
         new_key = self._mesh_element_key(next_elem)
@@ -2391,6 +2414,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 pass
 
     def _clear_mesh_element_selection(self) -> None:
+        self._mesh_polygon_preview = {}
+        self._mesh_polygon_hover_target = None
         self._mesh_polygon_anchor = None
         had_state = bool(
             getattr(self, "_mesh_select_selected", None)
@@ -2470,6 +2495,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 pass
 
+    def _flush_mesh_hover_pick(self) -> None:
+        event = getattr(self, '_mesh_hover_pending_event', None)
+        self._mesh_hover_pending_event = None
+        if event is not None:
+            self._update_mesh_element_hover_from_event(event)
+
     def _update_mesh_element_hover_from_event(self, e) -> None:
         mode = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
         if mode not in {spec[0] for spec in self._mesh_selection_mode_specs()}:
@@ -2484,8 +2515,18 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         try:
             now = time.perf_counter()
             last = float(getattr(self, "_mesh_hover_pick_last_t", 0.0) or 0.0)
-            if (now - last) < 0.033:
+            if (now - last) < 0.016:
+                # Coalesce motion, but always process the last position even if
+                # the cursor stops before the next mouse event.
+                self._mesh_hover_pending_event = QtGui.QMouseEvent(e)
+                timer = getattr(self, '_mesh_hover_pick_timer', None)
+                if timer is None:
+                    timer = self._mesh_hover_pick_timer = QtCore.QTimer(self)
+                    timer.setSingleShot(True)
+                    timer.timeout.connect(self._flush_mesh_hover_pick)
+                timer.start(max(1, math.ceil((0.016 - (now - last)) * 1000)))
                 return
+            self._mesh_hover_pending_event = None
             self._mesh_hover_pick_last_t = now
         except Exception:
             pass
@@ -2500,6 +2541,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         except Exception:
             elem = None
         self._set_mesh_element_hover(elem if isinstance(elem, dict) else None)
+        from .mesh_polygons import component_gesture_operation, update_polygon_preview
+        operation = component_gesture_operation(self, e.modifiers())
+        update_polygon_preview(self, elem, operation is not None, selection_op=operation)
         try:
             self.setCursor(QtCore.Qt.ArrowCursor)
         except Exception:
@@ -2675,14 +2719,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
 
     def _on_mgl_gizmo_toggled(self, checked: bool) -> None:
-        try:
-            self._mgl_gizmo_visible = bool(checked)
-        except Exception:
-            self._mgl_gizmo_visible = True
-        try:
-            self.update()
-        except Exception:
-            pass
+        self.set_gizmo_visible(checked)
 
     def _on_mgl_gizmo_tips_test_toggled(self, checked: bool) -> None:
         enabled = bool(checked)
@@ -2834,22 +2871,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
 
     def set_gizmo_visible(self, visible: bool) -> None:
-        try:
-            self._mgl_gizmo_visible = bool(visible)
-        except Exception:
-            self._mgl_gizmo_visible = True
-        toggle = getattr(self, "_mgl_gizmo_toggle", None)
-        if toggle is not None:
-            try:
-                toggle.blockSignals(True)
-                toggle.setChecked(bool(self._mgl_gizmo_visible))
-            except Exception:
-                pass
-            finally:
-                try:
-                    toggle.blockSignals(False)
-                except Exception:
-                    pass
+        self._mgl_gizmo_enabled = bool(visible)
+        sync_gizmo_visibility(self)
         try:
             self.update()
         except Exception:
@@ -7697,7 +7720,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 pass
 
     def _draw_xform_gizmo_top_overlay(self, painter: QtGui.QPainter) -> None:
-        if not bool(getattr(self, "_mgl_gizmo_visible", True)):
+        if not sync_gizmo_visibility(self):
             return
         active_mode = str(getattr(self, "_xform_gizmo_mode", "translate") or "translate")
         if active_mode not in ("translate", "scale"):
@@ -7882,6 +7905,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 pass
 
     def _draw_rotate_shared_overlay(self) -> None:
+        if not sync_gizmo_visibility(self):
+            return
         rot_shared = getattr(self, "_rot_shared", None)
         if rot_shared is None:
             return
@@ -7889,10 +7914,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         # only show in rotate mode
         mode = getattr(self, "_xform_gizmo_mode", "translate") or "translate"
         if mode != "rotate":
-            return
-
-        # only draw when something is selected (unless idle gizmo is allowed)
-        if getattr(self, "_xform_gizmo_owner", None) is None and not bool(getattr(self, "_xform_gizmo_idle_visible", False)):
             return
 
         if np is None:
@@ -9523,29 +9544,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 pass
 
-        mod_mask = (
-            QtCore.Qt.ControlModifier
-            | QtCore.Qt.AltModifier
-            | QtCore.Qt.ShiftModifier
-            | QtCore.Qt.MetaModifier
-        )
-
         def _seq_to_keymods(seq: str):
-            try:
-                if not seq:
-                    return None, None
-                q = QtGui.QKeySequence(str(seq))
-                if q.count() < 1:
-                    return None, None
-                val = int(q[0])
-                mods = QtCore.Qt.KeyboardModifiers(int(val) & int(mod_mask))
-                key = int(val) & ~int(mod_mask)
-                if "shift+" not in str(seq).lower():
-                    if QtCore.Qt.Key_A <= key <= QtCore.Qt.Key_Z:
-                        mods = QtCore.Qt.KeyboardModifiers(int(mods) & ~int(QtCore.Qt.ShiftModifier))
-                return key, mods
-            except Exception:
-                return None, None
+            return hotkeys_config.parse_key_binding(seq)
+
+        mod_mask = hotkeys_config._MOD_MASK
 
         def _matches_hotkey(seq: str) -> bool:
             try:
@@ -9553,7 +9555,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 if key is None:
                     return False
                 ev_mods = e.modifiers() if e is not None else QtCore.Qt.NoModifier
-                ev_mods = QtCore.Qt.KeyboardModifiers(int(ev_mods) & int(mod_mask))
+                ev_mods = ev_mods & mod_mask
                 if (e.key() == key) and (ev_mods == mods):
                     return True
                 # Fallback for plain letter keys (handles Shift/Caps quirks).
@@ -9573,12 +9575,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             frame_seq = hotkeys_config.keyseq("gl_frame", "F")
             wire_seq = hotkeys_config.keyseq("gl_wireframe_toggle", "H")
             grid_seq = hotkeys_config.keyseq("gl_grid_toggle", "G")
+            xray_seq = hotkeys_config.keyseq("gl_xray_toggle", "Shift+H")
         except Exception:
             frame_seq = "F"
             wire_seq = "H"
             grid_seq = "G"
+            xray_seq = "Shift+H"
 
-        if not (_matches_hotkey(frame_seq) or _matches_hotkey(wire_seq) or _matches_hotkey(grid_seq)):
+        if not any(_matches_hotkey(seq) for seq in (frame_seq, wire_seq, grid_seq, xray_seq)):
             return False
 
         try:
@@ -9587,7 +9591,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         except Exception:
             pass
 
-        if _matches_hotkey(frame_seq):
+        if _matches_hotkey(xray_seq):
+            self._toggle_mgl_xray()
+        elif _matches_hotkey(frame_seq):
             try:
                 self._on_frame_clicked()
             except Exception:
@@ -9621,9 +9627,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             key = e.key()
         except Exception:
             key = None
-        if key == QtCore.Qt.Key_A and getattr(self, "_mesh_select_mode", "") == "face" and not getattr(self, "_fly_mode_enabled", False):
-            self._mesh_polygon_a_held = True
-            e.accept()
+        from .mesh_polygons import handle_component_gesture_key
+        if handle_component_gesture_key(self, e, pressed=True):
             return
         mask_key_press = getattr(self, "_handle_mask_paint_key_press", None)
         if callable(mask_key_press) and mask_key_press(e, key):
@@ -9708,8 +9713,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             key = e.key()
         except Exception:
             key = None
-        if key == QtCore.Qt.Key_A:
-            self._mesh_polygon_a_held = False
+        from .mesh_polygons import handle_component_gesture_key
+        if handle_component_gesture_key(self, e, pressed=False):
+            return
         mask_key_release = getattr(self, "_handle_mask_paint_key_release", None)
         if callable(mask_key_release) and mask_key_release(e, key):
             return
@@ -9750,7 +9756,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         super().keyReleaseEvent(e)
 
     def focusOutEvent(self, e):
+        self._mesh_hover_pending_event = None
         self._mesh_polygon_a_held = False
+        self._mesh_component_held_keys = set()
+        self._mesh_polygon_preview = {}
         try:
             self._mask_paint_b_held = False
             self._mask_paint_resize_active = False

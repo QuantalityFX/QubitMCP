@@ -172,7 +172,7 @@ class RigPreviewPanel(QtWidgets.QFrame):
         self.content = QtWidgets.QWidget()
         self.content.setObjectName('PreviewRigContent')
         self.sections_layout = QtWidgets.QVBoxLayout(self.content)
-        self.sections_layout.setContentsMargins(0,0,0,0)
+        self.sections_layout.setContentsMargins(0,0,8,0)
         self.sections_layout.setSpacing(SECTION_SPACING)
         self.sections_layout.setAlignment(QtCore.Qt.AlignTop)
         self.scroll.setWidget(self.content)

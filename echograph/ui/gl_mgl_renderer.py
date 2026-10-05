@@ -10627,6 +10627,11 @@ void main() {
                     pass
 
     def _mgl_clear_mesh_selection_overlay_cache(self) -> None:
+        for overlay in (getattr(self, '_mesh_component_overlay_caches', {}) or {}).values():
+            for key in ('points', 'edges', 'faces', 'object_faces', 'object_outlines'):
+                for entry in overlay.get(key, []):
+                    self._mgl_release_mesh_selection_cache_entry(entry)
+        self._mesh_component_overlay_caches = {}
         cache = getattr(self, "_mesh_selection_overlay_cache", None)
         if isinstance(cache, dict):
             for key in ("points", "edges", "faces", "object_faces", "object_outlines"):
@@ -18277,6 +18282,16 @@ void main() {
                     pass
 
     def _mgl_draw_scene_mesh(self, item: MGLSceneItem, mvp) -> None:
+        ghost = bool(getattr(self, '_mgl_wireframe_xray', False)) and item.tag in ('model', 'scene-model')
+        if self._mgl_prog is None:
+            return
+        self._mgl_prog['GhostMode'].value = int(ghost)
+        try:
+            self._mgl_draw_scene_mesh_surface(item, mvp)
+        finally:
+            self._mgl_prog['GhostMode'].value = 0
+
+    def _mgl_draw_scene_mesh_surface(self, item: MGLSceneItem, mvp) -> None:
         if self._mgl_ctx is None or self._mgl_prog is None:
             return
         payload = item.payload or {}
@@ -18872,6 +18887,7 @@ void main() {
             prev_depth_func = None
             prev_wireframe = None
             prev_line_width = None
+            xray = bool(getattr(self, '_mgl_wireframe_xray', False))
             restore_cull = not bool(getattr(self, "_mgl_cull_enabled", False))
             try:
                 prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
@@ -18903,13 +18919,28 @@ void main() {
                 self._mgl_ctx.depth_func = "<="
             except Exception:
                 pass
-            if restore_cull:
+            if xray:
+                self._mgl_ctx.disable(moderngl.CULL_FACE | moderngl.DEPTH_TEST)
+            elif restore_cull:
                 try:
                     self._mgl_ctx.enable(moderngl.CULL_FACE)
                 except Exception:
                     pass
+            coverage = 1.0
             try:
-                self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
+                # Scale native triangle wires by the projected owner bounds.
+                topo = self._mgl_mesh_topology_for_owner(str(owner or ''))
+                if isinstance(topo, dict):
+                    lo, hi = np.asarray(topo['bounds_min']), np.asarray(topo['bounds_max'])
+                    corners = np.array([[x,y,z,1.] for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2])])
+                    clip = corners @ np.asarray(mvp_to_use)
+                    if np.all(clip[:,3] > 1e-6):
+                        ndc = clip[:,:2]/clip[:,3,None]
+                        coverage = min(1., float(np.max(np.ptp(ndc,axis=0)))/1.5)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.line_width = max(1., float(self._mgl_wire_line_width)*coverage)
             except Exception:
                 pass
             try:
@@ -18917,7 +18948,8 @@ void main() {
             except Exception:
                 pass
             try:
-                self._mgl_prog["Color"].value = self._mgl_wire_color
+                self._mgl_prog['GhostMode'].value = 0
+                self._mgl_prog["Color"].value = (*self._mgl_wire_color[:3], self._mgl_wire_color[3]*coverage)
                 self._mgl_prog["UseMaterial"].value = 0
                 self._mgl_prog["UseVertexColor"].value = 0
             except Exception:
@@ -18925,6 +18957,10 @@ void main() {
             try:
                 draw_geometry()
             finally:
+                self._mgl_prog['GhostMode'].value = int(xray)
+                self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                if xray and not restore_cull:
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
                 try:
                     self._mgl_ctx.wireframe = prev_wireframe
                 except Exception:
@@ -19616,7 +19652,8 @@ void main() {
                 )
             return
         is_volume = tag == "scene-volume"
-        xray = bool(payload.get("xray", False))
+        surface_wire = tag in {'scene-wire', 'model-wire'}
+        xray = bool(payload.get("xray", False)) or (surface_wire and bool(getattr(self, '_mgl_wireframe_xray', False)))
 
         def _as_rgba(col):
             try:
@@ -19645,6 +19682,7 @@ void main() {
                 wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
                 wire_prog["Color"].value = color_rgba
                 wire_prog["Viewport"].value = self._mgl_wire_viewport_size()
+                wire_prog['AdaptiveWidth'].value = int(surface_wire)
                 wire_prog["LineWidth"].value = float(
                     payload.get("line_width", getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0)))
                 )
@@ -19678,7 +19716,7 @@ void main() {
         except Exception:
             prev_depth_func = None
         try:
-            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_mask = self._mgl_mesh_overlay_depth_mask()
         except Exception:
             prev_depth_mask = None
 
@@ -19697,7 +19735,7 @@ void main() {
             except Exception:
                 pass
             try:
-                self._mgl_ctx.depth_mask = False
+                self._mgl_mesh_overlay_depth_mask(False)
             except Exception:
                 pass
             color = _as_rgba(payload.get("color") or self._mgl_wire_color)
@@ -19723,7 +19761,7 @@ void main() {
             finally:
                 if prev_depth_mask is not None:
                     try:
-                        self._mgl_ctx.depth_mask = prev_depth_mask
+                        self._mgl_mesh_overlay_depth_mask(prev_depth_mask)
                     except Exception:
                         pass
                 if prev_depth_func is not None:
@@ -19762,7 +19800,7 @@ void main() {
             except Exception:
                 pass
             try:
-                self._mgl_ctx.depth_mask = False
+                self._mgl_mesh_overlay_depth_mask(False)
             except Exception:
                 pass
             color = _as_rgba(payload.get("color") or self._mgl_wire_color)
@@ -19794,7 +19832,7 @@ void main() {
             finally:
                 if prev_depth_mask is not None:
                     try:
-                        self._mgl_ctx.depth_mask = prev_depth_mask
+                        self._mgl_mesh_overlay_depth_mask(prev_depth_mask)
                     except Exception:
                         pass
                 if prev_depth_func is not None:
@@ -19830,7 +19868,7 @@ void main() {
             except Exception:
                 pass
             try:
-                self._mgl_ctx.depth_mask = False
+                self._mgl_mesh_overlay_depth_mask(False)
             except Exception:
                 pass
             color = _as_rgba(payload.get("color") or self._mgl_wire_color)
@@ -19868,7 +19906,7 @@ void main() {
                         self._mgl_ctx.enable(moderngl.CULL_FACE)
                 if prev_depth_mask is not None:
                     try:
-                        self._mgl_ctx.depth_mask = prev_depth_mask
+                        self._mgl_mesh_overlay_depth_mask(prev_depth_mask)
                     except Exception:
                         pass
                 if prev_depth_func is not None:
@@ -19887,11 +19925,14 @@ void main() {
             return
 
         try:
-            self._mgl_ctx.depth_mask = False
+            self._mgl_mesh_overlay_depth_mask(False)
         except Exception:
             pass
 
         base_color = _as_rgba(payload.get("color") or self._mgl_wire_color)
+        if surface_wire:
+            self._mgl_ctx.disable(moderngl.CULL_FACE)
+            wire_prog['DepthBias'].value = 1e-5
         front_color = base_color
         try:
             back_alpha_scale = float(payload.get("xray_back_alpha", 0.25) or 0.25)
@@ -19923,16 +19964,19 @@ void main() {
                     + f"pass=xray err={exc!r}"
                 )
         finally:
+            if surface_wire:
+                wire_prog['DepthBias'].value = 0.0
+                if bool(getattr(self, '_mgl_cull_enabled', False)):
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
             if prev_depth_mask is not None:
                 try:
-                    self._mgl_ctx.depth_mask = prev_depth_mask
+                    self._mgl_mesh_overlay_depth_mask(prev_depth_mask)
                 except Exception:
                     pass
-            if prev_depth_func is not None:
-                try:
-                    self._mgl_ctx.depth_func = prev_depth_func
-                except Exception:
-                    pass
+            try:
+                self._mgl_ctx.depth_func = prev_depth_func or "<="
+            except Exception:
+                pass
             if prev_depth_test is not None:
                 try:
                     if prev_depth_test:
@@ -20988,6 +21032,24 @@ void main() {
                 pass
         return result
 
+    def _mgl_projected_mesh_surfaces(self, owners, viewport_w, viewport_h):
+        surfaces = []
+        if not bool(getattr(self, '_mgl_wireframe_xray', False)):
+            for surface_owner in owners:
+                if not self._mgl_scene_owner_visible(surface_owner):
+                    continue
+                surface_topo = self._mgl_mesh_topology_for_owner(surface_owner)
+                if not isinstance(surface_topo, dict):
+                    continue
+                triangles = np.asarray(surface_topo.get('triangles', []), dtype=np.int64).reshape(-1, 3)
+                if not len(triangles):
+                    continue
+                screen = self._mgl_project_owner_points_device(surface_owner, surface_topo, viewport_w, viewport_h)
+                if isinstance(screen, dict):
+                    points = np.column_stack((screen['x'], screen['y'], screen['z']))
+                    surfaces.append(points[triangles])
+        return surfaces
+
     def _mgl_pick_projected_point_for_owners(
         self,
         owners: List[str],
@@ -21006,6 +21068,7 @@ void main() {
         threshold2 = threshold * threshold
         best_elem = None
         best_score = (1.0e30, 1.0e30, 1.0e30)
+        surfaces = self._mgl_projected_mesh_surfaces(owners, viewport_w, viewport_h)
         for owner in owners:
             if not self._mgl_scene_owner_visible(owner):
                 continue
@@ -21030,6 +21093,11 @@ void main() {
             dy = ys[:count] - float(py)
             d2 = (dx * dx) + (dy * dy)
             d2[~valid] = np.float32(1.0e30)
+            if surfaces:
+                from .mesh_visibility import visible_points
+                candidates = np.flatnonzero(d2 <= threshold2)
+                visible = visible_points(np.column_stack((xs[candidates], ys[candidates], zs[candidates])), surfaces)
+                d2[candidates[~visible]] = np.float32(1.0e30)
             idx = int(np.argmin(d2))
             dist2 = float(d2[idx])
             if dist2 > threshold2:
@@ -21067,8 +21135,9 @@ void main() {
             dpr = float(viewport_w) / max(1.0, float(self.width()))
         except Exception:
             dpr = 1.0
-        threshold = max(8.0, 10.0 * max(1.0, dpr))
+        threshold = max(8.0, 12.0 * max(1.0, dpr))
         threshold2 = threshold * threshold
+        surfaces = None
         best_elem = None
         best_score = (1.0e30, 1.0e30, 1.0e30)
         cursor = np.asarray([float(px), float(py)], dtype=np.float32)
@@ -21102,40 +21171,44 @@ void main() {
             xs = xs[:count]
             ys = ys[:count]
             zs = zs[:count]
-            for edge in edges:
-                try:
-                    a = int(edge[0])
-                    b = int(edge[1])
-                    if a < 0 or b < 0 or a >= count or b >= count:
+            # Batch segment distances: large meshes must not run Python once per edge.
+            edges = edges[np.all((edges >= 0) & (edges < count), axis=1)]
+            if not len(edges):
+                continue
+            edges = edges[valid[edges].all(axis=1)]
+            if not len(edges):
+                continue
+            a, b = edges[:, 0], edges[:, 1]
+            pa = np.column_stack((xs[a], ys[a]))
+            ab = np.column_stack((xs[b] - xs[a], ys[b] - ys[a]))
+            delta = cursor - pa
+            denom = np.einsum('ij,ij->i', ab, ab)
+            t = np.divide(np.einsum('ij,ij->i', delta, ab), denom,
+                          out=np.zeros_like(denom), where=denom > 1e-8)
+            closest = pa + ab * np.clip(t, 0, 1)[:, None]
+            diff = cursor - closest
+            distances = np.einsum('ij,ij->i', diff, diff)
+            candidates = np.flatnonzero(np.isfinite(distances) & (distances <= threshold2))
+            if not len(candidates):
+                continue
+            if not bool(getattr(self, '_mgl_wireframe_xray', False)):
+                if surfaces is None:
+                    surfaces = self._mgl_projected_mesh_surfaces(owners, viewport_w, viewport_h)
+                if surfaces:
+                    from .mesh_visibility import visible_points
+                    depths_at_cursor = zs[a] + np.clip(t, 0, 1) * (zs[b] - zs[a])
+                    samples = np.column_stack((closest[candidates], depths_at_cursor[candidates]))
+                    candidates = candidates[visible_points(samples, surfaces)]
+                    if not len(candidates):
                         continue
-                    if not (bool(valid[a]) and bool(valid[b])):
-                        continue
-                    pa = np.asarray([float(xs[a]), float(ys[a])], dtype=np.float32)
-                    pb = np.asarray([float(xs[b]), float(ys[b])], dtype=np.float32)
-                    ab = pb - pa
-                    denom = float(np.dot(ab, ab))
-                    if denom <= 1.0e-8:
-                        closest = pa
-                    else:
-                        t = max(0.0, min(1.0, float(np.dot(cursor - pa, ab) / denom)))
-                        closest = pa + (ab * np.float32(t))
-                    diff = cursor - closest
-                    dist2 = float(np.dot(diff, diff))
-                    if dist2 > threshold2:
-                        continue
-                    z = min(float(zs[a]), float(zs[b]))
-                    score = (curve_priority, dist2, z)
-                    if score >= best_score:
-                        continue
-                    best_score = score
-                    best_elem = {
-                        "mode": "edge",
-                        "owner": owner,
-                        "edge": tuple(sorted((a, b))),
-                        "screen_distance": math.sqrt(max(0.0, dist2)),
-                    }
-                except Exception:
-                    continue
+            depths = np.minimum(zs[a], zs[b])
+            index = candidates[np.lexsort((depths[candidates], distances[candidates]))[0]]
+            score = (curve_priority, float(distances[index]), float(depths[index]))
+            if score < best_score:
+                best_score = score
+                best_elem = dict(mode='edge', owner=owner,
+                                 edge=tuple(sorted(map(int, edges[index]))),
+                                 screen_distance=math.sqrt(max(0.0, score[1])))
         return best_elem
 
     def _mgl_mesh_selection_owners(self) -> List[str]:
@@ -21496,6 +21569,7 @@ void main() {
                 except Exception:
                     pass
                 return point_elem
+            return None
         if mode == "edge":
             edge_elem = self._mgl_pick_projected_edge_for_owners(owners, px, py, viewport_w, viewport_h)
             if isinstance(edge_elem, dict):
@@ -21505,6 +21579,8 @@ void main() {
                 except Exception:
                     pass
                 return edge_elem
+
+            return None
 
         best = None
         best_t = 1e30
@@ -25868,6 +25944,22 @@ void main() {
             return None
         return np.asarray(verts, dtype="f4")
 
+    def _mgl_mesh_overlay_depth_mask(self, enabled=None):
+        """Read/set the real depth write mask, including Qt's current framebuffer."""
+        raw = getattr(self, "_gl", None)
+        if raw is not None:
+            previous = bool(raw.glGetBooleanv(0x0B72))  # GL_DEPTH_WRITEMASK
+            if enabled is not None:
+                raw.glDepthMask(bool(enabled))
+            return previous
+        framebuffer = getattr(self._mgl_ctx, "fbo", None)
+        if framebuffer is None:
+            return None
+        previous = framebuffer.depth_mask
+        if enabled is not None:
+            framebuffer.depth_mask = bool(enabled)
+        return previous
+
     def _mgl_draw_mesh_overlay_lines(self, owner: str, line_points, color, mvp, line_width: float) -> None:
         if self._mgl_ctx is None or self._mgl_wire_prog is None or np is None:
             return
@@ -25877,8 +25969,10 @@ void main() {
         mvp_to_use, _model_np = self._mgl_overlay_mvp_for_owner(owner, mvp)
         vbo = vao = None
         prev_depth_mask = prev_depth_func = prev_line_width = None
+        raw = getattr(self, '_gl', None)
+        previous_depth_test = bool(raw.glIsEnabled(0x0B71)) if raw is not None else True
         try:
-            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_mask = self._mgl_mesh_overlay_depth_mask()
         except Exception:
             prev_depth_mask = None
         try:
@@ -25896,12 +25990,14 @@ void main() {
                 [(vbo, "3f 3f 3f 1f", "in_pos", "in_start", "in_end", "in_side")],
             )
             self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
+            if bool(getattr(self, '_mgl_wireframe_xray', False)):
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST)
             try:
                 self._mgl_ctx.disable(moderngl.CULL_FACE)
             except Exception:
                 pass
             try:
-                self._mgl_ctx.depth_mask = False
+                self._mgl_mesh_overlay_depth_mask(False)
                 self._mgl_ctx.depth_func = "<="
             except Exception:
                 pass
@@ -25913,13 +26009,20 @@ void main() {
             self._mgl_wire_prog["Color"].value = tuple(float(v) for v in color)
             self._mgl_wire_prog["Viewport"].value = self._mgl_wire_viewport_size()
             self._mgl_wire_prog["LineWidth"].value = float(line_width)
+            self._mgl_wire_prog["AdaptiveWidth"].value = 0
+            self._mgl_wire_prog["DepthBias"].value = 3e-5
             vao.render(moderngl.TRIANGLES)
         except Exception as exc:
             self._mgl_error = f"Mesh selection line draw failed: {exc}"
         finally:
+            if previous_depth_test:
+                self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+            else:
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            self._mgl_wire_prog["DepthBias"].value = 0.0
             if prev_depth_mask is not None:
                 try:
-                    self._mgl_ctx.depth_mask = prev_depth_mask
+                    self._mgl_mesh_overlay_depth_mask(prev_depth_mask)
                 except Exception:
                     pass
             if prev_depth_func is not None:
@@ -26480,8 +26583,8 @@ void main() {
         except Exception:
             return None
 
-    def _mgl_selected_point_groups(self, selected_many=None, selected=None) -> Dict[str, object]:
-        cached = getattr(self, "_mesh_select_selected_point_indices_by_owner", None)
+    def _mgl_selected_point_groups(self, selected_many=None, selected=None, *, use_selection_state=True) -> Dict[str, object]:
+        cached = getattr(self, "_mesh_select_selected_point_indices_by_owner", None) if use_selection_state else None
         if isinstance(cached, dict) and cached:
             return {
                 str(owner): indices
@@ -26512,7 +26615,9 @@ void main() {
             groups.setdefault(display_owner, set()).add(idx)
         return {owner: tuple(sorted(indices)) for owner, indices in groups.items() if indices}
 
-    def _mgl_draw_mesh_overlay_points(self, owner: str, indices, color, mvp, point_size: float, *, depth_test: bool = False) -> bool:
+    def _mgl_draw_mesh_overlay_points(self, owner: str, indices, color, mvp, point_size: float, *, depth_test=None) -> bool:
+        if depth_test is None:
+            depth_test = not bool(getattr(self, '_mgl_wireframe_xray', False))
         if self._mgl_ctx is None or getattr(self, "_mgl_overlay_point_prog", None) is None or np is None:
             return False
         owner = str(owner or "").strip()
@@ -26553,7 +26658,7 @@ void main() {
         except Exception:
             prev_depth_test = True
         try:
-            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_mask = self._mgl_mesh_overlay_depth_mask()
         except Exception:
             prev_depth_mask = None
         try:
@@ -26584,7 +26689,7 @@ void main() {
             except Exception:
                 pass
             try:
-                self._mgl_ctx.depth_mask = False
+                self._mgl_mesh_overlay_depth_mask(False)
                 self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
             except Exception:
                 pass
@@ -26602,7 +26707,7 @@ void main() {
         finally:
             if prev_depth_mask is not None:
                 try:
-                    self._mgl_ctx.depth_mask = prev_depth_mask
+                    self._mgl_mesh_overlay_depth_mask(prev_depth_mask)
                 except Exception:
                     pass
             if prev_depth_func is not None:
@@ -27124,6 +27229,7 @@ void main() {
         selected_color,
         use_point_overlay: bool,
         source_key,
+        use_selection_state: bool = True,
     ) -> dict:
         selected_elems: List[dict] = []
         selected_keys = set()
@@ -27160,10 +27266,10 @@ void main() {
                 selected_keys.add(key)
             selected_elems.append(selected)
 
-        selected_point_groups = self._mgl_selected_point_groups(selected_many=selected_many, selected=selected) if use_point_overlay else {}
-        selected_point_sets = getattr(self, "_mesh_select_selected_point_index_sets_by_owner", None)
-        if not isinstance(selected_point_sets, dict):
-            selected_point_sets = {}
+        selected_point_groups = self._mgl_selected_point_groups(
+            selected_many=selected_many, selected=selected, use_selection_state=use_selection_state,
+        ) if use_point_overlay else {}
+        selected_point_sets = {owner.lower(): set(indices) for owner, indices in selected_point_groups.items()}
 
         cache = {
             "source_key": source_key,
@@ -27273,7 +27379,7 @@ void main() {
         except Exception:
             prev_depth_test = True
         try:
-            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_mask = self._mgl_mesh_overlay_depth_mask()
         except Exception:
             prev_depth_mask = None
         try:
@@ -27288,11 +27394,16 @@ void main() {
             except Exception:
                 self._mgl_ctx.enable(moderngl.BLEND)
             try:
-                self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+                self._mgl_ctx.disable(moderngl.CULL_FACE)
+                if bool(getattr(self, '_mgl_wireframe_xray', False)):
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                else:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    self._mgl_ctx.depth_func = "<="
             except Exception:
                 pass
             try:
-                self._mgl_ctx.depth_mask = False
+                self._mgl_mesh_overlay_depth_mask(False)
                 self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
             except Exception:
                 pass
@@ -27315,7 +27426,7 @@ void main() {
         finally:
             if prev_depth_mask is not None:
                 try:
-                    self._mgl_ctx.depth_mask = prev_depth_mask
+                    self._mgl_mesh_overlay_depth_mask(prev_depth_mask)
                 except Exception:
                     pass
             if prev_depth_func is not None:
@@ -27344,8 +27455,10 @@ void main() {
         if self._mgl_ctx is None or self._mgl_wire_prog is None or not entries:
             return False
         prev_depth_mask = prev_depth_func = prev_line_width = None
+        raw = getattr(self, '_gl', None)
+        previous_depth_test = bool(raw.glIsEnabled(0x0B71)) if raw is not None else True
         try:
-            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_mask = self._mgl_mesh_overlay_depth_mask()
             prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
             prev_line_width = getattr(self._mgl_ctx, "line_width", None)
         except Exception:
@@ -27353,12 +27466,14 @@ void main() {
         drawn = False
         try:
             self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
+            if bool(getattr(self, '_mgl_wireframe_xray', False)):
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST)
             try:
                 self._mgl_ctx.disable(moderngl.CULL_FACE)
             except Exception:
                 pass
             try:
-                self._mgl_ctx.depth_mask = False
+                self._mgl_mesh_overlay_depth_mask(False)
                 self._mgl_ctx.depth_func = "<="
                 self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
             except Exception:
@@ -27366,6 +27481,8 @@ void main() {
             self._mgl_wire_prog["Color"].value = tuple(float(v) for v in color)
             self._mgl_wire_prog["Viewport"].value = self._mgl_wire_viewport_size()
             self._mgl_wire_prog["LineWidth"].value = float(line_width)
+            self._mgl_wire_prog["AdaptiveWidth"].value = 0
+            self._mgl_wire_prog["DepthBias"].value = 3e-5
             for entry in list(entries or []):
                 vao = entry.get("vao") if isinstance(entry, dict) else None
                 owner = str(entry.get("owner") or "").strip() if isinstance(entry, dict) else ""
@@ -27378,9 +27495,14 @@ void main() {
         except Exception as exc:
             self._mgl_error = f"Mesh selection cached line draw failed: {exc}"
         finally:
+            if previous_depth_test:
+                self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+            else:
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            self._mgl_wire_prog["DepthBias"].value = 0.0
             if prev_depth_mask is not None:
                 try:
-                    self._mgl_ctx.depth_mask = prev_depth_mask
+                    self._mgl_mesh_overlay_depth_mask(prev_depth_mask)
                 except Exception:
                     pass
             if prev_depth_func is not None:
@@ -27395,7 +27517,7 @@ void main() {
                     pass
         return drawn
 
-    def _mgl_draw_cached_mesh_selection_faces(self, entries, color, mvp) -> bool:
+    def _mgl_draw_cached_mesh_selection_faces(self, entries, color, mvp, *, opacity=None) -> bool:
         if self._mgl_ctx is None or self._mgl_prog is None or not entries:
             return False
         prev_depth_mask = prev_depth_func = prev_wireframe = prev_polygon_offset = None
@@ -27403,7 +27525,7 @@ void main() {
         polygon_offset_enabled = False
         try:
             prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
-            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_mask = self._mgl_mesh_overlay_depth_mask()
             prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
             prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
             prev_polygon_offset = getattr(self._mgl_ctx, "polygon_offset", None)
@@ -27417,7 +27539,7 @@ void main() {
             except Exception:
                 pass
             try:
-                self._mgl_ctx.depth_mask = False
+                self._mgl_mesh_overlay_depth_mask(False)
                 self._mgl_ctx.depth_func = "<="
                 self._mgl_ctx.wireframe = False
                 self._mgl_ctx.polygon_offset = (-2.0, -2.0)
@@ -27444,7 +27566,7 @@ void main() {
                 float(color[0]),
                 float(color[1]),
                 float(color[2]),
-                min(0.32, max(0.14, float(color[3]) * 0.34)),
+                min(0.32, max(0.14, float(color[3]) * 0.34)) if opacity is None else float(opacity),
             )
             self._mgl_prog["Color"].value = face_color
             for uniform_name, value in (
@@ -27489,7 +27611,7 @@ void main() {
                     pass
             if prev_depth_mask is not None:
                 try:
-                    self._mgl_ctx.depth_mask = prev_depth_mask
+                    self._mgl_mesh_overlay_depth_mask(prev_depth_mask)
                 except Exception:
                     pass
             if prev_depth_func is not None:
@@ -27624,17 +27746,15 @@ void main() {
             return False
         if np is None:
             return False
-        topo_map = getattr(self, "_mgl_scene_mesh_topology_by_owner", None)
-        if not isinstance(topo_map, dict) or not topo_map:
-            return False
         drawn = False
-        for owner, topo in list(topo_map.items()):
+        for owner in self._mgl_mesh_selection_owners():
+            topo = self._mgl_mesh_topology_for_owner(owner)
             owner_s = str(owner or "").strip()
             if not owner_s or not isinstance(topo, dict):
                 continue
             if not self._mgl_scene_owner_visible(owner_s):
                 continue
-            depth_test_points = str(topo.get("topology_kind") or "").strip().lower() == "groom_guides"
+            depth_test_points = not bool(getattr(self, '_mgl_wireframe_xray', False))
             try:
                 points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
             except Exception:
@@ -27673,7 +27793,48 @@ void main() {
                     drawn = True
         return drawn
 
+    def _mgl_draw_component_preview(self, name, elements, color, mvp, *, face_opacity=None):
+        """Batch previews into persistent buffers, just like committed selection."""
+        from .mesh_polygons import expand_face_elements
+        elements = [triangle for elem in elements for triangle in expand_face_elements(
+            self._mgl_mesh_topology_for_owner(elem['owner']), elem)]
+        caches = getattr(self, '_mesh_component_overlay_caches', None)
+        if caches is None:
+            caches = self._mesh_component_overlay_caches = {}
+        owners = sorted({elem['owner'] for elem in elements})
+        key = (tuple((e['mode'], e['owner'], e.get('face_index'), e.get('vertex_index'),
+                      tuple(e.get('edge', ()))) for e in elements),
+               tuple(id(self._mgl_mesh_topology_for_owner(owner)) for owner in owners), tuple(color))
+        cache = caches.get(name)
+        if cache is None or cache.get('source_key') != key:
+            if cache:
+                for kind in ('points', 'edges', 'faces', 'object_faces', 'object_outlines'):
+                    for entry in cache.get(kind, []):
+                        self._mgl_release_mesh_selection_cache_entry(entry)
+            cache = self._mgl_build_mesh_selection_overlay_cache(selected=None, selected_many=elements,
+                selected_color=color, use_point_overlay=True, source_key=key, use_selection_state=False)
+            caches[name] = cache
+        if face_opacity is not None:
+            self._mgl_draw_cached_mesh_selection_faces(cache.get('faces'), color, mvp, opacity=face_opacity)
+        else:
+            self._mgl_draw_mesh_selection_overlay_cache(cache, color, mvp)
+
     def _paint_mgl_draw_mesh_selection_overlay_pass(self, *, mvp) -> None:
+        # Highlights must never become occluders for other highlights or Qt.
+        # ModernGL exposes depth_mask on the framebuffer, not on Context.
+        raw = getattr(self, '_gl', None)
+        previous_mask = self._mgl_mesh_overlay_depth_mask(False)
+        try:
+            self._paint_mgl_draw_mesh_selection_overlay_contents(mvp=mvp)
+        finally:
+            self._mgl_ctx.polygon_offset = (0.0, 0.0)
+            self._mgl_ctx.wireframe = False
+            if raw is not None:
+                raw.glDisable(0x8037)  # GL_POLYGON_OFFSET_FILL
+            if previous_mask is not None:
+                self._mgl_mesh_overlay_depth_mask(previous_mask)
+
+    def _paint_mgl_draw_mesh_selection_overlay_contents(self, *, mvp) -> None:
         try:
             self._mesh_selection_points_drawn_in_mgl = False
         except Exception:
@@ -27691,41 +27852,43 @@ void main() {
             use_point_overlay=use_point_overlay,
         )
         self._mgl_draw_curve_control_points_overlay(mvp=mvp)
-        if not bool(cache.get("has_selection")) and not isinstance(hover, dict):
-            return
-        selected_keys = cache.get("selected_keys")
-        if not isinstance(selected_keys, set):
-            selected_keys = set()
-        selected_point_sets = cache.get("selected_point_sets")
-        if not isinstance(selected_point_sets, dict):
-            selected_point_sets = {}
-        key_fn = getattr(self, "_mesh_element_key", None)
+        preview = getattr(self, '_mesh_polygon_preview', {}) or {}
+        def element_key(e):
+            return e['mode'], e['owner'], e.get('face_index'), e.get('vertex_index'), tuple(e.get('edge', ()))
+        subtract = bool(preview) and getattr(self, '_mesh_polygon_preview_operation', None) == 'subtract'
+        selected_preview_keys = set() if subtract else {
+            element_key(e) for e in (selected_many or ([selected] if selected else []))}
+        path = [e for e in preview.get('path', []) if element_key(e) not in selected_preview_keys]
+        path_ids = {element_key(e) for e in preview.get('path', [])}
+        loop = [e for e in preview.get('loop', []) if element_key(e) not in path_ids | selected_preview_keys]
+
+        def draw_preview():
+            loop_color = (1.0, 0.12, 0.1, 0.65) if subtract else (0.1, 0.45, 1.0, 0.45)
+            path_color = (1.0, 0.08, 0.06, 0.95) if subtract else (0.0, 0.65, 1.0, 0.8)
+            self._mgl_draw_component_preview('loop', loop, loop_color, mvp)
+            self._mgl_draw_component_preview('path', path, path_color, mvp)
+
         try:
-            if isinstance(hover, dict):
-                hover_selected = False
-                hover_mode = str(hover.get("mode") or "").strip().lower()
-                if hover_mode == "point":
-                    try:
-                        owner_l = str(hover.get("owner") or "").strip().lower()
-                        idx = int(hover.get("vertex_index"))
-                        point_set = selected_point_sets.get(owner_l)
-                        hover_selected = isinstance(point_set, set) and idx in point_set
-                    except Exception:
-                        hover_selected = False
-                elif callable(key_fn):
-                    try:
-                        hover_selected = key_fn(hover) in selected_keys
-                    except Exception:
-                        hover_selected = False
-                if not hover_selected:
-                    self._mgl_draw_mesh_overlay_element(hover, hover_color, mvp)
+            if not subtract:
+                draw_preview()
+            hover_mode = hover.get('mode') if isinstance(hover, dict) else None
+            hover_selected_face = (hover_mode == 'face' and
+                self._mgl_selection_overlay_elem_key(hover) in cache.get('selected_keys', set()))
+            if hover_mode and hover_mode != 'point' and not hover_selected_face and not subtract:
+                self._mgl_draw_component_preview('hover', [hover], hover_color, mvp)
             points_drawn = self._mgl_draw_mesh_selection_overlay_cache(cache, selected_color, mvp)
             if points_drawn:
-                try:
-                    self._mesh_selection_points_drawn_in_mgl = True
-                    self._mesh_selection_skip_qt_selected_points = True
-                except Exception:
-                    pass
+                self._mesh_selection_points_drawn_in_mgl = True
+                self._mesh_selection_skip_qt_selected_points = True
+            if subtract:
+                draw_preview()
+            elif hover_selected_face:
+                # Keep a little warmth from the orange selection underneath,
+                # while making the hovered polygon clearly light blue.
+                self._mgl_draw_component_preview('hover', [hover], (0.3, 0.8, 1.0, 1.0), mvp,
+                                                 face_opacity=0.72)
+            elif hover_mode == 'point':
+                self._mgl_draw_component_preview('hover', [hover], (*hover_color[:3], 1.0), mvp)
         finally:
             try:
                 if bool(getattr(self, "_mgl_cull_enabled", False)):
@@ -29010,6 +29173,8 @@ void main() {
         if not self._use_moderngl:
             return
         self._mgl_wireframe = bool(checked)
+        if not checked:
+            self._mgl_wireframe_xray = False
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None:
             visibility_map = getattr(self, "_mgl_scene_visibility", {}) or {}
@@ -29043,6 +29208,18 @@ void main() {
                         item.visible = True
             else:
                 scene.set_visible_by_tag("scene-wire", False)
+        self.update()
+
+    def _toggle_mgl_xray(self):
+        enabled = not bool(getattr(self, '_mgl_wireframe_xray', False))
+        self._mgl_wireframe_xray = enabled
+        self._on_mgl_wireframe_toggled(True)
+        toggle = getattr(self, '_mgl_wireframe_toggle', None)
+        if toggle is not None:
+            blocked = toggle.blockSignals(True)
+            toggle.setChecked(True)
+            toggle.blockSignals(blocked)
+        self._set_mesh_element_hover(None)
         self.update()
 
     def _on_mgl_uv_toggled(self, checked: bool) -> None:

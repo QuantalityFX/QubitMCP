@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 from echograph.services.profiler import profile_scope
+from .gizmo_visibility import sync_gizmo_visibility
 
 try:
     import numpy as np
@@ -55,7 +56,8 @@ def paint_gl(view: Any) -> None:
             setattr(view, "_mgl_gizmo_tips_test_last_drawn", False)
 
         # Axis overlay (debug) in ModernGL path
-        if getattr(view, "_debug_show_axis_overlay", False):
+        gizmo_visible = sync_gizmo_visibility(view)
+        if getattr(view, "_debug_show_axis_overlay", False) and gizmo_visible:
             try:
                 active_rect_fn = getattr(view, "_mgl_apply_active_viewport_for_overlay", None)
                 if callable(active_rect_fn):
@@ -65,12 +67,6 @@ def paint_gl(view: Any) -> None:
                 if getattr(view, "_axis_overlay", None) is None:
                     from echograph.ui.axis_gizmo_overlay import AxisGizmoOverlay
                     view._axis_overlay = AxisGizmoOverlay()
-
-                # Only draw gizmo when something is selected (unless idle gizmo is allowed)
-                if getattr(view, "_xform_gizmo_owner", None) is None and not bool(
-                    getattr(view, "_xform_gizmo_idle_visible", False)
-                ):
-                    return
 
                 if True:
                     renderer = getattr(view, "_mgl_renderer", None) or view
