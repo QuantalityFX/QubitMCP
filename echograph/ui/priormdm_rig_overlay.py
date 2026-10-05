@@ -86,6 +86,9 @@ def draw_rig_guide(renderer, painter, data):
     matrix = data['rig_projection']
     x,y,w,h = data['rig_viewport']
     selected = data.get('selected','')
+    selected_joints = set(data.get('selected_joints') or [])
+    if selected:
+        selected_joints.add(selected)
     colors = {'collision':(65,210,235), 'limit':(250,185,65), 'twist':(185,120,255),
               'pointer':(125,255,165),'limit_hit':(255,90,90)}
 
@@ -119,7 +122,7 @@ def draw_rig_guide(renderer, painter, data):
             kind = shape['kind']
             if kind == 'collision' and not guide['collisions']:
                 continue
-            if kind != 'collision' and (not guide['limits'] or (selected and shape['joint'] != selected)):
+            if kind != 'collision' and (not guide['limits'] or (selected_joints and shape['joint'] not in selected_joints)):
                 continue
             projected_sets = project_sets(shape['faces']+shape['wires'])
             for projected in projected_sets[:len(shape['faces'])]:
@@ -148,7 +151,7 @@ def draw_rig_guide(renderer, painter, data):
         lines = [title,'Cyan: volumes   Gold: bend   Purple: twist   Pointer: green / red at limit',*detail.splitlines(),
                  'Pose-editor limits; automatic generation cleanup is more conservative.']
         from .priormdm_rig_panel import show_rig_panel
-        if not show_rig_panel(renderer,data,detail):
+        if not show_rig_panel(renderer,data,detail,labels=labels):
             _draw_guide_panel(renderer,painter,(x,y,w,h),lines)
     finally:
         painter.restore()

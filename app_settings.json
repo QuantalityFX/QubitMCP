@@ -69,13 +69,13 @@
       },
       "left_ankle": {
         "bend_min": 0.0,
-        "bend_max": 50.0,
+        "bend_max": 45.0,
         "twist_min": -35.0,
         "twist_max": 35.0
       },
       "right_ankle": {
         "bend_min": 0.0,
-        "bend_max": 25.0,
+        "bend_max": 45.0,
         "twist_min": -35.0,
         "twist_max": 35.0
       },

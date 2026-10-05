@@ -27,6 +27,8 @@ APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 class PanelViewport(QtWidgets.QWidget, MGLRendererMixin):
     _set_owner_rot_deg = GraphGLView._set_owner_rot_deg
     _timeline_entry_axis_mask = GraphGLView._timeline_entry_axis_mask
+    _rot_shared_owner_is_scene_skeleton_joint = GraphGLView._rot_shared_owner_is_scene_skeleton_joint
+    _rot_shared_qt_to_xyzw = GraphGLView._rot_shared_qt_to_xyzw
 
     def __init__(self):
         super().__init__()
@@ -57,6 +59,47 @@ class PanelViewport(QtWidgets.QWidget, MGLRendererMixin):
 
 
 class PreviewSettingsTests(unittest.TestCase):
+    def test_standalone_preview_rotates_selected_parent_and_child_with_individual_limits(self):
+        for parent, child, axis in (('left_shoulder','left_elbow',(0,-1,0)),
+                                    ('left_hip','left_knee',(1,0,0))):
+            for names in ([parent,child],[child,parent]):
+                with self.subTest(selection=names):
+                    view=PanelViewport()
+                    self.addCleanup(view.close)
+                    view._xform_hist_start=None
+                    view._mgl_scene_skeleton_active_owner='Rig'
+                    view._mgl_scene_skeleton_selected_joints=names
+                    view._timeline_keys_map_for_owner=Mock(return_value={})
+                    active=view._mgl_scene_skeleton_joint_owner_token('Rig',names[-1])
+                    GraphGLView._begin_xform_history(view,active)
+                    self.assertEqual(view._xform_hist_start['entry_type'],'scene_joint_group')
+                    self.assertIsNone(view._xform_hist_start['scene_node'])
+                    limits=view.context['priormdm_rig_debug']['joint_limits']
+                    maximum={parent:limits[JOINT_NAMES.index(parent)]['swing'],
+                             child:limits[JOINT_NAMES.index(child)]['flex']}
+                    for step in range(1,21):
+                        current=view._mgl_scene_skeleton_get_joint_global_rotation(active)
+                        q=QtGui.QQuaternion(current[3],*current[:3])
+                        delta=QtGui.QQuaternion.fromAxisAndAngle(QtGui.QVector3D(*axis),10)
+                        self.assertTrue(GraphGLView._rot_shared_apply_scene_skeleton_global_q(view,active,q*delta))
+                        pose=evaluate_rig_at_time(view.context['skeleton'],view.context['clip'],0)
+                        for name in names:
+                            joint=JOINT_NAMES.index(name)
+                            actual=Rotation.from_quat(pose.local_transforms[joint].rotation).as_rotvec()
+                            np.testing.assert_allclose(actual,np.array(axis)*np.deg2rad(min(step*10,maximum[name])),atol=1e-5)
+                            np.testing.assert_allclose(pose.local_transforms[joint].translation,preview_offsets('standardman')[joint],atol=1e-8)
+                    current=view._mgl_scene_skeleton_get_joint_global_rotation(active)
+                    q=QtGui.QQuaternion(current[3],*current[:3])
+                    delta=QtGui.QQuaternion.fromAxisAndAngle(QtGui.QVector3D(*axis),-5)
+                    self.assertTrue(GraphGLView._rot_shared_apply_scene_skeleton_global_q(view,active,q*delta))
+                    pose=evaluate_rig_at_time(view.context['skeleton'],view.context['clip'],0)
+                    for name in names:
+                        actual=Rotation.from_quat(pose.local_transforms[JOINT_NAMES.index(name)].rotation).as_rotvec()
+                        np.testing.assert_allclose(actual,np.array(axis)*np.deg2rad(maximum[name]-5),atol=1e-5)
+                    self.assertEqual(set(view.context['_scene_skeleton_joint_overrides']),set(names))
+                    GraphGLView._commit_xform_history(view)
+                    self.assertIsNone(view._xform_hist_start)
+
     def test_ankle_defaults_are_narrower_without_changing_generation(self):
         for joint in (7,8):
             self.assertEqual(preview_limit_fields(joint)['bend_max'],25.)
@@ -200,6 +243,105 @@ class PreviewSettingsTests(unittest.TestCase):
         try: view._draw_scene_skeleton_qt_overlay(painter)
         finally: painter.end()
         self.assertTrue(panel.isHidden())
+
+    def test_multiple_joint_sections_grow_upward_then_scroll_without_resetting(self):
+        view=PanelViewport()
+        self.addCleanup(view.deleteLater)
+        view.show()
+        names=['left_ankle','right_ankle','left_knee','neck']
+        heights=[]
+        bottoms=[]
+        for count in (1,2,4):
+            data=view.data(names[count-1])
+            data['selected_joints']=names[:count]
+            labels={name:f'{name}: Current bend {i+1}°' for i,name in enumerate(names)}
+            show_rig_panel(view,data,labels[data['selected']],labels=labels)
+            APP.processEvents()
+            panel=view._priormdm_rig_panel
+            heights.append(panel.height())
+            bottoms.append(panel.geometry().bottom())
+            self.assertEqual(list(panel.sections),list(reversed(names[:count])))
+            self.assertEqual(panel.scroll.verticalScrollBar().maximum()>0,count>2)
+            for i,name in enumerate(names[:count]):
+                section=panel.sections[name]
+                self.assertIn(f'Current bend {i+1}°',section.detail.text())
+                field=section.fields['twist_max']
+                self.assertLess(field.mapTo(section,QtCore.QPoint(0,field.height())).y(),section.height())
+        self.assertLess(heights[0],heights[1])
+        self.assertEqual(heights[1],heights[2])
+        self.assertEqual(len(set(bottoms)),1)
+        bar=panel.scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        position=bar.value()
+        section=panel.sections['neck']
+        show_rig_panel(view,data,labels[data['selected']],labels=labels)
+        APP.processEvents()
+        self.assertIs(panel.sections['neck'],section)
+        self.assertEqual(bar.value(),position)
+        show_rig_panel(view,view.data('left_ankle'),'Ankle')
+        APP.processEvents()
+        self.assertEqual(panel.height(),heights[0])
+        self.assertEqual(bar.maximum(),0)
+
+    def test_editing_and_resetting_another_card_keeps_active_joint_and_saves_all(self):
+        view=PanelViewport()
+        self.addCleanup(view.deleteLater)
+        data=view.data('right_ankle')
+        data['selected_joints']=['left_ankle','right_ankle']
+        panel=RigPreviewPanel(view)
+        panel.sync(data,'Right ankle')
+        left=view._mgl_scene_skeleton_joint_owner_token('Rig','left_ankle')
+        right=view._mgl_scene_skeleton_joint_owner_token('Rig','right_ankle')
+        view._set_owner_rot_deg(left,(24,0,0),False)
+        view._set_owner_rot_deg(right,(18,0,0),False)
+        active_keys=view._timeline_keys
+        view._refresh_scene_skeleton_joint_gizmo_after_rotation.reset_mock()
+        panel.sections['left_ankle'].fields['bend_max'].setValue(12)
+        self.assertIs(view._timeline_keys,active_keys)
+        view._refresh_scene_skeleton_joint_gizmo_after_rotation.assert_not_called()
+        pose=evaluate_rig_at_time(view.context['skeleton'],view.context['clip'],0)
+        for joint,expected in ((7,12),(8,18)):
+            self.assertAlmostEqual(np.degrees(rotation_parts(pose.local_transforms[joint].rotation,[0,0,1])[0].magnitude()),expected,places=4)
+        panel.sections['right_ankle'].fields['bend_max'].setValue(17)
+        panel.sections['left_ankle'].reset_button.click()
+        self.assertEqual(panel.sections['left_ankle'].fields['bend_max'].value(),25)
+        self.assertEqual(panel.sections['right_ankle'].fields['bend_max'].value(),17)
+        # Save also commits text still being edited in a non-active card.
+        panel.sections['left_ankle'].fields['bend_max'].lineEdit().setText('16.0°')
+        with tempfile.TemporaryDirectory() as folder:
+            settings=Path(folder)/'app_settings.json'
+            with patch('echograph.motion.rig_preview_settings.APP_SETTINGS_PATH',settings):
+                panel.save_button.click()
+            saved=load_preview_limits(settings)
+        self.assertEqual(saved[7]['swing'],16)
+        self.assertEqual(saved[8]['swing'],17)
+        self.assertEqual(data['selected'],'right_ankle')
+
+    def test_guides_render_for_all_selected_joints(self):
+        from types import SimpleNamespace
+        from echograph.ui.priormdm_rig_overlay import draw_rig_guide
+        _,guide=build_guide(preview_offsets('standardman'))
+        guide.update(profile='standardman',collisions=False,limits=True)
+        selected=['left_shoulder','right_shoulder']
+        projection=np.eye(4)
+        projection[0,0]=projection[1,1]=.85
+        projection[1,3]=-.9
+        renderer=SimpleNamespace(_mgl_scene_skeleton_display_positions=lambda owner,rows:(rows,{}))
+        def render(shapes,selection,active):
+            image=QtGui.QImage(700,800,QtGui.QImage.Format_RGB32)
+            image.fill(QtGui.QColor('#20252c'))
+            data=dict(rig_guide=dict(guide,shapes=shapes),rig_projection=projection,
+                      rig_viewport=(0,0,700,800),owner='Rig',selected=active,selected_joints=selection)
+            painter=QtGui.QPainter(image)
+            try:
+                with patch('echograph.ui.priormdm_rig_overlay._draw_guide_panel'):
+                    draw_rig_guide(renderer,painter,data)
+            finally: painter.end()
+            return image
+        expected=render([s for s in guide['shapes'] if s['joint'] in selected],[],'')
+        actual=render(guide['shapes'],selected,selected[-1])
+        self.assertEqual(actual,expected)
+        self.assertNotEqual(actual,render(guide['shapes'],[],selected[-1]))
 
 
 if __name__ == '__main__':

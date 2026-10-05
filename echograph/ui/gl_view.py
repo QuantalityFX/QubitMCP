@@ -2724,8 +2724,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             win = self.window()
         except Exception:
             win = None
-        if win is None:
-            return
         scene_node = getattr(win, "_active_scene_node", None)
         if scene_node is None:
             try:
@@ -2739,14 +2737,17 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         break
             except Exception:
                 scene_node = None
-        if scene_node is None:
-            return
         kind = (getattr(scene_node, "kind", "") or "").lower()
-        if kind not in ("scene", "scene_assembly", "scene_outliner"):
-            return
         renderer = getattr(self, "_mgl_renderer", None) or self
         decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
-        if callable(decode_joint) and decode_joint(owner):
+        decoded = decode_joint(owner) if callable(decode_joint) else None
+        joint_context = renderer._mgl_scene_owner_fbx_rig_context(decoded[0]) if decoded else None
+        is_preview = isinstance(joint_context, dict) and bool(joint_context.get("priormdm_rig_debug"))
+        if kind not in ("scene", "scene_assembly", "scene_outliner"):
+            if not is_preview:
+                return
+            scene_node = None
+        if decoded:
             selected_fn = getattr(renderer, "_mgl_scene_skeleton_selected_joint_owners", None)
             selected = selected_fn(owner) if callable(selected_fn) else [owner]
             if len(selected) > 1 and getattr(self, "_xform_gizmo_mode", "rotate") == "rotate":
@@ -2756,6 +2757,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     self._xform_hist_start = {
                         "owner": owner, "scene_node": scene_node,
                         "entry_type": "scene_joint_group",
+                        "preview_incremental": is_preview,
                         "before": deepcopy(keys), "joint_keys": keys,
                         "global_rotation": contexts[owner]["current_global"],
                         "local_rotations": {token: context["current_local"] for token, context in contexts.items()},
@@ -8408,6 +8410,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     previous = values[1] if values is not None else (0.0, 0.0, 0.0)
                     euler = renderer._mgl_scene_skeleton_euler_from_quat_continuous(local, previous)
                     self._set_owner_rot_deg(token, euler, False)
+                if data.get("preview_incremental"):
+                    # Preview gizmos rebase every move to the constrained pose.
+                    # Rebase the whole group too, including parent/child pairs.
+                    contexts = {token: renderer._mgl_scene_skeleton_rotation_context(token)
+                                for token in data["local_rotations"]}
+                    data["global_rotation"] = contexts[owner]["current_global"]
+                    data["local_rotations"] = {token: context["current_local"]
+                                               for token, context in contexts.items()}
                 return True
             local_for_global = getattr(renderer, "_mgl_scene_skeleton_local_rotation_for_global", None)
             if not callable(local_for_global):
