@@ -2542,6 +2542,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             elem = None
         self._set_mesh_element_hover(elem if isinstance(elem, dict) else None)
         from .mesh_polygons import component_gesture_operation, update_polygon_preview
+        self._mesh_hover_subtract = bool(e.modifiers() & QtCore.Qt.ControlModifier) and not bool(e.modifiers() & QtCore.Qt.AltModifier)
         operation = component_gesture_operation(self, e.modifiers())
         update_polygon_preview(self, elem, operation is not None, selection_op=operation)
         try:
@@ -9756,6 +9757,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         super().keyReleaseEvent(e)
 
     def focusOutEvent(self, e):
+        self._mesh_hover_subtract = False
         self._mesh_hover_pending_event = None
         self._mesh_polygon_a_held = False
         self._mesh_component_held_keys = set()

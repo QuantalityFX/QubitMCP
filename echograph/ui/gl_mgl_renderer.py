@@ -19388,6 +19388,7 @@ void main() {
         vao = payload.get("vao")
         if vao is None:
             return
+        previous_mask = self._mgl_mesh_overlay_depth_mask(False)
         prev_wireframe = False
         prev_line_width = None
         try:
@@ -19414,7 +19415,7 @@ void main() {
         try:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
             try:
-                self._mgl_apply_shadow_uniforms(self._mgl_grid_prog)
+                self._mgl_grid_prog["UseShadows"].value = 0
             except Exception:
                 pass
             self._mgl_grid_prog["Color"].value = color
@@ -19450,6 +19451,8 @@ void main() {
         except Exception as exc:
             self._mgl_error = f"Scene grid draw failed: {exc}"
         finally:
+            if previous_mask is not None:
+                self._mgl_mesh_overlay_depth_mask(previous_mask)
             try:
                 self._mgl_ctx.wireframe = prev_wireframe
             except Exception:
@@ -24507,6 +24510,25 @@ void main() {
         return False
 
     def _paint_mgl_draw_grid_pass(self, *, mvp) -> None:
+        # A reference grid never occludes geometry, including X-ray BVH bones.
+        previous_mask = self._mgl_mesh_overlay_depth_mask(False)
+        raw = getattr(self, '_gl', None)
+        # ModernGL's depth_func getter is unsupported; query the active Qt context.
+        previous_depth_func = raw.glGetIntegerv(0x0B74) if raw is not None else None
+        previous_depth_test = bool(raw.glIsEnabled(0x0B71)) if raw is not None else True
+        try:
+            self._paint_mgl_draw_grid_contents(mvp=mvp)
+        finally:
+            if raw is not None:
+                raw.glDepthFunc(previous_depth_func)
+            if previous_depth_test:
+                self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+            else:
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            if previous_mask is not None:
+                self._mgl_mesh_overlay_depth_mask(previous_mask)
+
+    def _paint_mgl_draw_grid_contents(self, *, mvp) -> None:
         if bool(getattr(self, "_mgl_grid_model_clear_pending", False)):
             self._mgl_clear_grid_model()
             self._mgl_grid_model_clear_pending = False
@@ -24548,10 +24570,6 @@ void main() {
         if bool(getattr(self, "_mgl_grid_visible", False)) and self._mgl_grid_vao is not None:
             try:
                 try:
-                    _prev_depth_mask = bool(getattr(self._mgl_ctx, "depth_mask", True))
-                except Exception:
-                    _prev_depth_mask = True
-                try:
                     _prev_lw = float(getattr(self._mgl_ctx, "line_width", 1.0))
                 except Exception:
                     _prev_lw = 1.0
@@ -24571,10 +24589,6 @@ void main() {
                     pass
                 try:
                     self._mgl_ctx.depth_func = "<="
-                except Exception:
-                    pass
-                try:
-                    self._mgl_ctx.depth_mask = False
                 except Exception:
                     pass
                 try:
@@ -24755,7 +24769,7 @@ void main() {
 
                 self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
                 try:
-                    self._mgl_apply_shadow_uniforms(self._mgl_grid_prog)
+                    self._mgl_grid_prog["UseShadows"].value = 0
                 except Exception:
                     pass
                 self._mgl_grid_prog["Color"].value = (grid_rgb[0], grid_rgb[1], grid_rgb[2], grid_alpha)
@@ -24898,10 +24912,6 @@ void main() {
 
                 try:
                     self._mgl_ctx.line_width = _prev_lw
-                except Exception:
-                    pass
-                try:
-                    self._mgl_ctx.depth_mask = _prev_depth_mask
                 except Exception:
                     pass
                 try:
@@ -25318,6 +25328,9 @@ void main() {
             active_viewport = self._mgl_active_render_viewport()
             self._mgl_active_viewport_rect = active_viewport
             self._mgl_bind_default_fbo()
+            # glClear obeys the depth write mask. Reset it before clearing, not
+            # just before drawing, so prior overlay/Qt state cannot leave stale depth.
+            self._mgl_mesh_overlay_depth_mask(True)
             # QOpenGLWidget already has the correct default framebuffer bound.
             # Avoid Framebuffer.clear() because it may bind/use() internally and can hard-crash some drivers.
             self._dbgprint(dbg, "[MGL] set viewport", flush=True)
@@ -25440,7 +25453,8 @@ void main() {
             pass
         try:
             # Ensure depth writes are on before drawing the scene.
-            self._mgl_ctx.depth_mask = True
+            self._mgl_mesh_overlay_depth_mask(True)
+            self._mgl_ctx.depth_func = "<"
         except Exception:
             pass
 
@@ -25741,6 +25755,9 @@ void main() {
                 self._mgl_shadow_valid = False
             except Exception:
                 pass
+
+        with profile_scope("render.3d.mgl.draw_grid"):
+            self._paint_mgl_draw_grid_pass(mvp=mvp)
 
         scene = getattr(self, "_mgl_scene", None)
         try:
@@ -27716,14 +27733,14 @@ void main() {
                 pass
         return drawn
 
-    def _mgl_draw_mesh_selection_overlay_cache(self, cache: dict, selected_color, mvp) -> bool:
+    def _mgl_draw_mesh_selection_overlay_cache(self, cache: dict, selected_color, mvp, *, point_size=5.6) -> bool:
         if not isinstance(cache, dict):
             return False
         self._mgl_draw_cached_mesh_selection_faces(cache.get("object_faces"), selected_color, mvp)
         self._mgl_draw_cached_mesh_selection_outlines(cache.get("object_outlines"), selected_color, mvp)
         self._mgl_draw_cached_mesh_selection_faces(cache.get("faces"), selected_color, mvp)
         self._mgl_draw_cached_mesh_selection_lines(cache.get("edges"), selected_color, mvp, 5.0)
-        return self._mgl_draw_cached_mesh_selection_points(cache.get("points"), mvp, 5.6)
+        return self._mgl_draw_cached_mesh_selection_points(cache.get("points"), mvp, point_size)
 
     def _mgl_draw_mesh_overlay_element(self, elem, color, mvp) -> None:
         if not isinstance(elem, dict):
@@ -27793,7 +27810,7 @@ void main() {
                     drawn = True
         return drawn
 
-    def _mgl_draw_component_preview(self, name, elements, color, mvp, *, face_opacity=None):
+    def _mgl_draw_component_preview(self, name, elements, color, mvp, *, face_opacity=None, point_size=5.6):
         """Batch previews into persistent buffers, just like committed selection."""
         from .mesh_polygons import expand_face_elements
         elements = [triangle for elem in elements for triangle in expand_face_elements(
@@ -27817,7 +27834,7 @@ void main() {
         if face_opacity is not None:
             self._mgl_draw_cached_mesh_selection_faces(cache.get('faces'), color, mvp, opacity=face_opacity)
         else:
-            self._mgl_draw_mesh_selection_overlay_cache(cache, color, mvp)
+            self._mgl_draw_mesh_selection_overlay_cache(cache, color, mvp, point_size=point_size)
 
     def _paint_mgl_draw_mesh_selection_overlay_pass(self, *, mvp) -> None:
         # Highlights must never become occluders for other highlights or Qt.
@@ -27863,18 +27880,28 @@ void main() {
         loop = [e for e in preview.get('loop', []) if element_key(e) not in path_ids | selected_preview_keys]
 
         def draw_preview():
-            loop_color = (1.0, 0.12, 0.1, 0.65) if subtract else (0.1, 0.45, 1.0, 0.45)
-            path_color = (1.0, 0.08, 0.06, 0.95) if subtract else (0.0, 0.65, 1.0, 0.8)
-            self._mgl_draw_component_preview('loop', loop, loop_color, mvp)
-            self._mgl_draw_component_preview('path', path, path_color, mvp)
+            # Different RGB values keep the path distinct even on opaque wire shaders.
+            loop_color = (0.65, 0.04, 0.03, 1.0) if subtract else (0.1, 0.45, 1.0, 0.45)
+            path_color = (1.0, 0.32, 0.25, 1.0) if subtract else (0.0, 0.65, 1.0, 0.8)
+            point_preview = getattr(self, '_mesh_select_mode', '') == 'point'
+            if point_preview and not subtract:
+                loop_color = (0.35, 0.72, 1.0, 1.0)
+                path_color = (0.65, 0.88, 1.0, 1.0)
+            self._mgl_draw_component_preview('loop', loop, loop_color, mvp,
+                                             point_size=8.0 if point_preview else 5.6)
+            self._mgl_draw_component_preview('path', path, path_color, mvp,
+                                             point_size=9.0 if point_preview else 5.6)
 
+        ctrl_hover = bool(getattr(self, '_mesh_hover_subtract', False)) and not preview
+        if ctrl_hover:
+            hover = getattr(self, '_mesh_polygon_hover_target', None)
         try:
             if not subtract:
                 draw_preview()
             hover_mode = hover.get('mode') if isinstance(hover, dict) else None
             hover_selected_face = (hover_mode == 'face' and
                 self._mgl_selection_overlay_elem_key(hover) in cache.get('selected_keys', set()))
-            if hover_mode and hover_mode != 'point' and not hover_selected_face and not subtract:
+            if hover_mode and hover_mode != 'point' and not hover_selected_face and not subtract and not ctrl_hover:
                 self._mgl_draw_component_preview('hover', [hover], hover_color, mvp)
             points_drawn = self._mgl_draw_mesh_selection_overlay_cache(cache, selected_color, mvp)
             if points_drawn:
@@ -27882,6 +27909,10 @@ void main() {
                 self._mesh_selection_skip_qt_selected_points = True
             if subtract:
                 draw_preview()
+            elif ctrl_hover and hover_mode in ('point', 'edge', 'face'):
+                self._mgl_draw_component_preview('hover', [hover], (1.0, 0.08, 0.06, 1.0), mvp,
+                                                 face_opacity=0.65 if hover_mode == 'face' else None,
+                                                 point_size=9.0 if hover_mode == 'point' else 5.6)
             elif hover_selected_face:
                 # Keep a little warmth from the orange selection underneath,
                 # while making the hovered polygon clearly light blue.
@@ -28068,8 +28099,6 @@ void main() {
                 )
             with profile_scope("render.3d.mgl.draw_splat_wireframe"):
                 self._paint_mgl_draw_splat_wireframe_pass(mvp=mvp)
-            with profile_scope("render.3d.mgl.draw_grid"):
-                self._paint_mgl_draw_grid_pass(mvp=mvp)
             with profile_scope("render.3d.mgl.draw_transparent_scene"):
                 self._paint_mgl_draw_transparent_scene_pass(mvp=mvp)
             with profile_scope("render.3d.mgl.mesh_selection_overlay"):

@@ -6,7 +6,7 @@
     "audio": false,
     "profiler": false
   },
-  "view_mode": "split",
+  "view_mode": "2d",
   "voice_audio_mode": "bilateral",
   "voice_mic_device_index": 23,
   "shadow_quality": "ultra",
@@ -14,13 +14,13 @@
   "self_shadows": true,
   "two_sided_shadows": true,
   "ambient_light": true,
-  "unlit_view": false,
+  "unlit_view": true,
   "work_light_view": false,
   "ambient_light_strength": 0.1,
   "scene_skeleton_joint_names": false,
   "create_node_dialog_size": {
     "width": 844,
-    "height": 912
+    "height": 901
   },
   "preview_rig": {
     "version": 1,

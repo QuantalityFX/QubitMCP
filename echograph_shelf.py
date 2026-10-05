@@ -3697,6 +3697,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 sc.setKey(QtGui.QKeySequence(str(seq or "")))
             except Exception:
                 pass
+        view = getattr(self, "gl_view", None)
+        if view is not None:
+            view._mesh_component_held_keys = set()
+            view._mesh_polygon_a_held = False
+            view._mesh_polygon_preview = {}
+            view._update_mesh_selection_buttons()
+            view.update()
 
     def _open_hotkeys_dialog(self) -> None:
         try:
@@ -3789,7 +3796,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         editors = {}
         for row, action_id in enumerate(keys):
-            item = QtWidgets.QTableWidgetItem(action_id)
+            item = QtWidgets.QTableWidgetItem(hotkeys_config.ACTION_LABELS.get(action_id, action_id))
+            description = hotkeys_config.ACTION_DESCRIPTIONS.get(action_id, "")
+            item.setToolTip(description or action_id)
             table.setItem(row, 0, item)
             seq = mapping.get(action_id, hotkeys_config.DEFAULT_KEYMAP.get(action_id, ""))
             if action_id in wire_actions:
@@ -3805,8 +3814,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     pass
                 table.setCellWidget(row, 1, editor)
                 editors[action_id] = ("key", editor)
+            if description:
+                editor.setToolTip(description)
+            if action_id in hotkeys_config.ACTION_LABELS:
+                if hasattr(editor, "setMaximumSequenceLength"):
+                    editor.setMaximumSequenceLength(1)
 
         lay.addWidget(table, 1)
+        hint = QtWidgets.QLabel("Mesh path/loop: hold the shortcut and left-click for a path, or middle-click for the full loop.", dlg)
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
 
         btns = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel, parent=dlg

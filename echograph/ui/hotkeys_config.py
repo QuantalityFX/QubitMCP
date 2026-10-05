@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from echograph.qt_compat import QtCore
+from echograph.qt_compat import QtCore, QtGui
 _KEYMAP_CACHE = None
 
 # Action ids -> default key sequences
@@ -29,6 +29,9 @@ DEFAULT_KEYMAP = {
     "app_undo": "Ctrl+Z",
     "app_redo": "Ctrl+Y",
     "gl_wireframe_toggle": "H",
+    "gl_xray_toggle": "Shift+H",
+    "gl_mesh_select_path_loop": "Shift+A",
+    "gl_mesh_deselect_path_loop": "Ctrl+A",
     "gl_grid_toggle": "G",
     "timeline_play_toggle": "Space",
     "timeline_set_key": "K",
@@ -37,12 +40,35 @@ DEFAULT_KEYMAP = {
     "wire_remove": "Alt+LeftClick",
 }
 
+ACTION_LABELS = {
+    "gl_xray_toggle": "3D: toggle X-ray wireframe",
+    "gl_mesh_select_path_loop": "Mesh: add path / loop (hold)",
+    "gl_mesh_deselect_path_loop": "Mesh: deselect path / loop (hold)",
+}
+
+ACTION_DESCRIPTIONS = {
+    "gl_xray_toggle": "Toggle ghosted X-ray wireframe and rear-point picking in the 3D viewport.",
+    "gl_mesh_select_path_loop": "Hold this shortcut: left-click adds a path; middle-click adds the full loop. Works with points, edges and polygons; previews are blue.",
+    "gl_mesh_deselect_path_loop": "Hold this shortcut: left-click deselects a path; middle-click deselects the full loop. Works with points, edges and polygons; previews are red.",
+}
+
 _MOD_MASK = (
     QtCore.Qt.ControlModifier
     | QtCore.Qt.AltModifier
     | QtCore.Qt.ShiftModifier
     | QtCore.Qt.MetaModifier
 )
+
+
+def parse_key_binding(spec: str):
+    """Return a single key and modifiers on either PySide6 or PySide2."""
+    sequence = QtGui.QKeySequence(str(spec or ""))
+    if sequence.count() != 1:
+        return None, QtCore.Qt.NoModifier
+    combination = sequence[0]
+    value = combination.toCombined() if hasattr(combination, "toCombined") else int(combination)
+    mask = _MOD_MASK.value if hasattr(_MOD_MASK, "value") else int(_MOD_MASK)
+    return value & ~mask, QtCore.Qt.KeyboardModifiers(value & mask)
 
 def parse_mouse_binding(spec: str) -> tuple[QtCore.Qt.KeyboardModifiers, QtCore.Qt.MouseButton]:
     """

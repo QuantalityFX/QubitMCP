@@ -277,6 +277,7 @@ def handle_component_gesture_key(view, event, *, pressed):
     mods = event.modifiers()
     if key in modifiers:
         mods = mods | modifiers[key] if pressed else mods & ~modifiers[key]
+    view._mesh_hover_subtract = bool(mods & QtCore.Qt.ControlModifier) and not bool(mods & QtCore.Qt.AltModifier)
     pending = getattr(view, '_mesh_hover_pending_event', None)
     if pending is not None:
         pending.setModifiers(mods)
