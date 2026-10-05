@@ -36,10 +36,11 @@ def ensure_wrapper(item, *, force=False):
 
 def build_start(item):
     for name, default in (("source", ""), ("mode", "outputs"), ("loop_limit", "0"),
+                          ("single_pass", "0"), ("single_iteration", "1"),
                           ("parameter", "output"), ("count", "1"), ("first", "1"), ("step", "1"),
                           ("iteration", "0"), ("wrapper_created", "0")):
         params._ensure_param(item, name, default)
-    params._ensure_hidden_params(item.model, ["mode", "loop_limit", "parameter", "count", "first", "step", "iteration", "wrapper_created"])
+    params._ensure_hidden_params(item.model, ["mode", "loop_limit", "single_pass", "single_iteration", "parameter", "count", "first", "step", "iteration", "wrapper_created"])
     item.ensure_input("source")
 
 
@@ -70,6 +71,18 @@ class StartControls(QtWidgets.QWidget):
         self.limit.setValue(int(value(item.model, "loop_limit", "0")))
         self.limit.setToolTip("0 / All visits every eligible input; a positive value caps the number of renders.")
         form.addRow("Loop Limit", self.limit)
+        self.single_pass = QtWidgets.QCheckBox("Single pass")
+        self.single_pass.setChecked(value(item.model, "single_pass", "0") == "1")
+        self.single_pass.setToolTip("Run only the selected iteration. Overrides Loop Limit.")
+        self.single_iteration = QtWidgets.QSpinBox()
+        self.single_iteration.setPrefix("Iteration ")
+        self.single_iteration.setRange(1, 1_000_000)
+        self.single_iteration.setValue(int(value(item.model, "single_iteration", "1")))
+        self.single_iteration.setKeyboardTracking(False)
+        self.single_iteration.setToolTip("1-based iteration in the eligible inputs: 2 means the second checked path, not collection row 2.")
+        self.single_iteration.setEnabled(self.single_pass.isChecked())
+        self.limit.setEnabled(not self.single_pass.isChecked())
+        form.addRow(self.single_pass, self.single_iteration)
         layout.addLayout(form)
         self.parameter_box = QtWidgets.QWidget()
         fields = QtWidgets.QFormLayout(self.parameter_box)
@@ -108,6 +121,8 @@ class StartControls(QtWidgets.QWidget):
         self.wrapper_button.clicked.connect(lambda: ensure_wrapper(self.item, force=True))
         self.mode.currentIndexChanged.connect(self.mode_changed)
         self.limit.valueChanged.connect(lambda number: self.save("loop_limit", str(number)))
+        self.single_pass.toggled.connect(lambda checked: self.save("single_pass", "1" if checked else "0"))
+        self.single_iteration.valueChanged.connect(lambda number: self.save("single_iteration", str(number)))
         self.parameter.editingFinished.connect(lambda: self.save("parameter", self.parameter.text().strip()))
         for control, name in ((self.count, "count"), (self.first, "first"), (self.step, "step")):
             control.setKeyboardTracking(False)
@@ -140,6 +155,13 @@ class StartControls(QtWidgets.QWidget):
         with QtCore.QSignalBlocker(self.mode):
             self.mode.setCurrentIndex(max(0, self.mode.findData(value(self.item.model, "mode", "outputs"))))
         self.parameter_box.setVisible(self.mode.currentData() == "parameter")
+        for control, name, default in ((self.limit, "loop_limit", "0"),
+                                       (self.single_iteration, "single_iteration", "1")):
+            with QtCore.QSignalBlocker(control):
+                control.setValue(int(value(self.item.model, name, default)))
+        with QtCore.QSignalBlocker(self.single_pass):
+            self.single_pass.setChecked(value(self.item.model, "single_pass", "0") == "1")
+        self.update_pass_controls()
         fit_body(self)
 
     def run(self):
@@ -161,10 +183,17 @@ class StartControls(QtWidgets.QWidget):
         self.run_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
         self.mode.setEnabled(not running)
-        self.limit.setEnabled(not running)
+        self.update_pass_controls()
         self.parameter_box.setEnabled(not running)
         self.wrapper_button.setEnabled(not running)
         fit_body(self)
+
+    def update_pass_controls(self):
+        running = bool(self.session and self.session.running)
+        single = self.single_pass.isChecked()
+        self.single_pass.setEnabled(not running)
+        self.single_iteration.setEnabled(single and not running)
+        self.limit.setEnabled(not single and not running)
 
 
 class EndControls(QtWidgets.QWidget):

@@ -684,7 +684,7 @@ def _handle_mouse_press_moderngl_mesh_box_select_start(self, e, alt_pressed):
     except Exception:
         pass
     try:
-        self.setCursor(QtCore.Qt.CrossCursor)
+        self.setCursor(QtCore.Qt.ArrowCursor)
     except Exception:
         pass
     try:
@@ -818,7 +818,7 @@ def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
     except Exception:
         pass
     try:
-        self.setCursor(QtCore.Qt.CrossCursor)
+        self.setCursor(QtCore.Qt.ArrowCursor)
     except Exception:
         pass
     e.accept()
@@ -3204,7 +3204,7 @@ def _handle_mouse_move_moderngl_mesh_box_select_drag(self, e):
     except Exception:
         pass
     try:
-        self.setCursor(QtCore.Qt.CrossCursor)
+        self.setCursor(QtCore.Qt.ArrowCursor)
     except Exception:
         pass
     try:
@@ -3542,6 +3542,7 @@ def _handle_mouse_move_moderngl_rot_shared_arc_drag_prepare_qnew(
     )
 
     q_delta = quat_from_two_vectors(start_vec, cur_vec)
+    self._rot_shared_arc_current_vec = QtGui.QVector3D(cur_vec)
     q0 = getattr(self, "_rot_shared_arc_start_q", None)
     if q0 is None:
         return None
@@ -5335,6 +5336,13 @@ def _handle_mouse_release_moderngl_click_pick_dpr(self):
     return dpr
 
 def _handle_mouse_release_moderngl_click_pick_apply(self, *, owner, renderer, selection_op: str = "replace"):
+    if owner and selection_op == "replace":
+        context_for_owner = getattr(renderer, "_mgl_scene_owner_fbx_rig_context", None)
+        context = context_for_owner(owner) if callable(context_for_owner) else None
+        if isinstance(context, dict) and context.get("priormdm_rig_debug"):
+            # Joint-dot hits are consumed on press; body/bounds hits deselect.
+            self._handle_mouse_release_moderngl_pick_empty()
+            return
     if owner:
         self._handle_mouse_release_moderngl_pick_owner(owner, renderer, selection_op=selection_op)
     else:
@@ -5538,6 +5546,21 @@ def _handle_mouse_release_moderngl_pick_empty(self):
         self._clear_mesh_element_selection()
     except Exception:
         pass
+
+    # Joint highlights and rig-limit filtering have their own selection state.
+    # Keep the rig active so its handles and all limit guides remain visible.
+    renderer = getattr(self, "_mgl_renderer", None) or self
+    targets = (self,) if renderer is self else (self, renderer)
+    for target in targets:
+        target._mgl_scene_skeleton_selected_joint = ""
+        target._mgl_scene_skeleton_selected_joints = []
+        selected = getattr(target, "_mgl_retarget_selected_joint", None)
+        if isinstance(selected, dict) and selected.get("role") == "scene_skeleton":
+            target._mgl_retarget_selected_joint = None
+            target._mgl_retarget_selection_dirty = True
+        frame_keys = getattr(target, "_mgl_scene_skeleton_handle_frame_keys", None)
+        if isinstance(frame_keys, dict):
+            frame_keys.pop(getattr(target, "_mgl_scene_skeleton_active_owner", ""), None)
 
     # Clear gizmo selection state
     self._xform_gizmo_owner = None

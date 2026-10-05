@@ -283,6 +283,87 @@ class ForEachTests(unittest.TestCase):
             restored.clear()
             restored.deleteLater()
 
+    def test_single_pass_runs_only_selected_checked_animation_and_keeps_take_number(self):
+        node, reference = self.wire_retarget_chain()
+        rows = collection.entries(self.collection.model)
+        rows[1]["checked"] = False
+        collection.save_state(self.collection.model, rows, 1, self.scene)
+        controls = self.start._plugin_proxies[0].widget()
+        controls.mode.setCurrentIndex(controls.mode.findData("checked"))
+        controls.limit.setValue(1)
+        controls.single_pass.setChecked(True)
+        controls.single_iteration.setValue(2)
+        self.assertFalse(controls.limit.isEnabled())
+        self.assertTrue(controls.single_iteration.isEnabled())
+        def render_take(**kwargs):
+            self.assert_active_animation(node, reference, 3)
+            self.assertFalse(controls.single_pass.isEnabled())
+            self.assertFalse(controls.single_iteration.isEnabled())
+            self.assertTrue(Path(kwargs["output_template"]).parent.name.startswith("Take_002_"))
+            return RenderResult("completed")
+        with patch.object(self.renderer, "render_sequence", side_effect=render_take) as render_once:
+            controls.run_button.click()
+            self.finish()
+        self.assertEqual(render_once.call_count, 1)
+        manifest = json.loads(self.session.manifest_path.read_text())
+        self.assertEqual(manifest["planned_takes"], 1)
+        self.assertEqual(manifest["takes"][0]["collection_row"], 3)
+        self.assertEqual(manifest["takes"][0]["iteration"], 2)
+        self.assertEqual(manifest["takes"][0]["take_number"], 2)
+        self.assertEqual(runtime.value(self.end.model, "iteration"), "2")
+        self.assertTrue(controls.single_iteration.isEnabled())
+        controls.single_pass.setChecked(False)
+        self.assertTrue(controls.limit.isEnabled())
+        self.assertFalse(controls.single_iteration.isEnabled())
+        self.assertEqual(len(runtime.iteration_plan(self.start, self.collection)), 1)
+
+    def test_single_pass_settings_survive_workflow_serialization(self):
+        controls = self.start._plugin_proxies[0].widget()
+        controls.single_pass.setChecked(True)
+        controls.single_iteration.setValue(3)
+        data = json.loads(json.dumps(serialize_scene(self.scene)))
+        saved = next(row for row in data["nodes"] if row["name"] == "Start")
+        model = GraphNode("Restored", kind="for_each", params=saved["params"])
+        restored = self.scene.add_node(model, QtCore.QPointF(-1000, -1000))
+        body = restored._plugin_proxies[0].widget()
+        self.assertTrue(body.single_pass.isChecked())
+        self.assertEqual(body.single_iteration.value(), 3)
+        self.assertEqual(runtime.iteration_plan(restored, self.collection)[0]["collection_row"], 3)
+        # Parameter updates from another panel or undo must also update this UI.
+        collection.mocap._set_param_value(model, "single_iteration", "2")
+        body.params_changed(model.name, model.params)
+        self.assertEqual(body.single_iteration.value(), 2)
+
+    def test_single_pass_rejects_out_of_range_before_rendering(self):
+        collection.mocap._set_param_value(self.start.model, "single_pass", "1")
+        for number in (0, 4):
+            collection.mocap._set_param_value(self.start.model, "single_iteration", str(number))
+            with patch.object(self.renderer, "render_sequence") as renderer:
+                with self.assertRaisesRegex(ValueError, "out of range"):
+                    self.session.begin()
+                renderer.assert_not_called()
+            self.assertFalse(self.session.running)
+            self.assertFalse((self.root / "renders").exists())
+
+    def test_single_pass_does_not_validate_unselected_missing_paths(self):
+        self.paths[0].unlink()
+        collection.mocap._set_param_value(self.start.model, "single_pass", "1")
+        collection.mocap._set_param_value(self.start.model, "single_iteration", "3")
+        plan = runtime.iteration_plan(self.start, self.collection)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0]["source_path"], str(self.paths[2]))
+
+    def test_single_pass_parameter_range_selects_original_value(self):
+        driver = SimpleNamespace(model=GraphNode("Driver", params=[{"name": "value", "value": "0"}]))
+        for name, raw in (("mode", "parameter"), ("parameter", "value"), ("count", "5"),
+                          ("first", "2"), ("step", "0.5"), ("loop_limit", "1"),
+                          ("single_pass", "1"), ("single_iteration", "4")):
+            collection.mocap._set_param_value(self.start.model, name, raw)
+        plan = runtime.iteration_plan(self.start, driver)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0]["value"], "3.5")
+        self.assertEqual(plan[0]["iteration"], 4)
+
     def test_checked_outputs_wait_for_render_and_record_exact_paths(self):
         rows = collection.entries(self.collection.model)
         rows[1]["checked"] = False
@@ -377,6 +458,15 @@ class ForEachTests(unittest.TestCase):
             for proxy in item._plugin_proxies + item._param_proxies:
                 self.assertLessEqual(proxy.pos().y() + proxy.size().height() + 5, item.height)
                 self.assertGreaterEqual(proxy.size().height(), proxy.widget().minimumSizeHint().height())
+        body = self.start._plugin_proxies[0].widget()
+        body.single_pass.setChecked(True)
+        for mode in ("outputs", "checked", "parameter"):
+            body.mode.setCurrentIndex(body.mode.findData(mode))
+            APP.processEvents()
+            proxy = body.graphicsProxyWidget()
+            self.assertLessEqual(proxy.pos().y() + proxy.size().height() + 5, self.start.height)
+            self.assertGreaterEqual(proxy.size().height(), body.minimumSizeHint().height())
+            self.assertLessEqual(body.wrapper_button.geometry().bottom() + 5, body.height())
 
     def test_real_render_completion_writes_one_sequence_per_animation(self):
         window = QtWidgets.QMainWindow()

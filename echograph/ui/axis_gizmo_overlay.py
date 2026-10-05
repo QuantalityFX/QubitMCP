@@ -8,6 +8,8 @@ from PySide6.QtOpenGL import (
     QOpenGLShaderProgram,
     QOpenGLBuffer,
     QOpenGLVertexArrayObject,
+    QOpenGLVersionFunctionsFactory,
+    QOpenGLVersionProfile,
 )
 from PySide6 import QtGui
 
@@ -77,7 +79,13 @@ class AxisGizmoOverlay:
             return True
 
         ctx = gl_view.context()
-        self._gl = ctx.functions()
+        # QOpenGLFunctions omits desktop glPolygonMode. Without the versioned
+        # functions, resetting GL_FILL below silently fails and the cone/cube
+        # tips inherit the scene's wireframe or point rasterization mode.
+        profile = QOpenGLVersionProfile()
+        profile.setVersion(3, 3)
+        profile.setProfile(QtGui.QSurfaceFormat.CoreProfile)
+        self._gl = QOpenGLVersionFunctionsFactory.get(profile, ctx) or ctx.functions()
         self._gl.initializeOpenGLFunctions()
 
         prog = QOpenGLShaderProgram()

@@ -24,6 +24,45 @@ def bent_pose():
 
 
 class StableRotationTests(unittest.TestCase):
+    def test_spine_reversals_and_chest_flips_are_bounded_without_snapping(self):
+        positions = []
+        offsets = REST_DIRECTIONS * .2
+        for frame in range(30):
+            local = np.tile(np.eye(3), (22, 1, 1))
+            for joint in (3, 6, 9):
+                local[joint] = Rotation.from_euler('xyz',
+                    [170*(-1)**frame, 175*(-1)**frame, 40], degrees=True).as_matrix()
+            world = local.copy()
+            pose = np.zeros((22, 3))
+            for joint, parent in enumerate(PARENTS):
+                if parent >= 0:
+                    pose[joint] = pose[parent] + world[parent] @ offsets[joint]
+                    world[joint] = world[parent] @ local[joint]
+            positions.append(pose)
+        _, _, result, _ = reconstruct_animation(np.array(positions), 20, {})
+        for joint, bend_limit, twist_limit, speed in ((3,35,0,180), (6,35,0,180), (9,45,40,240)):
+            rotations = Rotation.from_matrix(result[:,joint])
+            q = rotations.as_quat()
+            twists = Rotation.from_quat(np.column_stack((np.zeros(len(q)), q[:,1], np.zeros(len(q)), q[:,3])))
+            swings = rotations * twists.inv()
+            self.assertLessEqual(np.max(np.degrees(swings.magnitude())), bend_limit+1e-6)
+            self.assertLessEqual(np.max(np.degrees(twists.magnitude())), twist_limit+1e-6)
+            self.assertLessEqual(np.max(np.degrees((rotations[:-1].inv()*rotations[1:]).magnitude())), speed/20+1e-6)
+
+    def test_measured_chest_twist_is_preserved_inside_limits(self):
+        pose = bent_pose()
+        chest = 9
+        # Rotate all descendants together; collar landmarks measure torso twist.
+        descendants = []
+        for joint in range(chest+1, 22):
+            parent = PARENTS[joint]
+            if parent == chest or parent in descendants:
+                descendants.append(joint)
+        pose[descendants] = (Rotation.from_euler('y', 30, degrees=True).apply(
+            pose[descendants]-pose[chest]) + pose[chest])
+        _, _, local, _ = reconstruct_animation(np.repeat(pose[None], 3, axis=0), 20, {})
+        np.testing.assert_allclose(local[:,chest], np.tile(Rotation.from_euler('y',30,degrees=True).as_matrix(), (3,1,1)), atol=1e-8)
+
     def test_full_body_flips_and_spins_do_not_accumulate_local_twist(self):
         pose = bent_pose()
         time = np.linspace(0, 1, 121)

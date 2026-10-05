@@ -3,10 +3,10 @@
   "shelf_visible": true,
   "panel_layout": {
     "timeline": true,
-    "audio": true,
+    "audio": false,
     "profiler": false
   },
-  "view_mode": "2d",
+  "view_mode": "split",
   "voice_audio_mode": "bilateral",
   "voice_mic_device_index": 23,
   "shadow_quality": "ultra",

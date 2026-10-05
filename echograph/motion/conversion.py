@@ -18,7 +18,7 @@ from echograph.rigging.fbx_canonical import (
     QuatKeyframe, SkeletonAsset, Vec3Keyframe,
 )
 from .types import GeneratedMotion
-from .rotation_reconstruction import bend_frame, parent_swing, stabilize_joint
+from .rotation_reconstruction import bend_frame, parent_swing, stabilize_joint, stabilize_spine
 
 JOINT_NAMES = ("pelvis", "left_hip", "right_hip", "spine1", "left_knee", "right_knee",
                "spine2", "left_ankle", "right_ankle", "spine3", "left_foot", "right_foot",
@@ -95,14 +95,22 @@ def reconstruct_animation(positions: np.ndarray, fps: float, metadata: dict, *, 
                     rotation = parent_rotation @ local
             else:
                 rotation = parent_rotation
+            if joint in (3, 6, 9):
+                previous = local_rot[frame - 1, joint] if frame else None
+                local = stabilize_spine(joint, parent_rotation.T @ rotation, previous, fps)
+                rotation = parent_rotation @ local
             global_rot[frame, joint] = rotation
             local_rot[frame, joint] = parent_rotation.T @ rotation
             local_pos[frame, joint] = parent_rotation.T @ (pose[joint] - pose[parent]) if parent >= 0 else pose[joint]
     metadata = {**metadata, "rotation_method": "parent-relative swing with limb bend-plane alignment",
-                "rotation_reconstruction_version": 2,
+                "rotation_reconstruction_version": 3,
                 "twist_policy": "anatomical bend planes; unobserved neck/foot roll follows parent; wrists follow forearms",
                 "rotation_limits": {"knee_flex_degrees": 165, "elbow_flex_degrees": 155,
-                                    "neck_swing_degrees": 70, "ankle_swing_degrees": 85},
+                                    "neck_swing_degrees": 70, "ankle_swing_degrees": 85,
+                                    "lower_spine_swing_degrees": 35, "lower_spine_twist_degrees": 0,
+                                    "chest_swing_degrees": 45, "chest_twist_degrees": 40,
+                                    "lower_spine_speed_degrees_per_second": 180,
+                                    "chest_speed_degrees_per_second": 240},
                 "bvh_note": "Fixed median bone lengths; skeleton preview/blocking, not a fitted production rig.",
                 "units": "metres", "up_axis": "Y", "frame_count": len(positions)}
     bind_globals = np.zeros((22, 3))
@@ -233,6 +241,22 @@ def _load_generated_motion(run_dir: Path, preview_profile):
         positions, rest_offsets, details = apply_preview_proportions(positions, preview_profile)
         metadata = {**metadata, **details}
     skeleton, clip, rotations, offsets = reconstruct_animation(positions, fps, metadata, rest_offsets=rest_offsets)
+    from .self_collision import ARMS, correct_arm_collisions
+    rotations, corrected, collision_report = correct_arm_collisions(rotations, offsets, positions[:, 0], fps)
+    if corrected.any():
+        tracks = {track.joint_name: track for track in clip.tracks}
+        for side, arm in enumerate(ARMS):
+            for joint in arm:
+                keys = Rotation.from_matrix(rotations[:, joint]).as_quat()
+                for frame in range(1, len(keys)):
+                    if keys[frame - 1] @ keys[frame] < 0:
+                        keys[frame] *= -1
+                tracks[JOINT_NAMES[joint]].rotation_keys = [QuatKeyframe(i/fps, tuple(q)) for i, q in enumerate(keys)]
+                if joint != arm[0]:
+                    for frame in np.flatnonzero(corrected[:, side]):
+                        tracks[JOINT_NAMES[joint]].translation_keys[frame].value = tuple(offsets[joint])
+    clip.metadata['self_collision_cleanup'] = collision_report
+    skeleton.metadata['self_collision_cleanup'] = collision_report
     return positions, fps, skeleton, clip, rotations, offsets
 
 

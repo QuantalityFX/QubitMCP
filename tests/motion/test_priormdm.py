@@ -83,7 +83,7 @@ class MotionConversionTests(unittest.TestCase):
             np.testing.assert_allclose(evaluated_positions(loaded_skeleton, loaded_clip, 4), positions[4], atol=1e-6)
             rebuilt = rebuild_generated_motion(root, root / "rebuilt")
             self.assertEqual(rebuilt.bvh_path.name, "preview.bvh")
-            self.assertEqual(rebuilt.metadata["rotation_reconstruction_version"], 2)
+            self.assertEqual(rebuilt.metadata["rotation_reconstruction_version"], 3)
             self.assertEqual(result.bvh_path.read_bytes(), rebuilt.bvh_path.read_bytes())
 
     def test_invalid_archive_rejected(self):

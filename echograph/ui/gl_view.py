@@ -2501,7 +2501,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             elem = None
         self._set_mesh_element_hover(elem if isinstance(elem, dict) else None)
         try:
-            self.setCursor(QtCore.Qt.CrossCursor if isinstance(elem, dict) else QtCore.Qt.ArrowCursor)
+            self.setCursor(QtCore.Qt.ArrowCursor)
         except Exception:
             pass
 
@@ -7307,6 +7307,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 self._gl.initializeOpenGLFunctions()
             except Exception:
                 pass
+            # In a compatibility context QPainter rewrites the currently bound
+            # VAO. Give it a private one so it cannot corrupt ModernGL's cached
+            # gizmo tips, selection, or mesh vertex layouts between frames.
+            self._qt_overlay_vao = QOpenGLVertexArrayObject(self)
+            self._qt_overlay_vao.create()
             # MSAA (helps jaggies on lines)
             try:
                 self._gl.glEnable(0x809D)  # GL_MULTISAMPLE
@@ -7492,6 +7497,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
         owns_painter = False
         if painter is None:
+            overlay_vao = getattr(self, "_qt_overlay_vao", None)
+            if overlay_vao is not None:
+                overlay_vao.bind()
             painter = QtGui.QPainter(self)
             owns_painter = True
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
@@ -7616,6 +7624,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
         if owns_painter:
             painter.end()
+            if overlay_vao is not None:
+                overlay_vao.release()
         if depth_disabled:
             try:
                 self._gl.glEnable(GL_DEPTH_TEST)
@@ -8553,6 +8563,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 decoded = decode_joint(owner) if callable(decode_joint) else None
                 if decoded and callable(apply_joint_keys):
                     asset_owner = str(decoded[0] or "").strip()
+                    constrain = getattr(renderer, "_mgl_scene_skeleton_constrain_preview_rotation", None)
+                    if callable(constrain):
+                        rot_deg = constrain(owner, rot_deg, interactive=True)
                     try:
                         frame = max(0, int(round(float(self._timeline_current_frame()))))
                     except Exception:
@@ -8561,6 +8574,15 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     group_keys = data.get("joint_keys") if isinstance(data, dict) else None
                     is_group = isinstance(group_keys, dict) and owner in group_keys
                     keys = group_keys[owner] if is_group else getattr(self, "_timeline_keys", None)
+                    joint_context = renderer._mgl_scene_owner_fbx_rig_context(asset_owner)
+                    if isinstance(joint_context, dict) and joint_context.get("priormdm_rig_debug"):
+                        # The timeline can still contain the previously selected
+                        # owner's XYZ channels. Rotation-only preview edits must
+                        # start from this joint's own authored channels instead.
+                        overrides = joint_context.get("_scene_skeleton_joint_overrides") or {}
+                        keys = {f:dict(row) for f,row in (overrides.get(decoded[1]) or {}).items()}
+                        if is_group:
+                            group_keys[owner] = keys
                     if not isinstance(keys, dict):
                         keys = {}
                     entry = keys.get(int(frame))
@@ -8622,6 +8644,27 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     if not is_active:
                         return
                     self._refresh_scene_skeleton_joint_gizmo_after_rotation(renderer, owner, asset_owner)
+                    context = renderer._mgl_scene_owner_fbx_rig_context(asset_owner)
+                    if isinstance(context, dict) and context.get("priormdm_rig_debug"):
+                        # Continue incremental drags from the clamped pose, not
+                        # the rejected overshoot cached by the rotation gizmo.
+                        actual_q = self._rot_shared_owner_global_q(owner)
+                        if actual_q is not None:
+                            self._rot_owner_quat[owner] = actual_q
+                            if owner == getattr(self, "_rot_shared_owner", None):
+                                shared = getattr(self, "_rot_shared", None)
+                                drag = getattr(shared, "drag_axis", None)
+                                direction = getattr(drag, "last_dir", None)
+                                if getattr(drag, "active", False) and isinstance(direction, QtGui.QVector3D):
+                                    # Axis drags otherwise keep accumulating from
+                                    # mouse-down and wrap across the cone at 180°.
+                                    drag.start_rot = QtGui.QQuaternion(actual_q)
+                                    drag.start_dir = QtGui.QVector3D(direction)
+                                    drag.last_ang_deg = drag.ang_deg = 0.0
+                                arc_vec = getattr(self, "_rot_shared_arc_current_vec", None)
+                                if getattr(self, "_rot_shared_arc_active", False) and arc_vec is not None:
+                                    self._rot_shared_arc_start_q = QtGui.QQuaternion(actual_q)
+                                    self._rot_shared_arc_start_vec = QtGui.QVector3D(arc_vec)
                     try:
                         self._timeline_update_key_markers()
                         self._timeline_update_key_count_label()

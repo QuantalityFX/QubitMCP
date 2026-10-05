@@ -77,6 +77,9 @@ AGENTS.md
 !/tests/
 /tests/*
 !/tests/motion/
+!/tests/ui/
+/tests/ui/*
+!/tests/ui/test_gizmo_qt_overlay.py
 !/tests/voice/
 /tests/voice/*
 !/tests/voice/test_*.py

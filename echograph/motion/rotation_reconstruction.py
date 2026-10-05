@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.spatial.transform import Rotation
+from .rig_limits import JOINT_LIMITS, UPPER_LIMB_ROLL
 
 
 def align_vector(source: np.ndarray, target: np.ndarray) -> np.ndarray:
@@ -53,7 +54,7 @@ def _bound_limb_roll(frame, source, target):
     neutral = parent_swing(source, target)
     delta = Rotation.from_matrix(frame @ neutral.T).as_rotvec()
     twist = float(delta @ target)
-    limit = np.deg2rad(100)
+    limit = np.deg2rad(UPPER_LIMB_ROLL)
     return Rotation.from_rotvec(target * np.clip(twist, -limit, limit)).as_matrix() @ neutral
 
 
@@ -97,10 +98,44 @@ def bend_frame(source, target, bend_direction, rest_bend_direction, previous=Non
     return _bound_limb_roll(frame, source, target)
 
 
+def stabilize_spine(joint, local, previous, fps):
+    """Bound parent-relative torso motion, including the multi-child chest.
+
+    Lower spine positions only measure swing; collar positions also measure
+    chest twist. Interpolate bounded swing vectors and twist separately so
+    smoothing cannot reintroduce roll or cross the +/-180 degree branch cut.
+    """
+    bend_limit = np.deg2rad(JOINT_LIMITS[joint]['swing'])
+    twist_limit = np.deg2rad(JOINT_LIMITS[joint]['twist'])
+
+    def components(matrix):
+        q = Rotation.from_matrix(matrix).as_quat()
+        twist_q = np.array([0., q[1], 0., q[3]])
+        norm = np.linalg.norm(twist_q)
+        twist = Rotation.from_quat(twist_q / norm) if norm > 1e-8 else Rotation.identity()
+        swing = (Rotation.from_matrix(matrix) * twist.inv()).as_rotvec()
+        swing[1] = 0.
+        angle = np.linalg.norm(swing)
+        if angle > bend_limit:
+            swing *= bend_limit / angle
+        return swing, float(np.clip(twist.as_rotvec()[1], -twist_limit, twist_limit))
+
+    swing, twist = components(local)
+    if previous is not None:
+        old_swing, old_twist = components(previous)
+        distance = np.linalg.norm(swing-old_swing) + abs(twist-old_twist)
+        step = np.deg2rad(JOINT_LIMITS[joint]['speed']) / fps
+        weight = min(1., step / max(distance, 1e-12))
+        swing = old_swing + weight * (swing-old_swing)
+        twist = old_twist + weight * (twist-old_twist)
+    return (Rotation.from_rotvec(swing) * Rotation.from_rotvec([0., twist, 0.])).as_matrix()
+
+
 def stabilize_joint(joint, source, target, local, previous, fps):
     """Conservative limits for inferred orientations, not authored animation.
 
-    Root/torso rotation is unrestricted, so flips and spins remain possible.
+    Root rotation is unrestricted, so flips and spins remain possible.
+    Spine stabilization also covers multi-child frames in the caller.
     Knees/elbows retain the measured flexion angle on their anatomical hinge;
     feet/neck use a local swing cone. Inconsistent source poses are corrected
     rather than transferring sideways or backward knee bends into a skin.
@@ -119,8 +154,8 @@ def stabilize_joint(joint, source, target, local, previous, fps):
         source = source / np.linalg.norm(source)
         target = target / np.linalg.norm(target)
         angle = float(np.arccos(np.clip(source @ target, -1, 1)))
-        hinge = np.array([1., 0., 0.]) if joint in (4, 5) else np.array([0., -1. if joint == 18 else 1., 0.])
-        limit = np.deg2rad(165 if joint in (4, 5) else 155)
+        hinge = np.array(JOINT_LIMITS[joint]['axis'])
+        limit = np.deg2rad(JOINT_LIMITS[joint]['flex'])
         local = Rotation.from_rotvec(hinge * min(angle, limit)).as_matrix()
         # Fast airborne flexion is measured motion, not unobserved roll. A
         # rate cap here would make the feet/hands lag behind a backflip.
@@ -128,10 +163,10 @@ def stabilize_joint(joint, source, target, local, previous, fps):
     elif joint in (7, 8, 12):
         vector = Rotation.from_matrix(local).as_rotvec()
         angle = float(np.linalg.norm(vector))
-        limit = np.deg2rad(70 if joint == 12 else 85)
+        limit = np.deg2rad(JOINT_LIMITS[joint]['swing'])
         if angle > limit:
             local = Rotation.from_rotvec(vector * (limit / angle)).as_matrix()
-        speed = 360. if joint == 12 else 540.
+        speed = JOINT_LIMITS[joint]['speed']
     else:
         return local
     if previous is not None:

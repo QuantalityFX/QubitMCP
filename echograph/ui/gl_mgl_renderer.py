@@ -1231,156 +1231,8 @@ void main() {
                     draw_axis_lines(center_line_map, 2.8)
             else:
                 return False
-            try:
-                screen_prog = getattr(self, "_mgl_gizmo_tips_screen_prog", None)
-                screen_vao = getattr(self, "_mgl_gizmo_tips_screen_vao", None)
-                screen_vbo = getattr(self, "_mgl_gizmo_tips_screen_vbo", None)
-                screen_cap = int(getattr(self, "_mgl_gizmo_tips_screen_vbo_capacity", 0) or 0)
-                if screen_prog is None:
-                    screen_vert = """
-#version 330
-in vec2 in_pos_ndc;
-in vec4 in_color;
-out vec4 v_color;
-void main() {
-    gl_Position = vec4(in_pos_ndc, 0.0, 1.0);
-    v_color = in_color;
-}
-"""
-                    screen_frag = """
-#version 330
-in vec4 v_color;
-out vec4 fragColor;
-void main() {
-    fragColor = v_color;
-}
-"""
-                    screen_prog = ctx.program(vertex_shader=screen_vert, fragment_shader=screen_frag)
-                    self._mgl_gizmo_tips_screen_prog = screen_prog
-
-                def project_local(px, py, pz):
-                    p = np.asarray([float(px), float(py), float(pz), 1.0], dtype="f4")
-                    c = mvp_np @ p
-                    w = float(c[3])
-                    if w <= 1.0e-6:
-                        return None
-                    nx = float(c[0] / w)
-                    ny = float(c[1] / w)
-                    if abs(nx) > 4.0 or abs(ny) > 4.0:
-                        return None
-                    return nx, ny
-
-                rows_2d = []
-                ndc_px = 2.0 / float(max(2, active_vp[2]))
-                ndc_py = 2.0 / float(max(2, active_vp[3]))
-                marker_px_scale = max(0.5, min(2.0, tips_size_scale))
-                def add_rect_ndc(cx, cy, half_px_x, half_px_y, color):
-                    hx = float(half_px_x) * ndc_px
-                    hy = float(half_px_y) * ndc_py
-                    x0, x1 = float(cx) - hx, float(cx) + hx
-                    y0, y1 = float(cy) - hy, float(cy) + hy
-                    r, g, b, a = color
-                    for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y0), (x1, y1), (x0, y1)):
-                        rows_2d.append((float(x), float(y), float(r), float(g), float(b), float(a)))
-
-                def add_line_ndc(x0, y0, x1, y1, width_px, color):
-                    aw = float(max(2, active_vp[2]))
-                    ah = float(max(2, active_vp[3]))
-                    sx0 = (float(x0) * 0.5 + 0.5) * aw
-                    sy0 = (float(y0) * 0.5 + 0.5) * ah
-                    sx1 = (float(x1) * 0.5 + 0.5) * aw
-                    sy1 = (float(y1) * 0.5 + 0.5) * ah
-                    dx = sx1 - sx0
-                    dy = sy1 - sy0
-                    length = math.sqrt(dx * dx + dy * dy)
-                    if length <= 1.0e-6:
-                        return
-                    nx = (-dy / length) * float(width_px) * 0.5
-                    ny = (dx / length) * float(width_px) * 0.5
-
-                    def to_ndc(sx, sy):
-                        return ((float(sx) / aw) * 2.0 - 1.0, (float(sy) / ah) * 2.0 - 1.0)
-
-                    p0 = to_ndc(sx0 + nx, sy0 + ny)
-                    p1 = to_ndc(sx1 + nx, sy1 + ny)
-                    p2 = to_ndc(sx1 - nx, sy1 - ny)
-                    p3 = to_ndc(sx0 - nx, sy0 - ny)
-                    r, g, b, a = color
-                    for x, y in (p0, p1, p2, p0, p2, p3):
-                        rows_2d.append((float(x), float(y), float(r), float(g), float(b), float(a)))
-
-                def add_cross_ndc(cx, cy, color):
-                    add_rect_ndc(cx, cy, 10.0 * marker_px_scale, 1.8 * marker_px_scale, color)
-                    add_rect_ndc(cx, cy, 1.8 * marker_px_scale, 10.0 * marker_px_scale, color)
-
-                center_ndc = project_local(0.0, 0.0, 0.0)
-                marker_axis_pos = scale_tip_axis_pos if mode_s == "scale" else tip_axis_len
-                marker_hover_colors = {
-                    "x": (1.0, 0.3215686275, 0.3215686275, 0.95),
-                    "y": (0.3215686275, 1.0, 0.4705882353, 0.95),
-                    "z": (0.3215686275, 0.6117647059, 1.0, 0.95),
-                }
-                for axis, base_color in (
-                    ("x", (1.0, 1.0, 1.0, 0.92)),
-                    ("y", (1.0, 1.0, 1.0, 0.92)),
-                    ("z", (1.0, 1.0, 1.0, 0.92)),
-                ):
-                    hover_color = marker_hover_colors.get(axis, (1.0, 1.0, 1.0, 0.95))
-                    if axis == "x":
-                        p_ndc = project_local(marker_axis_pos, 0.0, 0.0)
-                    elif axis == "y":
-                        p_ndc = project_local(0.0, marker_axis_pos, 0.0)
-                    else:
-                        p_ndc = project_local(0.0, 0.0, marker_axis_pos)
-                    if p_ndc is not None:
-                        if axis == hover_axis_s:
-                            if center_ndc is not None:
-                                add_line_ndc(
-                                    center_ndc[0],
-                                    center_ndc[1],
-                                    p_ndc[0],
-                                    p_ndc[1],
-                                    6.0 * marker_px_scale,
-                                    (hover_color[0], hover_color[1], hover_color[2], 0.38),
-                                )
-                                add_line_ndc(
-                                    center_ndc[0],
-                                    center_ndc[1],
-                                    p_ndc[0],
-                                    p_ndc[1],
-                                    2.6 * marker_px_scale,
-                                    hover_color,
-                                )
-                            add_rect_ndc(p_ndc[0], p_ndc[1], 9.0 * marker_px_scale, 9.0 * marker_px_scale, hover_color)
-                            add_rect_ndc(p_ndc[0], p_ndc[1], 5.0 * marker_px_scale, 5.0 * marker_px_scale, (1.0, 1.0, 1.0, 0.95))
-                        else:
-                            add_rect_ndc(p_ndc[0], p_ndc[1], 5.5 * marker_px_scale, 5.5 * marker_px_scale, base_color)
-
-                if rows_2d:
-                    verts_2d = np.asarray(rows_2d, dtype="f4")
-                    byte_count = int(verts_2d.nbytes)
-                    if screen_vbo is None or screen_vao is None or screen_cap < byte_count:
-                        for res_name in ("_mgl_gizmo_tips_screen_vao", "_mgl_gizmo_tips_screen_vbo"):
-                            res = getattr(self, res_name, None)
-                            if res is not None:
-                                try:
-                                    res.release()
-                                except Exception:
-                                    pass
-                        screen_cap = max(4096, byte_count * 2)
-                        screen_vbo = ctx.buffer(reserve=screen_cap)
-                        screen_vao = ctx.vertex_array(
-                            screen_prog,
-                            [(screen_vbo, "2f 4f", "in_pos_ndc", "in_color")],
-                        )
-                        self._mgl_gizmo_tips_screen_vbo = screen_vbo
-                        self._mgl_gizmo_tips_screen_vao = screen_vao
-                        self._mgl_gizmo_tips_screen_vbo_capacity = int(screen_cap)
-                    screen_vbo.write(verts_2d.tobytes())
-                    screen_vao.render(moderngl.TRIANGLES, vertices=int(verts_2d.shape[0]))
-                    self._mgl_gizmo_tips_screen_last_count = int(verts_2d.shape[0])
-            except Exception:
-                self._mgl_gizmo_tips_screen_last_count = 0
+            # The old screen-space debug markers are not part of the gizmo.
+            # Keep the cone/cube geometry as the only endpoint rendering.
             return True
         except Exception as exc:
             self._mgl_error = f"ModernGL tips test overlay draw failed: {exc}"
@@ -11348,6 +11200,27 @@ void main() {
             return self._mgl_scene_skeleton_quat_from_euler_deg(values[1])
         return (0.0, 0.0, 0.0, 1.0)
 
+    def _mgl_scene_skeleton_constrain_preview_rotation(self, owner, rot_deg, *, interactive=False):
+        decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
+        if not decoded:
+            return rot_deg
+        context = self._mgl_scene_owner_fbx_rig_context(decoded[0])
+        if not isinstance(context, dict) or not context.get("priormdm_rig_debug"):
+            return rot_deg
+        from echograph.motion.conversion import JOINT_NAMES, PARENTS, REST_DIRECTIONS
+        from echograph.motion.rig_limits import clamp_preview_rotation
+        if decoded[1] not in JOINT_NAMES:
+            return rot_deg
+        joint = JOINT_NAMES.index(decoded[1])
+        child = next((i for i,p in enumerate(PARENTS) if p == joint),joint)
+        axis = REST_DIRECTIONS[child]
+        # Stored keys are independent absolute poses. Only live edits sweep
+        # from the current pose; otherwise editing one frame changes others.
+        previous = ((self._mgl_scene_skeleton_rotation_context(owner) or {}).get("current_local")
+                    if interactive else None)
+        limited = clamp_preview_rotation(joint,self._mgl_scene_skeleton_quat_from_euler_deg(rot_deg),axis,previous)
+        return self._mgl_scene_skeleton_euler_from_quat_continuous(limited,rot_deg)
+
     def _mgl_scene_skeleton_local_rotation_for_global(self, owner: str, quat_xyzw):
         rotation_context = self._mgl_scene_skeleton_rotation_context(owner)
         if not isinstance(rotation_context, dict):
@@ -11716,6 +11589,9 @@ void main() {
             for frame, entry in (keys_map or {}).items()
             if isinstance(entry, dict) and not bool(entry.get("fbx_clip_key", False))
         }
+        for entry in authored_entries.values():
+            if isinstance(entry.get("rxyz"), (list, tuple)) and len(entry["rxyz"]) >= 3:
+                entry["rxyz"] = list(self._mgl_scene_skeleton_constrain_preview_rotation(owner,entry["rxyz"]))
         try:
             from echograph.rigging.fbx_canonical import AnimationClip, JointAnimationTrack, QuatKeyframe, Vec3Keyframe
         except Exception:
@@ -12918,6 +12794,7 @@ void main() {
         projected = list(best.get("points") or [])
 
         lines = []
+        context = None
         try:
             context = self._mgl_scene_owner_fbx_rig_context(owner)
             joints = list(getattr((context or {}).get("skeleton"), "joints", []) or []) if isinstance(context, dict) else []
@@ -12957,11 +12834,18 @@ void main() {
             "selected": str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or "").strip(),
             "selected_joints": list(getattr(self, "_mgl_scene_skeleton_selected_joints", []) or []),
             "show_names": bool(getattr(self, "_mgl_scene_skeleton_show_joint_names", False)),
+            "rig_guide": (context or {}).get("priormdm_rig_debug"),
+            "rig_context": context if (context or {}).get("priormdm_rig_debug") else None,
+            "rig_projection": view_proj,
+            "rig_viewport": (ax/dpr, (viewport_h-ay-ah)/dpr, aw/dpr, ah/dpr),
         }
 
     def _draw_scene_skeleton_qt_overlay(self, painter: QtGui.QPainter) -> None:
         data = self._mgl_scene_skeleton_qt_overlay_data()
         if isinstance(data, dict):
+            if data.get("rig_guide"):
+                from .priormdm_rig_overlay import draw_rig_guide
+                draw_rig_guide(self, painter, data)
             points = list(data.get("points") or [])
             lines = list(data.get("lines") or [])
             if points:
@@ -15456,6 +15340,13 @@ void main() {
             else:
                 scene_handles_by_owner = {}
         has_scene_handles = isinstance(scene_handles_by_owner, dict) and bool(scene_handles_by_owner)
+        if has_scene_handles and not retarget_preview_active:
+            context = self._mgl_scene_owner_fbx_rig_context(active_scene_owner)
+            if isinstance(context, dict) and context.get("priormdm_rig_debug"):
+                from .priormdm_rig_overlay import pick_guide_joint
+                data = self._mgl_scene_skeleton_qt_overlay_data()
+                handles = [h for group in scene_handles_by_owner.values() for h in group]
+                return pick_guide_joint(data,handles,px,py,float(self.devicePixelRatioF()))
         if np is None or (not bool(getattr(self, "_mgl_retarget_preview_active", False)) and not has_scene_handles):
             return None
         ray = self._mgl_retarget_pick_ray(px, py, viewport_w, viewport_h)

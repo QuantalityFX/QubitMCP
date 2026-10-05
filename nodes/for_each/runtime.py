@@ -86,6 +86,18 @@ def loop_nodes(start):
 def iteration_plan(start, source):
     mode = value(start.model, "mode", "outputs")
     limit = max(0, int(value(start.model, "loop_limit", "0")))
+    single = value(start.model, "single_pass", "0") == "1"
+    selected = int(value(start.model, "single_iteration", "1")) if single else 1
+
+    def selected_indices(count):
+        if not count:
+            return range(0)
+        if single:
+            if not 1 <= selected <= count:
+                raise ValueError(f"Single pass iteration {selected} is out of range; choose 1–{count}.")
+            return range(selected - 1, selected)
+        return range(min(count, limit) if limit else count)
+
     plan = []
     if mode in ("outputs", "checked"):
         if source.model.kind != "mocap_collection":
@@ -93,13 +105,13 @@ def iteration_plan(start, source):
         rows = collection.entries(source.model)
         eligible = collection.output_rows(source.model) if mode == "outputs" else [i + 1 for i, row in enumerate(rows) if row["checked"]]
         base = params._workflow_dir_for_node(source)
-        for row in eligible:
+        for index in selected_indices(len(eligible)):
+            row = eligible[index]
             path = params._resolve_existing_path(rows[row - 1]["path"], base)
             if path is None or not path.is_file():
                 raise ValueError(f"BVH file is missing: {rows[row - 1]['path']}")
-            plan.append({"source_path": str(path.resolve()), "collection_row": row, "value": row})
-            if limit and len(plan) >= limit:
-                break
+            plan.append({"source_path": str(path.resolve()), "collection_row": row, "value": row,
+                         "iteration": index + 1})
     else:
         parameter = value(start.model, "parameter", "output")
         if parameter not in [row.get("name") for row in source.model.params]:
@@ -110,8 +122,9 @@ def iteration_plan(start, source):
         import math
         if not math.isfinite(first) or not math.isfinite(step):
             raise ValueError("First value and step must be finite numbers.")
-        for i in range(min(count, limit) if limit else count):
-            plan.append({"source_path": "", "parameter": parameter, "value": format(first + i * step, ".12g")})
+        for i in selected_indices(count):
+            plan.append({"source_path": "", "parameter": parameter, "value": format(first + i * step, ".12g"),
+                         "iteration": i + 1})
     if not plan:
         raise ValueError("No eligible inputs. Check some collection paths or set a positive parameter count.")
     return plan
@@ -231,13 +244,13 @@ class ForEachSession(QtCore.QObject):
             else:
                 params._set_param_value(self.source.model, entry["parameter"], entry["value"])
                 self.scene.set_node_params(self.source.model.name, list(self.source.model.params), rebuild=False, emit=True)
-            number = self.index + 1
+            number = entry["iteration"]
             for item in (self.start_item, self.end_item):
                 params._set_param_value(item.model, "iteration", str(number))
             self.renderer._take_number.setValue(number)
             self.renderer._take_folders.setChecked(True)
             validate_retarget_inputs(self.render_item)
-            self.status = f"Rendering take {number}/{len(self.plan)}"
+            self.status = f"Rendering take {number} ({self.index + 1}/{len(self.plan)})"
             self.changed.emit()
             folder = reserve_take_folder(self.template.parent, number, entry["source_path"])
             if self.manifest_path is None:
@@ -260,7 +273,7 @@ class ForEachSession(QtCore.QObject):
                 return
             # End is reached only after render_sequence has returned its outcome.
             self.index += 1
-            self.status = f"Finished take {number}/{len(self.plan)}"
+            self.status = f"Finished take {number} ({self.index}/{len(self.plan)})"
             self.changed.emit()
             self._timer.start(0)
         except Exception as exc:

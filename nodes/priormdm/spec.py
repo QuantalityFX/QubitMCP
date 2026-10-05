@@ -23,6 +23,7 @@ DEFAULTS = {
     "last_bvh": "", "last_archive": "", "last_status": "Ready to configure",
     "animate_hands": "false", "hand_side": "auto", "hand_description": "",
     "preview_profile": "model",
+    "rig_show_collisions": "true", "rig_show_limits": "true",
     "hand_start": "0", "hand_end": "0", "hand_blend": "0.15",
     "hand_repository": str(_HAND_CONFIG.repository), "hand_python": str(_HAND_CONFIG.python),
     "hand_checkpoint": str(_HAND_CONFIG.checkpoint),
@@ -190,6 +191,19 @@ class MotionControls(QtWidgets.QWidget):
         self.proportions.setToolTip("Changes the exported preview's proportions. Original motion data is preserved. Reference proportions may need foot/contact cleanup.")
         form.addRow("Preview proportions", self.proportions)
         self.proportions.currentIndexChanged.connect(lambda: self._persist("preview_profile", self.proportions.currentData()))
+        rig_row = QtWidgets.QHBoxLayout()
+        self.rig_preview_button = QtWidgets.QPushButton("Preview Rig")
+        self.rig_preview_button.setAutoDefault(False)
+        self.rig_preview_button.setToolTip("Open the selected proportions as a rest rig in the viewport. Select joints to inspect their limits.")
+        self.rig_preview_button.clicked.connect(self._preview_rig)
+        rig_row.addWidget(self.rig_preview_button)
+        for key, label in (("rig_show_collisions", "Collision volumes"), ("rig_show_limits", "Joint limits")):
+            check = QtWidgets.QCheckBox(label)
+            check.setChecked(value(node,key) != "false")
+            check.setToolTip("Choose which guides to include, then press Preview Rig to refresh.")
+            check.toggled.connect(lambda enabled, name=key: self._persist(name,"true" if enabled else "false"))
+            rig_row.addWidget(check)
+        form.addRow("Rig inspection",rig_row)
         self.hand_mode = QtWidgets.QLabel()
         self.hand_mode.setWordWrap(True)
         layout.addWidget(self.hand_mode)
@@ -549,6 +563,14 @@ class MotionControls(QtWidgets.QWidget):
         except Exception as exc:
             self.status.setText(f"Could not create preview: {exc}")
 
+    def _preview_rig(self):
+        try:
+            from .rig_preview_ui import open_rig_preview
+            open_rig_preview(self.node,self.graph_scene,self)
+            self.status.setText("Rig preview opened. Select a joint in the viewport to inspect its limits.")
+        except Exception as exc:
+            self.status.setText(str(exc))
+
     def _tpose(self):
         self._static_pose("tpose")
 
@@ -595,6 +617,9 @@ def open_controls(item):
         scroll.setWidget(MotionControls(node, item.scene(), scroll))
         layout.addWidget(scroll)
         node._motion_dialog = dialog
+    # Keep the non-modal generator above the main window when generation or
+    # scene updates activate the graph. Apply on reopen as well as creation.
+    dialog.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
     dialog.show()
     dialog.raise_()
     dialog.activateWindow()
@@ -616,6 +641,12 @@ def render_node_body(item, y_cursor):
     setup_button.clicked.connect(open_setup)
     layout.addWidget(label)
     layout.addWidget(button)
+    rig_button = QtWidgets.QPushButton("Preview Rig")
+    rig_button.setAutoDefault(False)
+    rig_button.setToolTip("Inspect the proportions selected in Text to Motion, collision volumes, and joint limits.")
+    from .rig_preview_ui import preview_from_node
+    rig_button.clicked.connect(lambda: preview_from_node(item))
+    layout.addWidget(rig_button)
     layout.addWidget(setup_button)
     hand_setup = QtWidgets.QPushButton("Setup HandMDM")
     hand_setup.setAutoDefault(False)
