@@ -21,5 +21,94 @@
   "create_node_dialog_size": {
     "width": 844,
     "height": 912
+  },
+  "preview_rig": {
+    "version": 1,
+    "joint_limits": {
+      "spine1": {
+        "bend_min": 0.0,
+        "bend_max": 35.0,
+        "twist_min": -90.0,
+        "twist_max": 90.0
+      },
+      "spine2": {
+        "bend_min": 0.0,
+        "bend_max": 35.0,
+        "twist_min": -90.0,
+        "twist_max": 90.0
+      },
+      "spine3": {
+        "bend_min": 0.0,
+        "bend_max": 45.0,
+        "twist_min": -90.0,
+        "twist_max": 90.0
+      },
+      "left_knee": {
+        "bend_min": 0.0,
+        "bend_max": 165.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_knee": {
+        "bend_min": 0.0,
+        "bend_max": 165.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_elbow": {
+        "bend_min": 0.0,
+        "bend_max": 155.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_elbow": {
+        "bend_min": 0.0,
+        "bend_max": 155.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_ankle": {
+        "bend_min": 0.0,
+        "bend_max": 50.0,
+        "twist_min": -35.0,
+        "twist_max": 35.0
+      },
+      "right_ankle": {
+        "bend_min": 0.0,
+        "bend_max": 25.0,
+        "twist_min": -35.0,
+        "twist_max": 35.0
+      },
+      "neck": {
+        "bend_min": 0.0,
+        "bend_max": 70.0,
+        "twist_min": -60.0,
+        "twist_max": 60.0
+      },
+      "left_hip": {
+        "bend_min": 0.0,
+        "bend_max": 60.0,
+        "twist_min": -100.0,
+        "twist_max": 100.0
+      },
+      "right_hip": {
+        "bend_min": 0.0,
+        "bend_max": 60.0,
+        "twist_min": -100.0,
+        "twist_max": 100.0
+      },
+      "left_shoulder": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -100.0,
+        "twist_max": 100.0
+      },
+      "right_shoulder": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -100.0,
+        "twist_max": 100.0
+      }
+    }
   }
 }

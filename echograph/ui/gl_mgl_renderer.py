@@ -11214,11 +11214,16 @@ void main() {
         joint = JOINT_NAMES.index(decoded[1])
         child = next((i for i,p in enumerate(PARENTS) if p == joint),joint)
         axis = REST_DIRECTIONS[child]
+        guide = context['priormdm_rig_debug']
+        offsets = guide.get('offsets')
+        if offsets is not None and np.linalg.norm(offsets[child]) > 1e-8:
+            axis = np.asarray(offsets[child])/np.linalg.norm(offsets[child])
         # Stored keys are independent absolute poses. Only live edits sweep
         # from the current pose; otherwise editing one frame changes others.
         previous = ((self._mgl_scene_skeleton_rotation_context(owner) or {}).get("current_local")
                     if interactive else None)
-        limited = clamp_preview_rotation(joint,self._mgl_scene_skeleton_quat_from_euler_deg(rot_deg),axis,previous)
+        limited = clamp_preview_rotation(joint,self._mgl_scene_skeleton_quat_from_euler_deg(rot_deg),axis,previous,
+                                         limits=guide.get('joint_limits'))
         return self._mgl_scene_skeleton_euler_from_quat_continuous(limited,rot_deg)
 
     def _mgl_scene_skeleton_local_rotation_for_global(self, owner: str, quat_xyzw):
@@ -12842,6 +12847,10 @@ void main() {
 
     def _draw_scene_skeleton_qt_overlay(self, painter: QtGui.QPainter) -> None:
         data = self._mgl_scene_skeleton_qt_overlay_data()
+        if not isinstance(data,dict) or not data.get("rig_guide"):
+            panel = getattr(self,"_priormdm_rig_panel",None)
+            if panel is not None:
+                panel.hide()
         if isinstance(data, dict):
             if data.get("rig_guide"):
                 from .priormdm_rig_overlay import draw_rig_guide

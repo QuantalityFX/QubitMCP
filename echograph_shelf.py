@@ -374,6 +374,8 @@ def _load_app_settings() -> Dict[str, Any]:
     create_node_dialog_size = _normalize_create_node_dialog_size(raw.get(_CREATE_NODE_DIALOG_SIZE_KEY))
     if create_node_dialog_size is not None:
         payload[_CREATE_NODE_DIALOG_SIZE_KEY] = create_node_dialog_size
+    if isinstance(raw.get("preview_rig"), dict):
+        payload["preview_rig"] = raw["preview_rig"]
     return payload
 
 
@@ -438,6 +440,11 @@ def _save_app_settings(settings: Dict[str, Any]) -> None:
         create_node_dialog_size = _normalize_create_node_dialog_size(existing.get(_CREATE_NODE_DIALOG_SIZE_KEY))
     if create_node_dialog_size is not None:
         payload[_CREATE_NODE_DIALOG_SIZE_KEY] = create_node_dialog_size
+    # Preview Rig saves independently; use the latest on-disk category so a
+    # later top-bar/layout save cannot erase or roll back its joint limits.
+    preview_rig = existing.get("preview_rig", (settings or {}).get("preview_rig"))
+    if isinstance(preview_rig, dict):
+        payload["preview_rig"] = preview_rig
     try:
         _APP_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         _APP_SETTINGS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

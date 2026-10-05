@@ -16,12 +16,13 @@ def rotation_parts(quaternion, axis):
     return rotation*twist.inv(), float(twist.as_rotvec() @ axis)
 
 
-def clamp_preview_rotation(joint, quaternion, axis, previous=None):
+def clamp_preview_rotation(joint, quaternion, axis, previous=None, *, limits=None):
     """Project an edit into the limits, sweeping large drag steps to avoid flips."""
     import numpy as np
     from scipy.spatial.transform import Rotation
-    if previous is None or joint not in PREVIEW_JOINT_LIMITS:
-        return _project_preview_rotation(joint, quaternion, axis, previous)
+    limits = PREVIEW_JOINT_LIMITS if limits is None else limits
+    if previous is None or joint not in limits:
+        return _project_preview_rotation(joint, quaternion, axis, previous, limits=limits)
     # A fast mouse event can cross the forbidden region and end on the other
     # side of the cone. Apply its delta in small steps from the accepted pose,
     # projecting each step so an overshoot cannot tunnel through a limit.
@@ -29,20 +30,20 @@ def clamp_preview_rotation(joint, quaternion, axis, previous=None):
     delta = (Rotation.from_quat(quaternion)*start.inv()).as_rotvec()
     steps = max(1,int(np.ceil(np.linalg.norm(delta)/np.deg2rad(5.))))
     step = Rotation.from_rotvec(delta/steps)
-    current = _project_preview_rotation(joint,previous,axis)
+    current = _project_preview_rotation(joint,previous,axis,limits=limits)
     for _ in range(steps):
         desired = (step*Rotation.from_quat(current)).as_quat()
-        current = _project_preview_rotation(joint,desired,axis,current)
+        current = _project_preview_rotation(joint,desired,axis,current,limits=limits)
     return current
 
 
-def _project_preview_rotation(joint, quaternion, axis, previous=None):
+def _project_preview_rotation(joint, quaternion, axis, previous=None, *, limits):
     """Clamp a single pose; previous selects continuous hinge/twist angles."""
     import numpy as np
     from scipy.spatial.transform import Rotation
     if joint in (15,20,21):
         return np.array([0.,0.,0.,1.])
-    limit = PREVIEW_JOINT_LIMITS.get(joint)
+    limit = limits.get(joint)
     if limit is None:
         return np.asarray(quaternion)
     if 'flex' in limit:
@@ -51,17 +52,29 @@ def _project_preview_rotation(joint, quaternion, axis, previous=None):
         if previous is not None:
             _, old = rotation_parts(previous,hinge)
             angle = old + (angle-old+np.pi)%(2*np.pi)-np.pi
-        return Rotation.from_rotvec(hinge*np.clip(angle,0,np.deg2rad(limit['flex']))).as_quat()
+        return Rotation.from_rotvec(hinge*np.clip(angle,np.deg2rad(limit.get('flex_min',0.)),np.deg2rad(limit['flex']))).as_quat()
     swing, twist = rotation_parts(quaternion,axis)
     if previous is not None:
         _, old = rotation_parts(previous,axis)
         twist = old + (twist-old+np.pi)%(2*np.pi)-np.pi
     vector = swing.as_rotvec()
     maximum = np.deg2rad(limit.get('swing',180.))
+    minimum = np.deg2rad(limit.get('swing_min',0.))
     length = np.linalg.norm(vector)
     if length > maximum:
         vector *= maximum/length
-    twist = np.clip(twist,-np.deg2rad(limit['twist']),np.deg2rad(limit['twist']))
+    elif length < minimum:
+        if length > 1e-8:
+            vector *= minimum/length
+        else:
+            # At rest there is no bend direction. Prefer the previous pose's
+            # direction; otherwise use a stable perpendicular to the bone.
+            vector = rotation_parts(previous,axis)[0].as_rotvec() if previous is not None else np.zeros(3)
+            if np.linalg.norm(vector) < 1e-8:
+                vector = np.cross(axis,np.eye(3)[np.argmin(abs(np.asarray(axis)))])
+            vector = vector/np.linalg.norm(vector)*minimum
+    twist = np.clip(twist,np.deg2rad(limit.get('twist_min',-limit['twist'])),
+                    np.deg2rad(limit.get('twist_max',limit['twist'])))
     return (Rotation.from_rotvec(vector)*Rotation.from_rotvec(np.asarray(axis)*twist)).as_quat()
 
 
@@ -89,5 +102,39 @@ for _joint in (1,2):
 for _joint in (16,17):
     PREVIEW_JOINT_LIMITS[_joint] = dict(swing=80.,twist=UPPER_LIMB_ROLL)
 for _joint in (7,8):
+    PREVIEW_JOINT_LIMITS[_joint]['swing'] = 25.
     PREVIEW_JOINT_LIMITS[_joint]['twist'] = 35.
 PREVIEW_JOINT_LIMITS[12]['twist'] = 60.
+
+
+def preview_limit_fields(joint, limit=None):
+    """Editable degrees for one joint, independent of generation policy."""
+    limit = PREVIEW_JOINT_LIMITS[joint] if limit is None else limit
+    bend = 'flex' if 'flex' in limit else 'swing'
+    return dict(bend_min=limit.get(bend+'_min',0.),bend_max=limit[bend],
+                twist_min=limit.get('twist_min',-limit.get('twist',0.)),
+                twist_max=limit.get('twist_max',limit.get('twist',0.)))
+
+
+def preview_limit_from_fields(joint, fields):
+    """Validate persisted/user ranges, retaining this joint's anatomical type."""
+    import math
+    limit = dict(PREVIEW_JOINT_LIMITS[joint])
+    defaults = preview_limit_fields(joint)
+    bend = 'flex' if 'flex' in limit else 'swing'
+    for kind,lower,upper in (('bend',0.,179. if bend=='flex' else 89.),('twist',-179.,179.)):
+        if kind == 'twist' and bend == 'flex':
+            continue
+        try:
+            lo,hi = (float(fields.get(kind+suffix,defaults[kind+suffix])) for suffix in ('_min','_max'))
+            if not math.isfinite(lo) or not math.isfinite(hi) or lo > hi:
+                raise ValueError('Invalid angle range')
+            lo,hi = max(lower,min(upper,lo)),max(lower,min(upper,hi))
+        except (TypeError,ValueError,OverflowError):
+            lo,hi = defaults[kind+'_min'],defaults[kind+'_max']
+        if kind == 'bend':
+            limit[bend+'_min'],limit[bend] = lo,hi
+        else:
+            limit['twist_min'],limit['twist_max'] = lo,hi
+            limit['twist'] = max(abs(lo),abs(hi))
+    return limit

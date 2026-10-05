@@ -6,7 +6,7 @@ from scipy.spatial.transform import Rotation
 
 from .conversion import (JOINT_NAMES, PARENTS, REST_DIRECTIONS, load_motion_archive,
                          reconstruct_animation, write_bvh)
-from .rig_limits import PREVIEW_JOINT_LIMITS, rotation_parts
+from .rig_limits import PREVIEW_JOINT_LIMITS, rotation_parts, preview_limit_fields, clamp_preview_rotation
 from .self_collision import ARMS, body_capsules, world_pose
 
 
@@ -45,7 +45,7 @@ def capsule_surfaces(a, b, radius):
     return faces, [rings[2], rings[3], np.array([a+radius*u,b+radius*u]), np.array([a-radius*u,b-radius*u])]
 
 
-def build_guide(offsets, matrices=None):
+def build_guide(offsets, matrices=None, *, joint_limits=None):
     if matrices is None:
         points, _ = world_pose(np.tile(np.eye(3),(22,1,1)), offsets, np.zeros(3))
         points[:,1] -= points[:,1].min()
@@ -72,8 +72,11 @@ def build_guide(offsets, matrices=None):
               'left_wrist':'Wrist: follows forearm; fingers are outside collision cleanup.',
               'right_wrist':'Wrist: follows forearm; fingers are outside collision cleanup.'}
     children = {j:next((i for i,p in enumerate(PARENTS) if p==j),None) for j in range(22)}
-    limits = PREVIEW_JOINT_LIMITS
+    limits = PREVIEW_JOINT_LIMITS if joint_limits is None else joint_limits
     for joint, limit in limits.items():
+        fields = preview_limit_fields(joint,limit)
+        bend_min,bend_max = fields['bend_min'],fields['bend_max']
+        twist_min,twist_max = fields['twist_min'],fields['twist_max']
         origin = points[joint]
         axis,u,v = _basis(offsets[children[joint]])
         length = .13*scale
@@ -84,23 +87,24 @@ def build_guide(offsets, matrices=None):
         twist_degrees = float(np.degrees(twist))
         readout = ''
         if 'flex' in limit:
-            angles = np.linspace(0,np.deg2rad(limit['flex']),33)
+            angles = np.linspace(np.deg2rad(bend_min),np.deg2rad(bend_max),33)
             arc = origin + Rotation.from_rotvec(angles[:,None]*np.array(limit['axis'])).apply(np.tile(axis*length,(len(angles),1)))
-            text = f"Bend 0–{limit['flex']:g}°; anatomical hinge, no axial twist"
+            text = f"Bend {bend_min:g}–{bend_max:g}°; anatomical hinge, no axial twist"
             wires.append(arc)
             faces.extend(np.array([origin,a,b]) for a,b in zip(arc[:-1],arc[1:]))
-            ticks = np.r_[np.arange(0,limit['flex'],30),limit['flex']]
+            ticks = np.unique(np.r_[bend_min,np.arange(np.ceil(bend_min/30)*30,bend_max,30),bend_max])
             for tick in ticks:
                 direction = Rotation.from_rotvec(np.array(limit['axis'])*np.deg2rad(tick)).apply(axis)
                 wires.append(np.array([origin+length*.90*direction,origin+length*1.06*direction]))
             _, angle = rotation_parts(Rotation.from_matrix(local).as_quat(),limit['axis'])
             bend_degrees = float(np.degrees(angle))
-            hit = bend_degrees >= limit['flex']-.25 or bend_degrees <= .25
+            hit = bend_degrees >= bend_max-.25 or bend_degrees <= bend_min+.25
             shapes.append(dict(kind='limit_hit' if hit else 'pointer',joint=JOINT_NAMES[joint],faces=[],
                                wires=[np.array([origin,origin+local@axis*length])]))
             readout = f"Current bend {bend_degrees:.1f}° / {limit['flex']:g}°"
         else:
-            text = f"Twist ±{limit['twist']:g}°"
+            twist_range = f"±{twist_max:g}°" if twist_min == -twist_max else f"{twist_min:g}° to {twist_max:g}°"
+            text = 'Twist '+twist_range
             if 'swing' in limit:
                 bend = np.deg2rad(limit['swing'])
                 theta = np.linspace(0,2*np.pi,33)
@@ -109,28 +113,30 @@ def build_guide(offsets, matrices=None):
                 # Keep only the rim and straight sides of the cone.
                 wires.extend(np.array([origin,rim[i]]) for i in range(0,32,8))
                 faces.extend(np.array([origin,a,b]) for a,b in zip(rim[:-1],rim[1:]))
-                text = f"Bend ≤{limit['swing']:g}°; " + text
-                hit = bend_degrees >= limit['swing']-.25
+                if bend_min > 0:
+                    inner = origin+length*(np.cos(np.deg2rad(bend_min))*axis+np.sin(np.deg2rad(bend_min))*(np.cos(theta)[:,None]*u+np.sin(theta)[:,None]*v))
+                    wires.append(inner)
+                    wires.extend(np.array([origin,inner[i]]) for i in range(0,32,8))
+                text = (f"Bend {bend_min:g}–{bend_max:g}°; " if bend_min else f"Bend ≤{bend_max:g}°; ")+text
+                hit = bend_degrees >= bend_max-.25 or (bend_min > 0 and bend_degrees <= bend_min+.25)
                 shapes.append(dict(kind='limit_hit' if hit else 'pointer',joint=JOINT_NAMES[joint],faces=[],
                                    wires=[np.array([origin,origin+local@axis*length])]))
                 readout = f"Current bend {bend_degrees:.1f}° / {limit['swing']:g}°"
-            if limit['twist']:
-                theta = np.linspace(-np.deg2rad(limit['twist']),np.deg2rad(limit['twist']),33)
+            if 'twist' in limit:
+                theta = np.linspace(np.deg2rad(twist_min),np.deg2rad(twist_max),33)
                 center = origin
                 arc = center+length*.7*(np.cos(theta)[:,None]*u+np.sin(theta)[:,None]*v)
-                ticks = np.unique(np.r_[-limit['twist'],
-                    np.arange(-np.floor(limit['twist']/30),np.floor(limit['twist']/30)+1)*30,
-                    limit['twist']])
+                ticks = np.unique(np.r_[twist_min,np.arange(np.ceil(twist_min/30)*30,twist_max,30),twist_max])
                 dial_wires = [arc]
                 for tick in ticks:
                     direction = np.cos(np.deg2rad(tick))*u+np.sin(np.deg2rad(tick))*v
                     dial_wires.append(np.array([center+length*.64*direction,center+length*.75*direction]))
                 shapes.append(dict(kind='twist',joint=JOINT_NAMES[joint],faces=[np.array([center,a,b]) for a,b in zip(arc[:-1],arc[1:])],wires=dial_wires,follow_swing=True))
-                hit = abs(twist_degrees) >= limit['twist']-.25
+                hit = twist_degrees >= twist_max-.25 or twist_degrees <= twist_min+.25
                 pointer = Rotation.from_rotvec(axis*twist).apply(u)
                 shapes.append(dict(kind='limit_hit' if hit else 'pointer',joint=JOINT_NAMES[joint],faces=[],
                                    wires=[np.array([center,center+length*.7*pointer])],follow_swing=True))
-                readout += f"; twist {twist_degrees:.1f}° / ±{limit['twist']:g}°"
+                readout += f"; twist {twist_degrees:.1f}° / {twist_range}"
         labels[JOINT_NAMES[joint]] = f'{JOINT_NAMES[joint]}: {text}'
         labels[JOINT_NAMES[joint]] += '\n'+readout.lstrip('; ')
         if any(s['joint']==JOINT_NAMES[joint] and s['kind']=='limit_hit' for s in shapes):
@@ -152,19 +158,31 @@ def build_guide(offsets, matrices=None):
                 rotation = rotation @ swing.as_matrix()
             for key in ('faces','wires'):
                 shape[key] = [(rows-points[joint]) @ rotation.T + points[joint] for rows in shape[key]]
-    return points, dict(shapes=shapes,labels=labels,offsets=offsets.copy())
+    return points, dict(shapes=shapes,labels=labels,offsets=offsets.copy(),
+                        joint_limits={j:dict(limit) for j,limit in limits.items()})
 
 
-def create_rig_asset(profile, archive, output_dir, owner, *, collisions=True, limits=True):
+def create_rig_asset(profile, archive, output_dir, owner, *, collisions=True, limits=True, joint_limits=None):
+    from .rig_preview_settings import load_preview_limits
+    from echograph.rigging.fbx_canonical import QuatKeyframe
+    joint_limits = load_preview_limits() if joint_limits is None else joint_limits
     offsets = preview_offsets(profile,archive)
-    points, guide = build_guide(offsets)
+    points, guide = build_guide(offsets,joint_limits=joint_limits)
     positions = np.repeat(points[None],2,axis=0)
     skeleton, clip, rotations, _ = reconstruct_animation(positions,20,{},rest_offsets=offsets)
+    # Nonzero saved minima also constrain the initial preview pose.
+    for joint in joint_limits:
+        child = next(i for i,p in enumerate(PARENTS) if p==joint)
+        axis = offsets[child]/np.linalg.norm(offsets[child])
+        quat = clamp_preview_rotation(joint,[0.,0.,0.,1.],axis,limits=joint_limits)
+        rotations[:,joint] = Rotation.from_quat(quat).as_matrix()
+        clip.tracks[joint].rotation_keys = [QuatKeyframe(f/20,tuple(quat)) for f in range(2)]
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True,exist_ok=True)
     path = output_dir/'rig.bvh'
     write_bvh(path,positions,20,rotations,offsets)
-    guide.update(profile=profile,collisions=collisions,limits=limits)
+    guide.update(profile=profile,collisions=collisions,limits=limits,
+                 saved_joint_limits={j:dict(limit) for j,limit in joint_limits.items()})
     context = dict(skeleton=skeleton,clip=clip,meshes=[],loop=False,mesh_skinning_enabled=False,
                    show_capture_joints=False,show_animated_joints=True,source_format='bvh',priormdm_rig_debug=guide)
     return dict(path=str(path.resolve()),node=owner,kind='mocap',ext='.bvh',visible=True,fbx_rig_context=context)

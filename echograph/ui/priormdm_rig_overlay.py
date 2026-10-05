@@ -75,10 +75,10 @@ def draw_rig_guide(renderer, painter, data):
         evaluation = evaluate_rig_at_time(context['skeleton'],context.get('clip'),float(seconds),
                                           loop=bool(context.get('loop',False)))
         matrices = np.asarray(evaluation.global_matrices,dtype=float).reshape(-1,4,4)
-        pose_key = matrices.tobytes()
+        pose_key = (matrices.tobytes(),guide.get('limits_revision',0))
         cached = guide.get('_posed_shapes')
         if cached is None or cached[0] != pose_key:
-            _, posed = build_guide(guide['offsets'],matrices)
+            _, posed = build_guide(guide['offsets'],matrices,joint_limits=guide.get('joint_limits'))
             cached = (pose_key,posed)
             guide['_posed_shapes'] = cached
         shapes = cached[1]['shapes']
@@ -147,6 +147,8 @@ def draw_rig_guide(renderer, painter, data):
         detail = labels.get(selected,'Select a joint to isolate its limits and read the values.')
         lines = [title,'Cyan: volumes   Gold: bend   Purple: twist   Pointer: green / red at limit',*detail.splitlines(),
                  'Pose-editor limits; automatic generation cleanup is more conservative.']
-        _draw_guide_panel(renderer,painter,(x,y,w,h),lines)
+        from .priormdm_rig_panel import show_rig_panel
+        if not show_rig_panel(renderer,data,detail):
+            _draw_guide_panel(renderer,painter,(x,y,w,h),lines)
     finally:
         painter.restore()
