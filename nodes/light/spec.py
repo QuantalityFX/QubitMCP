@@ -12,6 +12,9 @@ LIGHT_UI_CONTROLLED_HIDDEN_PARAMS = {
     "shadow_range",
     "shadow_fov",
     "shadow_near",
+    "shadow_resolution",
+    "width",
+    "height",
 }
 LIGHT_ALWAYS_HIDDEN_PARAMS = {"pos", "rot", "scl", "shadow_near"}
 _LIGHT_TYPE_ALIASES = {
@@ -65,6 +68,8 @@ def _default_type_for_kind(kind: str) -> str:
 def light_hidden_params(light_type: str) -> set[str]:
     kind = normalize_light_type(light_type)
     hidden = set(LIGHT_ALWAYS_HIDDEN_PARAMS)
+    if kind != "area":
+        hidden.update({"width", "height", "shadow_resolution"})
     if kind == "directional":
         hidden.update({"range", "shadow_range", "shadow_fov"})
     elif kind == "point":
@@ -185,10 +190,13 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "type", default_type)
     _ensure_param(node_item, "intensity", "1.0")
     _ensure_param(node_item, "range", "300")
+    _ensure_param(node_item, "width", "1.0")
+    _ensure_param(node_item, "height", "1.0")
     _ensure_param(node_item, "shadow_strength", "1.0")
     _ensure_param(node_item, "shadow_range", "0")
     _ensure_param(node_item, "shadow_fov", "0")
     _ensure_param(node_item, "shadow_near", "0")
+    _ensure_param(node_item, "shadow_resolution", "0")
     _ensure_param(node_item, "shadow_bias", "0")
     # Light transforms live on the Scene node outliner.
     _remove_param(node_item, "pos")

@@ -2765,6 +2765,9 @@ def _handle_mouse_press_moderngl_left_gizmo_owner_is_splat(self, *, renderer, ow
 
 def _handle_mouse_press_moderngl_left_orbit_start(self, e, alt_pressed):
     if e.button() == QtCore.Qt.LeftButton and alt_pressed and self._mgl_arcball is not None:
+        release = getattr(self, "_camera_selector_release_unlocked_selection_on_navigation", None)
+        if callable(release):
+            release(force=True)
         if bool(getattr(self, "_mgl_orbit_locked", True)):
             self._sync_locked_orbit_from_arcball()
             self._mgl_orbit_dragging = True
@@ -2792,6 +2795,9 @@ def _handle_mouse_press_moderngl_middle_start(self, e, alt_pressed):
         if not alt_pressed and not fly_mode:
             e.ignore()
             return True
+        release = getattr(self, "_camera_selector_release_unlocked_selection_on_navigation", None)
+        if callable(release):
+            release(force=True)
         self._mgl_prev_x = e.x()
         self._mgl_prev_y = e.y()
         self.setCursor(QtCore.Qt.OpenHandCursor)
@@ -2838,6 +2844,10 @@ def _handle_mouse_press_moderngl_right_start_fly_anchor_from_event(self, e):
 
 def _handle_mouse_press_moderngl_right_start_fly_camera_state(self):
     try:
+        released_camera = False
+        release = getattr(self, "_camera_selector_release_unlocked_selection_on_navigation", None)
+        if callable(release):
+            released_camera = bool(release(force=True))
         self._fps_camera_active = True
         locked_synced = False
         try:
@@ -2847,7 +2857,9 @@ def _handle_mouse_press_moderngl_right_start_fly_camera_state(self):
         except Exception:
             locked_synced = False
         orbit_enabled = bool(getattr(self, "_orbit_cam_enabled", True))
-        if (not bool(locked_synced)) and (orbit_enabled or getattr(self, "_fps_camera", None) is None):
+        if (not bool(released_camera)) and (not bool(locked_synced)) and (
+            orbit_enabled or getattr(self, "_fps_camera", None) is None
+        ):
             self._fps_cam_sync_from_orbit()
     except Exception:
         pass
@@ -2870,6 +2882,9 @@ def _handle_mouse_press_moderngl_right_start_fly_ui_state(self):
         pass
 
 def _handle_mouse_press_moderngl_right_start_zoom(self, e):
+    release = getattr(self, "_camera_selector_release_unlocked_selection_on_navigation", None)
+    if callable(release):
+        release(force=True)
     self._mgl_zoom_press_pos = e.pos()
     self._mgl_zoom_start = float(self._mgl_camera_zoom)
     self._handle_mouse_press_moderngl_right_start_zoom_center()
@@ -2996,6 +3011,9 @@ def _handle_mouse_press_example_pipeline(self, e):
             if not alt_pressed:
                 e.ignore()
                 return True
+            release = getattr(self, "_camera_selector_release_unlocked_selection_on_navigation", None)
+            if callable(release):
+                release(force=True)
             self._pan_dragging = True
             self._pan_last_pos = e.pos()
             self.setCursor(QtCore.Qt.OpenHandCursor)
@@ -3040,6 +3058,9 @@ def _handle_mouse_press_legacy_middle(self, e):
         if not alt_pressed:
             e.ignore()
             return True
+        release = getattr(self, "_camera_selector_release_unlocked_selection_on_navigation", None)
+        if callable(release):
+            release(force=True)
         self._pan_dragging = True
         self._pan_last_pos = e.pos()
         self.setCursor(QtCore.Qt.OpenHandCursor)

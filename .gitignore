@@ -85,6 +85,9 @@ AGENTS.md
 !/tests/ui/test_mesh_viewport_shaders.py
 !/tests/ui/test_mesh_viewport_overlay.py
 !/tests/ui/test_mesh_polygons.py
+!/tests/ui/test_scene_lighting.py
+!/tests/ui/test_light_node_layout.py
+!/tests/ui/test_fbx_normal_deformation.py
 !/tests/voice/
 /tests/voice/*
 !/tests/voice/test_*.py

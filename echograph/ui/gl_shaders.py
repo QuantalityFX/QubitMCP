@@ -1,5 +1,6 @@
 # echograph/ui/gl_shaders.py
-# Pure data module: keep shader source strings here.
+# Shader sources, with shared expansion for the two scene lights.
+from .gl_light_shader import with_second_light
 
 SHADERS = {
     "mesh_vertex": """
@@ -73,13 +74,22 @@ uniform int LightType;
 uniform float LightIntensity;
 uniform float AmbientLight;
 uniform float LightRange;
+uniform vec3 AreaAxisU;
+uniform vec3 AreaAxisV;
+uniform vec2 AreaSize;
 uniform int UsePointShadowAtlas;
+uniform int UseAreaShadowAtlas;
 uniform mat4 PointShadowMvp0;
 uniform mat4 PointShadowMvp1;
 uniform mat4 PointShadowMvp2;
 uniform mat4 PointShadowMvp3;
 uniform mat4 PointShadowMvp4;
 uniform mat4 PointShadowMvp5;
+uniform mat4 AreaShadowMvp0;
+uniform mat4 AreaShadowMvp1;
+uniform mat4 AreaShadowMvp2;
+uniform mat4 AreaShadowMvp3;
+uniform mat4 AreaShadowMvp4;
 uniform float SpotCosInner;
 uniform float SpotCosOuter;
 uniform sampler2D Texture;
@@ -354,6 +364,8 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
     vec2 atlas_base = vec2(0.0);
     vec2 atlas_scale = vec2(1.0);
     vec4 sample_pos = shadow_pos;
+    vec4 receiver_dx = vec4(0.0);
+    vec4 receiver_dy = vec4(0.0);
     if (UsePointShadowAtlas == 1 && LightType == 1) {
         vec3 rel = v_world_pos - LightPos;
         vec3 a = abs(rel);
@@ -385,6 +397,9 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
         }
         atlas_scale = vec2(0.33333334, 0.5);
         sample_pos = face_mvp * vec4(v_world_pos, 1.0);
+        // Stay on this face's projection when differentiating at cube seams.
+        receiver_dx = face_mvp * vec4(dFdx(v_world_pos), 0.0);
+        receiver_dy = face_mvp * vec4(dFdy(v_world_pos), 0.0);
     }
     float w = sample_pos.w;
     if (abs(w) <= 1e-6) {
@@ -400,6 +415,16 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
     float ndotl = clamp(abs(dot(n, l)), 0.0, 1.0);
     float bias = max(ShadowBias * (1.0 - ndotl), ShadowBias * 0.25);
     vec2 texel = 1.0 / max(ShadowMapSize, vec2(1.0));
+    vec2 receiver_gradient = vec2(0.0);
+    if (UsePointShadowAtlas == 1 && LightType == 1) {
+        vec3 dx = (receiver_dx.xyz - proj * receiver_dx.w) * (0.5 / w);
+        vec3 dy = (receiver_dy.xyz - proj * receiver_dy.w) * (0.5 / w);
+        float determinant = dx.x * dy.y - dx.y * dy.x;
+        if (abs(determinant) > 1e-12) {
+            receiver_gradient = vec2(dy.y * dx.z - dx.y * dy.z,
+                                     dx.x * dy.z - dy.x * dx.z) / determinant;
+        }
+    }
     float visible = 0.0;
     float sample_count = 0.0;
     int radius = (LightType == 3) ? 2 : 1;
@@ -415,6 +440,83 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
                 sample_uv = clamp(sample_uv, tile_min, tile_max);
             }
             float closest = texture(ShadowMap, sample_uv).r;
+            float receiver_depth = uvw.z;
+            if (UsePointShadowAtlas == 1 && LightType == 1) {
+                // NEAREST reads: compare depths at the actual texel center on
+                // the receiver plane to avoid self-shadow bands on slopes.
+                vec2 center_uv = (floor(sample_uv * ShadowMapSize) + 0.5) * texel;
+                vec2 face_offset = (center_uv - atlas_base) / atlas_scale - uvw.xy;
+                receiver_depth += dot(receiver_gradient, face_offset);
+            }
+            float sample_visible = ((receiver_depth - bias) <= closest) ? 1.0 : 0.0;
+            if (UseSelfShadows == 0 && sample_visible < 1.0 && ShadowReceiverId > 0.0) {
+                float caster_id = texture(ShadowIdMap, sample_uv).r;
+                if (abs(caster_id - ShadowReceiverId) < 0.000008) {
+                    sample_visible = 1.0;
+                }
+            }
+            visible += sample_visible;
+            sample_count += 1.0;
+        }
+    }
+    visible /= max(sample_count, 1.0);
+    return mix(1.0 - clamp(ShadowDarkness, 0.0, 1.0), 1.0, visible);
+}
+
+vec2 area_sample_offset(int index) {
+    float x = float(index % 4);
+    float y = float(index / 4);
+    return vec2((x - 1.5) / 3.0, (y - 1.5) / 3.0);
+}
+
+mat4 area_shadow_mvp(int index) {
+    if (index == 1) return AreaShadowMvp1;
+    if (index == 2) return AreaShadowMvp2;
+    if (index == 3) return AreaShadowMvp3;
+    if (index == 4) return AreaShadowMvp4;
+    return AreaShadowMvp0;
+}
+
+vec2 area_shadow_base(int index) {
+    if (index == 1) return vec2(0.33333334, 0.0);
+    if (index == 2) return vec2(0.6666667, 0.0);
+    if (index == 3) return vec2(0.0, 0.5);
+    if (index == 4) return vec2(0.33333334, 0.5);
+    return vec2(0.0, 0.0);
+}
+
+float sample_area_shadow_factor(int sample_index, vec4 shadow_pos, vec3 normal, vec3 light_vec) {
+    if (UseAreaShadowAtlas == 0 || LightType != 3) {
+        return sample_shadow_factor(shadow_pos, normal, light_vec);
+    }
+    if (UseShadows == 0) {
+        return 1.0;
+    }
+    vec2 atlas_base = area_shadow_base(sample_index);
+    vec2 atlas_scale = vec2(0.33333334, 0.5);
+    vec4 sample_pos = area_shadow_mvp(sample_index) * vec4(v_world_pos, 1.0);
+    float w = sample_pos.w;
+    if (abs(w) <= 1e-6) {
+        return 1.0;
+    }
+    vec3 uvw = (sample_pos.xyz / w) * 0.5 + 0.5;
+    if (uvw.x < 0.0 || uvw.x > 1.0 || uvw.y < 0.0 || uvw.y > 1.0 || uvw.z < 0.0 || uvw.z > 1.0) {
+        return 1.0;
+    }
+    vec3 n = safe_normalize(normal);
+    vec3 l = safe_normalize(light_vec);
+    float ndotl = clamp(abs(dot(n, l)), 0.0, 1.0);
+    float bias = max(ShadowBias * (1.0 - ndotl), ShadowBias * 0.25);
+    vec2 texel = 1.0 / max(ShadowMapSize, vec2(1.0));
+    float visible = 0.0;
+    float sample_count = 0.0;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            vec2 sample_uv = atlas_base + uvw.xy * atlas_scale + vec2(float(x), float(y)) * texel;
+            vec2 tile_min = atlas_base + texel * 0.5;
+            vec2 tile_max = atlas_base + atlas_scale - texel * 0.5;
+            sample_uv = clamp(sample_uv, tile_min, tile_max);
+            float closest = texture(ShadowMap, sample_uv).r;
             float sample_visible = ((uvw.z - bias) <= closest) ? 1.0 : 0.0;
             if (UseSelfShadows == 0 && sample_visible < 1.0 && ShadowReceiverId > 0.0) {
                 float caster_id = texture(ShadowIdMap, sample_uv).r;
@@ -428,6 +530,27 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
     }
     visible /= max(sample_count, 1.0);
     return mix(1.0 - clamp(ShadowDarkness, 0.0, 1.0), 1.0, visible);
+}
+
+float area_light_diffuse(vec3 world_pos, vec4 shadow_pos, vec3 normal) {
+    vec2 area = max(AreaSize, vec2(0.001));
+    vec3 n = safe_normalize(normal);
+    vec3 emit_dir = safe_normalize(LightDir);
+    float total = 0.0;
+    for (int i = 0; i < 16; i++) {
+        vec2 offset = area_sample_offset(i);
+        vec3 sample_pos = LightPos + AreaAxisU * (offset.x * area.x) + AreaAxisV * (offset.y * area.y);
+        vec3 to_light = sample_pos - world_pos;
+        float dist = length(to_light);
+        vec3 l = (dist > 1e-5) ? (to_light / dist) : emit_dir;
+        float range = max(LightRange, 0.001);
+        float d = dist / range;
+        float attenuation = 1.0 / (1.0 + 4.0 * d * d);
+        float facing = smoothstep(0.0, 0.08, clamp(dot(l, emit_dir), 0.0, 1.0));
+        total += max(dot(n, l), 0.0) * attenuation * facing;
+    }
+    float visibility = sample_shadow_factor(shadow_pos, n, emit_dir);
+    return (total / 16.0) * visibility;
 }
 
 vec3 light_vector_at(vec3 world_pos, out float attenuation) {
@@ -480,6 +603,10 @@ void main() {
         float surface_gate = (LightType == 0 && !gl_FrontFacing) ? 0.0 : 1.0;
         float diffuse = max(dot(n, l), 0.0) * surface_gate * light_attenuation;
         float shadow_visibility = sample_shadow_factor(v_shadow_pos, n, l);
+        if (LightType == 3) {
+            diffuse = area_light_diffuse(v_world_pos, v_shadow_pos, n);
+            shadow_visibility = 1.0;
+        }
         float ambient = clamp(AmbientLight, 0.0, 1.0);
         float direct = diffuse * 0.86 * max(LightIntensity, 0.0) * shadow_visibility;
         lum = ambient + direct;
@@ -1045,13 +1172,22 @@ uniform int LightType;
 uniform float LightIntensity;
 uniform float AmbientLight;
 uniform float LightRange;
+uniform vec3 AreaAxisU;
+uniform vec3 AreaAxisV;
+uniform vec2 AreaSize;
 uniform int UsePointShadowAtlas;
+uniform int UseAreaShadowAtlas;
 uniform mat4 PointShadowMvp0;
 uniform mat4 PointShadowMvp1;
 uniform mat4 PointShadowMvp2;
 uniform mat4 PointShadowMvp3;
 uniform mat4 PointShadowMvp4;
 uniform mat4 PointShadowMvp5;
+uniform mat4 AreaShadowMvp0;
+uniform mat4 AreaShadowMvp1;
+uniform mat4 AreaShadowMvp2;
+uniform mat4 AreaShadowMvp3;
+uniform mat4 AreaShadowMvp4;
 uniform float SpotCosInner;
 uniform float SpotCosOuter;
 uniform sampler2D ShadowMap;
@@ -1085,6 +1221,8 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
     vec2 atlas_base = vec2(0.0);
     vec2 atlas_scale = vec2(1.0);
     vec4 sample_pos = shadow_pos;
+    vec4 receiver_dx = vec4(0.0);
+    vec4 receiver_dy = vec4(0.0);
     if (UsePointShadowAtlas == 1 && LightType == 1) {
         vec3 rel = v_world_pos - LightPos;
         vec3 a = abs(rel);
@@ -1116,6 +1254,9 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
         }
         atlas_scale = vec2(0.33333334, 0.5);
         sample_pos = face_mvp * vec4(v_world_pos, 1.0);
+        // Stay on this face's projection when differentiating at cube seams.
+        receiver_dx = face_mvp * vec4(dFdx(v_world_pos), 0.0);
+        receiver_dy = face_mvp * vec4(dFdy(v_world_pos), 0.0);
     }
     float w = sample_pos.w;
     if (abs(w) <= 1e-6) {
@@ -1131,6 +1272,16 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
     float ndotl = clamp(abs(dot(n, l)), 0.0, 1.0);
     float bias = max(ShadowBias * (1.0 - ndotl), ShadowBias * 0.25);
     vec2 texel = 1.0 / max(ShadowMapSize, vec2(1.0));
+    vec2 receiver_gradient = vec2(0.0);
+    if (UsePointShadowAtlas == 1 && LightType == 1) {
+        vec3 dx = (receiver_dx.xyz - proj * receiver_dx.w) * (0.5 / w);
+        vec3 dy = (receiver_dy.xyz - proj * receiver_dy.w) * (0.5 / w);
+        float determinant = dx.x * dy.y - dx.y * dy.x;
+        if (abs(determinant) > 1e-12) {
+            receiver_gradient = vec2(dy.y * dx.z - dx.y * dy.z,
+                                     dx.x * dy.z - dy.x * dx.z) / determinant;
+        }
+    }
     float visible = 0.0;
     float sample_count = 0.0;
     int radius = (LightType == 3) ? 2 : 1;
@@ -1146,12 +1297,103 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
                 sample_uv = clamp(sample_uv, tile_min, tile_max);
             }
             float closest = texture(ShadowMap, sample_uv).r;
+            float receiver_depth = uvw.z;
+            if (UsePointShadowAtlas == 1 && LightType == 1) {
+                // NEAREST reads: compare depths at the actual texel center on
+                // the receiver plane to avoid self-shadow bands on slopes.
+                vec2 center_uv = (floor(sample_uv * ShadowMapSize) + 0.5) * texel;
+                vec2 face_offset = (center_uv - atlas_base) / atlas_scale - uvw.xy;
+                receiver_depth += dot(receiver_gradient, face_offset);
+            }
+            visible += ((receiver_depth - bias) <= closest) ? 1.0 : 0.0;
+            sample_count += 1.0;
+        }
+    }
+    visible /= max(sample_count, 1.0);
+    return mix(1.0 - clamp(ShadowDarkness, 0.0, 1.0), 1.0, visible);
+}
+
+vec2 area_sample_offset(int index) {
+    float x = float(index % 4);
+    float y = float(index / 4);
+    return vec2((x - 1.5) / 3.0, (y - 1.5) / 3.0);
+}
+
+mat4 area_shadow_mvp(int index) {
+    if (index == 1) return AreaShadowMvp1;
+    if (index == 2) return AreaShadowMvp2;
+    if (index == 3) return AreaShadowMvp3;
+    if (index == 4) return AreaShadowMvp4;
+    return AreaShadowMvp0;
+}
+
+vec2 area_shadow_base(int index) {
+    if (index == 1) return vec2(0.33333334, 0.0);
+    if (index == 2) return vec2(0.6666667, 0.0);
+    if (index == 3) return vec2(0.0, 0.5);
+    if (index == 4) return vec2(0.33333334, 0.5);
+    return vec2(0.0, 0.0);
+}
+
+float sample_area_shadow_factor(int sample_index, vec4 shadow_pos, vec3 normal, vec3 light_vec) {
+    if (UseAreaShadowAtlas == 0 || LightType != 3) {
+        return sample_shadow_factor(shadow_pos, normal, light_vec);
+    }
+    if (UseShadows == 0) {
+        return 1.0;
+    }
+    vec2 atlas_base = area_shadow_base(sample_index);
+    vec2 atlas_scale = vec2(0.33333334, 0.5);
+    vec4 sample_pos = area_shadow_mvp(sample_index) * vec4(v_world_pos, 1.0);
+    float w = sample_pos.w;
+    if (abs(w) <= 1e-6) {
+        return 1.0;
+    }
+    vec3 uvw = (sample_pos.xyz / w) * 0.5 + 0.5;
+    if (uvw.x < 0.0 || uvw.x > 1.0 || uvw.y < 0.0 || uvw.y > 1.0 || uvw.z < 0.0 || uvw.z > 1.0) {
+        return 1.0;
+    }
+    vec3 n = safe_normalize(normal);
+    vec3 l = safe_normalize(light_vec);
+    float ndotl = clamp(abs(dot(n, l)), 0.0, 1.0);
+    float bias = max(ShadowBias * (1.0 - ndotl), ShadowBias * 0.25);
+    vec2 texel = 1.0 / max(ShadowMapSize, vec2(1.0));
+    float visible = 0.0;
+    float sample_count = 0.0;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            vec2 sample_uv = atlas_base + uvw.xy * atlas_scale + vec2(float(x), float(y)) * texel;
+            vec2 tile_min = atlas_base + texel * 0.5;
+            vec2 tile_max = atlas_base + atlas_scale - texel * 0.5;
+            sample_uv = clamp(sample_uv, tile_min, tile_max);
+            float closest = texture(ShadowMap, sample_uv).r;
             visible += ((uvw.z - bias) <= closest) ? 1.0 : 0.0;
             sample_count += 1.0;
         }
     }
     visible /= max(sample_count, 1.0);
     return mix(1.0 - clamp(ShadowDarkness, 0.0, 1.0), 1.0, visible);
+}
+
+float area_light_diffuse(vec3 world_pos, vec4 shadow_pos, vec3 normal) {
+    vec2 area = max(AreaSize, vec2(0.001));
+    vec3 n = safe_normalize(normal);
+    vec3 emit_dir = safe_normalize(LightDir);
+    float total = 0.0;
+    for (int i = 0; i < 16; i++) {
+        vec2 offset = area_sample_offset(i);
+        vec3 sample_pos = LightPos + AreaAxisU * (offset.x * area.x) + AreaAxisV * (offset.y * area.y);
+        vec3 to_light = sample_pos - world_pos;
+        float dist = length(to_light);
+        vec3 l = (dist > 1e-5) ? (to_light / dist) : emit_dir;
+        float range = max(LightRange, 0.001);
+        float d = dist / range;
+        float attenuation = 1.0 / (1.0 + 4.0 * d * d);
+        float facing = smoothstep(0.0, 0.08, clamp(dot(l, emit_dir), 0.0, 1.0));
+        total += clamp(abs(dot(n, l)), 0.0, 1.0) * attenuation * facing;
+    }
+    float visibility = sample_shadow_factor(shadow_pos, n, emit_dir);
+    return (total / 16.0) * visibility;
 }
 
 vec3 light_vector_at(vec3 world_pos, out float attenuation) {
@@ -1191,6 +1433,10 @@ void main() {
         vec3 l = light_vector_at(v_world_pos, light_attenuation);
         float diffuse = clamp(abs(dot(n, l)), 0.0, 1.0) * light_attenuation;
         float shadow_visibility = sample_shadow_factor(v_shadow_pos, n, l);
+        if (LightType == 3) {
+            diffuse = area_light_diffuse(v_world_pos, v_shadow_pos, n);
+            shadow_visibility = 1.0;
+        }
         float lum = clamp(AmbientLight, 0.0, 1.0) + diffuse * 0.72 * max(LightIntensity, 0.0) * shadow_visibility;
         rgb *= clamp(lum, 0.0, 3.0);
     }
@@ -1327,3 +1573,6 @@ void main() {
 """,
 
 }
+
+SHADERS["mesh_fragment"] = with_second_light(SHADERS["mesh_fragment"], mesh=True)
+SHADERS["splatq_fragment"] = with_second_light(SHADERS["splatq_fragment"], mesh=False)

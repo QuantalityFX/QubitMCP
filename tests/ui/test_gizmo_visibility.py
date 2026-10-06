@@ -106,6 +106,14 @@ class GizmoVisibilityTests(unittest.TestCase):
         self.view._xform_gizmo_owner_kind = 'retarget_target_joint'
         self.assertTrue(sync_gizmo_visibility(self.view))
 
+    def test_look_through_camera_hides_only_that_camera_gizmo(self):
+        view = self.view
+        view._mgl_active_scene_camera_owner = lambda: 'Camera_A'
+        view._xform_gizmo_owner = 'Camera_A'
+        self.assertFalse(sync_gizmo_visibility(view))
+        view._xform_gizmo_owner = 'mesh'
+        self.assertTrue(sync_gizmo_visibility(view))
+
     def test_empty_rig_click_clears_selection_and_checkbox_then_reselects(self):
         view = self.view
         view._mgl_scene_skeleton_selected_joints = ['left_shoulder', 'left_elbow']

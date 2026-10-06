@@ -2102,7 +2102,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._on_param_changed(idx, light_type, emit_scene=True)
         if self._sync_light_param_visibility(light_type):
             self._schedule_param_emit()
-            QtCore.QTimer.singleShot(0, self._build_widgets)
+            self._schedule_rebuild()
 
     def _sync_transforms_gizmo(self, selected: bool) -> None:
         owner = (getattr(self.model, "name", "") or "").strip()
@@ -4310,6 +4310,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             kind_lower = (self.model.kind or "").strip().lower()
             if kind_lower in _LIGHT_NODE_KINDS:
                 self._sync_light_param_visibility()
+                self._recompute_height()
             defer_plugin = kind_lower in (
                 "for_each", "for_each_end",
                 "delete_joint",
@@ -5017,12 +5018,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         nm = p.get("name", "value")
                         actions.wire_big_editor_for_lineedit(self, edit, nm)
 
-                    row_center_y = y_cursor + self._PARAM_ROW_H / 2.0
+                    row_h = self._PARAM_ROW_H
+                    if kind_lower in _LIGHT_NODE_KINDS:
+                        row.ensurePolished()
+                        row_h = max(row_h, row.sizeHint().height(), row.minimumSizeHint().height())
+                    row_center_y = y_cursor + row_h / 2.0
                     proxy = QtWidgets.QGraphicsProxyWidget(self)
                     proxy.setWidget(row)
                     proxy.setZValue(self.zValue() + 0.1)
                     proxy.setPos(0, y_cursor)
-                    proxy.resize(self.width, self._PARAM_ROW_H)
+                    proxy.resize(self.width, row_h)
                     self._param_proxies.append(proxy)
                     if has_port:
                         center_x = pin_center_x if pin_center_x is not None else 0.0
@@ -5032,7 +5037,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         canonical = (pname or pname_key) or pname_key
                         self._output_port_pos[pname_key] = (QtCore.QPointF(float(self.width), row_center_y), canonical)
 
-                    y_cursor += self._PARAM_ROW_H
+                    y_cursor += row_h
 
 
                     # If featured -> add a SECOND row right BELOW with a large QTextEdit (draggable resize)
@@ -5233,6 +5238,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     S = self._current_llm_scale()
                     y_cursor += int(LLM_NODE_H_BASE * S)
 
+            if kind_lower in _LIGHT_NODE_KINDS:
+                # Qt can make a parameter wrapper taller than the nominal row
+                # height (font/DPI/style). Include its actual bottom as well.
+                bottom = max((proxy.mapRectToParent(proxy.boundingRect()).bottom()
+                              for proxy in self._param_proxies), default=y_cursor)
+                required_h = max(self._BASE_H, y_cursor + self._PADDING, bottom + self._PADDING)
+                if self.height != required_h:
+                    self.prepareGeometryChange()
+                    self.height = required_h
+                self.update()
         finally:
             self._is_building = False
         self._apply_navigation_lite_visibility()

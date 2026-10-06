@@ -5,6 +5,13 @@ def has_gizmo_selection(view):
     owner = str(getattr(view, '_xform_gizmo_owner', '') or '').strip()
     if not owner:
         return False
+    # Looking through a selected camera must not draw or pick that camera's
+    # handles at the eye. Other selected objects keep their normal gizmos.
+    active_camera = getattr(view, '_mgl_active_scene_camera_owner', None)
+    camera_owner = (active_camera() if callable(active_camera)
+                    else getattr(view, '_camera_select_mode', 'default'))
+    if str(camera_owner or '').strip().casefold() == owner.casefold():
+        return False
     kind = getattr(view, '_xform_gizmo_owner_kind', None)
     if kind in ('scene_skeleton_joint', 'retarget_target_joint'):
         return True

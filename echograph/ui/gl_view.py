@@ -694,6 +694,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_scene_light_shadow_fov = None
         self._mgl_scene_light_shadow_near = None
         self._mgl_scene_light_shadow_bias = None
+        self._mgl_scene_light_shadow_resolution = None
         self._mgl_shadow_light_mvp = None
         self._mgl_shadow_valid = False
         self._mgl_shadow_dirty = True
@@ -1356,6 +1357,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
     def _fps_cam_sync_from_orbit(self) -> None:
         if np is None or Matrix44 is None:
             return
+        owner = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+        if owner.lower() != "default" and self._camera_selector_sync_fps_from_owner_pose(owner):
+            return
         arc = getattr(self, "_mgl_arcball", None)
         if arc is None or not hasattr(arc, "Transform"):
             return
@@ -1419,7 +1423,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             view = cam.view_matrix(roll_locked=roll_locked)
             lmat = np.array(lookat, dtype=np.float32)
             vmat = np.array(view, dtype=np.float32)
-            tmat = np.linalg.inv(lmat) @ vmat
+            # pyrr's A * B stores B @ A (row-vector matrices). Undo the
+            # look-at on the right, or a rotated camera acquires a position jump.
+            tmat = vmat @ np.linalg.inv(lmat)
             rot = np.array(tmat[:3, :3], dtype=np.float32)
             trow = np.array(tmat[3, :3], dtype=np.float32)
             try:
@@ -3720,7 +3726,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 pass
 
-    def _camera_selector_release_unlocked_selection_on_navigation(self) -> bool:
+    def _camera_selector_release_unlocked_selection_on_navigation(self, *, force: bool = False) -> bool:
         try:
             if bool(getattr(self, "_camera_select_lock_enabled", False)):
                 return False
@@ -3732,7 +3738,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             mode = "default"
         if not mode or mode == "default":
             return False
-        interacting = False
+        interacting = bool(force)
         if not interacting:
             try:
                 keys = getattr(self, "_fps_nav_keys", None)
@@ -3775,6 +3781,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 interacting = False
         if not interacting:
             return False
+        # Copy the current evaluated pose before discarding camera selection.
+        # The saved default state and an older orbit target are not the eye.
+        owner = str(getattr(self, "_camera_select_mode", "") or "").strip()
+        if not self._camera_selector_sync_fps_from_owner_pose(owner):
+            return False
+        self._fps_cam_sync_orbit_from_camera()
         # Manual navigation while unlocked means the user left camera look-through.
         try:
             self._camera_select_mode = "default"

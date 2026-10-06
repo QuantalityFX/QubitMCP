@@ -2614,6 +2614,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             shadow_range = _param_float(model, "shadow_range", 0.0)
             shadow_fov = _param_float(model, "shadow_fov", 0.0)
             shadow_near = _param_float(model, "shadow_near", 0.0)
+            shadow_resolution = _param_float(model, "shadow_resolution", 0.0)
             shadow_bias = _param_float(model, "shadow_bias", 0.0)
             shadow_fov_value = 0.0 if float(shadow_fov) <= 0.0 else max(1.0, min(179.0, float(shadow_fov)))
             light_type = _normalize_light_type(_param_value(model, "type") or _param_value(model, "light_type"))
@@ -2631,11 +2632,14 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     "light": {
                         "type": light_type,
                         "intensity": max(0.0, float(intensity)),
+                        "width": max(0.001, _param_float(model, "width", 1.0)),
+                        "height": max(0.001, _param_float(model, "height", 1.0)),
                         "range": max(0.0, float(light_range)),
                         "shadow_strength": max(0.0, min(1.0, float(shadow_strength))),
                         "shadow_range": max(0.0, float(shadow_range)),
                         "shadow_fov": float(shadow_fov_value),
                         "shadow_near": max(0.0, float(shadow_near)),
+                        "shadow_resolution": max(0.0, float(shadow_resolution)),
                         "shadow_bias": max(0.0, float(shadow_bias)),
                     },
                 }

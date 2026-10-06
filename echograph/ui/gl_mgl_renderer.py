@@ -53,6 +53,7 @@ from .gl_loaders import load_gltf_mesh_arrays
 from .gl_loaders import load_model
 from .gl_loaders import load_obj_mesh_arrays
 from .gl_scene import MGLSceneItem
+from .gl_scene_lighting import SceneLightingMixin
 from .gl_shaders import SHADERS
 from .gl_types import MeshArrays, SubMeshData
 from echograph.material_debug import material_debug_log as _material_debug_log
@@ -191,7 +192,7 @@ def _mgl_grid(size: float, steps: int) -> NDArray:
     return grid
 
 
-class MGLRendererMixin:
+class MGLRendererMixin(SceneLightingMixin):
     def _mgl_timeline_fx_enabled(self) -> bool:
         try:
             return bool(getattr(self, "_timeline_fx_instances_enabled", True))
@@ -3188,6 +3189,30 @@ void main() {
         except Exception:
             pass
 
+    @staticmethod
+    def _mgl_fbx_normal_matrices(linear: NDArray) -> NDArray:
+        """Inverse transpose for small 3x3 batches without threaded LAPACK dispatch."""
+        matrices = np.asarray(linear, dtype=np.float64)
+        shape = matrices.shape
+        matrices = matrices.reshape(-1, 3, 3)
+        cofactors = np.stack((
+            np.cross(matrices[:, 1], matrices[:, 2]),
+            np.cross(matrices[:, 2], matrices[:, 0]),
+            np.cross(matrices[:, 0], matrices[:, 1]),
+        ), axis=1)
+        det = np.einsum("ij,ij->i", matrices[:, 0], cofactors[:, 0])
+        scale = np.max(np.abs(matrices), axis=(1, 2))
+        regular = np.abs(det) > 1e-10 * scale ** 3
+        cofactors[regular] /= det[regular, None, None]
+        # Preserve inverse/pseudoinverse behavior for poorly conditioned or
+        # singular transforms, including flattened bones.
+        for index in np.flatnonzero(~regular):
+            try:
+                cofactors[index] = np.linalg.inv(matrices[index]).T
+            except np.linalg.LinAlgError:
+                cofactors[index] = np.linalg.pinv(matrices[index]).T
+        return cofactors.reshape(shape).astype("f4")
+
     def _mgl_fbx_deform_triangle_normals(self, mesh: dict, tri_points: NDArray, skin_mats=None) -> NDArray:
         """Skin authored corner normals without welding hard edges or UV seams."""
         try:
@@ -3198,32 +3223,45 @@ void main() {
         except (TypeError, ValueError):
             return self._mgl_fbx_triangle_normals(tri_points)
 
-        def normal_matrices(linear):
-            try:
-                return np.linalg.inv(linear).swapaxes(-1, -2)
-            except np.linalg.LinAlgError:
-                return np.linalg.pinv(linear).swapaxes(-1, -2)
-
-        normals = bind.copy()
-        if skin_mats is not None:
-            transforms = normal_matrices(np.asarray(skin_mats, dtype="f4")[:, :3, :3])
-            joints = np.asarray(mesh["joint_indices"], dtype=np.int32)[indices]
-            weights = np.asarray(mesh["joint_weights"], dtype="f4")[indices]
-            normals.fill(0.0)
-            weighted = np.zeros(indices.size, dtype=bool)
-            for slot in range(joints.shape[1]):
-                js, ws = joints[:, slot], weights[:, slot]
-                valid = (js >= 0) & (js < len(transforms)) & (ws > 1.0e-8)
-                normals[valid] += np.einsum("nij,nj->ni", transforms[js[valid]], bind[valid]) * ws[valid, None]
-                weighted |= valid
-            normals[~weighted] = bind[~weighted]
         affine = mesh.get("affine")
+        transform = np.eye(3, dtype="f4")
         if affine is not None:
-            transform = normal_matrices(np.asarray(affine, dtype="f4").reshape(4, 4)[:3, :3])
-            normals = normals @ transform.T
-        lengths = np.linalg.norm(normals, axis=1, keepdims=True)
-        valid = np.isfinite(normals).all(axis=1) & (lengths[:, 0] > 1.0e-8)
-        normals[valid] /= lengths[valid]
+            linear = np.asarray(affine, dtype="f4").reshape(4, 4)[:3, :3]
+            # Compare values so an in-place edit cannot leave stale transforms.
+            affine_key = linear.tobytes()
+            cached = mesh.get("_normal_affine_cache")
+            if cached is None or cached[0] != affine_key:
+                cached = (affine_key, self._mgl_fbx_normal_matrices(linear))
+                mesh["_normal_affine_cache"] = cached
+            transform = cached[1]
+
+        if skin_mats is not None:
+            transforms = self._mgl_fbx_normal_matrices(np.asarray(skin_mats, dtype="f4")[:, :3, :3])
+            # Apply the affine to the small bone palette instead of every corner.
+            if affine is not None:
+                transforms = np.einsum("ij,njk->nik", transform, transforms)
+            # Blend once per control point, then apply to each authored corner
+            # normal. This preserves seams without repeating the influence loop
+            # for every triangle corner (usually several times as many points).
+            joints = np.asarray(mesh["joint_indices"], dtype=np.int32)
+            blended = np.zeros((len(joints), 3, 3), dtype="f4")
+            if mesh.get("influence_joint_count") == len(transforms):
+                slots = mesh["influence_slots"]
+                unweighted = mesh["unweighted_indices"]
+            else:
+                slots, unweighted = self._mgl_fbx_runtime_influence_slots(
+                    joints, mesh["joint_weights"], len(transforms))
+            # Reuse sparse influence lists already built for position skinning.
+            for slot in slots:
+                vertices = slot["vertex_indices"]
+                blended[vertices] += transforms[slot["joint_indices"]] * slot["weights"][:, None, None]
+            blended[unweighted] = transform
+            normals = np.einsum("nij,nj->ni", blended[indices], bind)
+        else:
+            normals = np.einsum("ij,nj->ni", transform, bind)
+        lengths = np.sqrt(np.einsum("ij,ij->i", normals, normals))
+        valid = np.isfinite(lengths) & (lengths > 1.0e-8)
+        np.divide(normals, lengths[:, None], out=normals, where=valid[:, None])
         if not np.all(valid):
             normals[~valid] = self._mgl_fbx_triangle_normals(tri_points)[~valid]
         return normals.astype("f4", copy=False)
@@ -3550,6 +3588,7 @@ void main() {
                         "joint_indices": spec_joint_indices,
                         "joint_weights": spec_joint_weights,
                         "influence_slots": influence_slots,
+                        "influence_joint_count": joint_count,
                         "unweighted_indices": unweighted_indices,
                         "vbo": entry.get("vbo"),
                         "nbo": entry.get("nbo"),
@@ -3638,6 +3677,7 @@ void main() {
                         "joint_indices": spec_joint_indices,
                         "joint_weights": spec_joint_weights,
                         "influence_slots": influence_slots,
+                        "influence_joint_count": joint_count,
                         "unweighted_indices": unweighted_indices,
                         "vbo": entry.get("vbo"),
                         "nbo": entry.get("nbo"),
@@ -3844,7 +3884,8 @@ void main() {
                 except Exception:
                     deformed_for_render = deformed
             tri_points = deformed_for_render[triangle_indices].reshape(-1, 3).astype("f4", copy=False)
-            tri_normals = self._mgl_fbx_deform_triangle_normals(mesh, tri_points, mesh_skin_mats)
+            with profile_scope("render.3d.mgl.fbx_skin.normals"):
+                tri_normals = self._mgl_fbx_deform_triangle_normals(mesh, tri_points, mesh_skin_mats)
             vbo = mesh.get("vbo")
             nbo = mesh.get("nbo")
             entry = mesh.get("entry")
@@ -10391,6 +10432,7 @@ void main() {
             pass
 
     def _mgl_clear_scene_models(self) -> None:
+        self._mgl_release_second_light()
         try:
             self._mgl_clear_mesh_selection_overlay_cache()
         except Exception:
@@ -22816,7 +22858,7 @@ void main() {
         }.get(light_type, 0)
 
     @staticmethod
-    def _mgl_light_guide_line_points(light_type: str):
+    def _mgl_light_guide_line_points(light_type: str, area_size: Tuple[float, float] | None = None):
         if np is None:
             return None
         kind = MGLRendererMixin._mgl_normalize_light_type(light_type)
@@ -22872,12 +22914,23 @@ void main() {
                 add(apex, base[i])
             add(apex, (0.0, 0.0, base_z))
         elif kind == "area":
-            s = 0.42
-            corners = [(-s, s, 0.0), (s, s, 0.0), (s, -s, 0.0), (-s, -s, 0.0)]
+            try:
+                width = max(0.001, float((area_size or (1.0, 1.0))[0]))
+                height = max(0.001, float((area_size or (1.0, 1.0))[1]))
+            except Exception:
+                width = height = 1.0
+            sx = max(0.10, float(width) * 0.5)
+            sy = max(0.10, float(height) * 0.5)
+            corners = [(-sx, sy, 0.0), (sx, sy, 0.0), (sx, -sy, 0.0), (-sx, -sy, 0.0)]
             for i, a in enumerate(corners):
                 add(a, corners[(i + 1) % len(corners)])
             add(corners[0], corners[2])
             add(corners[1], corners[3])
+            add((0.0, 0.0, 0.0), (0.0, 0.0, -0.58))
+            add((0.0, 0.0, -0.58), (-0.055, 0.0, -0.48))
+            add((0.0, 0.0, -0.58), (0.055, 0.0, -0.48))
+            add((0.0, 0.0, -0.58), (0.0, -0.055, -0.48))
+            add((0.0, 0.0, -0.58), (0.0, 0.055, -0.48))
         else:
             add((-0.35, 0.35, 0.0), (0.35, 0.35, 0.0))
             add((0.35, 0.35, 0.0), (0.35, -0.35, 0.0))
@@ -22957,6 +23010,30 @@ void main() {
         except Exception:
             return False
 
+    def _mgl_uses_area_shadow_atlas(self) -> bool:
+        return False
+
+    def _mgl_area_light_size_tuple(self) -> Tuple[float, float]:
+        try:
+            width = max(0.001, float(getattr(self, "_mgl_scene_light_width", 1.0) or 1.0))
+        except Exception:
+            width = 1.0
+        try:
+            height = max(0.001, float(getattr(self, "_mgl_scene_light_height", 1.0) or 1.0))
+        except Exception:
+            height = 1.0
+        try:
+            owner = str(getattr(self, "_mgl_scene_light_owner", "") or "").strip()
+            if owner:
+                xf = self._mgl_get_scene_asset_xform(owner)
+                scl = list(xf.get("scl", (1.0, 1.0, 1.0)))[:3] if isinstance(xf, dict) else ()
+                if len(scl) >= 2:
+                    width *= max(0.001, abs(float(scl[0])))
+                    height *= max(0.001, abs(float(scl[1])))
+        except Exception:
+            pass
+        return (max(0.001, min(100000.0, float(width))), max(0.001, min(100000.0, float(height))))
+
     @staticmethod
     def _mgl_auto_shadow_near(far: float) -> float:
         try:
@@ -23032,6 +23109,78 @@ void main() {
             return (float(light_dir[0]), float(light_dir[1]), float(light_dir[2]))
         except Exception:
             return None
+
+    def _mgl_scene_light_area_axes(self):
+        if np is None:
+            return (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)
+        owner = str(getattr(self, "_mgl_scene_light_owner", "") or "").strip()
+        if owner:
+            try:
+                xf = self._mgl_get_scene_asset_xform(owner)
+                rot = list(xf.get("rot", (0.0, 0.0, 0.0)))[:3] if isinstance(xf, dict) else (0.0, 0.0, 0.0)
+                rx, ry, rz = (float(rot[0]), float(rot[1]), float(rot[2]))
+
+                def _rx(a):
+                    a = math.radians(a)
+                    c, s = math.cos(a), math.sin(a)
+                    m = np.eye(4, dtype=np.float32)
+                    m[1, 1] = c
+                    m[1, 2] = s
+                    m[2, 1] = -s
+                    m[2, 2] = c
+                    return m
+
+                def _ry(a):
+                    a = math.radians(a)
+                    c, s = math.cos(a), math.sin(a)
+                    m = np.eye(4, dtype=np.float32)
+                    m[0, 0] = c
+                    m[0, 2] = -s
+                    m[2, 0] = s
+                    m[2, 2] = c
+                    return m
+
+                def _rz(a):
+                    a = math.radians(a)
+                    c, s = math.cos(a), math.sin(a)
+                    m = np.eye(4, dtype=np.float32)
+                    m[0, 0] = c
+                    m[0, 1] = s
+                    m[1, 0] = -s
+                    m[1, 1] = c
+                    return m
+
+                rmat = _rx(-rx) @ _ry(-ry) @ _rz(-rz)
+                axis_u = (np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32) @ rmat)[:3]
+                axis_v = (np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32) @ rmat)[:3]
+                u_len = float(np.linalg.norm(axis_u))
+                v_len = float(np.linalg.norm(axis_v))
+                if u_len > 1.0e-6 and v_len > 1.0e-6 and np.all(np.isfinite(axis_u)) and np.all(np.isfinite(axis_v)):
+                    axis_u = axis_u / u_len
+                    axis_v = axis_v / v_len
+                    return (float(axis_u[0]), float(axis_u[1]), float(axis_u[2])), (
+                        float(axis_v[0]), float(axis_v[1]), float(axis_v[2])
+                    )
+            except Exception:
+                pass
+        try:
+            normal = np.asarray(self._mgl_light_direction_tuple(), dtype=np.float32).reshape(-1)[:3]
+            n_len = float(np.linalg.norm(normal))
+            if n_len <= 1.0e-6 or not np.all(np.isfinite(normal)):
+                raise ValueError("invalid area normal")
+            normal = normal / n_len
+            up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            if abs(float(np.dot(up, normal))) > 0.92:
+                up = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            axis_u = np.cross(up, normal)
+            axis_u = axis_u / max(float(np.linalg.norm(axis_u)), 1.0e-6)
+            axis_v = np.cross(normal, axis_u)
+            axis_v = axis_v / max(float(np.linalg.norm(axis_v)), 1.0e-6)
+            return (float(axis_u[0]), float(axis_u[1]), float(axis_u[2])), (
+                float(axis_v[0]), float(axis_v[1]), float(axis_v[2])
+            )
+        except Exception:
+            return (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)
 
     def _mgl_effective_light_intensity(self) -> float:
         try:
@@ -23141,9 +23290,20 @@ void main() {
             light_type = self._mgl_normalize_light_type(getattr(self, "_mgl_scene_light_type", "directional"))
             if light_type == "area":
                 size = max(int(size), 2048)
+                override = float(getattr(self, "_mgl_scene_light_shadow_resolution", 0.0) or 0.0)
+                if override > 0.0:
+                    size = int(round(override))
         except Exception:
-            pass
-        return max(256, min(4096, int(size)))
+            light_type = "directional"
+        max_size = 4096
+        try:
+            if light_type == "area":
+                info = getattr(self._mgl_ctx, "info", {}) if getattr(self, "_mgl_ctx", None) is not None else {}
+                gpu_max = int(info.get("GL_MAX_TEXTURE_SIZE", 0) or 0) if isinstance(info, dict) else 0
+                max_size = 8192 if gpu_max >= 8192 else 4096
+        except Exception:
+            max_size = 4096
+        return max(256, min(max_size, int(size)))
 
     def _mgl_shadow_tile_size_value(self) -> int:
         size = self._mgl_shadow_map_size_value()
@@ -23360,6 +23520,7 @@ void main() {
         light_type = self._mgl_normalize_light_type(getattr(self, "_mgl_scene_light_type", "directional"))
         try:
             self._mgl_shadow_point_faces = None
+            self._mgl_shadow_area_faces = None
             self._mgl_shadow_light_mvp_faces = None
         except Exception:
             pass
@@ -23447,24 +23608,40 @@ void main() {
                     forward = np.array([0.0, 0.0, -1.0], dtype=np.float32)
                 else:
                     forward = forward / forward_len
+                area_width, area_height = self._mgl_area_light_size_tuple()
+                axis_u_raw, axis_v_raw = self._mgl_scene_light_area_axes()
+                axis_u = np.asarray(axis_u_raw, dtype=np.float32).reshape(-1)[:3]
+                axis_v = np.asarray(axis_v_raw, dtype=np.float32).reshape(-1)[:3]
+                if axis_u.shape[0] < 3 or not np.all(np.isfinite(axis_u)) or float(np.linalg.norm(axis_u)) <= 1.0e-6:
+                    axis_u = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+                else:
+                    axis_u = axis_u / float(np.linalg.norm(axis_u))
+                if axis_v.shape[0] < 3 or not np.all(np.isfinite(axis_v)) or float(np.linalg.norm(axis_v)) <= 1.0e-6:
+                    axis_v = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+                else:
+                    axis_v = axis_v / float(np.linalg.norm(axis_v))
                 extent = max(1.0, float(radius) * 2.5)
+                extent = max(extent, float(area_width) + float(radius), float(area_height) + float(radius))
                 auto_far = max(2.0, float(to_center_len) + float(radius) * 4.0)
                 far = auto_far
                 try:
                     explicit_range = self._mgl_explicit_shadow_range_value()
                     if explicit_range is not None and float(explicit_range) > 0.0:
                         value = min(100000.0, float(explicit_range))
-                        extent = max(extent, value * 0.5)
                         far = max(2.0, value)
                 except Exception:
                     pass
-                eye = light_pos
-                target = eye + forward
-                up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+                up = axis_v
+                if abs(float(np.dot(up, forward))) > 0.92:
+                    up = axis_u
+                if abs(float(np.dot(up, forward))) > 0.92:
+                    up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
                 if abs(float(np.dot(up, forward))) > 0.92:
                     up = np.array([1.0, 0.0, 0.0], dtype=np.float32)
                 try:
                     near = self._mgl_auto_shadow_near(far)
+                    eye = light_pos
+                    target = eye + forward
                     view = Matrix44.look_at(
                         (float(eye[0]), float(eye[1]), float(eye[2])),
                         (float(target[0]), float(target[1]), float(target[2])),
@@ -23480,6 +23657,8 @@ void main() {
                         float(far),
                         dtype="f4",
                     )
+                    self._mgl_shadow_area_faces = None
+                    self._mgl_shadow_light_mvp_faces = None
                     return proj, view, (proj * view).astype("f4"), center, float(extent)
                 except Exception:
                     return None
@@ -23594,11 +23773,13 @@ void main() {
             parts.append(("light_dir", tuple(round(float(v), 5) for v in self._mgl_light_direction_tuple())))
             parts.append(("light_intensity", round(float(self._mgl_effective_light_intensity()), 5)))
             parts.append(("light_range", round(float(self._mgl_light_range_value()), 5)))
+            parts.append(("area_size", tuple(round(float(v), 5) for v in self._mgl_area_light_size_tuple())))
             parts.append(("light_shadow", round(float(self._mgl_effective_shadow_darkness()), 5)))
             parts.append(("shadow_bias", round(float(self._mgl_effective_shadow_bias()), 7)))
             parts.append(("shadow_range", round(float(getattr(self, "_mgl_scene_light_shadow_range", 0.0) or 0.0), 5)))
             parts.append(("shadow_fov", round(float(getattr(self, "_mgl_scene_light_shadow_fov", 0.0) or 0.0), 5)))
             parts.append(("shadow_near", round(float(getattr(self, "_mgl_scene_light_shadow_near", 0.0) or 0.0), 5)))
+            parts.append(("shadow_resolution", round(float(getattr(self, "_mgl_scene_light_shadow_resolution", 0.0) or 0.0), 1)))
         except Exception:
             pass
 
@@ -23654,39 +23835,49 @@ void main() {
             pass
         return tuple(parts)
 
-    def _mgl_apply_shadow_uniforms(self, prog) -> None:
+    def _mgl_apply_one_light_uniforms(self, prog, *, suffix="", texture_unit=7) -> None:
         if prog is None or np is None:
             return
         light_dir = self._mgl_light_direction_tuple()
         try:
-            prog["LightDir"].value = light_dir
+            prog["LightDir" + suffix].value = light_dir
         except Exception:
             pass
         light_type = "directional"
         try:
             light_type = self._mgl_normalize_light_type(getattr(self, "_mgl_scene_light_type", "directional"))
-            prog["LightType"].value = int(self._mgl_light_type_index(light_type))
+            prog["LightType" + suffix].value = int(self._mgl_light_type_index(light_type))
         except Exception:
             pass
         try:
-            prog["LightPos"].value = self._mgl_light_position_tuple()
+            prog["LightPos" + suffix].value = self._mgl_light_position_tuple()
         except Exception:
             pass
         try:
-            prog["LightRange"].value = float(self._mgl_light_range_value())
+            prog["LightRange" + suffix].value = float(self._mgl_light_range_value())
+        except Exception:
+            pass
+        try:
+            area_u, area_v = self._mgl_scene_light_area_axes()
+            prog["AreaAxisU" + suffix].value = tuple(float(v) for v in area_u)
+            prog["AreaAxisV" + suffix].value = tuple(float(v) for v in area_v)
+        except Exception:
+            pass
+        try:
+            prog["AreaSize" + suffix].value = self._mgl_area_light_size_tuple()
         except Exception:
             pass
         spot_inner_cos, spot_outer_cos = self._mgl_spot_cone_cosines()
         try:
-            prog["SpotCosInner"].value = float(spot_inner_cos)
+            prog["SpotCosInner" + suffix].value = float(spot_inner_cos)
         except Exception:
             pass
         try:
-            prog["SpotCosOuter"].value = float(spot_outer_cos)
+            prog["SpotCosOuter" + suffix].value = float(spot_outer_cos)
         except Exception:
             pass
         try:
-            prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
+            prog["LightIntensity" + suffix].value = float(self._mgl_effective_light_intensity())
         except Exception:
             pass
         try:
@@ -23697,20 +23888,33 @@ void main() {
         if light_mvp is None:
             light_mvp = np.eye(4, dtype="f4")
         try:
-            prog["LightMvp"].write(np.asarray(light_mvp, dtype="f4").tobytes())
+            prog["LightMvp" + suffix].write(np.asarray(light_mvp, dtype="f4").tobytes())
         except Exception:
             pass
         point_faces = getattr(self, "_mgl_shadow_light_mvp_faces", None)
         use_point_atlas = bool(light_type == "point" and isinstance(point_faces, list) and len(point_faces) >= 6)
         try:
-            prog["UsePointShadowAtlas"].value = 1 if use_point_atlas else 0
+            prog["UsePointShadowAtlas" + suffix].value = 1 if use_point_atlas else 0
         except Exception:
             pass
         ident = np.eye(4, dtype="f4")
         for idx in range(6):
             try:
                 mvp = point_faces[idx] if use_point_atlas else ident
-                prog[f"PointShadowMvp{idx}"].write(np.asarray(mvp, dtype="f4").tobytes())
+                prog[f"PointShadowMvp{idx}{suffix}"].write(np.asarray(mvp, dtype="f4").tobytes())
+            except Exception:
+                pass
+        area_faces = getattr(self, "_mgl_shadow_area_faces", None)
+        use_area_atlas = bool(light_type == "area" and isinstance(area_faces, list) and len(area_faces) >= 5)
+        try:
+            prog["UseAreaShadowAtlas" + suffix].value = 1 if use_area_atlas else 0
+        except Exception:
+            pass
+        for idx in range(5):
+            try:
+                face = area_faces[idx] if use_area_atlas else None
+                mvp = face.get("mvp", ident) if isinstance(face, dict) else ident
+                prog[f"AreaShadowMvp{idx}{suffix}"].write(np.asarray(mvp, dtype="f4").tobytes())
             except Exception:
                 pass
         use_shadows = bool(
@@ -23721,21 +23925,21 @@ void main() {
             and getattr(self, "_mgl_shadow_depth_tex", None) is not None
         )
         try:
-            prog["UseShadows"].value = 1 if use_shadows else 0
+            prog["UseShadows" + suffix].value = 1 if use_shadows else 0
         except Exception:
             pass
         try:
-            prog["ShadowBias"].value = float(self._mgl_effective_shadow_bias())
+            prog["ShadowBias" + suffix].value = float(self._mgl_effective_shadow_bias())
         except Exception:
             pass
         try:
-            prog["ShadowDarkness"].value = float(self._mgl_effective_shadow_darkness())
+            prog["ShadowDarkness" + suffix].value = float(self._mgl_effective_shadow_darkness())
         except Exception:
             pass
         try:
             id_tex = getattr(self, "_mgl_shadow_id_tex", None)
             self_shadows = bool(getattr(self, "_mgl_self_shadows_enabled", True)) or id_tex is None
-            prog["UseSelfShadows"].value = 1 if self_shadows else 0
+            prog["UseSelfShadows" + suffix].value = 1 if self_shadows else 0
         except Exception:
             pass
         try:
@@ -23743,28 +23947,28 @@ void main() {
         except Exception:
             shadow_width = shadow_height = self._mgl_shadow_map_size_value()
         try:
-            prog["ShadowMapSize"].value = (float(shadow_width), float(shadow_height))
+            prog["ShadowMapSize" + suffix].value = (float(shadow_width), float(shadow_height))
         except Exception:
             pass
         if use_shadows:
             try:
-                prog["ShadowMap"].value = 7
+                prog["ShadowMap" + suffix].value = texture_unit
             except Exception:
                 pass
             try:
-                prog["ShadowIdMap"].value = 8
+                prog["ShadowIdMap" + suffix].value = texture_unit + 1
             except Exception:
                 pass
             try:
                 tex = getattr(self, "_mgl_shadow_depth_tex", None)
                 if tex is not None:
-                    tex.use(location=7)
+                    tex.use(location=texture_unit)
             except Exception:
                 pass
             try:
                 id_tex = getattr(self, "_mgl_shadow_id_tex", None)
                 if id_tex is not None:
-                    id_tex.use(location=8)
+                    id_tex.use(location=texture_unit + 1)
             except Exception:
                 pass
 
@@ -24015,6 +24219,12 @@ void main() {
                 pass
             scene = getattr(self, "_mgl_scene", None)
             point_faces = getattr(self, "_mgl_shadow_point_faces", None)
+            area_faces = getattr(self, "_mgl_shadow_area_faces", None)
+            atlas_faces = None
+            if isinstance(point_faces, list) and len(point_faces) >= 6:
+                atlas_faces = point_faces[:6]
+            elif isinstance(area_faces, list) and len(area_faces) >= 5:
+                atlas_faces = area_faces[:5]
             if scene is not None:
                 try:
                     items = [
@@ -24024,8 +24234,8 @@ void main() {
                     ]
                 except Exception:
                     items = []
-                if isinstance(point_faces, list) and len(point_faces) >= 6:
-                    for face in point_faces[:6]:
+                if isinstance(atlas_faces, list):
+                    for face in atlas_faces:
                         try:
                             viewport = face.get("viewport", None) if isinstance(face, dict) else None
                             face_mvp = face.get("mvp", light_mvp) if isinstance(face, dict) else light_mvp
@@ -24046,8 +24256,8 @@ void main() {
                     except Exception:
                         pass
             else:
-                if isinstance(point_faces, list) and len(point_faces) >= 6:
-                    for face in point_faces[:6]:
+                if isinstance(atlas_faces, list):
+                    for face in atlas_faces:
                         try:
                             viewport = face.get("viewport", None) if isinstance(face, dict) else None
                             if viewport is not None:
@@ -24067,6 +24277,7 @@ void main() {
             self._mgl_shadow_last_update_ts = time.perf_counter()
             self._mgl_shadow_valid = True
         except Exception as exc:
+            self._mgl_shadow_valid = False
             try:
                 self._mgl_log_throttled(
                     "_mgl_shadow_render_error_ts",
@@ -25749,7 +25960,7 @@ void main() {
         self._mgl_upload_pending_splats()
 
         try:
-            self._mgl_render_shadow_map()
+            self._mgl_render_scene_light_shadows()
         except Exception:
             try:
                 self._mgl_shadow_valid = False
@@ -29332,6 +29543,10 @@ void main() {
                     self._mgl_light_type_index(getattr(self, "_mgl_scene_light_type", "directional"))
                 )
                 self._mgl_prog["LightRange"].value = float(self._mgl_light_range_value())
+                self._mgl_prog["AreaAxisU"].value = (1.0, 0.0, 0.0)
+                self._mgl_prog["AreaAxisV"].value = (0.0, 1.0, 0.0)
+                self._mgl_prog["AreaSize"].value = (1.0, 1.0)
+                self._mgl_prog["UseAreaShadowAtlas"].value = 0
                 spot_inner_cos, spot_outer_cos = self._mgl_spot_cone_cosines()
                 self._mgl_prog["SpotCosInner"].value = float(spot_inner_cos)
                 self._mgl_prog["SpotCosOuter"].value = float(spot_outer_cos)
@@ -29396,6 +29611,8 @@ void main() {
                         self._mgl_prog["Model"].write(ident.tobytes())
                         self._mgl_prog["LightMvp"].write(ident.tobytes())
                         self._mgl_prog["VolumeInv"].write(ident.tobytes())
+                        for idx in range(5):
+                            self._mgl_prog[f"AreaShadowMvp{idx}"].write(ident.tobytes())
                     except Exception:
                         pass
             except Exception:
@@ -29459,6 +29676,10 @@ void main() {
                     self._mgl_light_type_index(getattr(self, "_mgl_scene_light_type", "directional"))
                 )
                 self._mgl_splatq_prog["LightRange"].value = float(self._mgl_light_range_value())
+                self._mgl_splatq_prog["AreaAxisU"].value = (1.0, 0.0, 0.0)
+                self._mgl_splatq_prog["AreaAxisV"].value = (0.0, 1.0, 0.0)
+                self._mgl_splatq_prog["AreaSize"].value = (1.0, 1.0)
+                self._mgl_splatq_prog["UseAreaShadowAtlas"].value = 0
                 spot_inner_cos, spot_outer_cos = self._mgl_spot_cone_cosines()
                 self._mgl_splatq_prog["SpotCosInner"].value = float(spot_inner_cos)
                 self._mgl_splatq_prog["SpotCosOuter"].value = float(spot_outer_cos)
@@ -29473,6 +29694,8 @@ void main() {
                 if np is not None:
                     ident = np.eye(4, dtype="f4")
                     self._mgl_splatq_prog["LightMvp"].write(ident.tobytes())
+                    for idx in range(5):
+                        self._mgl_splatq_prog[f"AreaShadowMvp{idx}"].write(ident.tobytes())
             except Exception:
                 pass
 
@@ -32793,6 +33016,13 @@ void main() {
                         except Exception:
                             self._mgl_scene_light_shadow_bias = 0.0
                         try:
+                            self._mgl_scene_light_shadow_resolution = max(
+                                0.0,
+                                float(light_cfg.get("shadow_resolution", 0.0)),
+                            )
+                        except Exception:
+                            self._mgl_scene_light_shadow_resolution = 0.0
+                        try:
                             xf = self._mgl_get_scene_asset_xform(owner)
                             pos = list(xf.get("pos", (0.0, 0.0, 0.0)))[:3] if isinstance(xf, dict) else (0.0, 0.0, 0.0)
                             self._mgl_scene_light_pos = tuple(float(v) for v in pos)
@@ -32801,7 +33031,11 @@ void main() {
 
                     wire_item = None
                     try:
-                        line_points = self._mgl_light_guide_line_points(light_type)
+                        area_size = (
+                            max(0.001, float(light_cfg.get("width", 1.0) or 1.0)),
+                            max(0.001, float(light_cfg.get("height", 1.0) or 1.0)),
+                        )
+                        line_points = self._mgl_light_guide_line_points(light_type, area_size=area_size)
                         if line_points is None or line_points.size == 0:
                             raise ValueError("empty light guide")
                         self._mgl_scene_bounds_by_owner[owner] = (
