@@ -76,6 +76,8 @@ def sync_output(model, scene=None) -> str:
 
 
 def save_state(model, rows, number, scene=None):
+    from . import approvals
+    approvals.save(scene, rows)
     mocap._set_param_value(model, "files", json.dumps(rows, ensure_ascii=False))
     mocap._set_param_value(model, "output", str(number))
     sync_output(model, scene)
@@ -148,6 +150,65 @@ def build_ports(item):
     sync_output(item.model)
 
 
+def relocate_paths(model, selected_rows, root, scene=None):
+    """Relink selected rows by their longest matching path suffix; never guess ties."""
+    root = Path(root).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError("Choose an existing parent folder.")
+    candidates = {}
+    for path in root.rglob("*"):
+        if path.is_file() and path.suffix.lower() == ".bvh":
+            candidates.setdefault(path.name.casefold(), []).append(path)
+    rows = entries(model)
+    updates = {}
+    for index in sorted(set(selected_rows)):
+        old = rows[index]["path"].replace("\\", "/").split("/")
+        matches = candidates.get(old[-1].casefold(), [])
+        scored = []
+        for path in matches:
+            score = 0
+            for a, b in zip(reversed(old), reversed(path.relative_to(root).parts)):
+                if a.casefold() != b.casefold():
+                    break
+                score += 1
+            scored.append((score, path))
+        best = max((score for score, path in scored), default=0)
+        winners = [path for score, path in scored if score == best]
+        if len(winners) != 1:
+            reason = "No matching BVH" if not winners else "Multiple matching BVHs"
+            raise ValueError(f"{reason} for {rows[index]['path']}. No paths were changed.")
+        updates[index] = str(winners[0])
+    for index, path in updates.items():
+        rows[index]["path"] = path
+    if updates:
+        save_state(model, rows, output_number(model), scene)
+    return len(updates)
+
+
+class CollectionPathDelegate(QtWidgets.QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        approved = bool(index.data(QtCore.Qt.UserRole))
+        selected = bool(option.state & QtWidgets.QStyle.State_Selected)
+        if not selected:
+            return super().paint(painter, option, index)
+        # Selection uses the active-path purple; green is reserved for approval.
+        styled = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        styled.font.setBold(True)
+        styled.state &= ~QtWidgets.QStyle.State_Selected
+        styled.backgroundBrush = QtGui.QBrush(QtGui.QColor("#554080"))
+        styled.palette.setColor(QtGui.QPalette.Text, QtGui.QColor("#ffffff"))
+        style = styled.widget.style() if styled.widget else QtWidgets.QApplication.style()
+        style.drawControl(QtWidgets.QStyle.CE_ItemViewItem, styled, painter, styled.widget)
+        if not approved:
+            return
+        painter.save()
+        painter.setPen(QtGui.QPen(QtGui.QColor("#9be8b8"), 1))
+        painter.drawLine(styled.rect.topLeft(), styled.rect.topRight())
+        painter.drawLine(styled.rect.bottomLeft(), styled.rect.bottomRight())
+        painter.restore()
+
+
 class MocapCollectionWidget(QtWidgets.QWidget):
     def __init__(self, model, scene=None, parent=None):
         super().__init__(parent)
@@ -159,24 +220,41 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         self.load_button = QtWidgets.QPushButton("Load BVH files")
         self.load_folder_button = QtWidgets.QPushButton("Load BVH folder")
         self.load_folder_button.setToolTip("Add all BVH files in a folder and its subfolders. Existing paths are skipped.")
-        self.remove_button = QtWidgets.QPushButton("Remove active")
+        self.remove_button = QtWidgets.QPushButton("Remove")
+        self.remove_button.setToolTip("Remove the active path from the collection")
         toolbar.addWidget(self.load_button)
         toolbar.addWidget(self.load_folder_button)
+        self.relocate_button = QtWidgets.QPushButton("Update paths")
+        self.relocate_button.setToolTip("Select rows with Shift/Ctrl, then find their BVH files under a new parent folder. Checked boxes stay unchanged.")
+        toolbar.addWidget(self.relocate_button)
         toolbar.addWidget(self.remove_button)
         layout.addLayout(toolbar)
         reviews = QtWidgets.QHBoxLayout()
         self.load_renders_button = QtWidgets.QPushButton("Load renders")
         self.review_button = QtWidgets.QPushButton("Review renders")
-        self.rename_button = QtWidgets.QPushButton("Rename active")
-        for button in (self.load_renders_button, self.review_button, self.rename_button):
+        self.rename_button = QtWidgets.QPushButton("Rename")
+        self.rename_button.setToolTip("Rename the active BVH folder and its assigned render folders")
+        self.view_button = QtWidgets.QPushButton("View")
+        self.view_button.setMinimumWidth(100)
+        self.view_button.setStyleSheet(
+            "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+            "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+        )
+        self.view_button.setToolTip("View the active animation")
+        self.archive_button = QtWidgets.QPushButton("Archive")
+        self.archive_button.setToolTip("Move selected BVH run folders and renders into a named archive")
+        for button in (self.load_renders_button, self.review_button, self.rename_button, self.archive_button):
             reviews.addWidget(button)
         layout.addLayout(reviews)
         self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setItemDelegate(CollectionPathDelegate(self.table))
         self.table.setHorizontalHeaderLabels(["Use", "#", "Render", "BVH path"])
         self.table.setIconSize(QtCore.QSize(52, 32))
         self.table.verticalHeader().setDefaultSectionSize(38)
         self.table.verticalHeader().hide()
-        self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setWordWrap(False)
         self.table.setTextElideMode(QtCore.Qt.ElideNone)
@@ -185,17 +263,21 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
         self.table.setColumnWidth(2, 64)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setToolTip("Check files for batch use or Checked only output. Click an eligible number or path to make it active.")
+        self.table.setToolTip("Shift selects a range; Ctrl selects individual paths for Update paths. Selection does not change the Use checkboxes. Click an eligible path to make it active.")
         layout.addWidget(self.table)
         checks = QtWidgets.QHBoxLayout()
         self.all_button = QtWidgets.QPushButton("Check all")
         self.none_button = QtWidgets.QPushButton("Uncheck all")
-        self.view_button = QtWidgets.QPushButton("View active")
-        for button in (self.all_button, self.none_button, self.view_button):
+        self.select_all_button = QtWidgets.QPushButton("Select all")
+        self.select_all_button.setToolTip("Select every path without changing its Use checkbox")
+        for button in (self.select_all_button, self.all_button, self.none_button):
+            button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Fixed)
             checks.addWidget(button)
         self.live_view = QtWidgets.QCheckBox("Live view")
         self.live_view.setToolTip("Update the viewport when the active output changes. Keep the current camera while sliding.")
         checks.addWidget(self.live_view)
+        checks.addStretch(1)
+        checks.addWidget(self.view_button)
         layout.addLayout(checks)
         self.status = QtWidgets.QLabel()
         self.status.setWordWrap(True)
@@ -219,9 +301,16 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         self.load_renders_button.clicked.connect(self._load_renders)
         self.review_button.clicked.connect(lambda: self._review())
         self.rename_button.clicked.connect(lambda: self._rename())
+        self.relocate_button.clicked.connect(self._relocate)
+        self.archive_button.clicked.connect(self._archive)
+        self.table.itemSelectionChanged.connect(lambda: self.archive_button.setEnabled(bool(self.table.selectionModel().selectedRows(3))))
+        self.archive_button.setEnabled(False)
+        self.table.itemSelectionChanged.connect(lambda: self.relocate_button.setEnabled(bool(self.table.selectionModel().selectedRows(3))))
+        self.relocate_button.setEnabled(False)
         self.remove_button.clicked.connect(self._remove)
         self.all_button.clicked.connect(lambda: self._check_all(True))
         self.none_button.clicked.connect(lambda: self._check_all(False))
+        self.select_all_button.clicked.connect(self.table.selectAll)
         self.view_button.clicked.connect(self._view)
         self._live_timer = QtCore.QTimer(self)
         self._live_timer.setSingleShot(True)
@@ -241,9 +330,30 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         self.table.verticalScrollBar().valueChanged.connect(self._queue_thumbnails)
         self.slider.valueChanged.connect(self._select)
         self.number.valueChanged.connect(self._select)
+        from . import approvals
+        try:
+            restored = approvals.restore(scene, entries(model))
+            mocap._set_param_value(model, "files", json.dumps(restored, ensure_ascii=False))
+        except (OSError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(self, "Approval metadata", str(exc))
         if scene is not None:
             scene.paramChanged.connect(self._params_changed)
         self.refresh()
+        # Workflow loading may assign the project filename after node creation.
+        QtCore.QTimer.singleShot(0, self._restore_project_approvals)
+
+    def _restore_project_approvals(self):
+        if not isValid(self):
+            return
+        from . import approvals
+        try:
+            rows = entries(self.model)
+            restored = approvals.restore(self.graph_scene, [dict(row) for row in rows])
+            if restored != rows:
+                mocap._set_param_value(self.model, "files", json.dumps(restored, ensure_ascii=False))
+                self.refresh()
+        except (OSError, ValueError) as exc:
+            self.status.setText(f"Could not load approval metadata: {exc}")
 
     @QtCore.Slot(str, list)
     def _params_changed(self, name, _params):
@@ -273,6 +383,9 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         with QtCore.QSignalBlocker(self.table), QtCore.QSignalBlocker(self.slider), QtCore.QSignalBlocker(self.number):
             rows_changed = rows != getattr(self, "_displayed_rows", None)
             if rows_changed:
+                selected_paths = {self.table.item(index.row(), 3).text()
+                                  for index in self.table.selectionModel().selectedRows(3)}
+                self.table.clearSelection()
                 self.table.setRowCount(len(rows))
                 for i, row in enumerate(rows):
                     check = QtWidgets.QTableWidgetItem()
@@ -287,6 +400,9 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                         if column == 3:
                             cell.setToolTip(row["path"] + "\nDouble-click to rename the BVH and assigned render folders.")
                         self.table.setItem(i, column, cell)
+                    if row["path"] in selected_paths:
+                        self.table.selectionModel().select(self.table.model().index(i, 3),
+                            QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
                 self._displayed_rows = rows
             # Moving the slider changes only two row highlights, not every cell.
             for index in (range(len(rows)) if rows_changed else {getattr(self, "_displayed_number", 0) - 1, number - 1}):
@@ -295,12 +411,25 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                         cell = self.table.item(index, column)
                         active = index + 1 == number
                         approved = rows[index].get("approved", False)
-                        color = ("#338253" if active else "#225c39") if approved else "#554080" if active else ""
+                        cell.setData(QtCore.Qt.UserRole, approved)
+                        # Purple belongs exclusively to Qt row selection (the
+                        # delegate paints it). An active output can differ from
+                        # the clicked row when Checked only excludes that row.
+                        color = ("#338253" if active else "#225c39") if approved else ""
                         cell.setBackground(QtGui.QBrush(QtGui.QColor(color)) if color else QtGui.QBrush())
                         cell.setForeground(QtGui.QBrush(QtGui.QColor("#ffffff")) if color else QtGui.QBrush())
                         font = cell.font()
-                        font.setBold(active)
+                        # Selection emphasis is painted by the delegate, rather
+                        # than left on an output row that may no longer be selected.
+                        font.setBold(False)
                         cell.setFont(font)
+            if number != getattr(self, "_displayed_number", number):
+                selection = self.table.selectionModel()
+                if number:
+                    selection.setCurrentIndex(self.table.model().index(number - 1, 3),
+                        QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows)
+                else:
+                    selection.clear()
             self._displayed_number = number
             self._displayed_path = mocap._param_value(self.model, "path")
             for control in (self.slider, self.number):
@@ -309,10 +438,12 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                 control.setEnabled(bool(eligible))
             if number:
                 self.table.scrollToItem(self.table.item(number - 1, 0))
-        for button in (self.all_button, self.none_button):
+        for button in (self.select_all_button, self.all_button, self.none_button):
             button.setEnabled(bool(rows))
         self.review_button.setEnabled(bool(rows))
         self.load_renders_button.setEnabled(bool(rows))
+        self.relocate_button.setEnabled(bool(self.table.selectionModel().selectedRows(3)))
+        self.archive_button.setEnabled(bool(self.table.selectionModel().selectedRows(3)))
         for button in (self.remove_button, self.view_button, self.rename_button):
             button.setEnabled(bool(eligible))
         self.status.setText(f"{len(rows)} files | {len(checked_paths(self.model))} checked" if rows
@@ -373,6 +504,41 @@ class MocapCollectionWidget(QtWidgets.QWidget):
     def _rename(self, number=None):
         from .review import rename_with_dialog
         rename_with_dialog(self.model, self.graph_scene, number or output_number(self.model), self._dialog_parent())
+
+    def _relocate(self):
+        selected = [index.row() for index in self.table.selectionModel().selectedRows(3)]
+        if not selected:
+            return
+        root = QtWidgets.QFileDialog.getExistingDirectory(self._dialog_parent(), "New parent folder for selected BVH paths", "")
+        if not root:
+            return
+        try:
+            count = relocate_paths(self.model, selected, root, self.graph_scene)
+            self.refresh()
+            self.status.setText(f"Updated {count} paths. Checked boxes unchanged.")
+        except (OSError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(self._dialog_parent(), "Update paths", str(exc))
+
+    def _archive(self):
+        from .archive import choose_archive, archive_rows
+        from .review_data import ensure_idle
+        selected = [index.row() for index in self.table.selectionModel().selectedRows(3)]
+        if not selected:
+            return
+        try:
+            ensure_idle(self.graph_scene)
+            choice = choose_archive(self.graph_scene, self._dialog_parent())
+            if choice is None:
+                return
+            review = getattr(self.model, "_collection_review_dialog", None)
+            if review is not None and isValid(review):
+                review.player._stop_playback()
+                review.close()
+            count, destination = archive_rows(self.model, self.graph_scene, selected, *choice)
+            self.refresh()
+            self.status.setText(f"Archived {count} paths to {destination}")
+        except (OSError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(self._dialog_parent(), "Archive paths", str(exc))
         if isValid(self):
             self.refresh()
 
@@ -407,6 +573,8 @@ class MocapCollectionWidget(QtWidgets.QWidget):
             self._view(live=True, frame=frame)
 
     def _clicked(self, row, column):
+        if QtWidgets.QApplication.keyboardModifiers() & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier):
+            return
         if column == 2 and entries(self.model)[row].get("render"):
             self._review(row + 1)
             return

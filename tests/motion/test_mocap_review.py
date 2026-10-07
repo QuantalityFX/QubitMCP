@@ -16,6 +16,84 @@ from test_mocap_collection import APP, Scene, BVH
 
 
 class ReviewTests(unittest.TestCase):
+    def test_archive_moves_run_and_render_folders_and_appends(self):
+        from nodes.mocap_collection.archive import archive_rows
+        self.assign()
+        self.scene._filename = str(self.root / "workflow.json")
+        rows = spec.entries(self.model)
+        rows[0]["approved"] = True
+        rows[0]["checked"] = False
+        spec.save_state(self.model, rows, 2, self.scene)
+        parent = self.root / "archives"
+        count, destination = archive_rows(self.model, self.scene, [0], parent, "Accepted")
+        self.assertEqual(count, 1)
+        self.assertFalse(self.paths[0].parent.exists())
+        self.assertFalse(self.takes[0].exists())
+        self.assertTrue(self.paths[1].is_file())
+        self.assertEqual(len(spec.entries(self.model)), 1)
+        archived = json.loads((destination / "archive.json").read_text())["entries"][0]
+        self.assertTrue(Path(archived["path"]).is_file())
+        self.assertTrue(archived["approved"])
+        self.assertFalse(archived["checked"])
+        take = Path(archived["render"]["folder"])
+        self.assertTrue((take / "frame_0001.png").is_file())
+        self.assertEqual(json.loads((take / "take.json").read_text())["source_path"], archived["path"])
+        self.assertEqual(json.loads(self.manifest.read_text())["takes"][0]["source_path"], archived["path"])
+        archive_rows(self.model, self.scene, [0], parent, "Accepted")
+        self.assertEqual(len(json.loads((destination / "archive.json").read_text())["entries"]), 2)
+        self.assertEqual(spec.entries(self.model), [])
+
+    def test_archive_rolls_back_when_second_folder_move_fails(self):
+        from nodes.mocap_collection import archive
+        self.assign()
+        before = spec.entries(self.model)
+        original = archive.shutil.move
+        calls = []
+        def move(source, target):
+            calls.append(source)
+            if len(calls) == 2:
+                raise OSError("test disk failure")
+            return original(source, target)
+        with patch.object(archive.shutil, "move", side_effect=move):
+            with self.assertRaisesRegex(OSError, "test disk failure"):
+                archive.archive_rows(self.model, self.scene, [0], self.root / "archives", "Test")
+        self.assertTrue(self.paths[0].is_file())
+        self.assertTrue(self.takes[0].is_dir())
+        self.assertEqual(spec.entries(self.model), before)
+
+    def test_archive_updates_shared_unselected_run_and_other_collection(self):
+        from nodes.mocap_collection.archive import archive_rows
+        sibling = self.paths[0].with_name("second.bvh")
+        sibling.write_text(BVH.replace("{x}", "1"))
+        spec.add_paths(self.model, [sibling], self.scene)
+        other = GraphNode("Other", kind="mocap_collection")
+        self.scene.add_node(other, QtCore.QPointF(700, 0))
+        spec.add_paths(other, [self.paths[0]], self.scene)
+        archive_rows(self.model, self.scene, [0], self.root / "archives", "Test")
+        self.assertFalse(self.paths[0].exists())
+        remaining = spec.entries(self.model)
+        self.assertEqual(len(remaining), 2)
+        self.assertEqual(Path(remaining[0]["path"]), self.paths[1])
+        self.assertTrue(Path(remaining[1]["path"]).is_file())
+        self.assertEqual(Path(remaining[1]["path"]).name, "second.bvh")
+        self.assertTrue(Path(spec.entries(other)[0]["path"]).is_file())
+
+    def test_archive_restores_files_and_model_when_collection_update_fails(self):
+        from nodes.mocap_collection.archive import archive_rows
+        self.assign()
+        before = spec.entries(self.model)
+        old_manifest = self.manifest.read_bytes()
+        def fail_save(model, rows, number, scene):
+            spec.mocap._set_param_value(model, "files", "[]")
+            raise OSError("test save failure")
+        with patch.object(spec, "save_state", side_effect=fail_save):
+            with self.assertRaisesRegex(OSError, "test save failure"):
+                archive_rows(self.model, self.scene, [0], self.root / "archives", "Test")
+        self.assertEqual(spec.entries(self.model), before)
+        self.assertTrue(self.paths[0].is_file())
+        self.assertTrue(self.takes[0].is_dir())
+        self.assertEqual(self.manifest.read_bytes(), old_manifest)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()

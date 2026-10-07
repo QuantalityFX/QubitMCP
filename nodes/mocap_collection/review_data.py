@@ -116,8 +116,7 @@ def apply_assignments(model, scene, result):
     for row in rows:
         assignment = result["assignments"].get(path_key(resolved_path(row["path"], base)))
         if assignment is not None:
-            if row.get("render") != assignment:
-                row["approved"] = False
+            # Approval belongs to the BVH path, not transient render metadata.
             row["render"] = assignment
             count += 1
     spec.save_state(model, rows, spec.output_number(model), scene)

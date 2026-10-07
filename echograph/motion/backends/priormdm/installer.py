@@ -115,7 +115,12 @@ def main(argv=None) -> int:
 def perform_setup(args, parser, repository: Path) -> int:
     dataset = (args.dataset or repository / "dataset" / "HumanML3D").resolve()
     if args.clone and not repository.exists():
-        run(["git", "clone", UPSTREAM_URL, str(repository)])
+        git = shutil.which("git")
+        if not git:
+            raise RuntimeError("Git was not found. Install Git for Windows from https://git-scm.com/download/win "
+                               "with command-line/PATH support, then restart Qubit and click Install PriorMDM again.")
+        repository.parent.mkdir(parents=True, exist_ok=True)
+        run([git, "clone", UPSTREAM_URL, str(repository)])
     if not (repository / "utils" / "model_util.py").is_file():
         parser.error(f"Clone {UPSTREAM_URL} into {repository} first (or pass --clone).")
     environment = repository / ".venv"

@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from PySide6 import QtCore, QtTest, QtWidgets
 
@@ -36,6 +36,59 @@ def await_signal(spy, timeout=7000):
 
 
 class MotionUITests(unittest.TestCase):
+    def test_output_resolves_after_new_node_is_attached_to_project(self):
+        from nodes.priormdm.spec import value, resolve_output_default
+        for attribute, path, expected in (
+            ("_current_path", "C:/Projects/Motion/workflow.json", "C:/Projects/Motion"),
+            ("_current_project_dir", "C:/Projects/Motion", "C:/Projects/Motion"),
+            ("_pending_project_save_dir", "C:/Projects/NewProject", "C:/Projects/NewProject"),
+        ):
+            window = QtWidgets.QMainWindow()
+            scene = QtWidgets.QGraphicsScene(window)
+            view = QtWidgets.QGraphicsView(scene)
+            window.setCentralWidget(view)
+            setattr(window, attribute, path)
+            item = Item()
+            with patch("nodes.priormdm.setup_ui.schedule_setup_offer"):
+                build_ports(item)  # Actual construction order: no scene yet.
+            self.assertEqual(Path(value(item.model, "output_root")), Path(tempfile.gettempdir()) / "EchoGraph")
+            scene.addItem(item)
+            APP.processEvents()
+            self.assertEqual(Path(value(item.model, "output_root")), Path(expected) / "priormdm")
+            next(p for p in item.model.params if p["name"] == "output_root")["value"] = expected
+            resolve_output_default(item)
+            self.assertEqual(Path(value(item.model, "output_root")), Path(expected) / "priormdm")
+            next(p for p in item.model.params if p["name"] == "output_root")["value"] = "C:/Custom/Motions"
+            resolve_output_default(item)
+            self.assertEqual(Path(value(item.model, "output_root")), Path("C:/Custom/Motions"))
+            window.close()
+            window.deleteLater()
+
+    def test_output_defaults_use_project_or_temp_and_preserve_custom_paths(self):
+        from nodes.priormdm.spec import value
+        from echograph.motion.backends.priormdm.backend import PROJECT_ROOT
+        for project, existing, expected in (
+            (None, None, Path(tempfile.gettempdir()) / "EchoGraph"),
+            (Path("C:/Projects/Motion"), None, Path("C:/Projects/Motion/priormdm")),
+            (Path("C:/Projects/Motion"), str(PROJECT_ROOT / "logs/motion/priormdm"), Path("C:/Projects/Motion/priormdm")),
+            (Path("C:/Projects/Motion"), "C:/Custom/Motions", Path("C:/Custom/Motions")),
+        ):
+            item = Item()
+            if existing is not None:
+                item.model.params.append({"name": "output_root", "value": existing})
+            with patch("nodes.mocap_import.spec._workflow_dir_for_node", return_value=project), \
+                    patch("nodes.priormdm.setup_ui.schedule_setup_offer"):
+                build_ports(item)
+            self.assertEqual(Path(value(item.model, "output_root")), expected)
+
+    def test_missing_git_has_actionable_setup_error(self):
+        from echograph.motion.backends.priormdm import installer
+        with tempfile.TemporaryDirectory() as folder, patch.object(installer.shutil, "which", return_value=None), \
+                patch.object(installer, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "Git was not found.*restart Qubit"):
+                installer.perform_setup(SimpleNamespace(dataset=None, clone=True), Mock(), Path(folder) / "PriorMDM")
+            run.assert_not_called()
+
     def test_typing_with_pauses_waits_until_the_editor_loses_focus(self):
         for field in ("prompt", "hand_description"):
             with self.subTest(field=field):

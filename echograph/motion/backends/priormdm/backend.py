@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import uuid
+import tempfile
 
 from ...types import GeneratedMotion, GenerationPlan, MotionRequest
 
@@ -23,7 +24,7 @@ class PriorMDMConfig:
     python: Path = PROJECT_ROOT / "third_party" / "PriorMDM" / ".venv" / "Scripts" / "python.exe"
     checkpoint: Path | None = None
     dataset: Path = PROJECT_ROOT / "third_party" / "PriorMDM" / "dataset" / "HumanML3D"
-    output_root: Path = PROJECT_ROOT / "logs" / "motion" / "priormdm"
+    output_root: Path = Path(tempfile.gettempdir()) / "EchoGraph"
     device: str = "cuda:0"
     download_cache: Path | None = None
 

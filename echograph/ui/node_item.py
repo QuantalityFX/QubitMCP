@@ -9796,7 +9796,12 @@ body {
         extra_top = 0.0
         try:
             kind_lower = (self.model.kind or "").lower()
-            if kind_lower in ("video_player", "video player", "videoplayer"):
+            if kind_lower == "mocap_collection":
+                # Its floating BVH icon uses the same size as Mocap Import.
+                # Include it in the item bounds so zoomed repaint/cache clips
+                # don't cut off the portion above the node body.
+                extra_top = 80.0
+            elif kind_lower in ("video_player", "video player", "videoplayer"):
                 # Video icon is intentionally oversized and floats above the node.
                 extra_top = 220.0
             elif kind_lower in ("render", "render_sequence", "render node"):

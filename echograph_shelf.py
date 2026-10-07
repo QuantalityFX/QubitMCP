@@ -561,9 +561,16 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         return self._rect.adjusted(-8, -28, 8, 8)
 
     def shape(self) -> QtGui.QPainterPath:
-        path = QtGui.QPainterPath()
-        path.addRoundedRect(self._rect, 14, 14)
-        return path
+        # The translucent body is not an interaction surface: it must let node
+        # marquee selection and nested wrapper hover events pass through.
+        outline = QtGui.QPainterPath()
+        outline.addRect(self._rect)
+        stroker = QtGui.QPainterPathStroker()
+        stroker.setWidth(16.0)  # Match the eight-pixel resize hit margin.
+        path = stroker.createStroke(outline)
+        header = QtGui.QPainterPath()
+        header.addRect(self._header_rect())
+        return path.united(header)
 
     def paint(self, p: QtGui.QPainter, option, widget=None):
         rect = QtCore.QRectF(self._rect)
@@ -711,6 +718,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
                 preserve_selection = preserve_selection or self.isSelected()
                 preserve_selection = preserve_selection or self._has_extended_member_selection(sc)
                 self._select_members(preserve_existing=preserve_selection)
+                self.setSelected(True)
                 e.accept()
                 return
         # Let clicks in the body fall through so rubber-band selection can start inside the wrapper.

@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import uuid
+import tempfile
 
 from ...types import GenerationPlan
 
@@ -21,7 +22,7 @@ class HandMDMConfig:
     repository: Path = REPOSITORY
     python: Path = REPOSITORY / ".venv/Scripts/python.exe"
     checkpoint: Path = REPOSITORY / "models/mdm_bobsl3dt_phonology_hms/checkpoints/last.ckpt"
-    output_root: Path = ROOT / "logs/motion/handmdm"
+    output_root: Path = Path(tempfile.gettempdir()) / "EchoGraph" / "handmdm"
     device: str = "cuda:0"
 
 

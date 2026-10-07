@@ -593,6 +593,62 @@ class ForEachTests(unittest.TestCase):
         self.assertEqual(manifest["takes"][0]["message"], "capture broke")
 
 
+class CommentInteractionTests(unittest.TestCase):
+    def test_header_drag_selects_wrapper_for_border_highlight(self):
+        scene = QtWidgets.QGraphicsScene()
+        wrapper = CommentGroup(scene, "Wrapper", "", [], QtCore.QRectF(0, 0, 300, 200))
+        scene.addItem(wrapper)
+        event = QtWidgets.QGraphicsSceneMouseEvent(QtCore.QEvent.GraphicsSceneMousePress)
+        event.setButton(QtCore.Qt.LeftButton)
+        event.setButtons(QtCore.Qt.LeftButton)
+        event.setPos(QtCore.QPointF(100, 18))
+        event.setScenePos(QtCore.QPointF(100, 18))
+        scene.sendEvent(wrapper, event)
+        self.assertTrue(wrapper.isSelected())
+        self.assertTrue(wrapper._dragging_header)
+        release = QtWidgets.QGraphicsSceneMouseEvent(QtCore.QEvent.GraphicsSceneMouseRelease)
+        release.setButton(QtCore.Qt.LeftButton)
+        scene.sendEvent(wrapper, release)
+        self.assertTrue(wrapper.isSelected())
+        self.assertFalse(wrapper._dragging_header)
+        scene.clear()
+
+    def test_marquee_inside_wrapper_selects_nodes_only(self):
+        scene = QtWidgets.QGraphicsScene()
+        wrapper = CommentGroup(scene, "Outer", "", [], QtCore.QRectF(0, 0, 600, 500))
+        scene.addItem(wrapper)
+        node = scene.addRect(QtCore.QRectF(100, 100, 80, 60))
+        node.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable)
+        selection = QtGui.QPainterPath()
+        selection.addRect(QtCore.QRectF(70, 70, 150, 130))
+        scene.setSelectionArea(selection)
+        self.assertTrue(node.isSelected())
+        self.assertFalse(wrapper.isSelected())
+        selection = QtGui.QPainterPath()
+        selection.addRect(QtCore.QRectF(-20, -40, 660, 580))
+        scene.setSelectionArea(selection)
+        self.assertTrue(wrapper.isSelected())
+        scene.clear()
+
+    def test_inner_resize_edges_receive_hover_even_below_outer(self):
+        scene = QtWidgets.QGraphicsScene()
+        inner = CommentGroup(scene, "Inner", "", [], QtCore.QRectF(100, 100, 250, 200))
+        outer = CommentGroup(scene, "Outer", "", [], QtCore.QRectF(0, 0, 600, 500))
+        scene.addItem(inner)
+        scene.addItem(outer)  # Deliberately above inner in stacking order.
+        for point, cursor in ((QtCore.QPointF(96, 200), QtCore.Qt.SizeHorCursor),
+                              (QtCore.QPointF(350, 300), QtCore.Qt.SizeFDiagCursor)):
+            hits = scene.items(point)
+            self.assertIn(inner, hits)
+            self.assertNotIn(outer, hits)
+            event = QtWidgets.QGraphicsSceneHoverEvent(QtCore.QEvent.GraphicsSceneHoverMove)
+            event.setPos(inner.mapFromScene(point))
+            event.setScenePos(point)
+            scene.sendEvent(inner, event)
+            self.assertEqual(inner.cursor().shape(), cursor)
+        scene.clear()
+
+
 class RenderTakeTests(unittest.TestCase):
     def test_take_folders_are_unique_and_keep_parent_folder_label(self):
         with tempfile.TemporaryDirectory() as folder:

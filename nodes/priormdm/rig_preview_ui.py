@@ -16,7 +16,7 @@ def open_rig_preview(node, scene, parent=None):
     window = next((w for w in windows if callable(getattr(w,'open_scene_assets',None))),None)
     if window is None:
         raise ValueError('Open Preview Rig from a graph with a 3D viewport.')
-    directory = Path(__file__).resolve().parents[2]/'logs'/'motion'/'rig_previews'/uuid4().hex[:12]
+    directory = Path(value(node, 'output_root')) / 'rig_previews' / uuid4().hex[:12]
     owner = f'{node.name}_RigPreview'
     asset = create_rig_asset(value(node,'preview_profile'),value(node,'last_archive'),directory,owner,
                             collisions=value(node,'rig_show_collisions') != 'false',

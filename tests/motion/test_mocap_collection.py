@@ -108,6 +108,143 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(spec.entries(restored), spec.entries(self.model))
         self.assertEqual(spec.output_number(restored), 2)
 
+    def test_floating_icon_fits_bounds_when_zoomed_out(self):
+        from echograph.ui import node_icons
+        icon = node_icons._mocap_import_icon() or node_icons._import_icon()
+        self.assertIsNotNone(icon)
+        for zoom in (1.0, 0.5, 0.25, 0.1):
+            size = int(max(40, min(128, 38 / zoom)))
+            scaled = icon.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+            icon_rect = QtCore.QRectF((self.item.width - scaled.width()) / 2,
+                                     -scaled.height() * 0.6, scaled.width(), scaled.height())
+            self.assertTrue(self.item.boundingRect().contains(icon_rect), f"Icon clipped at zoom {zoom}")
+
+    def test_project_approvals_restore_and_unapprove_across_reload(self):
+        from nodes.mocap_collection import approvals
+        self.scene._filename = str(Path(self.temp.name) / "workflow.json")
+        rows = [{"path": str(self.paths[0]), "checked": False, "approved": True}]
+        spec.save_state(self.model, rows, 1, self.scene)
+        path = Path(self.temp.name) / "mocap_approvals.json"
+        metadata = json.loads(path.read_text())
+        self.assertEqual(metadata["files"]["walk.bvh"], {"approved": True})
+        # Even an older workflow snapshot recovers the independent decision.
+        stale = [{"path": str(self.paths[0]), "checked": False}]
+        restored = approvals.restore(self.scene, stale)
+        self.assertTrue(restored[0]["approved"])
+        self.assertFalse(restored[0]["checked"])
+        restored[0]["approved"] = False
+        spec.save_state(self.model, restored, 1, self.scene)
+        self.assertFalse(approvals.restore(self.scene, rows)[0]["approved"])
+        # A second collection adds records without erasing the first.
+        approvals.save(self.scene, [{"path": str(self.paths[1]), "approved": True}])
+        self.assertEqual(len(json.loads(path.read_text())["files"]), 2)
+
+    def test_render_assignment_refresh_preserves_approval(self):
+        from nodes.mocap_collection import review_data
+        spec.save_state(self.model, [{"path": str(self.paths[0]), "checked": True, "approved": True}], 1, self.scene)
+        result = {"assignments": {review_data.path_key(self.paths[0]): {"folder": "new-render"}}}
+        review_data.apply_assignments(self.model, self.scene, result)
+        self.assertTrue(spec.entries(self.model)[0]["approved"])
+
+    def test_relocate_selected_rows_preserves_checks_and_metadata(self):
+        root = Path(self.temp.name).resolve() / "new"
+        for folder in ("walk", "dance"):
+            (root / folder).mkdir(parents=True)
+            (root / folder / "preview.bvh").write_text("motion")
+        rows = [{"path": "Z:/old/walk/preview.bvh", "checked": False, "approved": True},
+                {"path": str(self.paths[1]), "checked": True},
+                {"path": "Z:/old/dance/preview.bvh", "checked": True}]
+        spec.save_state(self.model, rows, 2, self.scene)
+        self.assertEqual(spec.relocate_paths(self.model, [0, 2], root, self.scene), 2)
+        updated = spec.entries(self.model)
+        self.assertEqual([r["checked"] for r in updated], [False, True, True])
+        self.assertTrue(updated[0]["approved"])
+        self.assertEqual(updated[1], rows[1])
+        self.assertEqual(Path(updated[0]["path"]), root / "walk/preview.bvh")
+        self.assertEqual(Path(updated[2]["path"]), root / "dance/preview.bvh")
+        self.assertEqual(spec.output_number(self.model), 2)
+        (root / "walk/preview.bvh").unlink()
+        (root / "other").mkdir()
+        (root / "other/preview.bvh").write_text("motion")
+        before = spec.entries(self.model)
+        with self.assertRaisesRegex(ValueError, "Multiple matching"):
+            spec.relocate_paths(self.model, [2, 0], root, self.scene)
+        self.assertEqual(spec.entries(self.model), before)
+
+    def test_shift_ctrl_selection_does_not_change_checks(self):
+        spec.add_paths(self.model, self.paths, self.scene)
+        table = self.widget.table
+        selection = table.selectionModel()
+        selection.select(table.model().index(0, 3), QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows)
+        selection.select(QtCore.QItemSelection(table.model().index(0, 3), table.model().index(2, 3)),
+                         QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
+        self.assertEqual(len(selection.selectedRows(3)), 3)
+        selection.select(table.model().index(1, 3), QtCore.QItemSelectionModel.Toggle | QtCore.QItemSelectionModel.Rows)
+        self.assertEqual([i.row() for i in selection.selectedRows(3)], [0, 2])
+        self.assertTrue(all(row["checked"] for row in spec.entries(self.model)))
+        self.assertTrue(self.widget.relocate_button.isEnabled())
+        self.assertEqual(table.selectionMode(), QtWidgets.QAbstractItemView.ExtendedSelection)
+
+    def test_selected_approved_path_is_purple_with_green_approval_edge(self):
+        spec.save_state(self.model, [{"path": str(self.paths[0]), "checked": True, "approved": True}], 1, self.scene)
+        table = self.widget.table
+        index = table.model().index(0, 3)
+        self.assertTrue(index.data(QtCore.Qt.UserRole))
+        image = QtGui.QImage(300, 38, QtGui.QImage.Format_ARGB32)
+        image.fill(QtCore.Qt.black)
+        option = QtWidgets.QStyleOptionViewItem()
+        option.rect = QtCore.QRect(0, 0, 300, 38)
+        option.state = QtWidgets.QStyle.State_Enabled | QtWidgets.QStyle.State_Selected
+        painter = QtGui.QPainter(image)
+        table.itemDelegate().paint(painter, option, index)
+        painter.end()
+        color = image.pixelColor(290, 30)
+        self.assertEqual(color.name(), "#554080")
+        self.assertEqual(image.pixelColor(150, 0).name(), "#9be8b8")
+
+    def test_navigation_clears_previous_selection_after_approval(self):
+        spec.add_paths(self.model, self.paths, self.scene)
+        table = self.widget.table
+        spec.save_state(self.model, spec.entries(self.model), 1, self.scene)
+        table.selectRow(0)
+        rows = spec.entries(self.model)
+        rows[0]["approved"] = True
+        spec.save_state(self.model, rows, 1, self.scene)
+        # Review navigation updates the same output parameter.
+        for number in (2, 3, 2):
+            spec.save_state(self.model, spec.entries(self.model), number, self.scene)
+            APP.processEvents()
+            selected = table.selectionModel().selectedIndexes()
+            self.assertEqual({index.row() for index in selected}, {number - 1})
+            self.assertEqual({index.column() for index in selected}, {1, 2, 3})
+            for column in range(4):
+                self.assertEqual(table.item(0, column).background().color().name(), "#225c39")
+
+    def test_click_unchecked_path_without_render_clears_old_purple(self):
+        spec.save_state(self.model, [
+            {"path": str(self.paths[0]), "checked": True, "render": {"folder": "render"}},
+            {"path": str(self.paths[1]), "checked": False},
+            {"path": str(self.paths[2]), "checked": True}], 1, self.scene)
+        spec.mocap._set_param_value(self.model, "checked_only", "1")
+        widget = spec.MocapCollectionWidget(self.model)
+        self.addCleanup(widget.deleteLater)
+        self.addCleanup(widget.close)
+        widget.show()
+        APP.processEvents()
+        table = widget.table
+        def click(row, modifiers=QtCore.Qt.NoModifier):
+            point = table.visualItemRect(table.item(row, 3)).center()
+            QtTest.QTest.mouseClick(table.viewport(), QtCore.Qt.LeftButton, modifiers, point)
+        click(0)
+        click(1)
+        self.assertEqual({i.row() for i in table.selectionModel().selectedRows(3)}, {1})
+        self.assertEqual(spec.output_number(self.model), 1)
+        self.assertEqual(table.item(0, 3).background().style(), QtCore.Qt.NoBrush)
+        click(2, QtCore.Qt.ControlModifier)
+        self.assertEqual({i.row() for i in table.selectionModel().selectedRows(3)}, {1, 2})
+        click(1)
+        self.assertEqual({i.row() for i in table.selectionModel().selectedRows(3)}, {1})
+
     def test_browse_uses_graph_window_and_survives_body_rebuild(self):
         window = QtWidgets.QMainWindow()
         window.setCentralWidget(QtWidgets.QGraphicsView(self.scene))
@@ -145,7 +282,7 @@ class CollectionTests(unittest.TestCase):
         self.widget.slider.setValue(1)
         self.assertEqual(spy.count(), 1)
         self.assertEqual(card_widget.number.value(), 1)
-        self.assertEqual(self.widget.table.item(0, 2).background().color(), QtGui.QColor("#554080"))
+        self.assertTrue(self.widget.table.item(0, 2).isSelected())
         self.assertNotEqual(self.widget.table.item(2, 2).background().color(), QtGui.QColor("#554080"))
         self.item._recompute_height()
         self.item._build_widgets()
@@ -240,7 +377,7 @@ class CollectionTests(unittest.TestCase):
         for row, row_cells in enumerate(cells):
             for column, cell in enumerate(row_cells):
                 self.assertIs(self.widget.table.item(row, column), cell)
-        self.assertEqual(cells[2][2].background().color().name(), "#554080")
+        self.assertTrue(cells[2][2].isSelected())
         self.assertEqual(cells[1][2].background().style(), QtCore.Qt.NoBrush)
 
     def test_checked_only_skips_unchecked_rows_and_preserves_original_highlight(self):
@@ -260,7 +397,7 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(spec.output_number(self.model), 1)
         self.widget.number.setValue(2)
         self.assertEqual(spec.output_number(self.model), 3)
-        self.assertEqual(self.widget.table.item(2, 2).background().color().name(), "#554080")
+        self.assertTrue(self.widget.table.item(2, 2).isSelected())
         self.widget._clicked(1, 2)  # Clicking an unchecked path cannot bypass the filter.
         self.assertEqual(spec.output_number(self.model), 3)
         self.widget.checked_only.setChecked(False)

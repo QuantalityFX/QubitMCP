@@ -273,7 +273,7 @@ class ReviewDialog(QtWidgets.QDialog):
             spec.save_state(self.model, rows, active, self.graph_scene)
             if previous != spec.mocap._param_value(self.model, "path"):
                 spec.schedule_live_preview(self.model, self.graph_scene)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             self.row_number = spec.output_number(self.model)
             self.refresh()
             self.message.setText(str(exc))

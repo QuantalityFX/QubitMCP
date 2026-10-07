@@ -55,16 +55,54 @@ def _notify_params_changed(node, scene):
         scene.set_node_params(node.name, node.params, rebuild=False, emit=True)
 
 
+def _output_project_directory(item):
+    from nodes.mocap_import.spec import _workflow_dir_for_node
+    scene = item.scene()
+    if scene is not None:
+        for view in scene.views():
+            window = view.window()
+            for name in ("_pending_project_save_dir", "_current_project_dir"):
+                directory = str(getattr(window, name, "") or "").strip()
+                if directory:
+                    return Path(directory)
+    return _workflow_dir_for_node(item)
+
+
+def resolve_output_default(item):
+    """Resolve again after NodeItem construction, when its scene is available."""
+    from echograph.motion.backends.priormdm.backend import PROJECT_ROOT
+    current = value(item.model, "output_root").strip()
+    directory = _output_project_directory(item)
+    if current and Path(current) not in (_CONFIG.output_root, PROJECT_ROOT / "logs/motion/priormdm", directory):
+        return
+    if directory is not None:
+        set_value(item.model, item.scene(), "output_root", str(directory / "priormdm"))
+
+
 def build_ports(item):
     node = item.model
+    from echograph.motion.backends.priormdm.backend import PROJECT_ROOT
+    project_directory = _output_project_directory(item)
+    output_default = str(project_directory / "priormdm" if project_directory else _CONFIG.output_root)
+    old_output = next((p for p in node.params if p.get("name") == "output_root"), None)
+    if old_output is not None and (not str(old_output.get("value", "")).strip()
+            or Path(str(old_output["value"])) == PROJECT_ROOT / "logs/motion/priormdm"):
+        old_output["value"] = output_default
     names = {p.get("name") for p in node.params}
-    for key, default in {**DEFAULTS, **default_paths()}.items():
+    for key, default in {**DEFAULTS, **default_paths(), "output_root": output_default}.items():
         if key not in names:
             node.params.append({"name": key, "value": default})
     hidden = set(value(node, "__ui_hidden_params").split(",")) | set(DEFAULTS)
     set_value(node, None, "__ui_hidden_params", ",".join(sorted(hidden - {""})))
     from .setup_ui import schedule_setup_offer
     schedule_setup_offer(item)
+    import weakref
+    reference = weakref.ref(item)
+    def resolve_after_creation():
+        current = reference()
+        if current is not None and isValid(current):
+            resolve_output_default(current)
+    QtCore.QTimer.singleShot(0, resolve_after_creation)
 
 
 def config_for_node(node):
@@ -399,7 +437,8 @@ class MotionControls(QtWidgets.QWidget):
             from echograph.motion.combined import BodyHandBackend
             hand = HandMDMConfig(**{key: Path(self.paths['hand_' + key].text().strip().strip('"')
                                             or str(getattr(_HAND_CONFIG, key))).expanduser().resolve()
-                                   for key in ("repository", "python", "checkpoint")}, device=config.device)
+                                   for key in ("repository", "python", "checkpoint")}, device=config.device,
+                                 output_root=config.output_root / "handmdm")
             backend = BodyHandBackend(backend, hand, side=self.hand_side.currentText(),
                                       description=self.hand_description.text(),
                                       start=self.hand_times["hand_start"].value(),
@@ -596,6 +635,7 @@ class MotionControls(QtWidgets.QWidget):
 
 
 def open_controls(item):
+    resolve_output_default(item)
     node = item.model
     dialog = getattr(node, "_motion_dialog", None)
     if dialog is None:
