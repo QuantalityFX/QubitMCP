@@ -94,6 +94,7 @@ def register_defaults() -> None:
     register("skinned_volume_mesh", stripe_color="#14b8a6")
     register("modeler", stripe_color="#0ea5e9")
     register("copy_to_points", stripe_color="#06b6d4")
+    register("look_at", stripe_color="#38bdf8")
     register("curve", stripe_color="#22d3ee")
     register("mask", stripe_color="#f43f5e")
     register("groom_guides", stripe_color="#7a5842")
@@ -203,6 +204,14 @@ def register_defaults() -> None:
             _modeler.register(core=sys.modules[__name__])
     except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Modeler auto-register failed:", exc)
+
+    # Auto-register Look At so saved scene constraints rebuild their ports early.
+    try:
+        from nodes import look_at as _look_at  # type: ignore
+        if hasattr(_look_at, "register"):
+            _look_at.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Look At auto-register failed:", exc)
 
     # Auto-register Data Nexus so saved workflows can rebuild its body and ports early.
     try:

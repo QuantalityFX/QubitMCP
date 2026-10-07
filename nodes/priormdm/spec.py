@@ -617,9 +617,9 @@ def open_controls(item):
         scroll.setWidget(MotionControls(node, item.scene(), scroll))
         layout.addWidget(scroll)
         node._motion_dialog = dialog
-    # Keep the non-modal generator above the main window when generation or
-    # scene updates activate the graph. Apply on reopen as well as creation.
-    dialog.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+    # The parented dialog stays above Qubit as an owned window. A global
+    # topmost flag would also cover other applications; clear it on reopen.
+    dialog.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, False)
     dialog.show()
     dialog.raise_()
     dialog.activateWindow()

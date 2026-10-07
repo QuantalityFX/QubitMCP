@@ -4754,6 +4754,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         kind in ("light", "scene_light", "directional_light", "point_light", "spot_light", "area_light")
                         and pname_key in ("type", "light_type")
                     )
+                    use_look_at_combo = (
+                        kind in ("look_at", "lookat", "look at", "transform_constraint", "transform constraint")
+                        and pname_key in {
+                            "aim_axis",
+                            "up_axis",
+                            "rotation_mode",
+                            "match_rotation",
+                            "match_position",
+                            "maintain_offset",
+                            "position_axes",
+                        }
+                    )
                     input_label_only = (
                         (kind == "for_each" and pname_key == "source")
                         or (kind == "for_each_end" and pname_key == "render")
@@ -4915,6 +4927,70 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             lambda _row, c=combo, idx=i: self._on_light_type_changed(
                                 idx,
                                 str(c.currentData() or c.currentText()).strip().lower(),
+                            )
+                        )
+                        lay.addWidget(combo, 1)
+                    elif use_look_at_combo:
+                        combo = QtWidgets.QComboBox()
+                        combo.setMaxVisibleItems(8)
+                        combo.setStyleSheet(
+                            "QComboBox{background:#12151a;color:#e6edf3;"
+                            "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+                            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;"
+                            "selection-background-color:#1e3a8a;}"
+                        )
+                        axis_choices = (
+                            ("+X", "x"), ("-X", "-x"),
+                            ("+Y", "y"), ("-Y", "-y"),
+                            ("+Z", "z"), ("-Z", "-z"),
+                        )
+                        choices_by_param = {
+                            "aim_axis": axis_choices,
+                            "up_axis": axis_choices,
+                            "rotation_mode": (("Look At", "look_at"), ("Copy Target Rotation", "copy_target")),
+                            "match_rotation": (("On", "1"), ("Off", "0")),
+                            "match_position": (("Off", "0"), ("On", "1")),
+                            "maintain_offset": (("On", "1"), ("Off", "0")),
+                            "position_axes": (
+                                ("XYZ", "xyz"), ("X", "x"), ("Y", "y"), ("Z", "z"),
+                                ("XY", "xy"), ("XZ", "xz"), ("YZ", "yz"),
+                            ),
+                        }
+                        current = str(pval or "").strip().lower().replace("+", "")
+                        if pname_key in {"match_rotation", "match_position", "maintain_offset"}:
+                            current = "1" if current in {"1", "true", "yes", "on", "y"} else "0"
+                        elif pname_key == "rotation_mode":
+                            current = {
+                                "copy": "copy_target",
+                                "copy_rotation": "copy_target",
+                                "target": "copy_target",
+                                "exact": "copy_target",
+                                "match": "copy_target",
+                                "lookat": "look_at",
+                                "look at": "look_at",
+                            }.get(current, current or "look_at")
+                        elif pname_key == "position_axes":
+                            current = "".join(ch for ch in current if ch in "xyz") or "xyz"
+                        elif pname_key == "aim_axis":
+                            current = current if current in {"x", "-x", "y", "-y", "z", "-z"} else "-z"
+                        elif pname_key == "up_axis":
+                            current = current if current in {"x", "-x", "y", "-y", "z", "-z"} else "y"
+                        selected_idx = 0
+                        for opt_idx, (label_text, value_text) in enumerate(choices_by_param.get(pname_key, ())):
+                            combo.addItem(label_text, value_text)
+                            if value_text == current:
+                                selected_idx = opt_idx
+                        combo.setCurrentIndex(selected_idx)
+                        if wired:
+                            combo.setEnabled(False)
+                            combo.setToolTip("Driven by connected input.")
+                        else:
+                            combo.setToolTip("Choose the Look At constraint option.")
+                        combo.currentIndexChanged.connect(
+                            lambda _row, c=combo, idx=i: self._on_param_changed(
+                                idx,
+                                str(c.currentData() or c.currentText()).strip(),
+                                emit_scene=True,
                             )
                         )
                         lay.addWidget(combo, 1)

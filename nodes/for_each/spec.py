@@ -37,11 +37,13 @@ def ensure_wrapper(item, *, force=False):
 def build_start(item):
     for name, default in (("source", ""), ("mode", "outputs"), ("loop_limit", "0"),
                           ("single_pass", "0"), ("single_iteration", "1"),
+                          ("loop_start", "0"), ("start_iteration", "1"),
                           ("parameter", "output"), ("count", "1"), ("first", "1"), ("step", "1"),
                           ("iteration", "0"), ("wrapper_created", "0")):
         params._ensure_param(item, name, default)
     params._ensure_hidden_params(item.model, ["mode", "loop_limit", "single_pass", "single_iteration", "parameter", "count", "first", "step", "iteration", "wrapper_created"])
     item.ensure_input("source")
+    params._ensure_hidden_params(item.model, ["loop_start", "start_iteration"])
 
 
 def build_end(item):
@@ -70,19 +72,28 @@ class StartControls(QtWidgets.QWidget):
         self.limit.setSpecialValueText("All")
         self.limit.setValue(int(value(item.model, "loop_limit", "0")))
         self.limit.setToolTip("0 / All visits every eligible input; a positive value caps the number of renders.")
-        form.addRow("Loop Limit", self.limit)
         self.single_pass = QtWidgets.QCheckBox("Single pass")
         self.single_pass.setChecked(value(item.model, "single_pass", "0") == "1")
         self.single_pass.setToolTip("Run only the selected iteration. Overrides Loop Limit.")
         self.single_iteration = QtWidgets.QSpinBox()
-        self.single_iteration.setPrefix("Iteration ")
         self.single_iteration.setRange(1, 1_000_000)
         self.single_iteration.setValue(int(value(item.model, "single_iteration", "1")))
         self.single_iteration.setKeyboardTracking(False)
         self.single_iteration.setToolTip("1-based iteration in the eligible inputs: 2 means the second checked path, not collection row 2.")
         self.single_iteration.setEnabled(self.single_pass.isChecked())
         self.limit.setEnabled(not self.single_pass.isChecked())
+        self.loop_start = QtWidgets.QCheckBox("Loop Start")
+        self.loop_start.setChecked(value(item.model, "loop_start", "0") == "1")
+        self.loop_start.setToolTip("Start at this iteration and continue. Turns off Single pass.")
+        self.start_iteration = QtWidgets.QSpinBox()
+        self.start_iteration.setRange(1, 1_000_000)
+        self.start_iteration.setValue(int(value(item.model, "start_iteration", "1")))
+        self.start_iteration.setKeyboardTracking(False)
+        self.start_iteration.setToolTip("1-based starting iteration in the eligible inputs. Loop Limit caps how many iterations run from here.")
+        self.start_iteration.setEnabled(self.loop_start.isChecked())
+        form.addRow(self.loop_start, self.start_iteration)
         form.addRow(self.single_pass, self.single_iteration)
+        form.addRow("Loop Limit", self.limit)
         layout.addLayout(form)
         self.parameter_box = QtWidgets.QWidget()
         fields = QtWidgets.QFormLayout(self.parameter_box)
@@ -121,7 +132,9 @@ class StartControls(QtWidgets.QWidget):
         self.wrapper_button.clicked.connect(lambda: ensure_wrapper(self.item, force=True))
         self.mode.currentIndexChanged.connect(self.mode_changed)
         self.limit.valueChanged.connect(lambda number: self.save("loop_limit", str(number)))
-        self.single_pass.toggled.connect(lambda checked: self.save("single_pass", "1" if checked else "0"))
+        self.single_pass.toggled.connect(lambda checked: self.set_pass_mode("single_pass", checked))
+        self.loop_start.toggled.connect(lambda checked: self.set_pass_mode("loop_start", checked))
+        self.start_iteration.valueChanged.connect(lambda number: self.save("start_iteration", str(number)))
         self.single_iteration.valueChanged.connect(lambda number: self.save("single_iteration", str(number)))
         self.parameter.editingFinished.connect(lambda: self.save("parameter", self.parameter.text().strip()))
         for control, name in ((self.count, "count"), (self.first, "first"), (self.step, "step")):
@@ -144,6 +157,15 @@ class StartControls(QtWidgets.QWidget):
         if scene is not None:
             scene.set_node_params(self.item.model.name, list(self.item.model.params), rebuild=False, emit=True)
 
+    def set_pass_mode(self, name, checked):
+        if checked:
+            other = "loop_start" if name == "single_pass" else "single_pass"
+            params._set_param_value(self.item.model, other, "0")
+            with QtCore.QSignalBlocker(getattr(self, other)):
+                getattr(self, other).setChecked(False)
+        self.save(name, "1" if checked else "0")
+        self.update_pass_controls()
+
     def mode_changed(self):
         self.save("mode", self.mode.currentData())
         self.parameter_box.setVisible(self.mode.currentData() == "parameter")
@@ -156,11 +178,14 @@ class StartControls(QtWidgets.QWidget):
             self.mode.setCurrentIndex(max(0, self.mode.findData(value(self.item.model, "mode", "outputs"))))
         self.parameter_box.setVisible(self.mode.currentData() == "parameter")
         for control, name, default in ((self.limit, "loop_limit", "0"),
-                                       (self.single_iteration, "single_iteration", "1")):
+                                       (self.single_iteration, "single_iteration", "1"),
+                                       (self.start_iteration, "start_iteration", "1")):
             with QtCore.QSignalBlocker(control):
                 control.setValue(int(value(self.item.model, name, default)))
         with QtCore.QSignalBlocker(self.single_pass):
             self.single_pass.setChecked(value(self.item.model, "single_pass", "0") == "1")
+        with QtCore.QSignalBlocker(self.loop_start):
+            self.loop_start.setChecked(value(self.item.model, "loop_start", "0") == "1")
         self.update_pass_controls()
         fit_body(self)
 
@@ -193,6 +218,8 @@ class StartControls(QtWidgets.QWidget):
         single = self.single_pass.isChecked()
         self.single_pass.setEnabled(not running)
         self.single_iteration.setEnabled(single and not running)
+        self.loop_start.setEnabled(not running)
+        self.start_iteration.setEnabled(self.loop_start.isChecked() and not running)
         self.limit.setEnabled(not single and not running)
 
 

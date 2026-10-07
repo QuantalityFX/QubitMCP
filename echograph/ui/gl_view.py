@@ -5988,7 +5988,65 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_proc_gpu_enabled = False
         self._mgl_proc_gpu_state = None
 
+    def _set_scene_look_at_constraints(self, assets) -> None:
+        constraints = {}
+        kinds = {}
+        for entry in assets or []:
+            if not isinstance(entry, dict):
+                continue
+            owner = str(entry.get("node") or "").strip()
+            if not owner:
+                continue
+            kinds[owner] = str(entry.get("kind") or "").strip().lower()
+            if isinstance(entry.get("look_at_constraint"), dict):
+                constraints[owner] = dict(entry["look_at_constraint"])
+        self._mgl_scene_look_at_constraints_by_owner = constraints
+        self._mgl_scene_owner_kind_by_owner = kinds
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        renderer._mgl_scene_look_at_constraints_by_owner = constraints
+        renderer._mgl_scene_owner_kind_by_owner = kinds
+        self._sync_scene_look_at_live_timer()
+
+    def update_scene_look_at_constraint(self, node_name: str, config: dict, *, evaluate: bool = True) -> None:
+        """Update an already-loaded constraint when its outliner controls change."""
+        constraints = getattr(self, "_mgl_scene_look_at_constraints_by_owner", {})
+        for cfg in constraints.values():
+            if str(cfg.get("node_name") or "").casefold() == str(node_name).casefold():
+                cfg.update(config)
+        for entry in getattr(self, "_timeline_scene_assets", []) or []:
+            cfg = entry.get("look_at_constraint")
+            if isinstance(cfg, dict) and str(cfg.get("node_name") or "").casefold() == str(node_name).casefold():
+                cfg.update(config)
+        self._sync_scene_look_at_live_timer()
+        if evaluate:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            renderer._mgl_apply_look_at_constraints()
+
+    def _sync_scene_look_at_live_timer(self) -> None:
+        enabled = any(
+            bool(cfg.get("live_update", False)) and str(cfg.get("target_owner") or "").strip()
+            for cfg in getattr(self, "_mgl_scene_look_at_constraints_by_owner", {}).values()
+        )
+        timer = getattr(self, "_scene_look_at_live_timer", None)
+        if enabled and timer is None:
+            timer = self._scene_look_at_live_timer = QtCore.QTimer(self)
+            timer.setInterval(33)
+            timer.timeout.connect(self._on_scene_look_at_live_tick)
+        if timer is not None:
+            if enabled:
+                if not timer.isActive():
+                    timer.start()
+            else:
+                timer.stop()
+
+    def _on_scene_look_at_live_tick(self) -> None:
+        if self.isVisible():
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            if not bool(getattr(renderer, "_mgl_look_at_frame_applying", False)):
+                renderer._mgl_apply_look_at_constraints(live_only=True)
+
     def _clear_scene_asset_state(self) -> None:
+        self._set_scene_look_at_constraints([])
         if not self._use_moderngl:
             return
         try:
@@ -6034,6 +6092,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
 
     def load_scene_assets(self, assets: List[Dict[str, str]], frame: bool = True) -> None:
+        self._set_scene_look_at_constraints(assets)
         try:
             scene_tag = str(self._timeline_default_scene_name() or "").strip()
         except Exception:
@@ -6560,6 +6619,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         self._xform_gizmo_pos = pos
                 except Exception:
                     pass
+            # Bounds and all owner transforms are now available. Constraints must
+            # win over both restored transforms and the current animation frame.
+            self._timeline_apply_scene_frame(self._timeline_current_frame())
             self.update()
             _scene_load_log("gl_view.load_scene_assets done")
             return

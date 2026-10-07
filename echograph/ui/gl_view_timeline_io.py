@@ -1183,11 +1183,7 @@ class GraphGLTimelineIOMixin:
             pass
         if bool(apply_current_frame):
             try:
-                self._timeline_apply_frame_if_keyed(self._timeline_current_frame())
-            except Exception:
-                pass
-            try:
-                self._timeline_apply_selected_camera_owner_frame(self._timeline_current_frame())
+                self._timeline_apply_scene_frame(self._timeline_current_frame(), force=False)
             except Exception:
                 pass
 

@@ -317,6 +317,63 @@ class ForEachTests(unittest.TestCase):
         self.assertFalse(controls.single_iteration.isEnabled())
         self.assertEqual(len(runtime.iteration_plan(self.start, self.collection)), 1)
 
+    def test_loop_start_runs_remaining_iterations_and_keeps_take_numbers(self):
+        controls = self.start._plugin_proxies[0].widget()
+        form = controls.layout().itemAt(0).layout()
+        self.assertLess(form.getWidgetPosition(controls.start_iteration)[0], form.getWidgetPosition(controls.single_iteration)[0])
+        self.assertLess(form.getWidgetPosition(controls.single_iteration)[0], form.getWidgetPosition(controls.limit)[0])
+        self.assertEqual(controls.single_iteration.prefix(), "")
+        controls.single_pass.setChecked(True)
+        controls.loop_start.setChecked(True)
+        controls.start_iteration.setValue(2)
+        self.assertFalse(controls.single_pass.isChecked())
+        self.assertEqual(runtime.value(self.start.model, "single_pass"), "0")
+        self.assertTrue(controls.start_iteration.isEnabled())
+        self.paths[0].unlink()  # Skipped inputs need not exist when resuming.
+        def render_take(**kwargs):
+            self.assertFalse(controls.loop_start.isEnabled())
+            self.assertFalse(controls.start_iteration.isEnabled())
+            return RenderResult("completed")
+        with patch.object(self.renderer, "render_sequence", side_effect=render_take) as render:
+            controls.run_button.click()
+            self.finish()
+        self.assertEqual(render.call_count, 2)
+        self.assertEqual([record["iteration"] for record in self.session.records], [2, 3])
+        self.assertEqual([record["take_number"] for record in self.session.records], [2, 3])
+        controls.limit.setValue(1)
+        self.assertEqual([row["iteration"] for row in runtime.iteration_plan(self.start, self.collection)], [2])
+        controls.single_pass.setChecked(True)
+        self.assertFalse(controls.loop_start.isChecked())
+        self.assertEqual(runtime.value(self.start.model, "loop_start"), "0")
+        self.assertFalse(controls.start_iteration.isEnabled())
+
+    def test_loop_start_serialization_and_range_validation(self):
+        controls = self.start._plugin_proxies[0].widget()
+        controls.loop_start.setChecked(True)
+        controls.start_iteration.setValue(3)
+        data = json.loads(json.dumps(serialize_scene(self.scene)))
+        saved = next(row for row in data["nodes"] if row["name"] == "Start")
+        model = GraphNode("Restored", kind="for_each", params=saved["params"])
+        restored = self.scene.add_node(model, QtCore.QPointF(-1000, -1000))
+        body = restored._plugin_proxies[0].widget()
+        self.assertTrue(body.loop_start.isChecked())
+        self.assertEqual(body.start_iteration.value(), 3)
+        self.assertEqual(runtime.iteration_plan(restored, self.collection)[0]["iteration"], 3)
+        for number in (0, 4):
+            collection.mocap._set_param_value(model, "start_iteration", str(number))
+            with self.assertRaisesRegex(ValueError, "Loop start iteration.*out of range"):
+                runtime.iteration_plan(restored, self.collection)
+
+    def test_loop_start_parameter_range_preserves_values(self):
+        driver = SimpleNamespace(model=GraphNode("Driver", params=[{"name": "value", "value": "0"}]))
+        for name, raw in (("mode", "parameter"), ("parameter", "value"), ("count", "5"),
+                          ("first", "2"), ("step", "0.5"), ("loop_limit", "2"),
+                          ("loop_start", "1"), ("start_iteration", "4")):
+            collection.mocap._set_param_value(self.start.model, name, raw)
+        plan = runtime.iteration_plan(self.start, driver)
+        self.assertEqual([row["value"] for row in plan], ["3.5", "4"])
+        self.assertEqual([row["iteration"] for row in plan], [4, 5])
+
     def test_single_pass_settings_survive_workflow_serialization(self):
         controls = self.start._plugin_proxies[0].widget()
         controls.single_pass.setChecked(True)
@@ -547,6 +604,14 @@ class RenderTakeTests(unittest.TestCase):
     def test_auto_range_includes_animation_duration(self):
         asset = {"fbx_rig_context": {"clip": SimpleNamespace(start_time=0, end_time=2.5)}}
         self.assertEqual(render._animation_max_frame_from_assets([asset], 30), 75)
+
+    def test_auto_end_marker_overrides_longer_animation(self):
+        controls = SimpleNamespace(_timeline_max_frame=lambda *args: 270)
+        asset = {"fbx_rig_context": {"clip": SimpleNamespace(start_time=0, end_time=9)}}
+        from nodes.render.spec import RenderNodeWidget
+        for marker, expected in ((215, 215), (0, 0), (None, 270)):
+            glv = SimpleNamespace(_timeline_out_frame=marker)
+            self.assertEqual(RenderNodeWidget._auto_end_frame(controls, glv, "Scene", None, [asset], 30), expected)
 
 
 if __name__ == "__main__":

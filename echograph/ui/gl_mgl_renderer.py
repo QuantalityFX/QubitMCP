@@ -11673,6 +11673,7 @@ void main() {
             context["clip"] = original_clip
             context.pop("_scene_skeleton_override_clip", None)
             self._mgl_scene_skeleton_invalidate_owner(asset_owner)
+            self._mgl_apply_live_look_at_constraints(asset_owner)
             return True
 
         def _source_frame_for_entry(frame_i: int, entry: dict) -> Optional[float]:
@@ -11834,6 +11835,7 @@ void main() {
             **self._mgl_scene_skeleton_context_log_fields(context),
         )
         self._mgl_scene_skeleton_invalidate_owner(asset_owner)
+        self._mgl_apply_live_look_at_constraints(asset_owner)
         return True
 
     def _mgl_scene_skeleton_rebuild_handle_mesh_for_owner(self, owner: str, handles: list) -> None:
@@ -17604,6 +17606,257 @@ void main() {
             return mx
         return {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
 
+    def _mgl_scene_xform_owner_exists(self, owner: str) -> bool:
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            return False
+        for mapping_name in ("_mgl_scene_xforms_by_owner", "_mgl_scene_splat_xforms_by_owner"):
+            mapping = getattr(self, mapping_name, None)
+            key, val = self._mgl_lookup_owner_entry(mapping, owner_key)
+            if key is not None and isinstance(val, dict):
+                return True
+        return False
+
+    def _mgl_scene_owner_kind(self, owner: str) -> str:
+        mapping = getattr(self, "_mgl_scene_owner_kind_by_owner", None)
+        key, val = self._mgl_lookup_owner_entry(mapping, owner)
+        if key is not None:
+            return str(val or "").strip().lower()
+        return ""
+
+    def _mgl_look_at_target_owner_key(self, owner: str) -> str:
+        raw = str(owner or "").strip()
+        key = raw.lower()
+        if self._mgl_scene_xform_owner_exists(raw):
+            return raw
+        for suffix in ("/skeleton", "::skeleton", ".skeleton", " skeleton"):
+            if key.endswith(suffix):
+                parent = raw[: -len(suffix)].strip()
+                if self._mgl_scene_xform_owner_exists(parent):
+                    return parent
+        return raw
+
+    def _mgl_resolve_look_at_target(self, text: str):
+        from echograph.rigging.joint_targets import resolve_joint_target, split_joint_target
+
+        text = str(text or "").strip()
+        if not text:
+            return None
+        owner = self._mgl_look_at_target_owner_key(text)
+        if self._mgl_scene_xform_owner_exists(owner):
+            return owner, None, None
+        qualified = split_joint_target(text)
+        if qualified:
+            owners = [qualified[0]]
+        else:
+            # A bare joint name is accepted only when it identifies one rig.
+            owners = list(getattr(self, "_mgl_scene_owner_kind_by_owner", {}) or {})
+            owners.extend(str(asset.get("node") or "") for asset in
+                          (getattr(self, "_timeline_scene_assets", []) or []) if isinstance(asset, dict))
+        contexts = {}
+        seen = set()
+        for owner in owners:
+            if not owner or owner.casefold() in seen:
+                continue
+            seen.add(owner.casefold())
+            context = self._mgl_scene_owner_fbx_rig_context(owner)
+            if isinstance(context, dict) and context.get("skeleton") is not None:
+                contexts[owner] = context
+        resolved = resolve_joint_target(text, [(name, ctx["skeleton"]) for name, ctx in contexts.items()])
+        if resolved is None:
+            return None
+        owner, joint_index = resolved
+        return owner, joint_index, contexts[owner]
+
+    def _mgl_look_at_target_xform(self, resolved, config: dict):
+        owner, joint_index, context = resolved
+        xf = dict(self._mgl_get_scene_asset_xform(owner) or {})
+        if joint_index is None:
+            xf["pos"] = list(self._mgl_scene_owner_world_center(owner, xf))
+            return xf
+        # Sample the current rig directly. Overlay handles may be hidden or
+        # cached from a different frame, and must not drive the constraint.
+        positions = self._mgl_retarget_joint_positions_for_context(context, "source", owner)
+        if joint_index >= len(positions):
+            return None
+        displayed, _info = self._mgl_scene_skeleton_display_positions(owner, [positions[joint_index]])
+        xf["pos"] = [float(v) for v in displayed[0]]
+        mode = str(config.get("rotation_mode") or "look_at").strip().lower()
+        if bool(config.get("match_rotation", True)) and mode in {"copy", "copy_target", "target", "exact", "match"}:
+            from nodes.look_at.spec import _rows_to_scene_euler
+
+            axes = self._mgl_scene_skeleton_joint_display_axes(owner, context)
+            if joint_index < len(axes):
+                xf["rot"] = list(_rows_to_scene_euler(axes[joint_index]))
+        return xf
+
+    def _mgl_scene_rot_rows_for_xform(self, xf: dict):
+        try:
+            rx, ry, rz = [math.radians(-float(v)) for v in list((xf or {}).get("rot", (0.0, 0.0, 0.0)))[:3]]
+        except Exception:
+            rx = ry = rz = 0.0
+
+        def _mm(a, b):
+            return tuple(
+                tuple(sum(float(a[r][k]) * float(b[k][c]) for k in range(3)) for c in range(3))
+                for r in range(3)
+            )
+
+        cx, sx = math.cos(rx), math.sin(rx)
+        cy, sy = math.cos(ry), math.sin(ry)
+        cz, sz = math.cos(rz), math.sin(rz)
+        mx = ((1.0, 0.0, 0.0), (0.0, cx, sx), (0.0, -sx, cx))
+        my = ((cy, 0.0, -sy), (0.0, 1.0, 0.0), (sy, 0.0, cy))
+        mz = ((cz, sz, 0.0), (-sz, cz, 0.0), (0.0, 0.0, 1.0))
+        return _mm(_mm(mx, my), mz)
+
+    def _mgl_scene_owner_world_center(self, owner: str, xf: dict):
+        kind = self._mgl_scene_owner_kind(owner)
+        if kind in {"camera", "light"}:
+            try:
+                return tuple(float(v) for v in list((xf or {}).get("pos", (0.0, 0.0, 0.0)))[:3])
+            except Exception:
+                return (0.0, 0.0, 0.0)
+        bval = None
+        for name in ("_mgl_scene_mesh_bounds_by_owner", "_mgl_scene_splats_bounds_local", "_mgl_scene_bounds_by_owner"):
+            _bkey, bval = self._mgl_lookup_owner_entry(getattr(self, name, None), owner)
+            if bval is not None:
+                break
+        if not isinstance(bval, (list, tuple)) or len(bval) < 2:
+            try:
+                return tuple(float(v) for v in list((xf or {}).get("pos", (0.0, 0.0, 0.0)))[:3])
+            except Exception:
+                return (0.0, 0.0, 0.0)
+        try:
+            bmin, bmax = bval[0], bval[1]
+            local = [0.5 * (float(bmin[i]) + float(bmax[i])) for i in range(3)]
+            pos = [float(v) for v in list((xf or {}).get("pos", (0.0, 0.0, 0.0)))[:3]]
+            scl = [float(v) for v in list((xf or {}).get("scl", (1.0, 1.0, 1.0)))[:3]]
+            while len(pos) < 3:
+                pos.append(0.0)
+            while len(scl) < 3:
+                scl.append(1.0)
+            rows = self._mgl_scene_rot_rows_for_xform(xf)
+            if str(getattr(self, "_mgl_xform_space", "world")).lower() == "local":
+                local = [local[i] * scl[i] for i in range(3)]
+                scl = [1.0, 1.0, 1.0]
+            rotated = [sum(float(local[k]) * float(rows[k][c]) for k in range(3)) for c in range(3)]
+            return tuple(pos[i] + rotated[i] * scl[i] for i in range(3))
+        except Exception:
+            try:
+                return tuple(float(v) for v in list((xf or {}).get("pos", (0.0, 0.0, 0.0)))[:3])
+            except Exception:
+                return (0.0, 0.0, 0.0)
+
+    def _mgl_owner_is_splat_xform(self, owner: str) -> bool:
+        mapping = getattr(self, "_mgl_scene_splat_xforms_by_owner", None)
+        _key, val = self._mgl_lookup_owner_entry(mapping, owner)
+        return isinstance(val, dict)
+
+    def _mgl_apply_live_look_at_constraints(self, changed_owner: str) -> None:
+        if not bool(getattr(self, "_mgl_look_at_frame_applying", False)):
+            self._mgl_apply_look_at_constraints(changed_owner, live_only=True)
+
+    def _mgl_apply_look_at_constraints(self, changed_owner: str | None = None, *, live_only: bool = False) -> set[str]:
+        """Evaluate constraints after base transforms, without changing animation keys."""
+        if bool(getattr(self, "_mgl_live_look_at_applying", False)):
+            return set()
+        constraints = getattr(self, "_mgl_scene_look_at_constraints_by_owner", None)
+        if not isinstance(constraints, dict) or not constraints:
+            return set()
+        from nodes.look_at.spec import apply_constraint
+        from echograph.rigging.joint_targets import split_joint_target
+
+        eligible = {
+            str(owner).strip().lower(): (str(owner).strip(), cfg)
+            for owner, cfg in constraints.items()
+            if isinstance(cfg, dict) and (not live_only or bool(cfg.get("live_update", False)))
+        }
+        targets = {key: self._mgl_resolve_look_at_target(cfg.get("target_owner", ""))
+                   for key, (_source, cfg) in eligible.items()}
+        affected = set(eligible)
+        if changed_owner:
+            changed_joint = split_joint_target(changed_owner)
+            affected = {str(changed_joint[0] if changed_joint else changed_owner).strip().lower()}
+            # Include downstream constraints when a constrained object is itself a target.
+            for _ in eligible:
+                previous = len(affected)
+                for key, target in targets.items():
+                    if target is not None and target[0].lower() in affected:
+                        affected.add(key)
+                if len(affected) == previous:
+                    break
+
+        changed = set()
+        evaluated = set()
+        visiting = set()
+
+        def evaluate(key):
+            if key in evaluated or key not in eligible or key not in affected:
+                return True
+            if key in visiting:
+                return False  # Cyclic constraints have no unambiguous evaluation order.
+            source, cfg = eligible[key]
+            resolved = targets[key]
+            if resolved is None:
+                return True
+            target = resolved[0]
+            if source.lower() == target.lower():
+                return False
+            visiting.add(key)
+            if not evaluate(target.lower()):
+                visiting.discard(key)
+                return False
+            visiting.discard(key)
+            evaluated.add(key)
+            if not self._mgl_scene_xform_owner_exists(source):
+                return True
+            source_xf = dict(self._mgl_get_scene_asset_xform(source) or {})
+            target_xf = self._mgl_look_at_target_xform(resolved, cfg)
+            if target_xf is None:
+                return True
+            next_xf = apply_constraint(source_xf, target_xf, cfg)
+            differs = any(
+                abs(float(a) - float(b)) > 1.0e-6
+                for channel, default in (("pos", (0, 0, 0)), ("rot", (0, 0, 0)), ("scl", (1, 1, 1)))
+                for a, b in zip(source_xf.get(channel, default), next_xf.get(channel, default))
+            )
+            if differs:
+                is_splat = self._mgl_owner_is_splat_xform(source)
+                self._mgl_set_scene_asset_xform(
+                    source,
+                    pos=next_xf.get("pos"),
+                    rot=next_xf.get("rot"),
+                    scl=next_xf.get("scl"),
+                    apply_to_scene_models=not is_splat,
+                    use_splat_xform=is_splat,
+                    apply_live_constraints=False,
+                )
+                changed.add(source)
+            active = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+            if active.lower() == key and (differs or not live_only):
+                sync = getattr(self, "_sync_selected_scene_camera_view", None)
+                if callable(sync):
+                    sync(source)
+            return True
+
+        try:
+            self._mgl_live_look_at_applying = True
+            for key in eligible:
+                evaluate(key)
+            if changed:
+                # Refresh displayed values without writing derived rotations into saved keys.
+                win = self.window() if callable(getattr(self, "window", None)) else None
+                changed_keys = {owner.lower() for owner in changed}
+                for card in (getattr(win, "_card_by_node", {}) or {}).values():
+                    selected = str(getattr(card, "_scene_selected_owner", "") or "").strip()
+                    refresh = getattr(card, "_scene_xform_refresh", None)
+                    if selected.lower() in changed_keys and callable(refresh):
+                        refresh(selected)
+        finally:
+            self._mgl_live_look_at_applying = False
+        return changed
+
     def _mgl_set_scene_asset_xform(
         self,
         owner: str,
@@ -17612,6 +17865,7 @@ void main() {
         scl=None,
         apply_to_scene_models: bool = True,
         use_splat_xform: bool = False,
+        apply_live_constraints: bool = True,
     ) -> None:
         if not owner:
             return
@@ -17753,11 +18007,9 @@ void main() {
             model = T(-cx, -cy, -cz) @ R @ S(sx, sy, sz) @ T(px, py, pz)
 
         scene = getattr(self, "_mgl_scene", None)
-        if scene is None:
-            return
 
         # apply to matching scene items (solid + wire)
-        if apply_to_scene_models:
+        if apply_to_scene_models and scene is not None:
             try:
                 for tag in (
                     "scene-model",
@@ -17828,6 +18080,11 @@ void main() {
                 self._mgl_scene_skeleton_update_owner_handles(str(owner).strip(), force=True)
         except Exception:
             pass
+        if bool(apply_live_constraints):
+            try:
+                self._mgl_apply_live_look_at_constraints(str(owner).strip())
+            except Exception:
+                pass
         try:
             self.update()
         except Exception:
@@ -19653,6 +19910,10 @@ void main() {
         if wire_prog is None:
             return
         tag = str(getattr(item, "tag", "") or "")
+        # Light guides are editor geometry. Keep the item visible for lighting
+        # and shadow evaluation, but omit its lines from rendered images.
+        if tag == "scene-light" and int(getattr(self, "_mgl_render_target_fbo_id", 0) or 0) > 0:
+            return
         if self._mgl_should_hide_scene_camera_proxy(tag, payload):
             return
         scene_skeleton_overlay = bool(tag == "scene-rig-joints" and payload.get("scene_skeleton_overlay", False))

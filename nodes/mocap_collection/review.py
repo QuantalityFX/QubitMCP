@@ -162,7 +162,7 @@ class ReviewDialog(QtWidgets.QDialog):
         self.player._transport_layout.addWidget(self.output)
         self.player._transport_layout.addWidget(self.checked_only)
         self.player._transport_layout.addStretch(1)
-        self.player._preview.setToolTip("Space: play/pause. Up/Down: previous/next animation.\nF11: toggle full screen. Esc: exit full screen.")
+        self.player._preview.setToolTip("")
         layout.addWidget(self.player, 1)
         actions = QtWidgets.QHBoxLayout()
         self.approve = QtWidgets.QPushButton("Approve")
@@ -188,6 +188,12 @@ class ReviewDialog(QtWidgets.QDialog):
             actions.addWidget(widget)
         actions.addStretch(1)
         layout.addLayout(actions)
+        self.help_label = QtWidgets.QLabel(
+            "Space: play/pause. Up/Down: previous/next animation. F11: toggle full screen. Esc: exit full screen."
+        )
+        self.help_label.setWordWrap(True)
+        self.help_label.setStyleSheet("color:#94a3b8;padding:0 2px;")
+        layout.addWidget(self.help_label)
         layout.addWidget(self.message)
         self.previous.clicked.connect(lambda: self.output.stepBy(-1))
         self.next.clicked.connect(lambda: self.output.stepBy(1))

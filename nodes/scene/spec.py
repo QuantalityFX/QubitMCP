@@ -184,6 +184,13 @@ _COPY_TO_POINTS_KIND_ALIASES = {
     "copy to point",
     "copytopoints",
 }
+_LOOK_AT_KIND_ALIASES = {
+    "look_at",
+    "lookat",
+    "look at",
+    "transform_constraint",
+    "transform constraint",
+}
 _LIGHT_KIND_ALIASES = {
     "light",
     "scene_light",
@@ -1286,6 +1293,12 @@ def _fx_surface_context(scene, owner_item, owner_model, owner_kind):
 
 
 @profiled("scene.collect_assets")
+def _look_at_constraint_from_model(constraint_model):
+    from nodes.look_at.spec import constraint_config
+
+    return constraint_config(constraint_model)
+
+
 def _collect_assets(node_item) -> List[Dict[str, str]]:
     scene = node_item.scene()
     if scene is None:
@@ -1948,6 +1961,145 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             key = key + "::modeler_hidden::" + "|".join(sorted(str(name).lower() for name in hidden_names))
         return key
 
+    def _attach_look_at_constraint_to_existing(owner_name: str, cfg: dict) -> bool:
+        owner_key = str(owner_name or "").strip().lower()
+        if not owner_key or not isinstance(cfg, dict):
+            return False
+        for entry in assets:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("node") or "").strip().lower() != owner_key:
+                continue
+            entry["look_at_constraint"] = dict(cfg)
+            return True
+        return False
+
+    def _set_look_at_position_offset_if_needed(constraint_node_name: str, cfg: dict, source_xf: dict, target_xf: dict) -> None:
+        if not bool((cfg or {}).get("match_position", False)) or not bool((cfg or {}).get("maintain_offset", True)):
+            return
+        if str((cfg or {}).get("position_offset") or "").strip():
+            return
+        if not constraint_node_name:
+            return
+        try:
+            constraint_item = getattr(scene, "_node_items", {}).get(constraint_node_name)
+            constraint_model = getattr(constraint_item, "model", None)
+        except Exception:
+            constraint_model = None
+        if constraint_model is None:
+            return
+        try:
+            src_pos = list((source_xf or {}).get("pos", (0.0, 0.0, 0.0)))[:3]
+            tgt_pos = list((target_xf or {}).get("pos", (0.0, 0.0, 0.0)))[:3]
+            offset = [float(src_pos[i]) - float(tgt_pos[i]) for i in range(3)]
+            text = ",".join(f"{v:.6f}".rstrip("0").rstrip(".") if "." in f"{v:.6f}" else f"{v:.6f}" for v in offset)
+        except Exception:
+            return
+        try:
+            _set_param_value(constraint_model, "position_offset", text)
+            cfg["position_offset"] = text
+        except Exception:
+            pass
+
+    def _scene_rot_rows(rot_values):
+        try:
+            rx, ry, rz = [math.radians(-float(v)) for v in list(rot_values or (0.0, 0.0, 0.0))[:3]]
+        except Exception:
+            rx = ry = rz = 0.0
+
+        def _mm(a, b):
+            return tuple(
+                tuple(sum(float(a[r][k]) * float(b[k][c]) for k in range(3)) for c in range(3))
+                for r in range(3)
+            )
+
+        cx, sx = math.cos(rx), math.sin(rx)
+        cy, sy = math.cos(ry), math.sin(ry)
+        cz, sz = math.cos(rz), math.sin(rz)
+        mx = ((1.0, 0.0, 0.0), (0.0, cx, sx), (0.0, -sx, cx))
+        my = ((cy, 0.0, -sy), (0.0, 1.0, 0.0), (sy, 0.0, cy))
+        mz = ((cz, sz, 0.0), (-sz, cz, 0.0), (0.0, 0.0, 1.0))
+        return _mm(_mm(mx, my), mz)
+
+    def _look_at_local_center(entry: dict):
+        kind = str((entry or {}).get("kind") or "").strip().lower()
+        if kind in {"camera", "light"}:
+            return None
+        if bool((entry or {}).get("wire_only")) and bool((entry or {}).get("volume")):
+            return None
+        path_text = str((entry or {}).get("path") or "").strip()
+        if not path_text:
+            return None
+        ext = Path(path_text).suffix.lower()
+        if ext not in {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off"}:
+            return None
+        try:
+            path_obj = Path(path_text)
+            stat = path_obj.stat()
+            key = (str(path_obj.resolve()), float(stat.st_mtime), int(stat.st_size))
+        except Exception:
+            key = (path_text, 0.0, 0)
+        try:
+            cache = getattr(node_item, "_scene_look_at_center_cache", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                setattr(node_item, "_scene_look_at_center_cache", cache)
+            if key in cache:
+                return cache.get(key)
+        except Exception:
+            cache = {}
+        center = None
+        try:
+            from nodes.transforms import spec as _transforms_spec  # type: ignore
+
+            load_fn = getattr(_transforms_spec, "_load_mesh_arrays", None)
+            pts, _norms, _uvs = load_fn(path_obj) if callable(load_fn) else (None, None, None)
+            if pts is not None and getattr(pts, "size", 0):
+                arr = pts.reshape((-1, 3))
+                bmin = arr.min(axis=0)
+                bmax = arr.max(axis=0)
+                center = tuple(float((bmin[i] + bmax[i]) * 0.5) for i in range(3))
+        except Exception:
+            center = None
+        try:
+            cache[key] = center
+        except Exception:
+            pass
+        return center
+
+    def _look_at_world_center(entry: dict, xf: dict):
+        local = _look_at_local_center(entry)
+        if local is None:
+            try:
+                return tuple(float(v) for v in list((xf or {}).get("pos", (0.0, 0.0, 0.0)))[:3])
+            except Exception:
+                return (0.0, 0.0, 0.0)
+        try:
+            pos = [float(v) for v in list((xf or {}).get("pos", (0.0, 0.0, 0.0)))[:3]]
+            scl = [float(v) for v in list((xf or {}).get("scl", (1.0, 1.0, 1.0)))[:3]]
+            while len(pos) < 3:
+                pos.append(0.0)
+            while len(scl) < 3:
+                scl.append(1.0)
+            rows = _scene_rot_rows((xf or {}).get("rot", (0.0, 0.0, 0.0)))
+            rotated = [sum(float(local[k]) * float(rows[k][c]) for k in range(3)) for c in range(3)]
+            return tuple(pos[i] + rotated[i] * scl[i] for i in range(3))
+        except Exception:
+            return tuple(float(v) for v in local)
+
+    def _look_at_owner_key(owner_text: str, owner_map: dict) -> str:
+        key = str(owner_text or "").strip().lower()
+        if not key:
+            return ""
+        if key in owner_map:
+            return key
+        for suffix in ("/skeleton", "::skeleton", ".skeleton", " skeleton"):
+            if key.endswith(suffix):
+                parent = key[: -len(suffix)].strip()
+                if parent in owner_map:
+                    return parent
+        return key
+
     scene_owner_names = set()
     for edge in in_edges:
         src_item = getattr(edge, "src", None)
@@ -1999,6 +2151,123 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         src_name = (getattr(model, "name", "") or "").strip()
         kind = (getattr(model, "kind", "") or "").strip().lower()
         material_asset = None
+        look_at_constraint = None
+        look_at_node_name = ""
+        if kind in _LOOK_AT_KIND_ALIASES:
+            look_at_node_name = src_name or "look_at"
+            source_item, source_kind, _source_path = _resolve_input_item(
+                scene,
+                src_item,
+                {"object", "mesh", "path", "source"},
+            )
+            if source_item is None:
+                source_item, source_kind, _source_path = _resolve_input_item(scene, src_item)
+            source_model = getattr(source_item, "model", None) if source_item is not None else None
+            if source_model is None:
+                continue
+            look_at_constraint = _look_at_constraint_from_model(model)
+            look_at_constraint["node_name"] = look_at_node_name
+            src_item = source_item
+            model = source_model
+            src_name = (getattr(model, "name", "") or "").strip()
+            kind = (source_kind or getattr(model, "kind", "") or "").strip().lower()
+            if kind == "camera":
+                cam_name = src_name or "camera"
+                if cam_name in seen_camera:
+                    _attach_look_at_constraint_to_existing(cam_name, look_at_constraint)
+                    continue
+                seen_camera.add(cam_name)
+                cam_path = _camera_proxy_obj_path(node_item, cam_name)
+                if not cam_path:
+                    continue
+                xf = _lookup_xform(xforms, cam_name)
+                if not isinstance(xf, dict):
+                    xf = _identity_xform()
+                try:
+                    fov = float((_param_value(model, "fov") or "").strip() or 60.0)
+                except Exception:
+                    fov = 60.0
+                try:
+                    aspect_width = int(float((_param_value(model, "aspect_width") or "").strip() or 1920.0))
+                except Exception:
+                    aspect_width = 1920
+                try:
+                    aspect_height = int(float((_param_value(model, "aspect_height") or "").strip() or 1080.0))
+                except Exception:
+                    aspect_height = 1080
+                assets.append(
+                    {
+                        "path": cam_path,
+                        "texture": "",
+                        "node": cam_name,
+                        "ext": ".obj",
+                        "kind": "camera",
+                        "visible": cam_name not in hidden,
+                        "xform": xf,
+                        "wire_only": True,
+                        "volume": True,
+                        "fov": fov,
+                        "aspect_width": max(1, int(aspect_width)),
+                        "aspect_height": max(1, int(aspect_height)),
+                        "look_at_constraint": dict(look_at_constraint),
+                    }
+                )
+                continue
+            if kind in _LIGHT_KIND_ALIASES:
+                light_name = src_name or "light"
+                if light_name in seen_light:
+                    _attach_look_at_constraint_to_existing(light_name, look_at_constraint)
+                    continue
+                seen_light.add(light_name)
+                light_path = _light_proxy_obj_path(node_item, light_name)
+                if not light_path:
+                    continue
+                xf = _lookup_xform(xforms, light_name)
+                if not isinstance(xf, dict):
+                    xf = _identity_xform()
+                elif _is_legacy_default_light_xform(xf):
+                    xf = _identity_xform()
+                try:
+                    intensity = float((_param_value(model, "intensity") or "").strip() or 1.0)
+                except Exception:
+                    intensity = 1.0
+                light_range = _param_float(model, "range", 0.0)
+                shadow_strength = _param_float(model, "shadow_strength", 1.0)
+                shadow_range = _param_float(model, "shadow_range", 0.0)
+                shadow_fov = _param_float(model, "shadow_fov", 0.0)
+                shadow_near = _param_float(model, "shadow_near", 0.0)
+                shadow_resolution = _param_float(model, "shadow_resolution", 0.0)
+                shadow_bias = _param_float(model, "shadow_bias", 0.0)
+                shadow_fov_value = 0.0 if float(shadow_fov) <= 0.0 else max(1.0, min(179.0, float(shadow_fov)))
+                light_type = _normalize_light_type(_param_value(model, "type") or _param_value(model, "light_type"))
+                assets.append(
+                    {
+                        "path": light_path,
+                        "texture": "",
+                        "node": light_name,
+                        "ext": ".obj",
+                        "kind": "light",
+                        "visible": light_name not in hidden,
+                        "xform": xf,
+                        "wire_only": True,
+                        "volume": True,
+                        "look_at_constraint": dict(look_at_constraint),
+                        "light": {
+                            "type": light_type,
+                            "intensity": max(0.0, float(intensity)),
+                            "width": max(0.001, _param_float(model, "width", 1.0)),
+                            "height": max(0.001, _param_float(model, "height", 1.0)),
+                            "range": max(0.0, float(light_range)),
+                            "shadow_strength": max(0.0, min(1.0, float(shadow_strength))),
+                            "shadow_range": max(0.0, float(shadow_range)),
+                            "shadow_fov": float(shadow_fov_value),
+                            "shadow_near": max(0.0, float(shadow_near)),
+                            "shadow_resolution": max(0.0, float(shadow_resolution)),
+                            "shadow_bias": max(0.0, float(shadow_bias)),
+                        },
+                    }
+                )
+                continue
         if _is_anim_retarget_kind(kind):
             try:
                 from nodes.anim_retarget import spec as _anim_retarget_spec  # type: ignore
@@ -3118,6 +3387,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             continue
         key = _asset_seen_key(path, node_name or src_name, modeler_hidden)
         if key in seen:
+            if isinstance(look_at_constraint, dict):
+                _attach_look_at_constraint_to_existing(node_name or src_name, look_at_constraint)
             if isinstance(fx_asset, dict) and node_name:
                 aliases = _fx_target_owner_aliases(scene, owner_item, owner_model, owner_kind)
                 fx_entry = dict(fx_asset)
@@ -3296,6 +3567,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             entry["texture_provider"] = texture_provider
         if modeler_hidden:
             entry["hidden_submeshes"] = list(modeler_hidden)
+        if isinstance(look_at_constraint, dict):
+            entry["look_at_constraint"] = dict(look_at_constraint)
         assets.append(entry)
         if kind in _MATERIAL_KINDS:
             if material_debug_on:
@@ -3503,6 +3776,58 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         for alias in _entry_retime_aliases(entry):
             if alias and _apply_retime(entry, alias):
                 break
+
+    xform_by_owner = {}
+    center_by_owner = {}
+    for entry in assets:
+        if not isinstance(entry, dict):
+            continue
+        owner = str(entry.get("node") or "").strip()
+        if not owner:
+            continue
+        xf = entry.get("xform")
+        xf = dict(xf) if isinstance(xf, dict) else _identity_xform()
+        owner_key = owner.lower()
+        xform_by_owner[owner_key] = xf
+        center_by_owner[owner_key] = _look_at_world_center(entry, xf)
+
+    for entry in assets:
+        if not isinstance(entry, dict):
+            continue
+        cfg = entry.get("look_at_constraint")
+        if not isinstance(cfg, dict):
+            continue
+        target_owner = str(cfg.get("target_owner") or "").strip()
+        if not target_owner:
+            continue
+        target_key = _look_at_owner_key(target_owner, xform_by_owner)
+        target_xf = xform_by_owner.get(target_key)
+        if not isinstance(target_xf, dict):
+            continue
+        target_xf = dict(target_xf)
+        target_center = center_by_owner.get(target_key)
+        if target_center is not None:
+            target_xf["pos"] = [float(v) for v in target_center]
+        source_xf = entry.get("xform") if isinstance(entry.get("xform"), dict) else _identity_xform()
+        _set_look_at_position_offset_if_needed(
+            str(cfg.get("node_name") or ""),
+            cfg,
+            source_xf,
+            target_xf,
+        )
+        try:
+            from nodes.look_at import spec as _look_at_spec  # type: ignore
+
+            apply_fn = getattr(_look_at_spec, "apply_constraint", None)
+            if callable(apply_fn):
+                next_xf = apply_fn(source_xf, target_xf, cfg)
+                if isinstance(next_xf, dict):
+                    entry["xform"] = next_xf
+                    owner = str(entry.get("node") or "").strip()
+                    if owner:
+                        xform_by_owner[owner.lower()] = dict(next_xf)
+        except Exception:
+            pass
 
     _scene_collect_cache_put(node_item, assets)
     return assets
@@ -4733,6 +5058,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             if not sel_kind:
                 sel_kind = "mesh"
             is_skeleton_row = sel_kind == "skeleton"
+            is_target_row = sel_kind == "look_at_target"
             preserve_glv = None
             preserve_view_state = None
             if sel_kind == "camera":
@@ -4812,10 +5138,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     )
             except Exception:
                 pass
-            xform_panel.setEnabled(not bool(is_skeleton_row))
-            if not bool(is_skeleton_row):
+            xform_panel.setEnabled(not bool(is_skeleton_row or is_target_row))
+            if not bool(is_skeleton_row or is_target_row):
                 _load_xform_from_view(owner)
             _update_row_highlight(it)
+
+            if bool(is_target_row):
+                return
 
             if bool(is_skeleton_row):
                 try:
@@ -5023,6 +5352,159 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 handler(old_name, new_name)
             return True
 
+        def _show_skeleton_joint_picker(owner_name: str, asset: dict):
+            from echograph.ui.skeleton_joint_picker import SkeletonJointPicker
+
+            context = asset.get("fbx_rig_context")
+            if _scene_is_active():
+                glv = _get_glv()
+                renderer = getattr(glv, "_mgl_renderer", None) or glv
+                get_context = getattr(renderer, "_mgl_scene_owner_fbx_rig_context", None)
+                if callable(get_context):
+                    current = get_context(owner_name)
+                    if isinstance(current, dict) and current.get("skeleton") is not None:
+                        context = current
+            if not isinstance(context, dict) or context.get("skeleton") is None:
+                scn = getattr(card, "_graph_scene", None)
+                scene_item = getattr(scn, "_node_items", {}).get(node.name)
+                if scene_item is not None:
+                    for current in _collect_assets(scene_item):
+                        if str(current.get("node") or "").casefold() == owner_name.casefold():
+                            candidate = current.get("fbx_rig_context")
+                            if isinstance(candidate, dict) and candidate.get("skeleton") is not None:
+                                context = candidate
+                                break
+            skeleton = context.get("skeleton") if isinstance(context, dict) else None
+            dialogs = getattr(card, "_scene_joint_pickers", None)
+            if not isinstance(dialogs, dict):
+                dialogs = card._scene_joint_pickers = {}
+            dialog = dialogs.get(owner_name)
+            if dialog is None:
+                dialog = SkeletonJointPicker(owner_name, skeleton, card.window())
+                QtWidgets.QApplication.instance().aboutToQuit.connect(dialog.close)
+                dialogs[owner_name] = dialog
+            else:
+                dialog.set_skeleton(skeleton)
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+
+        def _apply_look_at_target(constraint_node_name: str, target_owner: str) -> bool:
+            constraint_node_name = str(constraint_node_name or "").strip()
+            target_owner = str(target_owner or "").strip()
+            if not constraint_node_name:
+                return False
+            scn = getattr(card, "_graph_scene", None)
+            if scn is None:
+                return False
+            try:
+                node_items = getattr(scn, "_node_items", {})
+                constraint_item = node_items.get(constraint_node_name)
+                scene_item = node_items.get(node.name)
+            except Exception:
+                constraint_item = None
+                scene_item = None
+            if constraint_item is None:
+                return False
+            if _param_value(getattr(constraint_item, "model", None), "target_owner").strip() == target_owner:
+                return True
+            try:
+                setter = getattr(constraint_item, "_set_param_value", None)
+                if callable(setter):
+                    setter("target_owner", target_owner, rebuild=False, notify_scene=True)
+                    setter("position_offset", "", rebuild=False, notify_scene=True)
+                else:
+                    _set_param_value(getattr(constraint_item, "model", None), "target_owner", target_owner)
+                    _set_param_value(getattr(constraint_item, "model", None), "position_offset", "")
+            except Exception:
+                return False
+            try:
+                if scene_item is not None:
+                    setattr(scene_item, "_scene_collect_assets_cache", None)
+            except Exception:
+                pass
+            _update_look_at_viewport(constraint_item)
+            try:
+                QtCore.QTimer.singleShot(0, lambda: _refresh(scn))
+            except Exception:
+                pass
+            return True
+
+        def _update_look_at_viewport(constraint_item, *, evaluate=True):
+            if not _scene_is_active():
+                return
+            glv = _get_glv()
+            update = getattr(glv, "update_scene_look_at_constraint", None)
+            if callable(update):
+                model = constraint_item.model
+                update(model.name, _look_at_constraint_from_model(model), evaluate=evaluate)
+
+        def _apply_look_at_live(constraint_node_name: str, enabled: bool) -> bool:
+            scn = getattr(card, "_graph_scene", None)
+            items = getattr(scn, "_node_items", {})
+            constraint_item = items.get(constraint_node_name)
+            if constraint_item is None:
+                return False
+            setter = getattr(constraint_item, "_set_param_value", None)
+            if callable(setter):
+                setter("live_update", "1" if enabled else "0", rebuild=False, notify_scene=True)
+            else:
+                _set_param_value(constraint_item.model, "live_update", "1" if enabled else "0")
+            scene_item = items.get(node.name)
+            if scene_item is not None:
+                scene_item._scene_collect_assets_cache = None
+            _update_look_at_viewport(constraint_item, evaluate=enabled)
+            return True
+
+        def _set_look_at_live_icon(button, enabled):
+            pix = QtGui.QPixmap(16, 16)
+            pix.fill(QtCore.Qt.transparent)
+            painter = QtGui.QPainter(pix)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(QtGui.QColor("#ef4444" if enabled else "#808080"))
+            painter.drawEllipse(QtCore.QRectF(4, 4, 8, 8))
+            painter.end()
+            button.setIcon(QtGui.QIcon(pix))
+            button.setToolTip(
+                "Live Look At: on (red). Follows target movement in the viewport."
+                if enabled else
+                "Live Look At: off (gray). Updates on timeline frames and Scene rebuilds."
+            )
+
+        class _LookAtTargetEdit(QtWidgets.QLineEdit):
+            def __init__(self, constraint_node_name: str, owner_name: str, parent=None):
+                super().__init__(parent)
+                self._constraint_node_name = str(constraint_node_name or "").strip()
+                self._owner_name = str(owner_name or "").strip()
+                self.setAcceptDrops(True)
+
+            def dragEnterEvent(self, event):
+                try:
+                    if event.mimeData() is not None and event.mimeData().hasText():
+                        event.acceptProposedAction()
+                        return
+                except Exception:
+                    pass
+                super().dragEnterEvent(event)
+
+            def dropEvent(self, event):
+                text = ""
+                try:
+                    text = str(event.mimeData().text() or "").strip()
+                except Exception:
+                    text = ""
+                if text:
+                    text = text.splitlines()[0].strip()
+                    self.setText(text)
+                    _apply_look_at_target(self._constraint_node_name, text)
+                    try:
+                        event.acceptProposedAction()
+                    except Exception:
+                        pass
+                    return
+                super().dropEvent(event)
+
         def _quick_outliner_asset_rows(scene, item):
             try:
                 edges = list(scene._ordered_in_edges(item))
@@ -5038,11 +5520,35 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if src is None:
                     continue
                 model = getattr(src, "model", None)
+                raw_name = str(getattr(model, "name", "") or "").strip()
+                kind = (getattr(model, "kind", "") or "").strip().lower()
+                look_at_constraint = None
+                if kind in _LOOK_AT_KIND_ALIASES:
+                    look_at_constraint = _look_at_constraint_from_model(model)
+                    look_at_constraint["node_name"] = raw_name or "look_at"
+                    source_item, source_kind, _source_path = _resolve_input_item(
+                        scene,
+                        src,
+                        {"object", "mesh", "path", "source"},
+                    )
+                    if source_item is None:
+                        source_item, source_kind, _source_path = _resolve_input_item(scene, src)
+                    source_model = getattr(source_item, "model", None) if source_item is not None else None
+                    if source_model is None:
+                        continue
+                    model = source_model
+                    kind = (source_kind or getattr(model, "kind", "") or "").strip().lower()
                 name = str(getattr(model, "name", "") or "").strip()
-                if not name or name in seen_names:
+                if not name:
+                    continue
+                if name in seen_names:
+                    if isinstance(look_at_constraint, dict):
+                        for row in rows:
+                            if row.get("node") == name:
+                                row["look_at_constraint"] = dict(look_at_constraint)
+                                break
                     continue
                 seen_names.add(name)
-                kind = (getattr(model, "kind", "") or "").strip().lower()
                 path = (
                     _param_value(model, "path")
                     or _param_value(model, "mesh")
@@ -5050,9 +5556,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 )
                 ext = Path(str(path or "")).suffix.lower()
                 if kind == "camera" or ext == ".camera":
-                    rows.append({"node": name, "path": "", "kind": "camera", "ext": ".camera", "_quick": True})
+                    row = {"node": name, "path": "", "kind": "camera", "ext": ".camera", "_quick": True}
+                    if isinstance(look_at_constraint, dict):
+                        row["look_at_constraint"] = dict(look_at_constraint)
+                    rows.append(row)
                 elif kind in _LIGHT_KIND_ALIASES:
-                    rows.append({"node": name, "path": "", "kind": "light", "ext": "", "_quick": True})
+                    row = {"node": name, "path": "", "kind": "light", "ext": "", "_quick": True}
+                    if isinstance(look_at_constraint, dict):
+                        row["look_at_constraint"] = dict(look_at_constraint)
+                    rows.append(row)
                 else:
                     if (
                         kind in {"ply_sequence", "ply sequence"}
@@ -5067,8 +5579,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         if _is_anim_retarget_kind(kind)
                         else ("fbx_animation" if kind in _FBX_ANIMATION_KIND_ALIASES else "mesh")
                     )
-                    rows.append(
-                        {
+                    row = {
                             "node": name,
                             "path": path,
                             "kind": asset_kind,
@@ -5083,7 +5594,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                                 or ext in {".fbx", ".bvh"}
                             ),
                         }
-                    )
+                    if isinstance(look_at_constraint, dict):
+                        row["look_at_constraint"] = dict(look_at_constraint)
+                    rows.append(row)
             return rows
 
         def _outliner_alive() -> bool:
@@ -5164,6 +5677,26 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     asset_rows = list(_collect_assets(item) or [])
             except Exception:
                 asset_rows = []
+
+            def _append_look_at_target_row(asset: dict, owner_name: str) -> None:
+                cfg = asset.get("look_at_constraint") if isinstance(asset, dict) else None
+                if not isinstance(cfg, dict):
+                    return
+                rows.append(
+                    {
+                        "name": owner_name,
+                        "path": "",
+                        "kind": "look_at_target",
+                        "display": "Target",
+                        "indent": 1,
+                        "child": True,
+                        "parent": owner_name,
+                        "target_owner": str(cfg.get("target_owner") or "").strip(),
+                        "constraint_node": str(cfg.get("node_name") or "").strip(),
+                        "live_update": bool(cfg.get("live_update", False)),
+                    }
+                )
+
             for asset in asset_rows:
                 if not isinstance(asset, dict):
                     continue
@@ -5177,10 +5710,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if kind == "camera":
                     seen.add(name)
                     rows.append({"name": name, "path": "", "kind": "camera"})
+                    _append_look_at_target_row(asset, name)
                     continue
                 if kind == "light":
                     seen.add(name)
                     rows.append({"name": name, "path": "", "kind": "light"})
+                    _append_look_at_target_row(asset, name)
                     continue
                 path = str(asset.get("path") or "").strip()
                 if is_groom_guides_asset and not path:
@@ -5211,12 +5746,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     else "mesh"
                 )
                 rows.append({"name": name, "path": path, "kind": row_kind, "has_skeleton": bool(has_skeleton)})
+                _append_look_at_target_row(asset, name)
                 if bool(has_skeleton):
                     rows.append(
                         {
                             "name": name,
                             "path": path,
                             "kind": "skeleton",
+                            "asset": asset,
                             "display": "Skeleton",
                             "indent": 1,
                             "child": True,
@@ -5242,6 +5779,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 owner_name = str(entry.get("owner") or entry.get("parent") or name).strip()
                 display_name = str(entry.get("display") or name).strip()
                 row_kind = str(entry.get("kind") or "mesh").strip().lower()
+                is_target_row = row_kind == "look_at_target"
                 is_child = bool(entry.get("child")) or row_kind == "skeleton"
                 if not is_child:
                     visible_row_number += 1
@@ -5316,17 +5854,56 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     indent_spacer.setStyleSheet("background:transparent;")
                     row_layout.addWidget(indent_spacer, 0)
 
-                name_edit = QtWidgets.QLineEdit(display_name)
-                name_edit.setReadOnly(True)
+                if is_target_row:
+                    icon_label = QtWidgets.QLabel()
+                    icon_label.setFixedSize(16, 16)
+                    icon_label.setStyleSheet("background:transparent;")
+                    try:
+                        icon_path = Path(__file__).resolve().parents[2] / "icons" / "crosshairCorner_Icon_s.png"
+                        pix = QtGui.QPixmap(str(icon_path))
+                        if not pix.isNull():
+                            icon_label.setPixmap(pix.scaled(14, 14, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+                    except Exception:
+                        pass
+                    row_layout.addWidget(icon_label, 0)
+                    live_button = QtWidgets.QToolButton()
+                    live_button.setObjectName("SceneLookAtLiveButton")
+                    live_button.setAccessibleName(f"Live Look At for {owner_name}")
+                    live_button.setAutoRaise(True)
+                    live_button.setCheckable(True)
+                    live_button.setChecked(bool(entry.get("live_update", False)))
+                    live_button.setFixedSize(20, 20)
+                    live_button.setIconSize(QtCore.QSize(16, 16))
+                    _set_look_at_live_icon(live_button, live_button.isChecked())
+
+                    def _on_look_at_live_clicked(checked, b=live_button, c=str(entry.get("constraint_node") or "")):
+                        # Param notifications can rebuild (and delete) this row.
+                        _set_look_at_live_icon(b, checked)
+                        if not _apply_look_at_live(c, checked):
+                            b.setChecked(not checked)
+                            _set_look_at_live_icon(b, b.isChecked())
+
+                    live_button.clicked.connect(_on_look_at_live_clicked)
+                    row_layout.addWidget(live_button, 0)
+                    name_edit = _LookAtTargetEdit(str(entry.get("constraint_node") or ""), owner_name)
+                    name_edit.setText(str(entry.get("target_owner") or ""))
+                    name_edit.setPlaceholderText("drop target")
+                    name_edit.setToolTip(
+                        "Drop an object or skeleton joint here, or paste a joint target such as Character/Skeleton/Head."
+                    )
+                else:
+                    name_edit = QtWidgets.QLineEdit(display_name)
+                    name_edit.setReadOnly(True)
                 name_edit.setFrame(False)
                 name_edit.setMinimumWidth(0)
                 name_edit.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
                 name_edit.setStyleSheet(
-                    "QLineEdit{background:transparent;color:#94a3b8;}" if is_child
+                    "QLineEdit{background:rgba(15,23,42,0.55);color:#cbd5e1;border:1px solid #334155;border-radius:4px;padding:1px 6px;}" if is_target_row
+                    else "QLineEdit{background:transparent;color:#94a3b8;}" if is_child
                     else "QLineEdit{background:transparent;color:#e2e8f0;}"
                 )
-                name_edit.setFocusPolicy(QtCore.Qt.NoFocus)
-                name_edit.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+                name_edit.setFocusPolicy(QtCore.Qt.StrongFocus if is_target_row else QtCore.Qt.NoFocus)
+                name_edit.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False if is_target_row else True)
                 name_edit.setProperty("scene_node_name", owner_name)
 
                 def _start_edit(edit=name_edit):
@@ -5388,9 +5965,36 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
                 name_edit.editingFinished.connect(_finish_edit)
                 name_edit._scene_finish_edit = lambda e=name_edit: _finish_edit(e)
+                if is_target_row:
+                    try:
+                        name_edit.editingFinished.disconnect()
+                    except Exception:
+                        pass
+                    name_edit.editingFinished.connect(
+                        lambda e=name_edit, c=str(entry.get("constraint_node") or ""): _apply_look_at_target(c, e.text().strip())
+                    )
                 if is_child:
                     name_edit._scene_no_rename = True
-                row_layout.addWidget(name_edit, 1)
+                if row_kind == "skeleton":
+                    margins = name_edit.textMargins()
+                    name_edit.setFixedWidth(
+                        name_edit.fontMetrics().horizontalAdvance(name_edit.text())
+                        + margins.left() + margins.right() + 8
+                    )
+                row_layout.addWidget(name_edit, 0 if row_kind == "skeleton" else 1)
+                if row_kind == "skeleton":
+                    joint_button = QtWidgets.QToolButton()
+                    joint_button.setObjectName("SceneSkeletonJointsButton")
+                    joint_button.setAccessibleName(f"Browse joints for {owner_name}")
+                    joint_button.setAutoRaise(True)
+                    joint_button.setArrowType(QtCore.Qt.RightArrow)
+                    joint_button.setFixedSize(20, 20)
+                    joint_button.setToolTip("Browse skeleton joints: drag a target or double-click to copy")
+                    joint_button.clicked.connect(
+                        lambda _checked=False, n=owner_name, a=entry.get("asset", {}): _show_skeleton_joint_picker(n, a)
+                    )
+                    row_layout.addWidget(joint_button, 0)
+                    row_layout.addStretch(1)
 
                 row_item = QtWidgets.QListWidgetItem()
                 row_item.setData(QtCore.Qt.UserRole, owner_name)
@@ -5399,7 +6003,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     row_item.setData(QtCore.Qt.UserRole + 2, name)
                 if entry.get("path"):
                     row_item.setToolTip(entry["path"])
-                if is_child:
+                if is_target_row:
+                    row_item.setToolTip(f"Look At target for {owner_name}")
+                elif is_child:
                     row_item.setToolTip(f"Show skeleton for {owner_name}")
                 try:
                     vw = int(outliner.viewport().width())
@@ -5421,16 +6027,22 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 outliner.setItemWidget(row_item, row_widget)
                 row_widgets.append((row_item, row_widget))
                 class _RowSelectFilter(QtCore.QObject):
-                    def __init__(self, item, label, row_idx, row_name, edit):
+                    def __init__(self, item, label, row_idx, row_name, edit, row_kind_text):
                         super().__init__(outliner)
                         self._item = item
                         self._label = label
                         self._idx = row_idx
                         self._name = row_name
                         self._edit = edit
+                        self._row_kind = str(row_kind_text or "").strip().lower()
+                        self._press_pos = None
                     def eventFilter(self, obj, event):
                         et = event.type()
                         if et == QtCore.QEvent.MouseButtonPress:
+                            try:
+                                self._press_pos = event.pos()
+                            except Exception:
+                                self._press_pos = None
                             try:
                                 outliner.setCurrentItem(self._item)
                             except Exception:
@@ -5459,6 +6071,32 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                                 self._edit._scene_start_edit()
                             except Exception:
                                 pass
+                        if et == QtCore.QEvent.MouseMove and self._row_kind != "look_at_target":
+                            try:
+                                if not bool(event.buttons() & QtCore.Qt.LeftButton):
+                                    return False
+                                if self._press_pos is None:
+                                    return False
+                                if (event.pos() - self._press_pos).manhattanLength() < QtWidgets.QApplication.startDragDistance():
+                                    return False
+                                owner_text = str(self._item.data(QtCore.Qt.UserRole) or "").strip()
+                                if not owner_text:
+                                    return False
+                                child_text = str(self._item.data(QtCore.Qt.UserRole + 2) or "").strip()
+                                drag_text = owner_text
+                                if self._row_kind == "skeleton" and child_text:
+                                    drag_text = f"{owner_text}/Skeleton"
+                                mime = QtCore.QMimeData()
+                                mime.setText(drag_text)
+                                drag = QtGui.QDrag(obj)
+                                drag.setMimeData(mime)
+                                try:
+                                    drag.exec(QtCore.Qt.CopyAction)
+                                except Exception:
+                                    drag.exec_(QtCore.Qt.CopyAction)
+                                return True
+                            except Exception:
+                                return False
                         return False
 
                 for widget, label in (
@@ -5468,7 +6106,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     *(([(indent_spacer, "indent")] if is_child else [])),
                 ):
                     try:
-                        filt = _RowSelectFilter(row_item, label, display_number or idx, display_name, name_edit)
+                        filt = _RowSelectFilter(row_item, label, display_number or idx, display_name, name_edit, row_kind)
                         widget.installEventFilter(filt)
                         setattr(widget, "_row_select_filter", filt)
                     except Exception:

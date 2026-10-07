@@ -88,6 +88,8 @@ def iteration_plan(start, source):
     limit = max(0, int(value(start.model, "loop_limit", "0")))
     single = value(start.model, "single_pass", "0") == "1"
     selected = int(value(start.model, "single_iteration", "1")) if single else 1
+    loop_start = value(start.model, "loop_start", "0") == "1"
+    first_iteration = int(value(start.model, "start_iteration", "1")) if loop_start else 1
 
     def selected_indices(count):
         if not count:
@@ -96,7 +98,10 @@ def iteration_plan(start, source):
             if not 1 <= selected <= count:
                 raise ValueError(f"Single pass iteration {selected} is out of range; choose 1–{count}.")
             return range(selected - 1, selected)
-        return range(min(count, limit) if limit else count)
+        if not 1 <= first_iteration <= count:
+            raise ValueError(f"Loop start iteration {first_iteration} is out of range; choose 1–{count}.")
+        offset = first_iteration - 1
+        return range(offset, min(count, offset + limit) if limit else count)
 
     plan = []
     if mode in ("outputs", "checked"):

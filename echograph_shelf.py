@@ -4174,6 +4174,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 "visible": visible,
                 "xform": entry.get("xform"),
             }
+            if isinstance(entry.get("look_at_constraint"), dict):
+                clean_entry["look_at_constraint"] = dict(entry["look_at_constraint"])
             if "source_kind" in entry:
                 clean_entry["source_kind"] = str(entry.get("source_kind") or "").strip()
             if "scene_alignment_owner" in entry:
@@ -4493,6 +4495,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         repr(dict(entry.get("preview_context") or {})),
                         repr(list(entry.get("hidden_submeshes") or [])),
                         repr(dict(entry.get("light") or {})),
+                        repr(dict(entry.get("look_at_constraint") or {})),
                         repr(entry.get("fov", None)),
                         repr(entry.get("aspect_width", None)),
                         repr(entry.get("aspect_height", None)),
@@ -4555,9 +4558,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 except Exception:
                     cur_frame = 0
                 try:
-                    apply_selected = getattr(glv, "_timeline_apply_selected_camera_owner_frame", None)
-                    if callable(apply_selected):
-                        apply_selected(cur_frame)
+                    apply_frame = getattr(glv, "_timeline_apply_scene_frame", None)
+                    if callable(apply_frame):
+                        apply_frame(cur_frame)
                 except Exception:
                     pass
                 try:

@@ -406,9 +406,7 @@ class GraphGLTimelineModelMixin:
         if bool(apply_current_frame):
             try:
                 frame = int(self._timeline_current_frame())
-                self._timeline_apply_frame_if_keyed(frame, force=True)
-                self._timeline_apply_selected_camera_owner_frame(frame)
-                self._timeline_apply_other_owner_frames(frame)
+                self._timeline_apply_scene_frame(frame)
             except Exception:
                 pass
 
@@ -2550,6 +2548,28 @@ class GraphGLTimelineModelMixin:
             self._timeline_animation_clipboard_message("Nothing was pasted.")
         return bool(changed)
 
+    def _timeline_apply_scene_constraints(self) -> None:
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        if bool(getattr(renderer, "_mgl_look_at_frame_applying", False)) or self._timeline_preview_context_active():
+            return
+        apply_constraints = getattr(renderer, "_mgl_apply_look_at_constraints", None)
+        if callable(apply_constraints):
+            apply_constraints()
+
+    def _timeline_apply_scene_frame(self, frame: int, *, force: bool = True) -> None:
+        """Apply every owner's animation first, then evaluate Scene constraints."""
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        was_applying = bool(getattr(renderer, "_mgl_look_at_frame_applying", False))
+        renderer._mgl_look_at_frame_applying = True
+        try:
+            self._timeline_apply_frame_if_keyed(frame, force=force)
+            self._timeline_apply_selected_camera_owner_frame(frame)
+            self._timeline_apply_other_owner_frames(frame)
+        finally:
+            renderer._mgl_look_at_frame_applying = was_applying
+            self._timeline_apply_scene_constraints()
+        self._timeline_refresh_coord_labels()
+
     def _timeline_apply_selected_camera_owner_frame(self, frame: int) -> None:
         if self._timeline_preview_context_active():
             return
@@ -2706,6 +2726,7 @@ class GraphGLTimelineModelMixin:
                 self._timeline_apply_owner_xyz_only(owner, xyz_eval, rxyz=rxyz_eval)
             except Exception:
                 continue
+        self._timeline_apply_scene_constraints()
 
     def _timeline_owner_norm(self, owner: str) -> str:
         try:
@@ -5501,11 +5522,7 @@ class GraphGLTimelineModelMixin:
                 cur = 0
             if cur > int(end):
                 self._timeline_set_frame_widgets(int(end))
-                self._timeline_apply_frame_if_keyed(int(end), force=True)
-                try:
-                    self._timeline_apply_other_owner_frames(int(end))
-                except Exception:
-                    pass
+                self._timeline_apply_scene_frame(int(end))
             timer = getattr(self, "_timeline_play_timer", None)
             if timer is not None and timer.isActive() and int(cur) >= int(end):
                 self._timeline_stop_playback()
@@ -6740,15 +6757,7 @@ class GraphGLTimelineModelMixin:
                 return
             if bool(loop_enabled) and (int(cur) < int(start) or int(cur) > int(end)):
                 self._timeline_set_frame_widgets(int(start))
-                self._timeline_apply_frame_if_keyed(int(start), force=True)
-                try:
-                    self._timeline_apply_selected_camera_owner_frame(int(start))
-                except Exception:
-                    pass
-                try:
-                    self._timeline_apply_other_owner_frames(int(start))
-                except Exception:
-                    pass
+                self._timeline_apply_scene_frame(int(start))
                 try:
                     hook = getattr(self, "_timeline_audio_on_timeline_frame_changed", None)
                     if callable(hook):
@@ -6800,15 +6809,7 @@ class GraphGLTimelineModelMixin:
                 frame = int(end)
                 stop_after = True
         self._timeline_set_frame_widgets(frame)
-        self._timeline_apply_frame_if_keyed(frame, force=True)
-        try:
-            self._timeline_apply_selected_camera_owner_frame(frame)
-        except Exception:
-            pass
-        try:
-            self._timeline_apply_other_owner_frames(frame)
-        except Exception:
-            pass
+        self._timeline_apply_scene_frame(frame)
         try:
             hook = getattr(self, "_timeline_audio_on_timeline_frame_changed", None)
             if callable(hook):
@@ -6996,6 +6997,7 @@ class GraphGLTimelineModelMixin:
             )
         except Exception:
             pass
+        self._timeline_apply_scene_constraints()
         try:
             self.update()
         except Exception:
@@ -7224,15 +7226,7 @@ class GraphGLTimelineModelMixin:
             return
         frame = max(0, int(value))
         self._timeline_sync_range_controls(keep_current_visible=True)
-        self._timeline_apply_frame_if_keyed(frame, force=True)
-        try:
-            self._timeline_apply_selected_camera_owner_frame(frame)
-        except Exception:
-            pass
-        try:
-            self._timeline_apply_other_owner_frames(frame)
-        except Exception:
-            pass
+        self._timeline_apply_scene_frame(frame)
         try:
             hook = getattr(self, "_timeline_audio_on_timeline_frame_changed", None)
             if callable(hook):
@@ -7283,11 +7277,6 @@ class GraphGLTimelineModelMixin:
             self._timeline_update_playhead()
         except Exception:
             pass
-        self._timeline_apply_frame_if_keyed(frame, force=True)
-        try:
-            self._timeline_apply_selected_camera_owner_frame(frame)
-        except Exception:
-            pass
         allow_aux_updates = True
         slider = getattr(self, "_timeline_frame_slider", None)
         if slider is not None:
@@ -7303,12 +7292,12 @@ class GraphGLTimelineModelMixin:
                     self._timeline_scrub_aux_last_t = 0.0
             except Exception:
                 pass
-        if not bool(allow_aux_updates):
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        if not allow_aux_updates and not getattr(renderer, "_mgl_scene_look_at_constraints_by_owner", None):
+            self._timeline_apply_frame_if_keyed(frame, force=True)
+            self._timeline_apply_selected_camera_owner_frame(frame)
             return
-        try:
-            self._timeline_apply_other_owner_frames(frame)
-        except Exception:
-            pass
+        self._timeline_apply_scene_frame(frame)
         try:
             hook = getattr(self, "_timeline_audio_on_timeline_frame_changed", None)
             if callable(hook):

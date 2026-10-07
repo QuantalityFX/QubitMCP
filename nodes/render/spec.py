@@ -585,7 +585,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._end_spin.setSpecialValueText("Auto")
         self._end_spin.setValue(-1)
         self._end_spin.setKeyboardTracking(False)
-        self._end_spin.setToolTip("End frame (-1/Auto uses timeline max frame).")
+        self._end_spin.setToolTip("Auto uses the scene timeline end marker, or animation length when no marker is set.")
         self._end_spin.valueChanged.connect(self._on_end_frame_changed)
         row2b.addWidget(self._end_spin, 0)
         row2b.addStretch(1)
@@ -1187,6 +1187,14 @@ class RenderNodeWidget(QtWidgets.QWidget):
             max_frame = max(max_frame, int(mx))
         return max_frame if any_keys else 0
 
+    def _auto_end_frame(self, glv, scene_name, project_path, assets, fps):
+        marker = getattr(glv, "_timeline_out_frame", None)
+        if marker is not None:
+            return max(0, int(marker))
+        return max(self._timeline_max_frame(glv, scene_name, project_path),
+                   _music_effects_max_frame_from_assets(assets, fps),
+                   _animation_max_frame_from_assets(assets, fps))
+
     def _on_render_clicked(self):
         return self.render_sequence()
 
@@ -1308,6 +1316,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         old_viewport_bg = getattr(glv, "_viewport_bg", None)
         old_mgl_bg_color = getattr(glv, "_mgl_bg_color", None)
         old_gizmo_visible = bool(getattr(glv, "_mgl_gizmo_visible", True))
+        old_render_output_active = bool(getattr(glv, "_mgl_render_output_active", False))
         old_splat_sort_every_frame = bool(getattr(glv, "_mgl_splat_sort_every_frame", False))
         set_gizmo_visible = getattr(glv, "set_gizmo_visible", None)
         try:
@@ -1325,6 +1334,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         cancelled = False
         progress_dialog = None
         try:
+            glv._mgl_render_output_active = True
             try:
                 glv._timeline_on_play_toggled(False)
             except Exception:
@@ -1426,11 +1436,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
                 glv._mgl_splat_sort_every_frame = True
             except Exception:
                 pass
-            timeline_end = max(
-                self._timeline_max_frame(glv, scene_name, project_path),
-                _music_effects_max_frame_from_assets(assets, render_fps),
-                _animation_max_frame_from_assets(assets, render_fps),
-            )
+            timeline_end = self._auto_end_frame(glv, scene_name, project_path, assets, render_fps)
             render_start, render_end = self._resolved_frame_range(timeline_end)
             total_frames = max(1, int(render_end) - int(render_start) + 1)
             out_fmt_qt = _FORMAT_QT[_norm_fmt(fmt)]
@@ -1512,6 +1518,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
             if progress_dialog is not None:
                 progress_dialog.finish()
                 self._process_ui_events(12)
+            glv._mgl_render_output_active = old_render_output_active
             try:
                 glv._timeline_set_frame_widgets(old_frame)
                 glv._timeline_apply_frame_if_keyed(old_frame, force=True)

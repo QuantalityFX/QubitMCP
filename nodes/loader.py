@@ -175,6 +175,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Copy To Points plugin import failed:", e)
 
+    # 8.56) Look At
+    try:
+        from nodes import look_at
+        if hasattr(look_at, "register"):
+            look_at.register()
+            _safe_probe("look_at")
+        else:
+            print("[EchoGraph] Look At module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Look At plugin import failed:", e)
+
     # 8.57) Modeler
     try:
         from nodes import modeler

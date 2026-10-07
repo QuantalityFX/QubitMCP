@@ -17,6 +17,69 @@ def light(scene, owner, kind="directional", intensity=.25):
 
 
 class SceneLightingStateTests(unittest.TestCase):
+    def test_render_sequence_hides_light_proxies_in_viewport_capture(self):
+        renderer = MGLRendererMixin()
+        renderer._mgl_render_output_active = True
+        renderer._mgl_scene_owner_kind_by_owner = {"Lamp": "light", "Cube": "mesh"}
+        scene = MGLScene()
+        drawn = []
+        for name, tag, owner in (("guide", "scene-light", "Lamp"),
+                                 ("proxy", "scene-volume", "lamp"),
+                                 ("mesh", "scene-model", "Cube")):
+            scene.add(MGLSceneItem(name, lambda r, item, mvp: drawn.append(item.name),
+                                   tag=tag, payload={"owner": owner}))
+        scene.draw(renderer, None)
+        self.assertEqual(drawn, ["mesh"])
+        self.assertTrue(all(item.visible for item in scene.items()))
+        renderer._mgl_render_output_active = False
+        drawn.clear()
+        scene.draw(renderer, None)
+        self.assertEqual(drawn, ["guide", "proxy", "mesh"])
+
+    def test_render_excludes_light_guides_but_preserves_lights_and_viewport(self):
+        ctx = moderngl.create_standalone_context()
+        self.addCleanup(ctx.release)
+        renderer = MGLRendererMixin()
+        renderer._mgl_ctx = ctx
+        renderer._gl = None
+        renderer._mgl_wire_color = (1.0, 1.0, 0.0, 1.0)
+        renderer._mgl_wire_prog = ctx.program(
+            vertex_shader=SHADERS["wire_vertex"], fragment_shader=SHADERS["wire_fragment"])
+        self.addCleanup(renderer._mgl_wire_prog.release)
+        renderer._mgl_wire_viewport_size = lambda: (32.0, 32.0)
+        renderer._mgl_scene = scene = MGLScene()
+        self.addCleanup(scene.clear)
+        for owner, kind in (("key", "directional"), ("fill", "area")):
+            item = renderer._mgl_add_wire_item_from_points(
+                owner, renderer._mgl_light_guide_line_points(kind), True, "scene-light", owner)
+            item.payload["light"] = dict(type=kind, intensity=2.0)
+            scene.add(item)
+        shadows = []
+        renderer._mgl_render_shadow_map = lambda: shadows.append(renderer._mgl_scene_light_owner)
+        identity = np.eye(4, dtype="f4")
+
+        def paint():
+            ctx.clear(0, 0, 0, 1)
+            renderer._mgl_render_scene_light_shadows()
+            scene.draw(renderer, identity)
+
+        renderer._paint_mgl = paint
+        image = renderer._mgl_render_to_image(32, 32)
+        self.assertIsNotNone(image)
+        self.assertTrue(all(image.pixelColor(x, y).red() == 0 for y in range(32) for x in range(32)))
+        self.assertEqual(shadows, ["key", "fill"])
+        self.assertTrue(all(item.visible for item in scene.items()))
+        self.assertEqual(renderer._mgl_scene_light_intensity, 2.0)
+        self.assertEqual(renderer._mgl_render_target_fbo_id, 0)
+        # The same guides must still draw after capture in the editing viewport.
+        fbo = ctx.simple_framebuffer((32, 32), components=4)
+        self.addCleanup(fbo.release)
+        fbo.use()
+        ctx.viewport = (0, 0, 32, 32)
+        paint()
+        pixels = np.frombuffer(fbo.read(components=4), dtype=np.uint8).reshape(-1, 4)
+        self.assertGreater(int(pixels[:, :3].max()), 0)
+
     def test_area_light_guide_includes_front_arrow(self):
         points = MGLRendererMixin._mgl_light_guide_line_points("area")
         self.assertIsNotNone(points)

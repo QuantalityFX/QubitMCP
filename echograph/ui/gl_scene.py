@@ -72,6 +72,16 @@ class MGLScene:
                 item.visible = visible
 
     def draw(self, renderer: object, mvp: object) -> None:
+        rendering = (getattr(renderer, "_mgl_render_output_active", False)
+                     or getattr(renderer, "_mgl_render_target_fbo_id", 0))
+        kinds = getattr(renderer, "_mgl_scene_owner_kind_by_owner", {}) or {}
+        light_owners = {str(key).casefold() for key, kind in kinds.items() if kind == "light"} if rendering else set()
         for item in sorted(self._items, key=lambda it: it.order):
+            if rendering:
+                payload = item.payload or {}
+                owner = str(payload.get("owner") or "").casefold()
+                # Exclude only the editor geometry; lighting still reads these items.
+                if item.tag == "scene-light" or owner in light_owners:
+                    continue
             if item.visible:
                 item.draw(renderer, mvp)
