@@ -164,6 +164,14 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Curve plugin import failed:", e)
 
+    # Standalone 2D pattern authoring.
+    try:
+        from nodes import pattern_design
+        pattern_design.register()
+        _safe_probe("pattern_design")
+    except Exception as e:
+        print("[EchoGraph] Pattern Design plugin import failed:", e)
+
     # 8.55) Copy To Points
     try:
         from nodes import copy_to_points

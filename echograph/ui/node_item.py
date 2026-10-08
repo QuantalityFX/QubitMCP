@@ -1172,6 +1172,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _skinned_volume_mesh.register()
             except Exception:
                 pass
+        # Pattern documents live in their own files; the node stores a reference.
+        if (self.model.kind or "").strip().lower() == "pattern_design":
+            from nodes import pattern_design
+            pattern_design.register()
+
         # Ensure Curve spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("curve", "curve_primitive", "primitive_curve"):
             try:
@@ -3441,6 +3446,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("curve", "curve_primitive", "primitive_curve"):
             body_h = 34
             node_w = max(self._BASE_W, 220)
+        elif kind == "pattern_design":
+            from nodes.pattern_design.spec import PATTERN_BODY_H, PATTERN_NODE_W
+            body_h = max(PATTERN_BODY_H, getattr(self, "_pattern_min_h", 0))
+            node_w = max(self._BASE_W, PATTERN_NODE_W, getattr(self, "_pattern_min_w", 0))
         elif kind in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
             body_h = 116
             node_w = max(self._BASE_W, 236)

@@ -423,12 +423,12 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                         # than left on an output row that may no longer be selected.
                         font.setBold(False)
                         cell.setFont(font)
-            if number != getattr(self, "_displayed_number", number):
+            if number != getattr(self, "_displayed_number", number) and not rows_changed:
                 selection = self.table.selectionModel()
-                if number:
+                if number and selection.selectedRows(3):
                     selection.setCurrentIndex(self.table.model().index(number - 1, 3),
                         QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows)
-                else:
+                elif not number:
                     selection.clear()
             self._displayed_number = number
             self._displayed_path = mocap._param_value(self.model, "path")
@@ -553,6 +553,9 @@ class MocapCollectionWidget(QtWidgets.QWidget):
     def _select(self, number):
         eligible = output_rows(self.model)
         if 1 <= number <= len(eligible) and eligible[number - 1] != output_number(self.model):
+            self.table.selectionModel().setCurrentIndex(
+                self.table.model().index(eligible[number - 1] - 1, 3),
+                QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows)
             self._save(entries(self.model), eligible[number - 1])
 
     def _toggle_checked_only(self, enabled):

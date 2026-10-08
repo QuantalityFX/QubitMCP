@@ -96,6 +96,7 @@ def register_defaults() -> None:
     register("copy_to_points", stripe_color="#06b6d4")
     register("look_at", stripe_color="#38bdf8")
     register("curve", stripe_color="#22d3ee")
+    register("pattern_design", stripe_color="#32b9b0")
     register("mask", stripe_color="#f43f5e")
     register("groom_guides", stripe_color="#7a5842")
     register("groom_guide_pose", stripe_color="#7a5842")

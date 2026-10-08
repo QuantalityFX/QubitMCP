@@ -75,6 +75,19 @@ class Scene(QtWidgets.QGraphicsScene):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_selection_actions_disabled_until_paths_selected(self):
+        spec.add_paths(self.model, self.paths, self.scene)
+        APP.processEvents()
+        for button in (self.widget.relocate_button, self.widget.archive_button):
+            self.assertFalse(button.isEnabled())
+        self.widget.table.selectRow(0)
+        for button in (self.widget.relocate_button, self.widget.archive_button):
+            self.assertTrue(button.isEnabled())
+        self.widget.table.clearSelection()
+        self.widget.refresh()
+        for button in (self.widget.relocate_button, self.widget.archive_button):
+            self.assertFalse(button.isEnabled())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
