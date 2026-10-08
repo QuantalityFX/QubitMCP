@@ -1684,7 +1684,9 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setPos(0, y_cursor)
     body.ensurePolished()
     node_item.prepareGeometryChange()
-    w = max(int(getattr(node_item, "width", 220)), body.minimumSizeHint().width() + 12)
+    w = max(int(getattr(node_item, "width", 220)),
+            body.sizeHint().width() + 12, body.minimumSizeHint().width() + 12)
+    node_item._render_node_min_w = w
     node_item.width = w
     try:
         body.setMinimumWidth(w)
@@ -1694,6 +1696,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
     except Exception:
         pass
     h = max(body.sizeHint().height(), body.minimumSizeHint().height())
+    node_item._render_node_body_h = h
     proxy.resize(w, h)
     try:
         node_item._plugin_proxies.append(proxy)

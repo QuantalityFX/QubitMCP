@@ -10,7 +10,7 @@ from echograph.patterns.document import PatternError
 from echograph.patterns.geometry import bounds, edge_length, validate_piece
 from echograph.patterns.serialization import load_document, save_document
 from echograph.ui import hotkeys_config
-from .canvas import PatternCanvas
+from .canvas import PatternCanvas, sew_icon
 
 PATTERN_FILTER = "Pattern documents (*.pattern.json);;JSON files (*.json)"
 # Keep standalone editors alive across node rebuilds and workflow switches.
@@ -162,9 +162,18 @@ class PatternEditor(QtWidgets.QMainWindow):
         tools = self.addToolBar("Drafting")
         tools.setMovable(False)
         tools.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        for toolbar, background in ((filebar, "#1b2027"), (tools, "#262d36")):
+            toolbar.setStyleSheet(
+                f"QToolBar {{ background: {background}; border: 0; border-bottom: 1px solid #303742; }}"
+                "QToolBar::separator { background: #303742; width: 1px; margin: 6px 4px; }"
+            )
         self._action(tools, "+ Rectangle", lambda: self.template_dialog(False))
         self._action(tools, "+ Trapezoid", lambda: self.template_dialog(True))
         self._action(tools, "Draw Outline", lambda: self.canvas.start_outline())
+        self.sew_action = self._action(tools, "Sew", lambda enabled: self.canvas.set_sew_mode(enabled))
+        self.sew_action.setIcon(sew_icon())
+        self.sew_action.setCheckable(True)
+        self.sew_action.setToolTip("Sew two edges: click the first edge, then its partner. Esc exits.")
         self._action(tools, "Close Outline", self.close_outline)
         self._action(tools, "Finish Open", lambda: self.canvas.finish_outline(False))
         self._action(tools, "Cancel Draw", lambda: self.canvas.cancel_outline())
@@ -186,6 +195,9 @@ class PatternEditor(QtWidgets.QMainWindow):
         splitter = QtWidgets.QSplitter()
         layout.addWidget(splitter, 1)
         self.canvas = PatternCanvas()
+        self.canvas.sewModeChanged.connect(self.sew_action.setChecked)
+        self.canvas.sewRequested.connect(self._sew_requested)
+        self.canvas.sewStatusChanged.connect(lambda text: self.statusBar().showMessage(text))
         splitter.addWidget(self.canvas)
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
@@ -330,6 +342,17 @@ class PatternEditor(QtWidgets.QMainWindow):
             return False
         self.refresh()
         return changed
+
+    def _sew_requested(self, left_piece, left_edge, right_piece, right_edge):
+        from echograph.patterns.sewing import add_sew_pair
+
+        try:
+            self.history.edit("Sew edges", lambda doc: add_sew_pair(doc, left_piece, left_edge, right_piece, right_edge))
+        except PatternError as exc:
+            self.canvas.sewStatusChanged.emit(str(exc))
+            return
+        self.refresh()
+        self.canvas.sewStatusChanged.emit("Edges sewn. Click two more edges to sew another pair; Esc exits.")
 
     def refresh(self, *, rebuild_pieces=True):
         self._refreshing = True

@@ -2268,6 +2268,19 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     }
                 )
                 continue
+        if kind == "pattern_design":
+            from nodes.pattern_design.spec import build_pattern_scene_asset
+
+            asset = build_pattern_scene_asset(src_item)
+            if asset is not None:
+                owner = asset["node"]
+                if not any(existing.get("node") == owner for existing in assets):
+                    asset["visible"] = owner not in hidden
+                    asset["xform"] = _lookup_xform(xforms, owner) or _identity_xform()
+                    if look_at_constraint is not None:
+                        asset["look_at_constraint"] = dict(look_at_constraint)
+                    assets.append(asset)
+            continue
         if _is_anim_retarget_kind(kind):
             try:
                 from nodes.anim_retarget import spec as _anim_retarget_spec  # type: ignore
@@ -4045,7 +4058,7 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(
                 self,
                 "Scene",
-            "Connect one or more 3D import, primitive, material, volume, UV unwrap, texture, texture layer, texture pro, camera, or light nodes first.",
+            "Connect a saved Pattern, 3D import, primitive, material, volume, UV unwrap, texture, texture layer, texture pro, camera, or light node first.",
             )
             return
         try:

@@ -109,6 +109,27 @@ def polygon_path(topo, start_triangle, end_triangle, *, loop=False):
     return [i for polygon in path for i in topo["polygon_triangles"][polygon]]
 
 
+def connected_face_elements(topo, elem):
+    """Select the polygon island using authored connectivity, retaining render IDs."""
+    mapping = topo.get("triangle_polygons", [])
+    index = int(elem.get("face_index", -1))
+    if not 0 <= index < len(mapping):
+        return [dict(elem)]
+    polygons, edge_faces, _ = edge_connectivity(topo)
+    visited, stack = set(), [int(mapping[index])]
+    while stack:
+        current = stack.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        vertices = polygons[current]
+        for a, b in zip(vertices, np.roll(vertices, -1)):
+            stack.extend(edge_faces[tuple(sorted((int(a), int(b))))] - visited)
+    indices = sorted(i for polygon in visited for i in topo["polygon_triangles"][polygon])
+    return [dict(elem, face_index=i, indices=tuple(int(v) for v in topo["triangles"][i]))
+            for i in indices]
+
+
 def polygon_selection(topo, anchor, target, *, loop=False):
     """One source for the hover preview and committed polygon selection."""
     if not isinstance(target, dict):

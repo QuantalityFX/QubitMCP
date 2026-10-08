@@ -2,12 +2,32 @@ from __future__ import annotations
 
 from copy import deepcopy
 import math
+from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from echograph.patterns.commands import move_point, translate_edges
 from echograph.patterns.document import PatternError
 from echograph.patterns.geometry import validate_piece
+
+SEW_COLORS = ("#f4a261", "#85d6ff", "#d5a6ff", "#a8e6a3", "#ff8eab", "#ffe082")
+
+
+def sew_icon():
+    icons = Path(__file__).resolve().parents[3] / "icons"
+    path = next((icons / name for name in ("Sewn_Icon.png", "Sew_Icon.png")
+                 if (icons / name).is_file()), icons / "Sew_Icon.png")
+    return QtGui.QIcon(str(path))
+
+
+def edge_path(piece, edge):
+    a, b = piece.point(edge.start), piece.point(edge.end)
+    path = QtGui.QPainterPath(QtCore.QPointF(a.x, a.y))
+    if edge.kind == "cubic":
+        path.cubicTo(*edge.controls[0], *edge.controls[1], b.x, b.y)
+    else:
+        path.lineTo(b.x, b.y)
+    return path
 
 
 def painter_path(piece):
@@ -139,10 +159,17 @@ class PatternCanvas(QtWidgets.QGraphicsView):
     panelsSelected = QtCore.Signal(str, bool, bool)
     pointsSelectionChanged = QtCore.Signal(object)
     fusePointsRequested = QtCore.Signal(object)
+    sewRequested = QtCore.Signal(str, str, str, str)
+    sewModeChanged = QtCore.Signal(bool)
+    sewStatusChanged = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setScene(QtWidgets.QGraphicsScene(self))
+        # Foreground sewing connectors span outside the moving panels' bounds.
+        # Partial item updates leave stale dash fragments between the panels;
+        # repaint the whole viewport so old and new overlays are cleared together.
+        self.setViewportUpdateMode(self.ViewportUpdateMode.FullViewportUpdate)
         self.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing | QtGui.QPainter.RenderHint.TextAntialiasing)
         self.setBackgroundBrush(QtGui.QColor("#151c27"))
         self.setTransformationAnchor(self.ViewportAnchor.AnchorUnderMouse)
@@ -169,6 +196,8 @@ class PatternCanvas(QtWidgets.QGraphicsView):
         self._selection_origin = None
         self._selection_item = None
         self._edge_drag = None
+        self.sewing = False
+        self._sew_source = None
         self.pointClicked.connect(self._on_point_clicked)
         self.setMinimumSize(400, 350)
 
@@ -181,6 +210,9 @@ class PatternCanvas(QtWidgets.QGraphicsView):
     def show_document(self, document, selected_id="", selected_points=None, selected_edge=None,
                       selected_panels=None, point_selection=None, edge_selection=None):
         self._document = document
+        available = {(p.id, edge.id) for p in document.pieces for edge in p.segments}
+        if self._sew_source not in available:
+            self._sew_source = None
         self.scene().clear()
         self._active_piece_id = selected_id
         self._draft_item = None
@@ -246,6 +278,7 @@ class PatternCanvas(QtWidgets.QGraphicsView):
     def start_point_merge(self, piece_id, point_id):
         if self._document is None:
             return
+        self.set_sew_mode(False)
         self.cancel_outline()
         self._merge_source = (piece_id, point_id)
         self.show_document(self._document, self._active_piece_id,
@@ -272,6 +305,9 @@ class PatternCanvas(QtWidgets.QGraphicsView):
         self.fitInView(box.adjusted(-45, -45, 45, 45), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
     def start_outline(self):
+        self.set_sew_mode(False)
+        if self._merge_source:
+            self.cancel_point_merge()
         self.drawing = True
         self.draft_points = []
         self.setCursor(QtCore.Qt.CursorShape.CrossCursor)
@@ -318,6 +354,10 @@ class PatternCanvas(QtWidgets.QGraphicsView):
             self._zoom_pivot_scene = self.mapToScene(event.position().toPoint())
             self._zoom_start_scale = abs(self.transform().m11())
             self.setCursor(QtCore.Qt.CursorShape.SizeVerCursor)
+            event.accept()
+            return
+        if self.sewing and event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self._sew_edge_clicked(self._edge_at(event.position().toPoint()))
             event.accept()
             return
         if self._merge_source and event.button() == QtCore.Qt.MouseButton.LeftButton:
@@ -489,12 +529,16 @@ class PatternCanvas(QtWidgets.QGraphicsView):
             return
         if event.button() == QtCore.Qt.MouseButton.MiddleButton:
             self._pan_origin = None
-            self.setCursor(QtCore.Qt.CursorShape.CrossCursor if self.drawing else QtCore.Qt.CursorShape.ArrowCursor)
+            self.setCursor(QtCore.Qt.CursorShape.CrossCursor if self.drawing or self.sewing else QtCore.Qt.CursorShape.ArrowCursor)
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
+        if self.sewing and event.key() == QtCore.Qt.Key.Key_Escape:
+            self.set_sew_mode(False)
+            event.accept()
+            return
         if self._edge_drag is not None and event.key() == QtCore.Qt.Key.Key_Escape:
             drag, self._edge_drag = self._edge_drag, None
             self.unsetCursor()
@@ -623,6 +667,9 @@ class PatternCanvas(QtWidgets.QGraphicsView):
         return None
 
     def mouseDoubleClickEvent(self, event):
+        if self.sewing:
+            event.accept()
+            return
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             edge = self._edge_at(event.position().toPoint())
             if edge:
@@ -662,3 +709,104 @@ class PatternCanvas(QtWidgets.QGraphicsView):
         painter.setPen(QtGui.QPen(QtGui.QColor("#496078"), 0))
         painter.drawLine(QtCore.QLineF(0, rect.top(), 0, rect.bottom()))
         painter.drawLine(QtCore.QLineF(rect.left(), 0, rect.right(), 0))
+
+    def set_sew_mode(self, enabled):
+        enabled = bool(enabled)
+        if enabled:
+            self.cancel_outline()
+            if self._merge_source:
+                self.cancel_point_merge()
+            self.setFocus()
+        self.sewing = enabled
+        self._sew_source = None
+        self.setCursor(QtCore.Qt.CursorShape.CrossCursor if enabled else QtCore.Qt.CursorShape.ArrowCursor)
+        self.sewModeChanged.emit(enabled)
+        self.sewStatusChanged.emit("Sew: click the first edge, then its partner. Esc exits." if enabled else "")
+        self.viewport().update()
+
+    def _sew_edge_clicked(self, edge):
+        if not edge or not self._document:
+            self.sewStatusChanged.emit("Sew: click near a panel edge.")
+            return
+        if edge == self._sew_source:
+            self._sew_source = None
+            self.sewStatusChanged.emit("Sew: first edge cleared. Click an edge to start again.")
+        elif self._sew_source is None:
+            self._sew_source = edge
+            self.sewStatusChanged.emit("Sew: first edge selected. Click the second edge.")
+        else:
+            source, self._sew_source = self._sew_source, None
+            self.sewRequested.emit(*source, *edge)
+        self.viewport().update()
+
+    def sewing_visuals(self):
+        """Scene paths follow each panel's current placement, including drag previews."""
+        if self._document is None:
+            return []
+        pairs = self._document.metadata.get("sew_pairs", [])
+        if not pairs:
+            return []
+        needed = {(pair[side + "_piece"], pair[side + "_edge"])
+                  for pair in pairs for side in ("left", "right")}
+        paths = {}
+        for item in self._piece_items:
+            for edge in item.piece.segments:
+                if (item.piece.id, edge.id) in needed:
+                    paths[item.piece.id, edge.id] = item.sceneTransform().map(edge_path(item.piece, edge))
+        visuals = []
+        for pair in pairs:
+            left = paths.get((pair["left_piece"], pair["left_edge"]))
+            right = paths.get((pair["right_piece"], pair["right_edge"]))
+            if left is not None and right is not None:
+                visuals.append((pair, left, right))
+        return visuals
+
+    def drawForeground(self, painter, rect):
+        super().drawForeground(painter, rect)
+        transform = painter.worldTransform()
+        painter.save()
+        painter.resetTransform()
+
+        def at(path, fraction):
+            return path.pointAtPercent(path.percentAtLength(path.length() * fraction))
+
+        def mark_edge(path, color, label):
+            painter.setPen(QtGui.QPen(color, 3))
+            painter.drawPath(path)
+            # Two transverse ticks stay readable at every canvas zoom level.
+            for fraction in (1 / 3, 2 / 3):
+                point = at(path, fraction)
+                tangent = at(path, min(1, fraction + .01)) - at(path, max(0, fraction - .01))
+                length = math.hypot(tangent.x(), tangent.y())
+                normal = QtCore.QPointF(-tangent.y(), tangent.x()) * (5.0 / max(length, 1e-9))
+                painter.drawLine(QtCore.QLineF(point - normal, point + normal))
+            if label:
+                font = painter.font()
+                font.setBold(True)
+                painter.setFont(font)
+                point = at(path, .5) + QtCore.QPointF(7, -9)
+                painter.setPen(QtGui.QPen(QtGui.QColor("#151c27"), 4))
+                metrics = QtGui.QFontMetricsF(font)
+                box = metrics.boundingRect(label).translated(point)
+                painter.fillRect(box.adjusted(-3, -2, 3, 2), QtGui.QColor("#151c27"))
+                painter.setPen(color)
+                painter.drawText(point, label)
+
+        for pair, left, right in self.sewing_visuals():
+            color = QtGui.QColor(SEW_COLORS[(pair["number"] - 1) % len(SEW_COLORS)])
+            left, right = transform.map(left), transform.map(right)
+            pen = QtGui.QPen(color, 1, QtCore.Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            for fraction in (.15, .5, .85):
+                painter.drawLine(QtCore.QLineF(at(left, fraction), at(right, 1 - fraction if pair["reverse"] else fraction)))
+            for path in (left, right):
+                mark_edge(path, color, str(pair["number"]))
+        if self._sew_source:
+            owner, edge_id = self._sew_source
+            item = next((item for item in self._piece_items if item.piece.id == owner), None)
+            if item:
+                edge = next((edge for edge in item.piece.segments if edge.id == edge_id), None)
+                if edge:
+                    path = transform.map(item.sceneTransform().map(edge_path(item.piece, edge)))
+                    mark_edge(path, QtGui.QColor("#ffe082"), "?")
+        painter.restore()

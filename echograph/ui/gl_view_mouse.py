@@ -430,6 +430,9 @@ def _mesh_connected_selection_elements(self, elem, *, mode: str = "", renderer=N
     topo = topo_get(owner) if callable(topo_get) else None
     if not isinstance(topo, dict):
         return [dict(elem)]
+    if mode == "face" and "triangle_polygons" in topo:
+        from .mesh_polygons import connected_face_elements
+        return connected_face_elements(topo, elem)
     try:
         points = np.asarray(topo.get("points"), dtype=np.float32).reshape(-1, 3)
         point_count = int(points.shape[0])

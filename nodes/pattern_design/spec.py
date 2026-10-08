@@ -50,6 +50,24 @@ def resolve_pattern_document(node_item) -> dict:
             "diagnostics": diagnostics}
 
 
+def build_pattern_scene_asset(node_item):
+    """Publish only saved, ready panels, using the standard Scene mesh loader."""
+    from echograph.patterns.mesh import cached_mesh
+
+    try:
+        resolved = resolve_pattern_document(node_item)
+        if not resolved["ready"]:
+            messages = [d["message"] for d in resolved["diagnostics"]]
+            raise PatternError(messages[0] if messages else "Add a closed panel and save the pattern first.")
+        path = cached_mesh(PatternDocument.from_dict(resolved["document"]))
+    except (OSError, PatternError) as exc:
+        node_item.model._pattern_scene_error = str(exc)
+        return None
+    node_item.model._pattern_scene_error = ""
+    return {"node": node_item.model.name, "path": str(path), "ext": ".obj",
+            "kind": "mesh", "source_kind": "pattern_design", "texture": ""}
+
+
 def build_ports(node_item):
     params = node_item.model.params
     if not any(p.get("name") == "pattern_path" for p in params):
@@ -119,8 +137,10 @@ class PatternNodeWidget(QtWidgets.QWidget):
         self.filename.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         layout.addWidget(self.filename)
 
-        from echograph.ui.pattern_editor.canvas import PatternCanvas
+        from echograph.ui.pattern_editor.canvas import PatternCanvas, sew_icon
         self.canvas = PatternCanvas()
+        self.canvas.sewRequested.connect(self._sew_requested)
+        self.canvas.sewStatusChanged.connect(self._sew_status_changed)
         self.canvas.setMinimumSize(500, 340)
         self.canvas.setMaximumHeight(420)
         self.canvas.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
@@ -176,6 +196,16 @@ class PatternNodeWidget(QtWidgets.QWidget):
         self.delete_points_button.setToolTip("Drag on empty canvas to box-select points, then delete. Shift-drag works anywhere.")
         self.delete_points_button.clicked.connect(self.delete_selected_points)
         drawing_row.addWidget(self.delete_points_button)
+        self.sew_button = QtWidgets.QToolButton()
+        self.sew_button.setText("Sew")
+        self.sew_button.setIcon(sew_icon())
+        self.sew_button.setIconSize(QtCore.QSize(22, 22))
+        self.sew_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.sew_button.setCheckable(True)
+        self.sew_button.setToolTip("Sew two edges: click the first edge, then its partner. Esc exits.")
+        self.sew_button.toggled.connect(self.canvas.set_sew_mode)
+        self.canvas.sewModeChanged.connect(self.sew_button.setChecked)
+        drawing_row.addWidget(self.sew_button)
         tools.addLayout(template_row)
         tools.addLayout(drawing_row)
         layout.addLayout(tools)
@@ -350,6 +380,23 @@ class PatternNodeWidget(QtWidgets.QWidget):
             return
         self.node_item.model._pattern_history = self.history
         self.refresh()
+
+    def _sew_requested(self, left_piece, left_edge, right_piece, right_edge):
+        from echograph.patterns.sewing import add_sew_pair
+
+        try:
+            self.history.edit("Sew edges", lambda doc: add_sew_pair(doc, left_piece, left_edge, right_piece, right_edge))
+        except PatternError as exc:
+            self.canvas.sewStatusChanged.emit(str(exc))
+            return
+        self.node_item.model._pattern_history = self.history
+        self.refresh()
+        self.canvas.sewStatusChanged.emit("Edges sewn. Click two more edges to sew another pair; Esc exits.")
+
+    def _sew_status_changed(self, text):
+        self._sew_status = text
+        if hasattr(self, "status"):
+            self.refresh()
 
     def add_rectangle(self):
         width, height = self.width_edit.value(), self.height_edit.value()
@@ -603,7 +650,10 @@ class PatternNodeWidget(QtWidgets.QWidget):
         if not isValid(self.node_item):
             return
         resolved = Path(path).resolve()
-        self.node_item._set_param_value("pattern_path", str(resolved), rebuild=False, notify_scene=True)
+        # Notify once, after save bookkeeping is complete. Immediate notification
+        # here rebuilt the connected Scene mesh inside the Save button handler,
+        # then _schedule_param_emit below triggered the same refresh again.
+        self.node_item._set_param_value("pattern_path", str(resolved), rebuild=False, notify_scene=False)
         self.node_item.model._pattern_history = self.history
         self.node_item.model._pattern_missing = False
         self.node_item.model._pattern_disk_hash = file_hash(resolved)
@@ -638,7 +688,15 @@ class PatternNodeWidget(QtWidgets.QWidget):
                 self.filename.setToolTip("Draw now. Your separate pattern file is created when you choose Save.")
                 problems = [p for piece in self.history.document.pieces for p in validate_piece(piece)]
                 status = f"{len(self.history.document.pieces)} panel(s); {len(problems)} issue(s); ready to draw"
+            status += "; save to update connected Scene geometry"
+            scene_error = getattr(self.node_item.model, "_pattern_scene_error", "")
+            if scene_error:
+                status += "; Scene: " + scene_error
             self.status.setText(status + ("; unsaved edits" if self.history.dirty else ""))
+            self.status.setToolTip(self.status.text())
+            if getattr(self, "_sew_status", ""):
+                self.status.setText(self._sew_status)
+                self.status.setToolTip(self._sew_status)
             document = self.history.document
             render_key = (self.history.generation, self._selected_id, tuple(sorted(self._selected_panels)), self._selected_edge_id, self._file_stat,
                           bool(self.canvas.drawing), bool(getattr(self, "_external_change", False)))

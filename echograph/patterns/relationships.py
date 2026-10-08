@@ -358,8 +358,15 @@ def reconcile_relationships(previous, document):
             if math.dist(world_point(pieces[piece_id], point_id), moved[0]) > 1e-7:
                 _move_world(pieces[piece_id], point_id, moved[0])
 
+    from .sewing import reconcile_sewing
+
+    reconcile_sewing(previous, document)
+
 
 def validate_relationships(document):
+    from .sewing import validate_sewing
+
+    validate_sewing(document)
     pieces = {p.id: p for p in document.pieces}
     active = set()
     seen = set()

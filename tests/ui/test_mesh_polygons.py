@@ -7,7 +7,7 @@ from PySide6 import QtCore
 
 from echograph.ui.gl_mgl_renderer import MGLRendererMixin
 from echograph.ui.gl_view import GraphGLView
-from echograph.ui.gl_view_mouse import mousePressEvent
+from echograph.ui.gl_view_mouse import mousePressEvent, _handle_mouse_double_click_moderngl, _mesh_connected_selection_elements
 from echograph.ui.mesh_polygons import polygon_path, expand_face_elements
 
 
@@ -29,6 +29,31 @@ def strip(count):
 
 
 class PolygonTests(unittest.TestCase):
+    def test_double_click_selects_connected_polygons_with_expanded_render_vertices(self):
+        topo = topology(strip(3) + [[6, 7, 17, 16]])
+        view = SimpleNamespace(_use_moderngl=True, _mesh_select_mode='face',
+            _handle_mouse_release_moderngl_click_pick_viewport=lambda **kwargs: (10, 10, 100, 100),
+            pick_mesh_element_at=lambda *args, **kwargs: dict(mode='face', owner='mesh', face_index=3),
+            _mgl_mesh_topology_for_owner=lambda owner: topo, _set_mesh_element_selection_many=Mock(),
+            _set_mesh_element_hover=Mock(), update=Mock())
+        view._mesh_connected_selection_elements = lambda elem, **kwargs: _mesh_connected_selection_elements(view, elem, **kwargs)
+        for mods, operation in ((QtCore.Qt.NoModifier, 'replace'), (QtCore.Qt.ShiftModifier, 'add'),
+                                (QtCore.Qt.ControlModifier, 'subtract')):
+            event = SimpleNamespace(button=lambda: QtCore.Qt.LeftButton, modifiers=lambda: mods, accept=Mock())
+            self.assertTrue(_handle_mouse_double_click_moderngl(view, event))
+            args = view._set_mesh_element_selection_many.call_args
+            self.assertEqual([elem['face_index'] for elem in args.args[0]], list(range(6)))
+            self.assertEqual(args.kwargs['selection_op'], operation)
+            self.assertIsNone(view._mgl_pick_press_pos)
+            event.accept.assert_called_once()
+
+    def test_double_click_triangles_stops_at_disconnected_island(self):
+        topo = topology([[0, 1, 11], [0, 11, 10], [5, 6, 16]])
+        view = SimpleNamespace(_mgl_mesh_topology_for_owner=lambda owner: topo)
+        selected = _mesh_connected_selection_elements(view,
+            dict(mode='face', owner='mesh', face_index=1), mode='face')
+        self.assertEqual([elem['face_index'] for elem in selected], [0, 1])
+
     def test_quad_and_ngon_preserve_boundary_and_expand_selection(self):
         topo = topology([[0, 1, 11, 10], [1, 2, 3, 13, 12, 11]])
         self.assertEqual([len(p) for p in topo['polygons']], [4, 6])

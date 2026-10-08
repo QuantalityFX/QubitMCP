@@ -826,6 +826,35 @@ class PatternEditorTests(unittest.TestCase):
 
 
 class PatternNodeTests(unittest.TestCase):
+    def test_save_sends_one_scene_notification_after_file_and_state_are_ready(self):
+        class Graph(QtWidgets.QGraphicsScene):
+            paramChanged = QtCore.Signal(str, object)
+
+            def set_node_params(self, name, params, **kwargs):
+                self.paramChanged.emit(name, params)
+
+        graph = Graph()
+        item = NodeItem(GraphNode("Pattern", kind="pattern_design",
+                                 params=[{"name": "pattern_path", "value": str(self.path)}]))
+        graph.addItem(item)
+        self.app.processEvents()
+        widget = next(proxy.widget() for proxy in item._plugin_proxies if isinstance(proxy.widget(), PatternNodeWidget))
+        notifications = []
+        graph.paramChanged.connect(lambda name, params: notifications.append(
+            (name, load_document(self.path)[0].to_dict(), widget.history.dirty)))
+        try:
+            widget.add_rectangle()
+            self.assertTrue(widget.save_pattern())
+            self.assertEqual(notifications, [])
+            QtTest.QTest.qWait(item._PARAM_EMIT_DEBOUNCE_MS + 100)
+            self.assertEqual(len(notifications), 1)
+            self.assertEqual(notifications[0][0], "Pattern")
+            self.assertEqual(notifications[0][1], widget.history.document.to_dict())
+            self.assertFalse(notifications[0][2])
+        finally:
+            graph.clear()
+            self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])

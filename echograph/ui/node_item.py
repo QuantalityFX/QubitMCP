@@ -3238,8 +3238,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = max(self._BASE_W, 260)
         elif kind in ("render", "render_sequence", "render node"):
             # Keep extra bottom frame space for Render node controls.
-            body_h = 198
-            node_w = self._BASE_W
+            body_h = max(198, getattr(self, "_render_node_body_h", 0))
+            # Graph connection updates also recompute the border without rebuilding
+            # its embedded controls. Preserve their measured width in either case.
+            node_w = max(self._BASE_W, self.width, getattr(self, "_render_node_min_w", 0))
         elif kind in ("video_player", "video player", "videoplayer"):
             # Keep extra bottom frame space for the Video Player preview controls.
             body_h = 188
@@ -3607,6 +3609,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             extra_pad = 0.0
         elif kind == "output":
             extra_pad = self._PADDING + 4.0
+        elif kind in ("render", "render_sequence", "render node"):
+            extra_pad = max(self._PADDING, 10.0)
         new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + extra_pad)
 
         if kind == "note":
