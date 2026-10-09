@@ -567,6 +567,8 @@ def _mesh_connected_selection_elements(self, elem, *, mode: str = "", renderer=N
 def _handle_mouse_press_moderngl(self, e):
     # ModernGL path: gizmo interaction, scene picking, and Alt camera controls.
     if self._use_moderngl:
+        if getattr(self, "_cloth_mouse_press", lambda event: False)(e):
+            return True
         try:
             if QtWidgets.QApplication.mouseGrabber() is self:
                 self.releaseMouse()
@@ -3130,6 +3132,8 @@ def _mouse_move_event_impl(self, e):
 
 def _handle_mouse_move_moderngl(self, e, _rot_dbg):
     if self._use_moderngl:
+        if getattr(self, "_cloth_mouse_move", lambda event: False)(e):
+            return True
         # cache mouse pos for ROT_SHARED hover (logical pixels, matches project_to_screen usage)
         try:
             mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
@@ -4910,6 +4914,8 @@ def _handle_mouse_release_rot_shared_axis(self, e, rot_shared):
 
 def _handle_mouse_release_moderngl(self, e):
     if self._use_moderngl:
+        if getattr(self, "_cloth_mouse_release", lambda event: False)(e):
+            return True
         if e.button() == QtCore.Qt.RightButton:
             self._handle_mouse_release_moderngl_right_button_nav()
         if self._handle_mouse_release_moderngl_retarget_drag(e):

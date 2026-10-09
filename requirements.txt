@@ -23,5 +23,6 @@ shiboken6==6.10.0
 soupsieve==2.8
 trimesh==4.11.0
 typing_extensions==4.15.0
+warp-lang==1.18.0
 youtube-transcript-api>=1.2.0
 yt-dlp>=2025.8.11

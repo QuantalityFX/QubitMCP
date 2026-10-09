@@ -44,6 +44,7 @@ AGENTS.md
 /echograph/QOpenGLWidget_example-main/
 /echograph/repos/
 /third_party/image-gs/
+/third_party/warp/
 /third_party/Wan2.2/
 /third_party/PriorMDM/
 /third_party/HandMDM/
@@ -78,6 +79,7 @@ AGENTS.md
 /tests/*
 !/tests/motion/
 !/tests/patterns/
+!/tests/physics/
 !/tests/ui/
 /tests/ui/*
 !/tests/ui/test_gizmo_qt_overlay.py

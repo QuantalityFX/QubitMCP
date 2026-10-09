@@ -4232,6 +4232,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["copy_to_points"] = dict(entry.get("copy_to_points") or {})
             if isinstance(entry.get("music_effects"), dict):
                 clean_entry["music_effects"] = dict(entry.get("music_effects") or {})
+            if isinstance(entry.get("cloth"), dict):
+                clean_entry["cloth"] = dict(entry["cloth"])
             if isinstance(entry.get("preview_context"), dict):
                 clean_entry["preview_context"] = dict(entry.get("preview_context") or {})
             elif isinstance(entry.get("__preview_context"), dict):

@@ -168,6 +168,7 @@ if /I "%SETUP_MODE%"=="wan22_video" (
 )
 
 call :install_requirements "%ROOT_PY%" "%MAIN_REQ%" "root requirements" || goto :fail
+call :check_cloth_runtime "%ROOT_PY%" || goto :fail
 
 call :check_ffmpeg_runtime "%ROOT_PY%"
 call :install_voice_deps "%ROOT_PY%" "root voice dependencies"
@@ -424,6 +425,20 @@ call :install_optional_deps "%PY%" "%KOKORO_CORE_DEPS%" "Kokoro-82M base package
 call :install_optional_deps "%PY%" "%KOKORO_JA_DEPS%" "Kokoro-82M Japanese tokenizer"
 call :install_optional_deps "%PY%" "%KOKORO_JA_DICT_DEPS%" "Kokoro-82M Japanese dictionary"
 call :install_optional_deps "%PY%" "%KOKORO_ZH_DEPS%" "Kokoro-82M Chinese tokenizer"
+exit /b 0
+
+:check_cloth_runtime
+set "PY=%~1"
+echo [setup] Checking Warp cloth runtime and CUDA devices...
+echo [setup] Checking Warp cloth runtime with %PY% >> "%LOG%"
+"%PY%" -m echograph.physics.gpu.runtime
+if errorlevel 1 (
+  echo [setup] ERROR: Warp runtime check failed. See the diagnostic above.
+  echo [setup] ERROR: Warp runtime check failed. >> "%LOG%"
+  exit /b 1
+)
+echo [setup] Cloth runtime check completed.
+echo [setup] Cloth runtime check completed. >> "%LOG%"
 exit /b 0
 
 :check_ffmpeg_runtime

@@ -1176,6 +1176,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if (self.model.kind or "").strip().lower() == "pattern_design":
             from nodes import pattern_design
             pattern_design.register()
+        if (self.model.kind or "").strip().lower() == "cloth_solver":
+            from nodes import cloth_solver
+            cloth_solver.register()
 
         # Ensure Curve spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("curve", "curve_primitive", "primitive_curve"):
@@ -3452,6 +3455,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             from nodes.pattern_design.spec import PATTERN_BODY_H, PATTERN_NODE_W
             body_h = max(PATTERN_BODY_H, getattr(self, "_pattern_min_h", 0))
             node_w = max(self._BASE_W, PATTERN_NODE_W, getattr(self, "_pattern_min_w", 0))
+        elif kind == "cloth_solver":
+            from nodes.cloth_solver.spec import CLOTH_BODY_H, CLOTH_NODE_W
+            body_h = max(CLOTH_BODY_H, getattr(self, "_cloth_min_h", 0))
+            node_w = max(self._BASE_W, CLOTH_NODE_W)
         elif kind in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
             body_h = 116
             node_w = max(self._BASE_W, 236)
@@ -5585,6 +5592,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 collector = getattr(_scene_spec, "_collect_assets", None)
                 if callable(collector):
                     return list(collector(self) or [])
+            if scene_kind == "cloth_solver":
+                from nodes.cloth_solver.spec import build_cloth_scene_asset
+                asset = build_cloth_scene_asset(self)
+                return [asset, *asset["cloth"].get("colliders", [])] if asset else []
             if scene_kind in groom_guide_sim_kinds:
                 try:
                     from nodes.groom_guide_sim import spec as _groom_guide_sim_spec  # type: ignore
@@ -6536,6 +6547,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         f"edge[{edge_idx}] add groom_guides node={asset.get('node', '')!r} "
                         f"guides={asset.get('guide_count', '')!r}"
                     )
+                continue
+            if kind == "cloth_solver":
+                from nodes.cloth_solver.spec import build_cloth_scene_asset
+                asset = build_cloth_scene_asset(src_item)
+                if asset:
+                    for entry in [asset, *asset["cloth"].get("colliders", [])]:
+                        entry = dict(entry)
+                        entry["xform"] = _lookup_xform(entry.get("node", "")) or _identity_xform()
+                        entry["visible"] = entry.get("node", "") not in hidden
+                        assets.append(entry)
                 continue
             if kind in groom_guide_sim_kinds:
                 try:

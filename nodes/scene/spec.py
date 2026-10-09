@@ -2268,6 +2268,19 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     }
                 )
                 continue
+        if kind == "cloth_solver":
+            from nodes.cloth_solver.spec import build_cloth_scene_asset
+
+            cloth_asset = build_cloth_scene_asset(src_item)
+            if cloth_asset is not None:
+                for asset in [cloth_asset, *cloth_asset["cloth"].get("colliders", [])]:
+                    owner = str(asset.get("node") or "")
+                    if owner and not any(existing.get("node") == owner for existing in assets):
+                        asset = dict(asset)
+                        asset["visible"] = owner not in hidden
+                        asset["xform"] = _lookup_xform(xforms, owner) or _identity_xform()
+                        assets.append(asset)
+            continue
         if kind == "pattern_design":
             from nodes.pattern_design.spec import build_pattern_scene_asset
 
@@ -5760,6 +5773,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 )
                 rows.append({"name": name, "path": path, "kind": row_kind, "has_skeleton": bool(has_skeleton)})
                 _append_look_at_target_row(asset, name)
+                if isinstance(asset.get("cloth"), dict):
+                    rows.append({"name": name, "path": path, "kind": "cloth_collider", "asset": asset,
+                                 "display": "Cloth collider", "indent": 1, "child": True, "parent": name})
                 if bool(has_skeleton):
                     rows.append(
                         {
@@ -5793,6 +5809,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 display_name = str(entry.get("display") or name).strip()
                 row_kind = str(entry.get("kind") or "mesh").strip().lower()
                 is_target_row = row_kind == "look_at_target"
+                is_cloth_row = row_kind == "cloth_collider"
+                is_input_row = is_target_row or is_cloth_row
                 is_child = bool(entry.get("child")) or row_kind == "skeleton"
                 if not is_child:
                     visible_row_number += 1
@@ -5904,6 +5922,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     name_edit.setToolTip(
                         "Drop an object or skeleton joint here, or paste a joint target such as Character/Skeleton/Head."
                     )
+                elif is_cloth_row:
+                    from nodes.cloth_solver.spec import ColliderOwnerEdit
+                    cfg = entry["asset"]["cloth"]
+                    solver_item = getattr(scene, "_node_items", {}).get(cfg["solver_node"])
+                    row_layout.addWidget(QtWidgets.QLabel("Collider"), 0)
+                    name_edit = ColliderOwnerEdit(solver_item) if solver_item is not None else QtWidgets.QLineEdit("Collider unavailable")
+                    name_edit.setObjectName("SceneClothColliderEdit")
                 else:
                     name_edit = QtWidgets.QLineEdit(display_name)
                     name_edit.setReadOnly(True)
@@ -5911,12 +5936,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 name_edit.setMinimumWidth(0)
                 name_edit.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
                 name_edit.setStyleSheet(
-                    "QLineEdit{background:rgba(15,23,42,0.55);color:#cbd5e1;border:1px solid #334155;border-radius:4px;padding:1px 6px;}" if is_target_row
+                    "QLineEdit{background:rgba(15,23,42,0.55);color:#cbd5e1;border:1px solid #334155;border-radius:4px;padding:1px 6px;}" if is_input_row
                     else "QLineEdit{background:transparent;color:#94a3b8;}" if is_child
                     else "QLineEdit{background:transparent;color:#e2e8f0;}"
                 )
-                name_edit.setFocusPolicy(QtCore.Qt.StrongFocus if is_target_row else QtCore.Qt.NoFocus)
-                name_edit.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False if is_target_row else True)
+                name_edit.setFocusPolicy(QtCore.Qt.StrongFocus if is_input_row else QtCore.Qt.NoFocus)
+                name_edit.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False if is_input_row else True)
                 name_edit.setProperty("scene_node_name", owner_name)
 
                 def _start_edit(edit=name_edit):
@@ -6084,7 +6109,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                                 self._edit._scene_start_edit()
                             except Exception:
                                 pass
-                        if et == QtCore.QEvent.MouseMove and self._row_kind != "look_at_target":
+                        if et == QtCore.QEvent.MouseMove and self._row_kind not in {"look_at_target", "cloth_collider"}:
                             try:
                                 if not bool(event.buttons() & QtCore.Qt.LeftButton):
                                     return False

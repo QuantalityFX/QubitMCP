@@ -52,6 +52,7 @@ from .gl_loaders import load_fbx_edge_vertices
 from .gl_loaders import load_gltf_mesh_arrays
 from .gl_loaders import load_model
 from .gl_loaders import load_obj_mesh_arrays
+from .gl_view_cloth import ClothViewportMixin
 from .gl_scene import MGLSceneItem
 from .gl_scene_lighting import SceneLightingMixin
 from .gl_shaders import SHADERS
@@ -192,7 +193,7 @@ def _mgl_grid(size: float, steps: int) -> NDArray:
     return grid
 
 
-class MGLRendererMixin(SceneLightingMixin):
+class MGLRendererMixin(ClothViewportMixin, SceneLightingMixin):
     def _mgl_timeline_fx_enabled(self) -> bool:
         try:
             return bool(getattr(self, "_timeline_fx_instances_enabled", True))
@@ -26175,6 +26176,8 @@ void main() {
         except Exception:
             pass
 
+        self._mgl_update_cloth()
+
         try:
             if self._mgl_update_skinned_splat_proxies():
                 if bool(getattr(self, "_mgl_render_splats", False)):
@@ -33944,6 +33947,16 @@ void main() {
 
                 model_item = None
                 wire_points = None
+                cloth_config = asset.get("cloth")
+                if isinstance(cloth_config, dict):
+                    # Use authored topology directly. OBJ importers can weld coincident
+                    # panels, which must remain distinct particles until sewn.
+                    mesh = None
+                    mesh_arrays = None
+                    points = (cloth_config["asset"].positions *
+                              float(cloth_config["settings"]["scene_units_per_meter"])).astype("f4")
+                    normals = np.tile(np.array([0, 0, 1], dtype="f4"), (len(points), 1))
+                    uvs = np.zeros((len(points), 2), dtype="f4")
                 if mesh is not None:
                     mesh.update_normals()
                     points = np.array(mesh.points(), dtype="f4")
@@ -34129,7 +34142,12 @@ void main() {
                                 wire_points = wire_sets[0]
                     else:
                         wire_points = self._mgl_edge_vertices_from_mesh(points)
-                        entry = self._mgl_build_mesh_entry(points, normals, uvs)
+                        entry = self._mgl_build_mesh_entry(points, normals, uvs,
+                            indices=cloth_config["asset"].triangles.ravel() if isinstance(cloth_config, dict) else None)
+                        if entry is not None and isinstance(cloth_config, dict):
+                            entry["_cloth_vertices"] = np.arange(len(points))
+                            entry["vertex_ids"] = np.arange(len(points))
+                            entry["topology_mesh"] = cloth_config["asset"].signature
                         if entry is None:
                             if material is not None:
                                 self._mgl_material_log(
@@ -34193,6 +34211,8 @@ void main() {
                         total_indices += int(entry.get("count", 0))
 
                 if model_item is not None:
+                    if isinstance(asset.get("cloth"), dict):
+                        model_item.payload["cloth"] = dict(asset["cloth"])
                     try:
                         self._mgl_store_mesh_topology_for_owner(owner, model_item.payload or {})
                     except Exception:

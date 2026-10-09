@@ -304,6 +304,7 @@ _NODE_KIND_SEARCH_HINTS = {
     "primitive": "basic mesh geometry shape",
     "curve": "curve spline path primitive",
     "pattern_design": "2d vector clothing garment sewing panel pattern drafting design",
+    "cloth_solver": "cloth fabric garment vellum xpbd physics simulation sew stretch bend collision gravity",
     "normals": "smooth normals mesh shading",
     "uv_unwrap": "uv unwrap texture coordinates",
     "texture": "image texture material",
@@ -616,7 +617,7 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._transforms_icon() or node_icons._object_select_icon() or node_icons._output_icon()
     elif key == "modeler":
         icon_pm = node_icons._object_select_icon() or node_icons._primitive_icon() or node_icons._output_icon()
-    elif key in ("primitive", "curve", "curve_primitive", "primitive_curve", "pattern_design"):
+    elif key in ("primitive", "curve", "curve_primitive", "primitive_curve", "pattern_design", "cloth_solver"):
         icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
     elif key == "html_preview":
         icon_pm = node_icons._html_preview_icon() or node_icons._output_icon()
@@ -788,7 +789,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit.setView(kind_popup_view)
         self._kinds = [
             "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","fbx_animation","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","image_gs_splat","skinned_volume_mesh","instance","copy_to_points","look_at","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","youtube_downloader","minimax_h3_video","minimax_h3_api_video","minimax_tts_api","wan22_video","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
-            "pattern_design", "priormdm", "mocap_collection", "delete_joint", "for_each", "for_each_end",
+            "pattern_design", "cloth_solver", "priormdm", "mocap_collection", "delete_joint", "for_each", "for_each_end",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "audio_capture",
