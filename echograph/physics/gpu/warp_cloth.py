@@ -140,6 +140,14 @@ class WarpProjector:
                      thickness, self.offsets, self.neighbors, self.correction, self.counts])
         self._launch(kernels.apply_contacts, n, [self.x, self.correction, self.counts])
 
+    def _body_contact(self, friction):
+        settings = self.solver.settings
+        margin = max(settings.thickness * (2 + settings.collision_quality), .02)
+        for collider in self.colliders:
+            self._launch(kernels.mesh_contact, len(self.x), [self.x, self.old, self.mass,
+                         collider.current, collider.previous, collider.faces, collider.bvh.id,
+                         settings.thickness, margin, friction])
+
     def _record_frame(self):
         settings = self.solver.settings
         n = len(self.x)
@@ -167,16 +175,14 @@ class WarpProjector:
                 quality = settings.collision_quality
                 passes = (iteration + 1) * quality // settings.iterations - iteration * quality // settings.iterations
                 for _ in range(passes):
-                    for collider in self.colliders:
-                        self._launch(kernels.mesh_contact, n, [self.x, self.old, self.mass,
-                                     collider.current, collider.previous, collider.faces, collider.bvh.id,
-                                     settings.thickness, max(settings.thickness * (2 + quality), .02),
-                                     settings.friction])
+                    self._body_contact(settings.friction)
                     if settings.self_collision:
                         self._self_contact()
                     if settings.ground:
                         self._launch(kernels.ground_contact, n, [self.x, self.old, self.mass,
                                      settings.ground_height + settings.thickness, settings.friction])
+            if settings.self_collision or settings.ground:
+                self._body_contact(0.0)
             self._launch(kernels.finish_substep, n, [self.x, self.old, self.velocity, self.mass, self.clock])
 
     def step(self, dt, colliders=()):

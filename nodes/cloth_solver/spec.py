@@ -3,9 +3,11 @@ import json
 from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
+from shiboken6 import isValid
 
 from nodes.core import Spec
 from echograph.physics.cloth import ClothSettings, build_cloth_asset
+from echograph.physics.cloth.placement import validate_placements
 from echograph.patterns.document import PatternError
 
 CLOTH_NODE_W = 350
@@ -55,6 +57,8 @@ def build_cloth_scene_asset(node_item):
                 raise ValueError()
         except (ValueError, TypeError):
             raise PatternError("Cloth pins must be a list of vertex indices.")
+        source_placements = validate_placements(json.loads(str(params(source.model).get("piece_transforms", "{}"))))
+        placements = {**source_placements, **validate_placements(json.loads(str(values.get("piece_transforms", "{}"))))}
         cache_path = str(values.get("cache_path", "") or "").strip()
         if cache_path and not Path(cache_path).is_absolute():
             window = _window(node_item)
@@ -66,14 +70,17 @@ def build_cloth_scene_asset(node_item):
                 "cloth": {"asset": asset, "settings": settings.to_dict(), "solver_node": model.name,
                           "pattern_owner": source.model.name, "pattern_path": resolved["path"],
                           "collider_owner": str(values.get("collider_owner", "")), "colliders": colliders,
-                          "pins": pins, "cache_path": cache_path, "node_model": model, "node_item": node_item}}
-    except (OSError, PatternError, ValueError, RuntimeError) as exc:
+                          "pins": pins, "piece_transforms": placements, "cache_path": cache_path,
+                          "node_model": model, "node_item": node_item},
+                "pattern_pieces": [{"id": p["id"], "name": p["name"]} for p in asset.pieces()]}
+    except (OSError, PatternError, ValueError, TypeError, RuntimeError) as exc:
         model._cloth_build_error = str(exc)
         return None
 
 
 def build_ports(node_item):
-    defaults = {**ClothSettings().to_dict(), "collider_owner": "", "pins": "[]", "cache_path": ""}
+    defaults = {**ClothSettings().to_dict(), "collider_owner": "", "pins": "[]", "cache_path": "",
+                "piece_transforms": "{}"}
     existing = params(node_item.model)
     for name, value in defaults.items():
         if name not in existing:
@@ -95,7 +102,10 @@ def build_ports(node_item):
 def set_value(node_item, name, value):
     # A Scene refresh can delete the originating outliner edit. Always finish
     # its event before emitting graph notifications and rebuilding widgets.
-    QtCore.QTimer.singleShot(0, lambda: node_item._set_param_value(name, str(value), rebuild=False))
+    def apply():
+        if isValid(node_item):
+            node_item._set_param_value(name, str(value), rebuild=False)
+    QtCore.QTimer.singleShot(0, apply)
 
 
 class ColliderOwnerEdit(QtWidgets.QLineEdit):
@@ -141,6 +151,57 @@ def request_command(node_item, action, **kwargs):
             widget.update()
 
 
+def _open_cache_dialog(node_item, save, action="bake"):
+    """Keep file pickers outside the replaceable graphics proxy widget."""
+    if not isValid(node_item) or node_item.scene() is None:
+        return
+    existing = getattr(node_item, "_cloth_cache_dialog", None)
+    if existing is not None and isValid(existing):
+        existing.raise_()
+        existing.activateWindow()
+        return
+    views = node_item.scene().views()
+    parent = views[0].window() if views else QtWidgets.QApplication.activeWindow()
+    if parent is not None and parent.graphicsProxyWidget() is not None:
+        parent = None
+    dialog = QtWidgets.QFileDialog(parent)
+    # Embedded graphics controls and native Windows modal dialogs can lose
+    # ownership/focus during graph refreshes. Use Qt's asynchronous browser.
+    dialog.setOption(QtWidgets.QFileDialog.DontUseNativeDialog)
+    dialog.setWindowTitle(("Bake cloth cache" if action == "bake" else "Save cloth state") if save else "Load cloth cache")
+    dialog.setNameFilter("Cloth cache (*.npz)")
+    dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptSave if save else QtWidgets.QFileDialog.AcceptOpen)
+    dialog.setFileMode(QtWidgets.QFileDialog.AnyFile if save else QtWidgets.QFileDialog.ExistingFile)
+    if save:
+        dialog.setDefaultSuffix("npz")
+        dialog.selectFile("cloth.cloth.npz")
+    dialog.setWindowModality(QtCore.Qt.WindowModal)
+    node_item._cloth_cache_dialog = dialog
+
+    def selected():
+        if not isValid(node_item) or node_item.scene() is None:
+            return
+        paths = dialog.selectedFiles()
+        if paths and paths[0]:
+            if save:
+                request_command(node_item, action, path=paths[0])
+            else:
+                set_value(node_item, "cache_path", paths[0])
+                request_command(node_item, "load_cache", path=paths[0])
+
+    def finished(_result):
+        if getattr(node_item, "_cloth_cache_dialog", None) is dialog:
+            node_item._cloth_cache_dialog = None
+        dialog.deleteLater()
+
+    dialog.accepted.connect(selected)
+    dialog.finished.connect(finished)
+    node_item.destroyed.connect(dialog.reject)
+    # No nested event loop inside a proxy button signal. The node item keeps
+    # the dialog alive even when a graph refresh replaces the originating body.
+    dialog.open()
+
+
 class ClothWidget(QtWidgets.QWidget):
     def __init__(self, node_item):
         super().__init__()
@@ -158,6 +219,9 @@ class ClothWidget(QtWidgets.QWidget):
             "QPushButton{background:#1e293b;color:#e2e8f0;border:1px solid #334155;"
             "border-radius:4px;padding:4px;}"
             "QPushButton:hover{background:#334155;}"
+            "QPushButton#ClothBakeStopButton:enabled{background:#b91c1c;color:#fee2e2;border-color:#ef4444;}"
+            "QPushButton#ClothBakeStopButton:enabled:hover{background:#dc2626;}"
+            "QPushButton#ClothBakeStopButton:enabled:pressed{background:#991b1b;}"
         )
         values = params(node_item.model)
         settings = ClothSettings.from_dict(values)
@@ -199,6 +263,13 @@ class ClothWidget(QtWidgets.QWidget):
             ("Start frame", "start_frame", 0, 100000, None, ""),
             ("End frame / bake", "end_frame", 0, 100000, None, ""),
         ]
+        hints = {
+            "substeps": "More substeps reduce motion per solve step. Try 8 for dressing, or 16 for fast body motion.",
+            "collision_quality": "More contact passes improve separation around folds and tight body features. Try 4; higher values take longer.",
+            "thickness": "Surface clearance in meters, also used for self collision. 0.003 m is 3 mm; try 0.003–0.005 m for body clearance.",
+            "scene_units_per_meter": "Use 1 for a scene modeled in meters, or 100 for centimeters. This also affects collision thickness and gravity.",
+            "seam_seconds": "Increase the closure time to pull sewn edges together more gently. Try 1–2 seconds when sewing around a body.",
+        }
         for title, name, low, high, decimals, suffix in controls:
             group = ("Simulation" if name in {"gravity_y", "substeps", "iterations", "fps", "start_frame", "end_frame"}
                      else "Collision" if name in {"thickness", "friction", "mesh_spacing_mm", "scene_units_per_meter", "collision_quality"}
@@ -209,6 +280,9 @@ class ClothWidget(QtWidgets.QWidget):
                 spin.setDecimals(decimals)
                 spin.setSingleStep(0.01 if high <= 1 else 1)
             spin.setSuffix(suffix)
+            help_text = hints.get(name)
+            if help_text:
+                spin.setToolTip(help_text)
             spin.setKeyboardTracking(False)
             spin.setValue(getattr(settings, name))
             spin.valueChanged.connect(lambda value, key=name: set_value(node_item, key, value))
@@ -231,6 +305,8 @@ class ClothWidget(QtWidgets.QWidget):
         layout.addLayout(buttons)
         for title, action in [("Play / Pause", "toggle"), ("Step", "step"), ("Reset", "reset")]:
             button = QtWidgets.QPushButton(title)
+            if action == "toggle":
+                button.setToolTip("Play or pause live simulation. During a bake, stop and save completed frames.")
             button.clicked.connect(lambda checked=False, key=action: request_command(node_item, key))
             buttons.addWidget(button)
         pin_buttons = QtWidgets.QHBoxLayout()
@@ -244,14 +320,34 @@ class ClothWidget(QtWidgets.QWidget):
         layout.addLayout(cache_buttons)
         for title, slot in [("Bake…", self._bake), ("Load cache…", self._load_cache), ("Clear cache", self._clear_cache)]:
             button = QtWidgets.QPushButton(title)
+            button.setToolTip("Bake the Start–End range from the arranged pattern. Stop & save keeps completed frames."
+                              if title == "Bake…" else "Load a saved pose or animation cache." if title == "Load cache…"
+                              else "Unload the cache and return to the arranged pattern.")
             button.clicked.connect(slot)
             cache_buttons.addWidget(button)
+        save_buttons = QtWidgets.QHBoxLayout()
+        layout.addLayout(save_buttons)
+        save_state = QtWidgets.QPushButton("Save state…")
+        save_state.setToolTip("Pause and save the current cloth pose and velocity. Load it later; Play continues the simulation.")
+        save_state.clicked.connect(self._save_state)
+        save_buttons.addWidget(save_state)
+        self.stop_bake = QtWidgets.QPushButton("Stop & save")
+        self.stop_bake.setObjectName("ClothBakeStopButton")
+        self.stop_bake.setToolTip("Stop baking after the current solve and save every completed frame.")
+        self.stop_bake.clicked.connect(lambda: request_command(node_item, "stop"))
+        self.stop_bake.setEnabled(bool(getattr(node_item.model, "_cloth_baking", False)))
+        save_buttons.addWidget(self.stop_bake)
+        self.cache_file = QtWidgets.QLineEdit(str(params(node_item.model).get("cache_path", "")))
+        self.cache_file.setReadOnly(True)
+        self.cache_file.setPlaceholderText("No cache loaded")
+        self.cache_file.setToolTip("Current cloth cache. Use Load cache to browse for a saved pose or animation.")
+        layout.addWidget(self.cache_file)
         self.status = QtWidgets.QLabel("Connect a saved pattern, then connect cloth to Scene.")
         self.status.setWordWrap(True)
         self.status.setFixedHeight(64)
         self.status.setStyleSheet("color:#94a3b8")
         layout.addWidget(self.status)
-        tip = QtWidgets.QLabel("Position the cloth, then Reset. Enable mouse grab to pull it while running. Alt still navigates the camera.")
+        tip = QtWidgets.QLabel("Select named pieces in the Scene outliner to arrange the garment. Reset uses those placements. Save state keeps a draped pose; Bake records a range. Alt navigates the camera.")
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#94a3b8; font-size:10px")
         layout.addWidget(tip)
@@ -261,20 +357,29 @@ class ClothWidget(QtWidgets.QWidget):
         self.timer.start()
 
     def _status(self):
+        self.stop_bake.setEnabled(bool(getattr(self.node_item.model, "_cloth_baking", False)))
+        path = str(params(self.node_item.model).get("cache_path", ""))
+        if self.cache_file.text() != path:
+            self.cache_file.setText(path)
+            self.cache_file.setToolTip(path or "No cache loaded")
         text = getattr(self.node_item.model, "_cloth_build_error", "") or getattr(self.node_item.model, "_cloth_status", "")
         if text:
             self.status.setText(str(text))
             self.status.setToolTip(str(text))
 
     def _bake(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Bake cloth cache", "cloth.cloth.npz", "Cloth cache (*.npz)")
-        if path:
-            request_command(self.node_item, "bake", path=path)
+        node_item = self.node_item
+        QtCore.QTimer.singleShot(0, lambda: _open_cache_dialog(node_item, save=True))
 
     def _load_cache(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load cloth cache", "", "Cloth cache (*.npz)")
-        if path:
-            set_value(self.node_item, "cache_path", path)
+        node_item = self.node_item
+        request_command(node_item, "pause")
+        QtCore.QTimer.singleShot(0, lambda: _open_cache_dialog(node_item, save=False))
+
+    def _save_state(self):
+        node_item = self.node_item
+        request_command(node_item, "pause")
+        QtCore.QTimer.singleShot(0, lambda: _open_cache_dialog(node_item, save=True, action="save"))
 
     def _clear_cache(self):
         set_value(self.node_item, "cache_path", "")

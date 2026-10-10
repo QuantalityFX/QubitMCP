@@ -86,7 +86,7 @@ def triangle_bounds(x: wp.array(dtype=wp.vec3), previous: wp.array(dtype=wp.vec3
 
 
 @wp.func
-def closest_triangle(p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3):
+def closest_triangle(p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, inside_tolerance: float):
     ab, ac = b - a, c - a
     cross = wp.cross(ab, ac)
     norm2 = wp.dot(cross, cross)
@@ -97,7 +97,7 @@ def closest_triangle(p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3):
     denominator = wp.max(aa * cc - bb * bb, 1.0e-30)
     u = (cc * wp.dot(ap, ab) - bb * wp.dot(ap, ac)) / denominator
     v = (aa * wp.dot(ap, ac) - bb * wp.dot(ap, ab)) / denominator
-    inside = u >= 0.0 and v >= 0.0 and u + v <= 1.0 and norm2 > 1.0e-24
+    inside = u >= -inside_tolerance and v >= -inside_tolerance and u + v <= 1.0 + inside_tolerance and norm2 > 1.0e-24
     # Construct from the face instead of subtracting a large swept distance from
     # p. Float32 cancellation otherwise leaves a resolved contact slightly inside
     # its margin and applies friction again on the following contact pass.
@@ -112,6 +112,33 @@ def closest_triangle(p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3):
         if wp.length_sq(p - candidate) < wp.length_sq(p - nearest):
             nearest = candidate
     return nearest, normal, inside
+
+
+@wp.func
+def inward_sweep(before: wp.vec3, point: wp.vec3, previous_a: wp.vec3, previous_b: wp.vec3,
+                 previous_c: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3,
+                 old_signed: float, signed: float):
+    result = bool(False)
+    if old_signed >= 0.0 and signed < 0.0:
+        fraction = old_signed / wp.max(old_signed - signed, 1.0e-30)
+        ab_change = b - a - (previous_b - previous_a)
+        ac_change = c - a - (previous_c - previous_a)
+        if wp.length_sq(ab_change) + wp.length_sq(ac_change) > 1.0e-12:
+            lo, hi = float(0.0), float(1.0)
+            for step in range(16):
+                mid = (lo + hi) * 0.5
+                ma, mb, mc = wp.lerp(previous_a, a, mid), wp.lerp(previous_b, b, mid), wp.lerp(previous_c, c, mid)
+                mp = wp.lerp(before, point, mid)
+                if wp.dot(mp - ma, wp.cross(mb - ma, mc - ma)) > 0.0:
+                    lo = mid
+                else:
+                    hi = mid
+            fraction = (lo + hi) * 0.5
+        hit = wp.lerp(before, point, fraction)
+        ha, hb, hc = wp.lerp(previous_a, a, fraction), wp.lerp(previous_b, b, fraction), wp.lerp(previous_c, c, fraction)
+        nearest, normal, inside = closest_triangle(hit, ha, hb, hc, 1.0e-6)
+        result = inside
+    return result
 
 
 @wp.kernel
@@ -131,28 +158,20 @@ def mesh_contact(x: wp.array(dtype=wp.vec3), old: wp.array(dtype=wp.vec3),
         motion = wp.vec3(0.0)
         while wp.bvh_query_next(query, face):
             a, b, c = faces[face, 0], faces[face, 1], faces[face, 2]
-            nearest, normal, inside = closest_triangle(p, surface[a], surface[b], surface[c])
+            nearest, normal, inside = closest_triangle(p, surface[a], surface[b], surface[c], 0.0)
             delta = p - nearest
             distance = wp.length(delta)
             signed = wp.dot(delta, normal)
-            old_signed = wp.dot(before - previous[a], normal)
-            divisor = float(1.0)
-            if wp.abs(old_signed - signed) > 1.0e-12:
-                divisor = old_signed - signed
-            fraction = old_signed / divisor
-            hit = wp.lerp(before, p, fraction)
-            hit_nearest, hit_normal, hit_inside = closest_triangle(hit, surface[a], surface[b], surface[c])
-            swept = old_signed * signed < 0.0 and fraction >= 0.0 and fraction <= 1.0 and hit_inside
+            old_cross = wp.cross(previous[b] - previous[a], previous[c] - previous[a])
+            old_normal = old_cross / wp.max(wp.length(old_cross), 1.0e-30)
+            old_signed = wp.dot(before - previous[a], old_normal)
+            swept = inward_sweep(before, p, previous[a], previous[b], previous[c],
+                                 surface[a], surface[b], surface[c], old_signed, signed)
             penetrated = inside and signed < 0.0 and signed > -margin
             if swept or distance < thickness or penetrated:
-                side = float(1.0)
-                if old_signed < 0.0:
-                    side = -1.0
-                if penetrated and not swept:
-                    side = 1.0
                 direction = delta / wp.max(distance, 1.0e-12)
                 if swept or penetrated or distance < 1.0e-10:
-                    direction = normal * side
+                    direction = normal
                 candidate = nearest + direction * thickness
                 depth = wp.length_sq(candidate - p)
                 if depth > deepest:
@@ -194,7 +213,7 @@ def self_face_contact(x: wp.array(dtype=wp.vec3), old: wp.array(dtype=wp.vec3),
     while wp.bvh_query_next(query, face):
         a, b, c = faces[face, 0], faces[face, 1], faces[face, 2]
         if not adjacent(i, a, offsets, neighbors) and not adjacent(i, b, offsets, neighbors) and not adjacent(i, c, offsets, neighbors):
-            nearest, normal, inside = closest_triangle(p, x[a], x[b], x[c])
+            nearest, normal, inside = closest_triangle(p, x[a], x[b], x[c], 0.0)
             delta = p - nearest
             distance = wp.length(delta)
             if distance < thickness:

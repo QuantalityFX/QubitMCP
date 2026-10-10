@@ -17576,6 +17576,9 @@ void main() {
         return None, None
 
     def _mgl_get_scene_asset_xform(self, owner: str):
+        panel_xform = self._cloth_panel_get_xform(owner)
+        if panel_xform is not None:
+            return panel_xform
         owner_key = str(owner or "").strip()
         d = getattr(self, "_mgl_scene_xforms_by_owner", None)
         if not isinstance(d, dict):
@@ -17871,6 +17874,8 @@ void main() {
         if not owner:
             return
         if np is None:
+            return
+        if self._cloth_panel_set_xform(owner, pos=pos, rot=rot, scl=scl):
             return
         owner_norm = str(owner).strip().lower()
 
@@ -20673,6 +20678,9 @@ void main() {
         topo_map[owner_key] = topo
 
     def _mgl_scene_owner_visible(self, owner: str) -> bool:
+        panel = self._cloth_panel_info(owner)
+        if panel is not None:
+            return self._mgl_scene_owner_visible(panel[0])
         owner_key = str(owner or "").strip().lower()
         if not owner_key:
             return False
@@ -21926,6 +21934,8 @@ void main() {
         except Exception:
             pass
         if mode == "object":
+            owner = self._cloth_piece_for_face(owner, int(best.get("face_index", -1)))
+            self._mgl_last_pick_owner = owner
             return {
                 "mode": "object",
                 "owner": owner,

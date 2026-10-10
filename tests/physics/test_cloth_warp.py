@@ -150,6 +150,74 @@ class WarpParityTests(unittest.TestCase):
         self.assert_cuda_matches(cpu, gpu)
         self.assertIsNot(gpu._accelerator.graph, graph)
 
+    def test_cuda_recovered_points_are_not_pulled_back_inside_body(self):
+        asset = build_cloth_asset(PatternDocument(pieces=[rectangle("Panel", 100, 100)]), 25)
+        rest = asset.positions[:, [0, 2, 1]].copy()
+        rest[:, 1] = -.001
+        settings = ClothSettings(gravity_y=0, damping=0, stretch=0, bend=0, self_collision=False,
+                                 substeps=1, iterations=1, collision_quality=4)
+        cpu, gpu = self.solvers(settings, rest, asset)
+        collider = MeshCollider(np.array([[-1, 0, -1], [0, 0, 1], [1, 0, -1]]), [[0, 1, 2]])
+        for solver in (cpu, gpu):
+            solver.step(colliders=[collider])
+            self.assertGreaterEqual(solver.x[:, 1].min(), settings.thickness - 1e-6)
+        self.assert_cuda_matches(cpu, gpu)
+
+    def test_cuda_allows_outward_escape_from_body(self):
+        asset = build_cloth_asset(PatternDocument(pieces=[rectangle("Panel", 100, 100)]), 25)
+        rest = asset.positions[:, [0, 2, 1]].copy()
+        rest[:, 1] = -.001
+        settings = ClothSettings(gravity_y=0, damping=0, stretch=0, bend=0, self_collision=False,
+                                 substeps=1, iterations=1, collision_quality=1)
+        cpu, gpu = self.solvers(settings, rest, asset)
+        collider = MeshCollider(np.array([[-1, 0, -1], [0, 0, 1], [1, 0, -1]]), [[0, 1, 2]])
+        for solver in (cpu, gpu):
+            solver.velocity[:, 1] = .011 * settings.fps
+            solver.step(colliders=[collider])
+            np.testing.assert_allclose(solver.x[:, 1], .01, atol=1e-6)
+        self.assert_cuda_matches(cpu, gpu)
+
+    def test_cuda_body_clearance_is_preserved_after_self_contact(self):
+        a, b = rectangle("A", 100, 100), rectangle("B", 100, 100)
+        asset = build_cloth_asset(PatternDocument(pieces=[a, b]), 25)
+        rest = asset.positions[:, [0, 2, 1]].copy()
+        rest[:, 1] = .0021
+        rest[np.asarray(asset.vertex_pieces) == b.id, 1] += .0001
+        settings = ClothSettings(gravity_y=0, stretch=0, bend=0, substeps=1, iterations=1, collision_quality=1)
+        cpu, gpu = self.solvers(settings, rest, asset)
+        collider = MeshCollider(np.array([[-1, 0, -1], [0, 0, 1], [1, 0, -1]]), [[0, 1, 2]])
+        for solver in (cpu, gpu):
+            solver.step(colliders=[collider])
+            self.assertGreaterEqual(solver.x[:, 1].min(), settings.thickness - 1e-6)
+        self.assert_cuda_matches(cpu, gpu)
+
+    def test_cuda_sideways_moving_triangle_is_tested_at_contact_pose(self):
+        settings = ClothSettings(gravity_y=0, stretch=0, bend=0, self_collision=False, friction=0,
+                                 substeps=1, iterations=1, collision_quality=1)
+        cpu, gpu = self.solvers(settings)
+        previous = np.array([[-.26, -.1, -.06], [-.2, -.1, .06], [-.14, -.1, -.06]])
+        collider = MeshCollider(previous + [.4, .2, 0], [[0, 1, 2]], previous)
+        for solver in (cpu, gpu):
+            solver.step(colliders=[collider])
+            self.assertGreaterEqual(solver.x[0, 1], .102 - 1e-6)
+        self.assert_cuda_matches(cpu, gpu)
+
+    def test_cuda_rotating_body_uses_contact_pose_and_previous_normal(self):
+        settings = ClothSettings(gravity_y=0, stretch=0, bend=0, self_collision=False, friction=0,
+                                 substeps=1, iterations=1, collision_quality=1)
+        cpu, gpu = self.solvers(settings)
+        previous = np.array([[-1, -1, -.1], [1, -1, -.1], [0, 1, -.1]])
+        angle = np.pi / 3
+        rotation = np.array([[1, 0, 0], [0, np.cos(angle), -np.sin(angle)], [0, np.sin(angle), np.cos(angle)]])
+        current = previous @ rotation.T + [0, 0, .2]
+        collider = MeshCollider(current, [[0, 1, 2]], previous)
+        normal = np.cross(current[1] - current[0], current[2] - current[0])
+        normal /= np.linalg.norm(normal)
+        for solver in (cpu, gpu):
+            solver.step(colliders=[collider])
+            self.assertGreaterEqual(np.dot(solver.x[0] - current[0], normal), settings.thickness - 1e-6)
+        self.assert_cuda_matches(cpu, gpu)
+
 
 if __name__ == "__main__":
     unittest.main()

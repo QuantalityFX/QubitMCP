@@ -5,7 +5,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 
-def closest_points(points, triangles):
+def closest_points(points, triangles, inside_tolerance=0.0):
     """Closest surface points for broadcast pairs (including triangle edges)."""
     a, b, c = triangles[:, 0], triangles[:, 1], triangles[:, 2]
     ab, ac = b - a, c - a
@@ -17,7 +17,7 @@ def closest_points(points, triangles):
     denominator = d00 * d11 - d01 * d01
     u = (d11 * np.sum(ap * ab, axis=1) - d01 * np.sum(ap * ac, axis=1)) / np.maximum(denominator, 1e-30)
     v = (d00 * np.sum(ap * ac, axis=1) - d01 * np.sum(ap * ab, axis=1)) / np.maximum(denominator, 1e-30)
-    inside = (u >= 0) & (v >= 0) & (u + v <= 1) & (norm2 > 1e-24)
+    inside = (u >= -inside_tolerance) & (v >= -inside_tolerance) & (u + v <= 1 + inside_tolerance) & (norm2 > 1e-24)
     candidates = []
     for start, end in ((a, b), (b, c), (c, a)):
         edge = end - start
@@ -76,6 +76,7 @@ class TriangleBroadphase:
 
 @dataclass
 class MeshCollider:
+    """Oriented body surface: resolve inward crossings and allow outward escape."""
     vertices: np.ndarray
     triangles: np.ndarray
     previous: np.ndarray | None = None
@@ -121,23 +122,48 @@ class MeshCollider:
         delta = x[rows] - nearest
         distance = np.linalg.norm(delta, axis=1)
         signed = np.sum(delta * normal, axis=1)
-        old_signed = np.sum((old[rows] - surface[:, 0]) * normal, axis=1)
+        previous_surface = surface
+        old_normal = normal
         if self.previous is not None and self.previous.shape == self.vertices.shape:
             previous_surface = self.previous[self.triangles[faces]]
-            old_signed = np.sum((old[rows] - previous_surface[:, 0]) * normal, axis=1)
+            old_normal = np.cross(previous_surface[:, 1] - previous_surface[:, 0],
+                                  previous_surface[:, 2] - previous_surface[:, 0])
+            old_normal /= np.maximum(np.linalg.norm(old_normal, axis=1)[:, None], 1e-30)
+        old_signed = np.sum((old[rows] - previous_surface[:, 0]) * old_normal, axis=1)
         # Crossing within the face catches fast cloth motion; small penetration
         # with outward winding also recovers cloth overtaken by a moving body.
-        fraction = old_signed / np.where(np.abs(old_signed - signed) > 1e-12, old_signed - signed, 1)
-        hit = old[rows] + (x[rows] - old[rows]) * fraction[:, None]
-        _, _, swept_inside = closest_points(hit, surface)
-        swept = (old_signed * signed < 0) & (fraction >= 0) & (fraction <= 1) & swept_inside
+        # Body contacts are one-sided. Re-testing an outward escape against the
+        # old substep position must not pull a recovered point back into the body.
+        swept = np.zeros(len(rows), dtype=bool)
+        crossing = np.flatnonzero((old_signed >= 0) & (signed < 0))
+        if len(crossing):
+            start, end = previous_surface[crossing], surface[crossing]
+            fraction = old_signed[crossing] / np.maximum(old_signed[crossing] - signed[crossing], 1e-30)
+            edge_change = (end[:, 1:] - end[:, :1]) - (start[:, 1:] - start[:, :1])
+            deforming = np.flatnonzero(np.sum(edge_change * edge_change, axis=(1, 2)) > 1e-12)
+            if len(deforming):
+                # Rotation/deformation makes signed plane distance nonlinear.
+                # Locate the crossing using the actual interpolated triangle.
+                lo, hi = np.zeros(len(deforming)), np.ones(len(deforming))
+                d = crossing[deforming]
+                for _ in range(16):
+                    mid = (lo + hi) * .5
+                    pose = start[deforming] * (1 - mid[:, None, None]) + end[deforming] * mid[:, None, None]
+                    point = old[rows[d]] * (1 - mid[:, None]) + x[rows[d]] * mid[:, None]
+                    plane = np.cross(pose[:, 1] - pose[:, 0], pose[:, 2] - pose[:, 0])
+                    positive = np.sum((point - pose[:, 0]) * plane, axis=1) > 0
+                    lo = np.where(positive, mid, lo)
+                    hi = np.where(positive, hi, mid)
+                fraction[deforming] = (lo + hi) * .5
+            hit = old[rows[crossing]] * (1 - fraction[:, None]) + x[rows[crossing]] * fraction[:, None]
+            pose = start * (1 - fraction[:, None, None]) + end * fraction[:, None, None]
+            _, _, swept_inside = closest_points(hit, pose, inside_tolerance=1e-6)
+            swept[crossing] = swept_inside
         close = distance < thickness
         penetrated = inside & (signed < 0) & (signed > -max(thickness * (2 + quality), 0.02))
         active = swept | close | penetrated
-        side = np.where(old_signed < 0, -1.0, 1.0)
-        side[penetrated & ~swept] = 1.0
         direction = delta / np.maximum(distance[:, None], 1e-12)
-        direction[swept | penetrated | (distance < 1e-10)] = (normal * side[:, None])[swept | penetrated | (distance < 1e-10)]
+        direction[swept | penetrated | (distance < 1e-10)] = normal[swept | penetrated | (distance < 1e-10)]
         target = nearest + direction * thickness
         # Resolve the deepest contact per vertex each pass; later passes handle corners.
         correction = np.linalg.norm(target - x[rows], axis=1)

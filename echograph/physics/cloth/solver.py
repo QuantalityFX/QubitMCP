@@ -262,6 +262,13 @@ class ClothSolver:
                             self.x[active, 1] = self.settings.ground_height + self.settings.thickness
                             self.x[active, 0::2] -= (self.x[active, 0::2] - old[active, 0::2]) * self.settings.friction
                 self.x[self.pins] = self.rest[self.pins]
+            if self.settings.self_collision or self.settings.ground:
+                # Finish the substep with body clearance after all constraints.
+                # One guard pass avoids doubling the configured contact budget
+                # or applying friction a second time.
+                for collider in sampled:
+                    collider.project(self.x, old, self.inverse_mass, self.settings.thickness,
+                                     0.0, self.settings.collision_quality)
             self.velocity = (self.x - old) / h
             self.velocity[self.pins] = 0
             self.time += h

@@ -567,8 +567,6 @@ def _mesh_connected_selection_elements(self, elem, *, mode: str = "", renderer=N
 def _handle_mouse_press_moderngl(self, e):
     # ModernGL path: gizmo interaction, scene picking, and Alt camera controls.
     if self._use_moderngl:
-        if getattr(self, "_cloth_mouse_press", lambda event: False)(e):
-            return True
         try:
             if QtWidgets.QApplication.mouseGrabber() is self:
                 self.releaseMouse()
@@ -580,13 +578,22 @@ def _handle_mouse_press_moderngl(self, e):
         except Exception:
             alt_pressed = False
         mesh_element_mode = False
+        mesh_object_mode = False
         try:
             mode = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
             mesh_element_mode = mode in {"object", "point", "edge", "face"}
+            mesh_object_mode = mode == "object"
         except Exception:
             mesh_element_mode = False
         mask_paint_press = getattr(self, "_handle_mask_paint_press", None)
         if callable(mask_paint_press) and mask_paint_press(e):
+            return True
+        # Object selections include individual pattern panels. Their handles
+        # must be picked before ordinary selection or interactive cloth grabs.
+        if mesh_object_mode and not alt_pressed and e.button() == QtCore.Qt.LeftButton:
+            if self._handle_mouse_press_moderngl_left_gizmo(e):
+                return True
+        if getattr(self, "_cloth_mouse_press", lambda event: False)(e):
             return True
         try:
             box_select_active = bool(self._mesh_box_select_active_mode())
@@ -5339,6 +5346,13 @@ def _handle_mouse_release_moderngl_click_pick_owner(self, *, e, renderer, select
                 pass
         return None
     pick_hit = getattr(renderer, "pick_hit_at", None)
+    # Panel placement also works with the default object click picker. Use the
+    # actual triangle hit so another object in front still receives the click.
+    if not mode and any(isinstance(i.payload.get("cloth"), dict)
+                        for i in getattr(renderer, "_cloth_items", lambda: [])()):
+        elem = renderer.pick_mesh_element_at(px, py, vw, vh, mode="object")
+        if isinstance(elem, dict) and renderer._cloth_panel_info(elem.get("owner")) is not None:
+            return elem["owner"]
     if callable(pick_hit):
         with profile_scope("input.click_pick.scene_hit"):
             owner, _hit = pick_hit(px, py, vw, vh)
@@ -5420,7 +5434,8 @@ def _handle_mouse_release_moderngl_pick_owner_select(self, *, owner, renderer, s
     except Exception:
         self._xform_gizmo_owner_kind = None
     try:
-        if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() == "object":
+        if (str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() == "object"
+                or getattr(renderer, "_cloth_panel_info", lambda _owner: None)(owner) is not None):
             self._set_mesh_element_selection({"mode": "object", "owner": owner}, selection_op=selection_op)
     except Exception:
         pass

@@ -12,11 +12,9 @@ from PySide6 import QtCore
 from echograph.physics.cloth import ClothSettings, ClothSolver
 from echograph.physics.cloth.cache import FrameCache, read_bake, write_bake
 from echograph.physics.cloth.collisions import MeshCollider
-
-
-def transform_points(points, matrix):
-    result = np.c_[points, np.ones(len(points))] @ np.asarray(matrix)
-    return result[:, :3] / np.where(np.abs(result[:, 3:4]) > 1e-12, result[:, 3:4], 1)
+from echograph.physics.cloth.placement import (PlacementPose, placed_positions, piece_xform,
+                                             transform_points, xform_matrix)
+from .gl_view_cloth_panels import ClothPanelsMixin
 
 
 def cloth_signature(config, matrix):
@@ -26,12 +24,24 @@ def cloth_signature(config, matrix):
              "colliders": [{"node": c.get("node"), "path": c.get("path"), "source_path": c.get("source_path")}
                            for c in config.get("colliders", [])],
              "matrix": np.asarray(matrix).round(7).tolist()}
+    if config.get("piece_transforms"):
+        pieces = config.get("_pieces")
+        if pieces is None:
+            pieces = config["_pieces"] = config["asset"].pieces()
+        placements = {}
+        for piece in pieces:
+            pose = xform_matrix(piece_xform(piece, config["piece_transforms"], 1))
+            default = xform_matrix(piece_xform(piece, {}, 1))
+            if not np.allclose(pose, default, rtol=0, atol=1e-7):
+                placements[piece["id"]] = pose.round(7).tolist()
+        if placements:
+            value["piece_transforms"] = placements
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
 @dataclass
 class ClothState:
-    solver: ClothSolver
+    solver: ClothSolver | PlacementPose
     signature: str
     matrix: np.ndarray
     frame: int
@@ -40,6 +50,8 @@ class ClothState:
     next_tick: float = 0.0
     cache: FrameCache = field(default_factory=FrameCache)
     disk_frames: dict = field(default_factory=dict)
+    disk_velocities: dict = field(default_factory=dict)
+    disk_metadata: dict = field(default_factory=dict)
     collider_previous: dict = field(default_factory=dict)
     bake: dict | None = None
     cache_path: str = ""
@@ -49,9 +61,12 @@ class ClothState:
     pending_kind: str = ""
     pending_frame: int = 0
     display_positions: np.ndarray | None = None
+    saving: dict | None = None
+    save_requested: str = ""
+    load_requested: str = ""
 
 
-class ClothViewportMixin:
+class ClothViewportMixin(ClothPanelsMixin):
     def _cloth_items(self):
         scene = getattr(self, "_mgl_scene", None)
         return list(scene.iter_by_tag("scene-model")) if scene is not None else []
@@ -66,30 +81,42 @@ class ClothViewportMixin:
             previous.pending.cancel()  # Drop queued work; running work can finish independently.
         settings = ClothSettings.from_dict(config["settings"])
         units = settings.scene_units_per_meter
-        rest = transform_points(config["asset"].positions * units, matrix) / units
-        state = ClothState(ClothSolver(config["asset"], settings, rest, config.get("pins", [])),
+        rest = placed_positions(config["asset"], config.get("piece_transforms", {}), units, matrix)
+        solver = (PlacementPose(config["asset"], settings, rest) if config.get("placement_only") else
+                  ClothSolver(config["asset"], settings, rest, config.get("pins", [])))
+        state = ClothState(solver,
                            cloth_signature(config, matrix), matrix.copy(), settings.start_frame,
                            int(timeline_frame))
         state.cache.put(state.frame, state.solver.x, state.solver.velocity)
         state.display_positions = state.solver.x.copy()
         return state
 
-    def _cloth_schedule(self, state, colliders, kind, frame):
+    def _cloth_worker(self):
         executor = getattr(self, "_cloth_executor", None)
         if executor is None:
             executor = self._cloth_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cloth-solve")
             # The worker owns only physics arrays. It never touches Qt or OpenGL,
             # and closing the viewport does not wait for an outstanding solve.
             self.destroyed.connect(lambda *_: executor.shutdown(wait=False, cancel_futures=True))
+        return executor
+
+    def _cloth_schedule(self, state, colliders, kind, frame):
         state.pending_kind, state.pending_frame = kind, int(frame)
-        state.pending = executor.submit(state.solver.step, colliders=colliders)
+        state.pending = self._cloth_worker().submit(state.solver.step, colliders=colliders)
 
     def _cloth_collect(self, owner, config, state):
         if state.pending is None or not state.pending.done():
             return
         pending = state.pending
         state.pending = None
-        pending.result()  # Already complete; propagate failures without blocking Qt.
+        try:
+            pending.result()  # Already complete; never block Qt on a solve or write.
+        except Exception:
+            state.saving = None
+            raise
+        if state.pending_kind == "save":
+            self._cloth_saved(owner, config, state)
+            return
         state.frame = state.pending_frame
         state.version += 1
         state.display_positions = state.solver.x.copy()
@@ -97,12 +124,14 @@ class ClothViewportMixin:
             bake = state.bake
             bake["frames"].append(state.frame)
             bake["positions"].append(state.display_positions.copy())
+            bake["velocities"].append(state.solver.velocity.copy())
+            state.cache.put(state.frame, state.solver.x, state.solver.velocity)
             bake["next"] += 1
-            if state.frame >= state.solver.settings.end_frame:
+            if bake.get("stop") or state.frame >= state.solver.settings.end_frame:
                 self._cloth_finish_bake(owner, config, state)
             else:
-                state.note = f"Baking frame {state.frame} / {state.solver.settings.end_frame} (Play / Pause cancels)"
-                QtCore.QTimer.singleShot(0, lambda f=bake["next"]: self._cloth_set_timeline(f))
+                state.note = f"Baking frame {state.frame} / {state.solver.settings.end_frame}. Stop & save keeps completed frames."
+                self._cloth_queue_bake_frame(owner, state, bake["next"])
         else:
             state.cache.put(state.frame, state.solver.x, state.solver.velocity)
             state.note = ""
@@ -110,7 +139,8 @@ class ClothViewportMixin:
     def _cloth_status(self, model, state):
         if model is None:
             return
-        mode = "Baking" if state.bake else "Running" if state.playing else "Paused"
+        model._cloth_baking = bool(state.bake)
+        mode = "Saving" if state.saving else "Baking" if state.bake else "Running" if state.playing else "Paused"
         detail = state.note or state.solver.backend_detail
         if state.pending is not None and not state.solver.last_ms:
             detail = "Preparing solver on the simulation worker…"
@@ -192,6 +222,7 @@ class ClothViewportMixin:
             entry["nbo"].write(entry["normals"].tobytes())
         owner = str(item.payload.get("owner") or "")
         self._mgl_store_mesh_topology_for_owner(owner, item.payload)
+        self._cloth_publish_panels(owner, item.payload["cloth"], state)
         self._mgl_scene_bounds_by_owner[owner] = (local.min(axis=0), local.max(axis=0))
         self._mgl_scene_mesh_bounds_by_owner[owner] = self._mgl_scene_bounds_by_owner[owner]
         # Update the same wire buffers rather than allocating new VAOs each tick.
@@ -222,6 +253,63 @@ class ClothViewportMixin:
             setter(int(frame))
         self.update()
 
+    def _cloth_queue_bake_frame(self, owner, state, frame):
+        def advance():
+            if (getattr(self, "_cloth_states", {}).get(owner) is state and state.bake
+                    and not state.bake.get("stop")):
+                self._cloth_set_timeline(frame)
+        QtCore.QTimer.singleShot(0, advance)
+
+    def _cloth_queue_pose_frame(self, owner, state, frame):
+        def seek():
+            if (getattr(self, "_cloth_states", {}).get(owner) is state and state.frame == frame
+                    and not state.playing and not state.bake):
+                self._cloth_set_timeline(frame)
+        QtCore.QTimer.singleShot(0, seek)
+
+    def _cloth_stop(self, owner, config, state):
+        state.playing = False
+        state.next_tick = 0
+        drag = getattr(self, "_cloth_drag", None)
+        if drag is not None and drag[0] == owner:
+            release = getattr(state.solver, "release_grab", None)
+            if callable(release):
+                release()
+            self._cloth_drag = None
+        if state.bake:
+            state.bake["stop"] = True
+            state.note = "Stopping bake; saving completed frames…"
+            if state.pending is None:
+                self._cloth_finish_bake(owner, config, state)
+
+    def _cloth_timeline_play_toggled(self, checked):
+        stopped_bake = False
+        for item in self._cloth_items():
+            owner = str(item.payload.get("owner") or "")
+            state = getattr(self, "_cloth_states", {}).get(owner)
+            if state is not None and (state.bake or (not checked and state.playing)):
+                stopped_bake = stopped_bake or bool(state.bake)
+                self._cloth_stop(owner, item.payload["cloth"], state)
+        if checked and stopped_bake:
+            stop = getattr(self, "_timeline_stop_playback", None)
+            if callable(stop):
+                QtCore.QTimer.singleShot(0, stop)
+        self.update()
+
+    @staticmethod
+    def _cloth_cache_path(config, path):
+        config["cache_path"] = path
+        if config.get("node_item") is not None:
+            from nodes.cloth_solver.spec import set_value
+            set_value(config["node_item"], "cache_path", path)
+        elif config.get("node_model") is not None:
+            model = config["node_model"]
+            parameter = next((p for p in model.params if p.get("name") == "cache_path"), None)
+            if parameter is None:
+                model.params.append({"name": "cache_path", "value": path})
+            else:
+                parameter["value"] = path
+
     def _cloth_command(self, command, owner, config, state, timeline):
         action = command.get("action")
         if action in {"pin", "unpin", "clear_pins"}:
@@ -242,57 +330,78 @@ class ClothViewportMixin:
             return state
         if action == "reset":
             if config.get("cache_path"):
-                config["cache_path"] = ""
-                if config.get("node_item") is not None:
-                    from nodes.cloth_solver.spec import set_value
-                    set_value(config["node_item"], "cache_path", "")
-                elif config.get("node_model") is not None:
-                    for parameter in config["node_model"].params:
-                        if parameter.get("name") == "cache_path":
-                            parameter["value"] = ""
+                self._cloth_cache_path(config, "")
             return self._cloth_reset(owner, config, self._cloth_matrix(owner), timeline)
+        if state.saving and action in {"toggle", "step", "bake", "save"}:
+            state.note = "Finishing cache save…"
+            return state
         if action == "toggle":
             if state.bake:
-                state.bake = None
-                state.note = "Bake cancelled."
+                self._cloth_stop(owner, config, state)
             else:
                 state.playing = not state.playing
                 state.next_tick = 0
                 state.disk_frames.clear()
+                state.disk_velocities.clear()
+        elif action in {"pause", "stop"}:
+            self._cloth_stop(owner, config, state)
+            stop = getattr(self, "_timeline_stop_playback", None)
+            if callable(stop):
+                stop()
+        elif action == "save":
+            self._cloth_stop(owner, config, state)
+            state.save_requested = command["path"]
+        elif action == "load_cache":
+            self._cloth_stop(owner, config, state)
+            state.load_requested = command["path"]
         elif action == "step":
             state.playing = False
             state.next_tick = -1  # one fixed step, even when the timeline is idle
             state.disk_frames.clear()
+            state.disk_velocities.clear()
         elif action == "bake":
             settings = state.solver.settings
             frames = settings.end_frame - settings.start_frame + 1
-            if frames * len(state.solver.x) * 12 > 512 * 1024**2:
+            if frames * len(state.solver.x) * 24 > 512 * 1024**2:
                 raise RuntimeError("Bake exceeds 512 MB. Shorten the frame range or use a coarser mesh.")
             stop = getattr(self, "_timeline_stop_playback", None)
             if callable(stop):
                 stop()
             state = self._cloth_reset(owner, config, self._cloth_matrix(owner), settings.start_frame)
             state.bake = {"path": command["path"], "frames": [state.frame], "positions": [state.solver.x.copy()],
-                          "restore_frame": timeline, "next": settings.start_frame + 1, "primed": False}
+                          "velocities": [state.solver.velocity.copy()],
+                          "next": settings.start_frame + 1, "primed": False, "stop": False}
             # Defer the frame change until the current paint finishes.
-            QtCore.QTimer.singleShot(0, lambda f=settings.start_frame: self._cloth_set_timeline(f))
+            self._cloth_queue_bake_frame(owner, state, settings.start_frame)
         return state
 
     def _cloth_finish_bake(self, owner, config, state):
         bake = state.bake
-        write_bake(bake["path"], {"signature": state.signature, "owner": owner}, bake["frames"], bake["positions"])
-        state.disk_frames = dict(zip(bake["frames"], bake["positions"]))
-        state.note = "Baked " + str(len(bake["frames"])) + " frames to " + bake["path"]
         state.bake = None
-        QtCore.QTimer.singleShot(0, lambda f=bake["restore_frame"]: self._cloth_set_timeline(f))
-        if config.get("node_item") is not None:
-            from nodes.cloth_solver.spec import set_value
-            set_value(config["node_item"], "cache_path", bake["path"])
-        elif config.get("node_model") is not None:
-            for parameter in config["node_model"].params:
-                if parameter.get("name") == "cache_path":
-                    parameter["value"] = bake["path"]
-        config["cache_path"] = state.cache_path = bake["path"]
+        self._cloth_save(owner, state, bake["path"], bake["frames"], bake["positions"], bake["velocities"])
+
+    def _cloth_save(self, owner, state, path, frames, positions, velocities):
+        state.playing = False
+        state.saving = {"path": path, "frames": frames, "positions": positions, "velocities": velocities}
+        metadata = {"signature": state.signature, "owner": owner, "resume_frame": int(frames[-1]),
+                    "solver_time": state.solver.time}
+        state.saving["metadata"] = metadata
+        state.note = f"Saving {len(frames)} frame(s)…"
+        state.pending_kind = "save"
+        state.pending = self._cloth_worker().submit(write_bake, path, metadata, frames, positions, velocities)
+
+    def _cloth_saved(self, owner, config, state):
+        saved = state.saving
+        state.saving = None
+        state.playing = False
+        state.disk_frames = dict(zip(saved["frames"], saved["positions"]))
+        state.disk_velocities = dict(zip(saved["frames"], saved["velocities"]))
+        state.disk_metadata = saved["metadata"]
+        state.note = f"Saved {len(saved['frames'])} frame(s) to {saved['path']}"
+        # Keep the last completed pose visible when a bake is stopped.
+        self._cloth_queue_pose_frame(owner, state, state.frame)
+        self._cloth_cache_path(config, saved["path"])
+        state.cache_path = saved["path"]
 
     def _mgl_update_cloth(self):
         items = self._cloth_items()
@@ -315,6 +424,9 @@ class ClothViewportMixin:
                 if state is None or state.signature != signature:
                     state = states[owner] = self._cloth_reset(owner, config, matrix, timeline)
                     self._cloth_colliders(config, state, items)
+                if config.get("placement_only"):
+                    self._cloth_publish(item, state)
+                    continue
                 settings = ClothSettings.from_dict(config["settings"])
                 if not settings.enabled:
                     state.playing = False
@@ -333,16 +445,35 @@ class ClothViewportMixin:
                     self._cloth_status(model, state)
                     continue
                 state.solver.settings = settings
+                if state.load_requested:
+                    self._cloth_cache_path(config, state.load_requested)
+                    state.load_requested = ""
+                    state.cache_path = ""  # Choosing the same file again reloads it.
+                if state.save_requested:
+                    path, state.save_requested = state.save_requested, ""
+                    self._cloth_save(owner, state, path, [state.frame], [state.display_positions.copy()],
+                                     [state.solver.velocity.copy()])
+                    self._cloth_status(model, state)
+                    continue
                 path = config.get("cache_path", "")
                 if path != state.cache_path:
                     if path:
-                        _, frames = read_bake(path, state.signature)
+                        metadata, frames, velocities = read_bake(path, state.signature, include_velocities=True)
                         if any(p.shape != state.solver.x.shape for p in frames.values()):
                             raise RuntimeError("Cache vertex count differs from the cloth mesh.")
                         state.disk_frames = frames
+                        state.disk_velocities = velocities
+                        state.disk_metadata = metadata
+                        state.collider_previous.clear()
                         state.playing = False
+                        if frames and ("resume_frame" in metadata or timeline not in frames):
+                            timeline = int(metadata.get("resume_frame", max(frames)))
+                            if timeline not in frames:
+                                timeline = max(frames)
+                            self._cloth_queue_pose_frame(owner, state, timeline)
                     else:
                         state.disk_frames.clear()
+                        state.disk_velocities.clear()
                     state.cache_path = path
                     state.version += 1
                 changed = timeline != state.last_timeline
@@ -352,12 +483,15 @@ class ClothViewportMixin:
                     if frame is not None:
                         state.solver.x[:] = frame
                         state.display_positions = state.solver.x.copy()
-                        state.solver.time = max(0, timeline - settings.start_frame) / settings.fps
+                        state.solver.velocity[:] = state.disk_velocities.get(timeline, np.zeros_like(frame))
+                        state.solver.time = (float(state.disk_metadata["solver_time"])
+                                             if timeline == state.disk_metadata.get("resume_frame")
+                                             else max(0, timeline - settings.start_frame) / settings.fps)
                         if changed:
                             state.version += 1
-                            state.solver.velocity.fill(0)
+                            state.collider_previous.clear()
                         state.frame = timeline
-                        state.note = "Baked cache playback"
+                        state.note = f"Cache frame {timeline}. Cloth Play continues from this pose."
                     else:
                         state.note = "Frame is outside the baked range."
                 elif state.bake:
@@ -368,7 +502,7 @@ class ClothViewportMixin:
                         if settings.end_frame == settings.start_frame:
                             self._cloth_finish_bake(owner, config, state)
                         else:
-                            QtCore.QTimer.singleShot(0, lambda f=bake["next"]: self._cloth_set_timeline(f))
+                            self._cloth_queue_bake_frame(owner, state, bake["next"])
                     elif bake["primed"] and timeline == bake["next"]:
                         self._cloth_schedule(state, self._cloth_colliders(config, state, items), "bake", timeline)
                 elif changed and not state.playing:
@@ -404,13 +538,14 @@ class ClothViewportMixin:
                     state.playing = False
                     state.bake = None
                 if model is not None:
+                    model._cloth_baking = False
                     model._cloth_status = "Cloth error: " + str(exc)
         # Keep paused states across graph refreshes, but remove disconnected solvers.
         for owner in set(states) - active:
             disconnected = states.pop(owner, None)
             if disconnected is not None and disconnected.pending is not None:
                 disconnected.pending.cancel()
-        live = any(s.playing or s.bake or s.pending is not None for s in states.values())
+        live = any(s.playing or s.bake or s.pending is not None or s.save_requested for s in states.values())
         timer = getattr(self, "_cloth_timer", None)
         if live and timer is None:
             timer = self._cloth_timer = QtCore.QTimer(self)
@@ -498,7 +633,7 @@ class ClothViewportMixin:
         if drag is None:
             return False
         state = getattr(self, "_cloth_states", {}).get(drag[0])
-        if state is None or state.solver.grab is None:
+        if state is None or getattr(state.solver, "grab", None) is None:
             self._cloth_drag = None
             return False
         ray = self._cloth_mouse_ray(event)
@@ -519,8 +654,10 @@ class ClothViewportMixin:
             return False
         state = getattr(self, "_cloth_states", {}).get(drag[0])
         if state is not None:
-            state.solver.release_grab()
-            state.playing = drag[3]
+            release = getattr(state.solver, "release_grab", None)
+            if callable(release):
+                release()
+            state.playing = drag[3] and state.solver.settings.enabled
         self._cloth_drag = None
         self.update()
         return True

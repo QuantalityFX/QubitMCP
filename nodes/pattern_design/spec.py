@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import json
 import weakref
 
 from PySide6 import QtCore, QtWidgets
@@ -60,24 +61,38 @@ def build_pattern_scene_asset(node_item):
             messages = [d["message"] for d in resolved["diagnostics"]]
             raise PatternError(messages[0] if messages else "Add a closed panel and save the pattern first.")
         path = cached_mesh(PatternDocument.from_dict(resolved["document"]))
-    except (OSError, PatternError) as exc:
+        from echograph.physics.cloth import ClothSettings, build_cloth_asset
+        from echograph.physics.cloth.placement import validate_placements
+        placement_document = PatternDocument.from_dict(resolved["document"])
+        placement_document.metadata["sew_pairs"] = []
+        asset = build_cloth_asset(placement_document)
+        placements = validate_placements(json.loads(str(next((p.get("value", "{}") for p in node_item.model.params
+                                         if p.get("name") == "piece_transforms"), "{}"))))
+    except (OSError, PatternError, ValueError, TypeError) as exc:
         node_item.model._pattern_scene_error = str(exc)
         return None
     node_item.model._pattern_scene_error = ""
     return {"node": node_item.model.name, "path": str(path), "ext": ".obj",
-            "kind": "mesh", "source_kind": "pattern_design", "texture": ""}
+            "kind": "mesh", "source_kind": "pattern_design", "texture": "",
+            "pattern_pieces": [{"id": p["id"], "name": p["name"]} for p in asset.pieces()],
+            "cloth": {"asset": asset, "settings": ClothSettings(device="cpu", enabled=False).to_dict(),
+                      "piece_transforms": placements, "placement_only": True, "pins": [], "colliders": [],
+                      "cache_path": "", "node_model": node_item.model, "node_item": node_item}}
 
 
 def build_ports(node_item):
     params = node_item.model.params
     if not any(p.get("name") == "pattern_path" for p in params):
         params.append({"name": "pattern_path", "value": ""})
+    if not any(p.get("name") == "piece_transforms" for p in params):
+        params.append({"name": "piece_transforms", "value": "{}"})
     hidden = next((p for p in params if p.get("name") == "__ui_hidden_params"), None)
     if hidden is None:
         hidden = {"name": "__ui_hidden_params", "value": ""}
         params.append(hidden)
     names = {n.strip() for n in str(hidden["value"]).split(",") if n.strip()}
     names.add("pattern_path")
+    names.add("piece_transforms")
     hidden["value"] = ",".join(sorted(names))
     node_item.ensure_output("pattern")
     node_item._hide_default_output_with_named = True

@@ -84,10 +84,12 @@ class SolverTests(unittest.TestCase):
                 self.calls += 1
 
         for iterations, quality in [(8, 2), (8, 8), (2, 8)]:
-            collider = CountingCollider()
-            solver = ClothSolver(panel(), settings(substeps=3, iterations=iterations, collision_quality=quality))
-            solver.step(colliders=[collider])
-            self.assertEqual(collider.calls, 3 * quality)
+            for self_collision in (False, True):
+                collider = CountingCollider()
+                solver = ClothSolver(panel(), settings(substeps=3, iterations=iterations,
+                    collision_quality=quality, self_collision=self_collision))
+                solver.step(colliders=[collider])
+                self.assertEqual(collider.calls, 3 * (quality + int(self_collision)))
 
     def test_gravity_and_disable(self):
         asset = panel()
@@ -190,6 +192,18 @@ class SolverTests(unittest.TestCase):
         self.assertGreater(np.max(abs(solver.x[:, 2] - before[:, 2])), .0001)
         self.assertTrue(np.isfinite(solver.x).all())
 
+    def test_self_contact_cannot_leave_cloth_inside_body_thickness(self):
+        a, b = rectangle("A", 100, 100), rectangle("B", 100, 100)
+        asset = build_cloth_asset(PatternDocument(pieces=[a, b]), 25)
+        rest = asset.positions[:, [0, 2, 1]].copy()
+        rest[:, 1] = .0021
+        rest[np.asarray(asset.vertex_pieces) == b.id, 1] += .0001
+        solver = ClothSolver(asset, settings(self_collision=True, stretch=0, bend=0,
+                                            substeps=1, iterations=1, collision_quality=1), rest)
+        collider = MeshCollider(np.array([[-1, 0, -1], [0, 0, 1], [1, 0, -1]]), [[0, 1, 2]])
+        solver.step(colliders=[collider])
+        self.assertGreaterEqual(solver.x[:, 1].min(), solver.settings.thickness - 1e-8)
+
     def test_bad_time_and_settings_cannot_poison_state(self):
         solver = ClothSolver(panel(), settings())
         for dt in [0, -1, float("nan"), 2]:
@@ -242,6 +256,38 @@ class CollisionTests(unittest.TestCase):
         np.testing.assert_allclose(sampled.vertices[:, 1], 0)
         np.testing.assert_allclose(sampled.previous[:, 1], -.05)
 
+    def test_outward_escape_is_not_projected_back_inside(self):
+        old, x = np.array([[0, -.001, 0.0]]), np.array([[0, .01, 0.0]])
+        before = x.copy()
+        self.collider().project(x, old, np.ones(1), .002, 0)
+        np.testing.assert_allclose(x, before)
+
+    def test_penetration_recovery_does_not_oscillate_between_passes(self):
+        old = np.array([[0, -.001, 0.0]])
+        x = old.copy()
+        for _ in range(3):
+            self.collider().project(x, old, np.ones(1), .002, 0)
+            self.assertGreaterEqual(x[0, 1], .002 - 1e-10)
+
+    def test_swept_triangle_is_checked_at_contact_time(self):
+        previous = np.array([[-.26, -.1, -.06], [-.2, -.1, .06], [-.14, -.1, -.06]])
+        collider = MeshCollider(previous + [.4, .2, 0], [[0, 1, 2]], previous)
+        x = np.array([[0, 0, 0.0]])
+        self.assertTrue(collider.project(x, x.copy(), np.ones(1), .002, 0)[0])
+        self.assertGreaterEqual(x[0, 1], .102 - 1e-10)
+
+    def test_rotating_triangle_uses_previous_normal_and_contact_pose(self):
+        previous = np.array([[-1, -1, -.1], [1, -1, -.1], [0, 1, -.1]])
+        angle = np.pi / 3
+        rotation = np.array([[1, 0, 0], [0, np.cos(angle), -np.sin(angle)], [0, np.sin(angle), np.cos(angle)]])
+        current = previous @ rotation.T + [0, 0, .2]
+        collider = MeshCollider(current, [[0, 1, 2]], previous)
+        x = np.array([[0, 0, 0.0]])
+        self.assertTrue(collider.project(x, x.copy(), np.ones(1), .002, 0)[0])
+        normal = np.cross(current[1] - current[0], current[2] - current[0])
+        normal /= np.linalg.norm(normal)
+        self.assertGreaterEqual(np.dot(x[0] - current[0], normal), .002 - 1e-10)
+
     def test_large_triangle_edges_are_considered(self):
         x = np.array([[.98, .001, -.99]])
         contact = self.collider().project(x, x.copy(), np.ones(1), .002, .2)
@@ -277,6 +323,21 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(set(frames), {0, 1})
             with self.assertRaises(ValueError):
                 read_bake(path, "second")
+
+    def test_disk_cache_preserves_velocities_and_reads_legacy_cache(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.npz"
+            positions = np.arange(9, dtype=float).reshape(1, 3, 3)
+            velocities = positions * .1
+            write_bake(path, {"signature": "cloth", "resume_frame": 7, "solver_time": .2},
+                       [7], positions, velocities)
+            metadata, frames, velocity = read_bake(path, "cloth", include_velocities=True)
+            self.assertEqual(metadata["resume_frame"], 7)
+            np.testing.assert_allclose(frames[7], positions[0])
+            np.testing.assert_allclose(velocity[7], velocities[0])
+            write_bake(path, {"signature": "cloth"}, [7], positions)
+            _, _, legacy_velocity = read_bake(path, "cloth", include_velocities=True)
+            np.testing.assert_array_equal(legacy_velocity[7], 0)
 
 
 if __name__ == "__main__":

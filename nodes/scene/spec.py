@@ -5215,6 +5215,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     show_skel = getattr(renderer, "_mgl_scene_skeleton_request_active", None)
                     if callable(show_skel):
                         show_skel("")
+                    if sel_kind == "pattern_piece":
+                        set_mode = getattr(glv, "_on_mesh_selection_mode_clicked", None)
+                        if callable(set_mode) and getattr(glv, "_mesh_select_mode", "") != "object":
+                            set_mode("object")
+                        select_piece = getattr(glv, "_set_mesh_element_selection", None)
+                        if callable(select_piece):
+                            select_piece({"mode": "object", "owner": owner}, selection_op="replace")
                     glv._xform_gizmo_owner = owner
                     try:
                         refresh_speed = getattr(glv, "_timeline_refresh_speed_control", None)
@@ -5545,6 +5552,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 src = getattr(edge, "src", None)
                 if src is None:
                     continue
+                asset_item = src
                 model = getattr(src, "model", None)
                 raw_name = str(getattr(model, "name", "") or "").strip()
                 kind = (getattr(model, "kind", "") or "").strip().lower()
@@ -5562,6 +5570,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     source_model = getattr(source_item, "model", None) if source_item is not None else None
                     if source_model is None:
                         continue
+                    asset_item = source_item
                     model = source_model
                     kind = (source_kind or getattr(model, "kind", "") or "").strip().lower()
                 name = str(getattr(model, "name", "") or "").strip()
@@ -5588,6 +5597,28 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     rows.append(row)
                 elif kind in _LIGHT_KIND_ALIASES:
                     row = {"node": name, "path": "", "kind": "light", "ext": "", "_quick": True}
+                    if isinstance(look_at_constraint, dict):
+                        row["look_at_constraint"] = dict(look_at_constraint)
+                    rows.append(row)
+                elif kind in {"pattern_design", "cloth_solver"}:
+                    # Workflow loading skips geometry construction. Read only
+                    # the saved panel names/IDs so its outliner has the same
+                    # selectable children as a normal Scene refresh.
+                    row = {"node": name, "path": "", "kind": "mesh", "ext": ".obj",
+                           "source_kind": kind, "_quick": True,
+                           "cloth": {"placement_only": kind == "pattern_design", "solver_node": name}}
+                    try:
+                        from nodes.pattern_design.spec import pattern_path
+                        from echograph.patterns.serialization import load_document
+                        source = asset_item
+                        if kind == "cloth_solver":
+                            from nodes.cloth_solver.spec import input_item
+                            source = input_item(asset_item, "pattern")
+                        if source is not None and str(source.model.kind).lower() == "pattern_design":
+                            document, _signature = load_document(pattern_path(source))
+                            row["pattern_pieces"] = [{"id": piece.id, "name": piece.name} for piece in document.pieces]
+                    except (OSError, ValueError, TypeError):
+                        pass
                     if isinstance(look_at_constraint, dict):
                         row["look_at_constraint"] = dict(look_at_constraint)
                     rows.append(row)
@@ -5774,8 +5805,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 rows.append({"name": name, "path": path, "kind": row_kind, "has_skeleton": bool(has_skeleton)})
                 _append_look_at_target_row(asset, name)
                 if isinstance(asset.get("cloth"), dict):
-                    rows.append({"name": name, "path": path, "kind": "cloth_collider", "asset": asset,
-                                 "display": "Cloth collider", "indent": 1, "child": True, "parent": name})
+                    if not asset["cloth"].get("placement_only"):
+                        rows.append({"name": name, "path": path, "kind": "cloth_collider", "asset": asset,
+                                     "display": "Cloth collider", "indent": 1, "child": True, "parent": name})
+                    from echograph.physics.cloth.placement import piece_owner
+                    for piece in asset.get("pattern_pieces", []):
+                        token = piece_owner(name, piece["id"])
+                        rows.append({"name": token, "owner": token, "path": path, "kind": "pattern_piece",
+                                     "display": piece["name"], "indent": 1, "child": True, "parent": name})
                 if bool(has_skeleton):
                     rows.append(
                         {
@@ -6043,6 +6080,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     row_item.setToolTip(entry["path"])
                 if is_target_row:
                     row_item.setToolTip(f"Look At target for {owner_name}")
+                elif row_kind == "pattern_piece":
+                    row_item.setToolTip(f"Arrange {display_name} with Move, Rotate, or Scale. Placement is saved in the workflow; changing it resets the cloth.")
                 elif is_child:
                     row_item.setToolTip(f"Show skeleton for {owner_name}")
                 try:

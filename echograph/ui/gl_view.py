@@ -4990,7 +4990,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         owner = str(owner or "").strip()
         if not owner:
             return False
-        center = self._scene_owner_selection_center(owner)
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        panel_xform = getattr(renderer, "_cloth_panel_get_xform", lambda _owner: None)(owner)
+        center = np.asarray(panel_xform["pos"]) if panel_xform is not None else self._scene_owner_selection_center(owner)
         if center is None:
             return False
         self._xform_gizmo_owner = owner

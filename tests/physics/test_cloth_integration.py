@@ -3,21 +3,23 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import threading
+from concurrent.futures import Future
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
+from shiboken6 import isValid
 
 from echograph.model import GraphNode
 from echograph.patterns.commands import rectangle
 from echograph.patterns.document import PatternDocument
 from echograph.patterns.serialization import save_document
 from echograph.physics.cloth import ClothSettings, build_cloth_asset
-from echograph.physics.cloth.cache import write_bake
+from echograph.physics.cloth.cache import read_bake, write_bake
 from echograph.ui.gl_mgl_renderer import MGLRendererMixin
 from echograph.ui.node_item import NodeItem
-from nodes.cloth_solver.spec import build_cloth_scene_asset, ColliderOwnerEdit
+from nodes.cloth_solver.spec import build_cloth_scene_asset, ColliderOwnerEdit, ClothWidget
 from nodes.scene import spec as scene_spec
 
 
@@ -39,6 +41,14 @@ class Graph(QtWidgets.QGraphicsScene):
 
     def set_node_params(self, name, parameters, **kwargs):
         self.changes.append(name)
+
+
+class CacheFileDialog(QtWidgets.QFileDialog):
+    """Exercise real dialogs without opening an interactive Windows file picker."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setOption(QtWidgets.QFileDialog.DontUseNativeDialog)
+        self.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
 
 
 class NodeTests(unittest.TestCase):
@@ -121,6 +131,132 @@ class NodeTests(unittest.TestCase):
         self.assertIsNone(build_cloth_scene_asset(node))
         self.assertIn("saved Pattern", node.model._cloth_build_error)
         graph.clear()
+
+    def cache_dialog_node(self):
+        graph = Graph()
+        window = QtWidgets.QMainWindow()
+        window.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
+        window.setCentralWidget(QtWidgets.QGraphicsView(graph))
+        node = NodeItem(GraphNode("Cloth", kind="cloth_solver"))
+        graph.addItem(node)
+        window.show()
+        self.app.processEvents()
+
+        def cleanup():
+            dialog = getattr(node, "_cloth_cache_dialog", None)
+            if dialog is not None and isValid(dialog):
+                dialog.reject()
+            graph.clear()
+            window.close()
+            window.deleteLater()
+            self.app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+
+        self.addCleanup(cleanup)
+        return graph, window, node
+
+    def cache_body(self, node):
+        return next(proxy.widget() for proxy in node._plugin_proxies if isinstance(proxy.widget(), ClothWidget))
+
+    def click_cache_button(self, node, title):
+        button = next(b for b in self.cache_body(node).findChildren(QtWidgets.QPushButton) if b.text() == title)
+        button.click()
+
+    def test_bake_dialog_survives_widget_rebuild_and_starts_only_after_selection(self):
+        graph, window, node = self.cache_dialog_node()
+        body = self.cache_body(node)
+        with tempfile.TemporaryDirectory() as temp, patch("nodes.cloth_solver.spec.QtWidgets.QFileDialog", CacheFileDialog):
+            self.click_cache_button(node, "Bake…")
+            self.assertIsNone(getattr(node, "_cloth_cache_dialog", None))
+            self.app.processEvents()
+            dialog = node._cloth_cache_dialog
+            self.assertIs(dialog.parentWidget(), window)
+            self.assertIsNone(dialog.graphicsProxyWidget())
+            self.assertTrue(dialog.isVisible())
+            self.assertFalse(getattr(node.model, "_cloth_commands", []))
+            node._build_widgets()
+            self.app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+            self.app.processEvents()
+            self.assertFalse(isValid(body))
+            self.assertTrue(isValid(dialog))
+            self.assertTrue(dialog.isVisible())
+            # A suffix-free selection must write a cache that Load Cache can find.
+            target = Path(temp) / "garment"
+            dialog.setDirectory(str(target.parent))
+            dialog.findChild(QtWidgets.QLineEdit, "fileNameEdit").setText(target.name)
+            self.app.processEvents()
+            dialog.accept()
+            self.app.processEvents()
+            commands = node.model._cloth_commands
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(commands[0]["action"], "bake")
+            self.assertEqual(Path(commands[0]["path"]), target.with_suffix(".npz"))
+            self.assertIsNone(node._cloth_cache_dialog)
+
+    def test_load_cache_dialog_survives_widget_rebuild(self):
+        graph, window, node = self.cache_dialog_node()
+        with tempfile.TemporaryDirectory() as temp, patch("nodes.cloth_solver.spec.QtWidgets.QFileDialog", CacheFileDialog):
+            target = Path(temp) / "garment.npz"
+            target.write_bytes(b"cache dialog selection fixture")
+            self.click_cache_button(node, "Load cache…")
+            self.app.processEvents()
+            dialog = node._cloth_cache_dialog
+            self.assertIs(dialog.parentWidget(), window)
+            node._build_widgets()
+            self.app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+            self.app.processEvents()
+            self.assertTrue(dialog.isVisible())
+            dialog.setDirectory(str(target.parent))
+            dialog.findChild(QtWidgets.QLineEdit, "fileNameEdit").setText(target.name)
+            self.app.processEvents()
+            dialog.accept()
+            self.app.processEvents()
+            self.assertEqual(Path(node._param_value("cache_path")), target)
+            self.assertEqual([c["action"] for c in node.model._cloth_commands], ["pause", "load_cache"])
+            self.assertIsNone(node._cloth_cache_dialog)
+
+    def test_cancel_and_repeat_click_do_not_start_bake_or_duplicate_dialog(self):
+        graph, window, node = self.cache_dialog_node()
+        with patch("nodes.cloth_solver.spec.QtWidgets.QFileDialog", CacheFileDialog):
+            self.click_cache_button(node, "Bake…")
+            self.app.processEvents()
+            dialog = node._cloth_cache_dialog
+            self.click_cache_button(node, "Bake…")
+            self.app.processEvents()
+            self.assertIs(node._cloth_cache_dialog, dialog)
+            self.assertEqual(len(window.findChildren(CacheFileDialog)), 1)
+            dialog.reject()
+            self.app.processEvents()
+            self.assertIsNone(node._cloth_cache_dialog)
+            self.assertFalse(getattr(node.model, "_cloth_commands", []))
+
+    def test_deleting_node_closes_pending_cache_dialog(self):
+        graph, window, node = self.cache_dialog_node()
+        model = node.model
+        with patch("nodes.cloth_solver.spec.QtWidgets.QFileDialog", CacheFileDialog):
+            self.click_cache_button(node, "Bake…")
+            self.app.processEvents()
+            dialog = node._cloth_cache_dialog
+            graph.clear()
+            self.app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+            self.app.processEvents()
+            self.assertFalse(isValid(dialog))
+            self.assertFalse(getattr(model, "_cloth_commands", []))
+
+    def test_save_state_browser_pauses_and_queues_snapshot_without_baking(self):
+        graph, window, node = self.cache_dialog_node()
+        with tempfile.TemporaryDirectory() as temp, patch("nodes.cloth_solver.spec.QtWidgets.QFileDialog", CacheFileDialog):
+            self.click_cache_button(node, "Save state…")
+            self.assertEqual([c["action"] for c in node.model._cloth_commands], ["pause"])
+            self.app.processEvents()
+            dialog = node._cloth_cache_dialog
+            self.assertEqual(dialog.windowTitle(), "Save cloth state")
+            target = Path(temp) / "shirt.npz"
+            dialog.setDirectory(str(target.parent))
+            dialog.findChild(QtWidgets.QLineEdit, "fileNameEdit").setText(target.name)
+            dialog.accept()
+            self.app.processEvents()
+            self.assertEqual([c["action"] for c in node.model._cloth_commands], ["pause", "save"])
+            self.assertEqual(Path(node.model._cloth_commands[-1]["path"]), target)
 
 
 class Buffer:
@@ -312,7 +448,7 @@ class ViewportTests(unittest.TestCase):
         self.assertEqual(json.loads(node._param_value("pins")), [])
         graph.clear()
 
-    def test_bake_runs_frames_and_restores_timeline(self):
+    def test_bake_runs_frames_and_keeps_final_pose(self):
         with tempfile.TemporaryDirectory() as temp:
             path = str(Path(temp) / "cloth.npz")
             self.model._cloth_commands = [{"action": "bake", "path": path}]
@@ -321,9 +457,131 @@ class ViewportTests(unittest.TestCase):
                 self.app.processEvents()
                 self.view._mgl_update_cloth()
             self.assertTrue(Path(path).is_file(), self.model._cloth_status)
-            self.assertEqual(self.view.frame, 0)
+            self.assertEqual(self.view.frame, 3)
             self.assertEqual(len(self.view._cloth_states["Cloth"].disk_frames), 4)
             self.assertEqual(self.model.params[0]["value"], path)
+
+    def test_stop_bake_writes_partial_cache_and_blocks_queued_frames(self):
+        self.config["settings"]["end_frame"] = 30
+        with tempfile.TemporaryDirectory() as temp:
+            path = str(Path(temp) / "partial.npz")
+            self.model._cloth_commands = [{"action": "bake", "path": path}]
+            self.view._mgl_update_cloth()
+            self.app.processEvents()
+            self.view._mgl_update_cloth()
+            self.app.processEvents()
+            self.view._mgl_update_cloth()
+            state = self.view._cloth_states["Cloth"]
+            final_frame = state.frame
+            self.assertGreater(final_frame, 0)
+            self.model._cloth_commands = [{"action": "toggle"}]
+            self.view._mgl_update_cloth()
+            for _ in range(2):
+                self.app.processEvents()
+                self.view._mgl_update_cloth()
+            metadata, frames, velocities = read_bake(path, state.signature, include_velocities=True)
+            self.assertEqual(max(frames), final_frame)
+            self.assertEqual(metadata["resume_frame"], final_frame)
+            self.assertEqual(self.view.frame, final_frame)
+            self.assertFalse(state.playing)
+            self.assertIsNone(state.bake)
+            np.testing.assert_allclose(frames[final_frame], state.solver.x, atol=1e-7)
+            np.testing.assert_allclose(velocities[final_frame], state.solver.velocity, atol=1e-7)
+            final = state.solver.x.copy()
+            self.model._cloth_commands = [{"action": "reset"}]
+            self.view.frame = 0
+            self.view._mgl_update_cloth()
+            self.model._cloth_commands = [{"action": "load_cache", "path": path}]
+            self.view._mgl_update_cloth()
+            self.app.processEvents()
+            self.assertEqual(self.view.frame, final_frame)
+            np.testing.assert_allclose(self.view._cloth_states["Cloth"].display_positions, final, atol=1e-7)
+
+    def test_stop_during_pending_bake_waits_without_blocking_and_saves_completed_solve(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = str(Path(temp) / "pending.npz")
+            self.model._cloth_commands = [{"action": "bake", "path": path}]
+            self.view._mgl_update_cloth()
+            state = self.view._cloth_states["Cloth"]
+            state.bake["primed"] = True
+            pending = Future()
+            state.pending, state.pending_kind, state.pending_frame = pending, "bake", 1
+            self.view._cloth_command({"action": "stop"}, "Cloth", self.config, state, 0)
+            self.assertIs(state.pending, pending)
+            self.assertFalse(Path(path).exists())
+            state.solver.step()
+            final = state.solver.x.copy()
+            pending.set_result(None)
+            self.view._cloth_collect("Cloth", self.config, state)
+            self.assertEqual(state.pending_kind, "save")
+            state.pending.result(timeout=10)
+            self.view._cloth_collect("Cloth", self.config, state)
+            _, frames = read_bake(path, state.signature)
+            self.assertEqual(set(frames), {0, 1})
+            np.testing.assert_allclose(frames[1], final, atol=1e-7)
+
+    def test_timeline_pause_saves_partial_bake(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = str(Path(temp) / "timeline.npz")
+            self.model._cloth_commands = [{"action": "bake", "path": path}]
+            self.view._mgl_update_cloth()
+            state = self.view._cloth_states["Cloth"]
+            self.view._cloth_timeline_play_toggled(False)
+            self.view._mgl_update_cloth()
+            self.assertTrue(Path(path).is_file())
+            self.assertFalse(state.playing)
+            self.assertIsNone(state.bake)
+
+    def test_save_state_load_seeks_saved_frame_and_can_continue(self):
+        for _ in range(3):
+            self.model._cloth_commands = [{"action": "step"}]
+            self.view._mgl_update_cloth()
+        final = self.state.solver.x.copy()
+        velocity = self.state.solver.velocity.copy()
+        solver_time = self.state.solver.time
+        with tempfile.TemporaryDirectory() as temp:
+            path = str(Path(temp) / "state.npz")
+            self.model._cloth_commands = [{"action": "save", "path": path}]
+            self.view._mgl_update_cloth()
+            self.view._mgl_update_cloth()
+            self.assertTrue(Path(path).is_file())
+            self.model._cloth_commands = [{"action": "reset"}]
+            self.view.frame = 0
+            self.view._mgl_update_cloth()
+            self.model._cloth_commands = [{"action": "load_cache", "path": path}]
+            self.view._mgl_update_cloth()
+            self.app.processEvents()
+            state = self.view._cloth_states["Cloth"]
+            self.assertEqual(self.view.frame, 3)
+            np.testing.assert_allclose(state.solver.x, final, atol=1e-7)
+            np.testing.assert_allclose(state.solver.velocity, velocity, atol=1e-7)
+            self.assertAlmostEqual(state.solver.time, solver_time)
+            self.model._cloth_commands = [{"action": "step"}]
+            self.view._mgl_update_cloth()
+            self.assertEqual(state.frame, 4)
+            self.assertGreater(state.solver.time, solver_time)
+            self.assertLess(state.solver.x[:, 1].mean(), final[:, 1].mean())
+
+    def test_save_failure_can_be_retried_without_staying_in_saving_mode(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = str(Path(temp) / "state.npz")
+            with patch("echograph.ui.gl_view_cloth.write_bake", side_effect=OSError("disk full")):
+                self.model._cloth_commands = [{"action": "save", "path": path}]
+                # Poll an intentionally failed write without the fixture's result()
+                # helper, which propagates worker exceptions before Qt can report them.
+                MGLRendererMixin._mgl_update_cloth(self.view)
+                pending = self.state.pending
+                try:
+                    pending.result(timeout=10)
+                except OSError:
+                    pass
+                MGLRendererMixin._mgl_update_cloth(self.view)
+            self.assertIsNone(self.state.saving)
+            self.assertIn("disk full", self.model._cloth_status)
+            self.assertFalse(Path(path).exists())
+            self.model._cloth_commands = [{"action": "save", "path": path}]
+            self.view._mgl_update_cloth()
+            self.assertTrue(Path(path).is_file())
 
     def test_one_frame_bake_and_reset_exit_cache_playback(self):
         self.config["settings"]["end_frame"] = 0

@@ -6716,6 +6716,9 @@ class GraphGLTimelineModelMixin:
 
     def _timeline_on_play_toggled(self, checked: bool) -> None:
         self._update_timeline_play_button()
+        cloth = getattr(getattr(self, "_mgl_renderer", None) or self, "_cloth_timeline_play_toggled", None)
+        if callable(cloth):
+            cloth(bool(checked))
         if bool(checked):
             try:
                 max_frame = int(max(0, self._timeline_max_known_frame()))

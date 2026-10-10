@@ -27,15 +27,33 @@ class ClothAsset:
     seam_numbers: np.ndarray
     vertex_pieces: tuple
     signature: str
+    piece_names: tuple = ()
+
+    def pieces(self):
+        """Stable panel IDs survive names, layout changes, and sewing."""
+        owners = np.asarray(self.vertex_pieces)
+        names = dict(self.piece_names)
+        result = []
+        for piece_id in dict.fromkeys(self.vertex_pieces):
+            vertices = np.flatnonzero(owners == piece_id)
+            faces = np.flatnonzero(owners[self.triangles[:, 0]] == piece_id)
+            center = (self.positions[vertices].min(axis=0) + self.positions[vertices].max(axis=0)) * .5
+            result.append({"id": piece_id, "name": names.get(piece_id, piece_id),
+                           "vertices": vertices, "faces": faces, "center": center})
+        return result
 
     def rest_obj(self):
         directory = Path(tempfile.gettempdir()) / "EchoGraph" / "cloth"
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / ("cloth_v1_" + self.signature + ".obj")
+        path = directory / ("cloth_v2_" + self.signature + ".obj")
         if not path.exists():
-            lines = ["# Cloth rest mesh, meters", "o Cloth"]
+            lines = ["# Cloth rest mesh, meters; named pattern pieces"]
             lines.extend("v %.9g %.9g %.9g" % tuple(p) for p in self.positions)
-            lines.extend("f %d %d %d" % tuple(t + 1) for t in self.triangles)
+            for piece in self.pieces():
+                label = "_".join(piece["name"].split()) or piece["id"]
+                lines.append("o " + label)
+                lines.append("g " + piece["id"])
+                lines.extend("f %d %d %d" % tuple(t + 1) for t in self.triangles[piece["faces"]])
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
@@ -137,4 +155,4 @@ def _build_cached(serialized, spacing):
               np.asarray(seam_weights).reshape(-1, 4), np.asarray(seam_numbers, dtype=np.int32)]
     for array in arrays:
         array.setflags(write=False)
-    return ClothAsset(*arrays, tuple(owners), signature)
+    return ClothAsset(*arrays, tuple(owners), signature, tuple((p.id, p.name) for p in document.pieces))
