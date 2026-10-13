@@ -621,6 +621,131 @@ class PatternEditorTests(unittest.TestCase):
         self.editor.undo()
         self.assertEqual(self.editor.selected_piece().point(point_id).x, 0)
 
+    def test_selected_points_drag_across_rotated_panels_with_one_undo_step(self):
+        from echograph.patterns.commands import set_edge_kind
+        editor = self.editor
+        editor.add_template("Front", 100, 100)
+        left = editor.selected_id
+        editor.add_template("Back", 100, 100)
+        right = editor.selected_id
+        editor.edit("Arrange", lambda doc: doc.piece(right).layout.__setitem__(slice(None), [350, 0, 90]))
+        edge = editor.document.piece(left).segments[0].id
+        editor.edit("Curve", lambda doc: set_edge_kind(doc.piece(left), edge, "cubic"))
+        editor.select_piece(left)
+        editor._canvas_panel_selected(right, True)
+        canvas = editor.canvas
+        canvas.fit_pieces()
+
+        def world(piece, point):
+            return QtGui.QTransform().translate(*piece.layout[:2]).rotate(piece.layout[2]).map(QtCore.QPointF(point.x, point.y))
+
+        wanted = {left: {point.id for point in editor.document.piece(left).points[:2]},
+                  right: {editor.document.piece(right).points[0].id}}
+        for piece_id, ids in wanted.items():
+            for point_id in sorted(ids):
+                piece = editor.document.piece(piece_id)
+                pixel = canvas.mapFromScene(world(piece, piece.point(point_id)))
+                QtTest.QTest.mouseClick(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton,
+                                       QtCore.Qt.KeyboardModifier.ShiftModifier, pixel)
+        self.assertEqual(canvas._selected_points, wanted)
+        before = editor.document.to_dict()
+        original = {(piece.id, point.id): world(piece, point) for piece in editor.document.pieces for point in piece.points}
+        undo_count = len(editor.history.undo_stack)
+        anchor = editor.document.piece(left).points[0]
+        start_world = world(editor.document.piece(left), anchor)
+        start = canvas.mapFromScene(start_world)
+        end = canvas.mapFromScene(start_world + QtCore.QPointF(20, 30))
+        QtTest.QTest.mousePress(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=start)
+        QtTest.QTest.mouseMove(canvas.viewport(), end, 20)
+        self.app.processEvents()
+        self.assertEqual(editor.document.to_dict(), before)
+        self.assertEqual(canvas._selected_points, wanted)
+        for item in canvas._piece_items:
+            for point in item.piece.points:
+                expected = QtCore.QPointF(original[item.piece.id, point.id])
+                if point.id in wanted[item.piece.id]:
+                    expected += QtCore.QPointF(20, 30)
+                actual = world(item.piece, point)
+                self.assertAlmostEqual(actual.x(), expected.x())
+                self.assertAlmostEqual(actual.y(), expected.y())
+        QtTest.QTest.mouseRelease(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=end)
+        self.app.processEvents()
+        self.assertEqual(len(editor.history.undo_stack), undo_count + 1)
+        self.assertEqual(editor._point_selection, wanted)
+        for piece in editor.document.pieces:
+            self.assertEqual(piece.layout, before["pieces"][0 if piece.id == left else 1]["layout"])
+            for point in piece.points:
+                expected = QtCore.QPointF(original[piece.id, point.id])
+                if point.id in wanted[piece.id]:
+                    expected += QtCore.QPointF(20, 30)
+                self.assertAlmostEqual(world(piece, point).x(), expected.x())
+                self.assertAlmostEqual(world(piece, point).y(), expected.y())
+        original_controls = before["pieces"][0]["segments"][0]["controls"]
+        for actual, original_control in zip(editor.document.piece(left).segment(edge).controls, original_controls):
+            self.assertAlmostEqual(actual[0], original_control[0] + 20)
+            self.assertAlmostEqual(actual[1], original_control[1] + 30)
+        editor.undo()
+        restored = editor.document.to_dict()
+        restored.pop("revision")
+        before.pop("revision")
+        self.assertEqual(restored, before)
+
+    def test_selected_point_group_click_and_escape_do_not_edit(self):
+        editor = self.editor
+        editor.add_template("Panel", 100, 100)
+        canvas = editor.canvas
+        canvas.fit_pieces()
+        panel = editor.selected_piece()
+        for point in panel.points[:2]:
+            canvas._on_point_clicked(panel.id, point.id, True, toggle=False)
+        selection = {key: set(ids) for key, ids in canvas._selected_points.items()}
+        before = editor.document.to_dict()
+        undo_count = len(editor.history.undo_stack)
+        start = canvas.mapFromScene(QtCore.QPointF(panel.points[0].x, panel.points[0].y))
+        end = canvas.mapFromScene(QtCore.QPointF(20, 30))
+        QtTest.QTest.mouseClick(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=start)
+        self.assertEqual(canvas._selected_points, selection)
+        self.assertEqual(len(editor.history.undo_stack), undo_count)
+        QtTest.QTest.mousePress(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=start)
+        QtTest.QTest.mouseMove(canvas.viewport(), end, 20)
+        QtTest.QTest.keyClick(canvas, QtCore.Qt.Key.Key_Escape)
+        QtTest.QTest.mouseRelease(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=end)
+        self.app.processEvents()
+        self.assertIsNone(canvas._point_drag)
+        self.assertEqual(editor.document.to_dict(), before)
+        self.assertEqual(len(editor.history.undo_stack), undo_count)
+        self.assertEqual(canvas._selected_points, selection)
+
+    def test_selected_point_group_drag_preserves_linked_mirror(self):
+        from echograph.patterns.relationships import symmetry_for_piece
+        editor = self.editor
+        editor.add_template("Front", 100, 100)
+        editor.duplicate(True)
+        source = editor.selected_id
+        pair = symmetry_for_piece(editor.document, source)
+        selected = editor.selected_piece().points[:2]
+        canvas = editor.canvas
+        canvas.fit_pieces()
+        for point in selected:
+            canvas._on_point_clicked(source, point.id, True, toggle=False)
+        item = next(item for item in canvas._piece_items if item.piece.id == source)
+        start_world = item.mapToScene(QtCore.QPointF(selected[0].x, selected[0].y))
+        start = canvas.mapFromScene(start_world)
+        end = canvas.mapFromScene(start_world + QtCore.QPointF(20, 30))
+        count = len(editor.history.undo_stack)
+        QtTest.QTest.mousePress(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=start)
+        QtTest.QTest.mouseMove(canvas.viewport(), end, 20)
+        partner = next(item.piece for item in canvas._piece_items if item.piece.id == pair["left"])
+        preview = next(item.piece for item in canvas._piece_items if item.piece.id == source)
+        for point in selected:
+            counterpart = {value: key for key, value in pair["points"].items()}[point.id]
+            self.assertAlmostEqual(partner.point(counterpart).x, pair["axis_sum"] - preview.point(point.id).x)
+            self.assertAlmostEqual(partner.point(counterpart).y, preview.point(point.id).y)
+        QtTest.QTest.mouseRelease(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=end)
+        self.app.processEvents()
+        self.assertEqual(len(editor.history.undo_stack), count + 1)
+        self.assertTrue(symmetry_for_piece(editor.document, source)["enabled"])
+
     def test_canvas_click_selects_edge_and_double_click_inserts_point(self):
         self.editor.add_template("Edge test")
         canvas = self.editor.canvas
@@ -895,6 +1020,42 @@ class PatternNodeTests(unittest.TestCase):
         QtTest.QTest.keyClick(widget.canvas, QtCore.Qt.Key.Key_M)
         self.assertEqual(len(widget.history.document.pieces), 1)
         self.assertEqual(len(widget.history.document.pieces[0].points), 6)
+
+    def test_embedded_canvas_moves_selected_points_from_two_panels(self):
+        from echograph.patterns.commands import rectangle
+        left, right = rectangle("Front", 100, 100), rectangle("Back", 100, 100)
+        right.layout = [250, 0, 0]
+        save_document(self.path, PatternDocument(pieces=[left, right]), expected_hash=load_document(self.path)[1])
+        item = self.node()
+        widget = next(proxy.widget() for proxy in item._plugin_proxies if isinstance(proxy.widget(), PatternNodeWidget))
+        widget._piece_selected(left.id)
+        widget._panels_selected(right.id, True)
+        canvas = widget.canvas
+        canvas.fit_pieces()
+        selection = {left.id: {left.points[0].id}, right.id: {right.points[0].id}}
+        for panel, point_ids in selection.items():
+            canvas._on_point_clicked(panel, next(iter(point_ids)), True, toggle=False)
+        before = widget.history.document.to_dict()
+        count = len(widget.history.undo_stack)
+        start = canvas.mapFromScene(QtCore.QPointF(0, 0))
+        end = canvas.mapFromScene(QtCore.QPointF(20, 30))
+        QtTest.QTest.mousePress(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=start)
+        QtTest.QTest.mouseMove(canvas.viewport(), end, 20)
+        widget.refresh()  # A periodic node refresh must not erase the drag preview.
+        self.assertEqual(widget.history.document.to_dict(), before)
+        for piece in (left, right):
+            preview = next(entry.piece for entry in canvas._piece_items if entry.piece.id == piece.id)
+            self.assertEqual((preview.points[0].x, preview.points[0].y), (20, 30))
+        QtTest.QTest.mouseRelease(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=end)
+        self.app.processEvents()
+        self.assertEqual(len(widget.history.undo_stack), count + 1)
+        self.assertEqual(widget._point_selection, selection)
+        for piece in widget.history.document.pieces:
+            self.assertEqual((piece.points[0].x, piece.points[0].y), (20, 30))
+            self.assertEqual((piece.points[1].x, piece.points[1].y), (100, 0))
+        widget.undo()
+        for piece in widget.history.document.pieces:
+            self.assertEqual((piece.points[0].x, piece.points[0].y), (0, 0))
 
     def test_embedded_canvas_delete_panel_and_switch_component_type(self):
         item = self.node()

@@ -11,6 +11,7 @@ from shiboken6 import isValid
 from nodes.mocap_import import spec as params
 from nodes.mocap_collection import spec as collection
 from nodes.render.takes import reserve_take_folder
+from echograph.ui.node_error_indicator import short_message
 
 
 def value(model, name, default=""):
@@ -166,6 +167,7 @@ class ForEachSession(QtCore.QObject):
         self.running = False
         self.cancel_requested = False
         self.status = "Ready"
+        self.error_details = ""
         self.index = 0
         self.plan = []
         self.manifest_path = None
@@ -176,6 +178,7 @@ class ForEachSession(QtCore.QObject):
     def begin(self):
         if self.running:
             return
+        self.error_details = ""
         if getattr(self.scene, "_foreach_active_session", None) is not None:
             raise ValueError("Another For Each loop is running in this graph.")
         self.end_item, self.render_item = loop_nodes(self.start_item)
@@ -274,7 +277,8 @@ class ForEachSession(QtCore.QObject):
             write_json(folder / "take.json", record)
             self._write_manifest("running")
             if result.status != "completed":
-                self._finish(result.status, result.message or f"Take {number} {result.status}.")
+                self._finish(result.status, result.message or f"Take {number} {result.status}.",
+                             details=result.details)
                 return
             # End is reached only after render_sequence has returned its outcome.
             self.index += 1
@@ -290,10 +294,11 @@ class ForEachSession(QtCore.QObject):
                 "for_each": self.start_item.model.name, "source_node": self.source.model.name,
                 "planned_takes": len(self.plan), "takes": self.records})
 
-    def _finish(self, status, message):
+    def _finish(self, status, message, *, details=""):
         self._timer.stop()
         self.running = False
-        self.status = message
+        self.status = short_message(message)
+        self.error_details = str(details or message) if status == "error" or details else ""
         if getattr(self.scene, "_foreach_active_session", None) is self:
             self.scene._foreach_active_session = None
         if self.initial_rows is not None and isValid(self.source) and self.source.scene() is self.scene:
@@ -302,11 +307,13 @@ class ForEachSession(QtCore.QObject):
         try:
             if self.records and self.records[-1]["status"] == "rendering":
                 record = self.records[-1]
-                record.update(status=status, message=message, finished_at=datetime.now(timezone.utc).isoformat())
+                record.update(status=status, message=self.status, details=self.error_details,
+                              finished_at=datetime.now(timezone.utc).isoformat())
                 write_json(Path(record["take_folder"]) / "take.json", record)
             self._write_manifest(status)
         except OSError as exc:
-            self.status += f" Manifest could not be saved: {exc}"
+            self.error_details += f"\nManifest could not be saved: {exc}"
+            self.status = short_message(self.status + " Manifest could not be saved.")
         self.changed.emit()
 
 

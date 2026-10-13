@@ -32,6 +32,7 @@ class RenderResult:
     written_frames: int = 0
     start_frame: int = 0
     end_frame: int = 0
+    details: str = ""
 
     def to_dict(self):
         return asdict(self)

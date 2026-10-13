@@ -4,6 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from pathlib import Path
 import tempfile
 import time
+import sys
 import unittest
 from unittest.mock import Mock, patch
 
@@ -221,6 +222,8 @@ class ReviewTests(unittest.TestCase):
         QtTest.QTest.keyClick(dialog, QtCore.Qt.Key_F11)
         self.assertTrue(dialog.isFullScreen())
         QtTest.QTest.keyClick(dialog, QtCore.Qt.Key_Escape)
+        # Windows restores maximization through a queued native window message.
+        QtTest.QTest.qWait(30)
         self.assertFalse(dialog.isFullScreen())
         self.assertTrue(dialog.isMaximized())
         dialog.showMinimized()
@@ -245,6 +248,112 @@ class ReviewTests(unittest.TestCase):
         self.assertFalse(spec.entries(self.model)[0]["checked"])
         dialog.checked_only.setChecked(False)
         self.assertEqual(spec.output_number(self.model), 1)
+
+    def test_review_rebinds_lost_window_owner_without_restarting_playback_or_focus(self):
+        self.assign()
+        window = QtWidgets.QMainWindow()
+        window.setCentralWidget(QtWidgets.QGraphicsView(self.scene))
+        self.addCleanup(window.deleteLater)
+        window.show()
+        dialog = self.widget._review(1)
+        APP.processEvents()
+        player = dialog.player
+        self.assertTrue(player._seq_timer.isActive())
+        player._stop_playback()
+        player._show_sequence_frame(1)
+        player._on_play_clicked()
+        dialog.showMaximized()
+        flags = dialog.windowFlags()
+        handle = dialog.windowHandle()
+        handle.setTransientParent(None)
+        with patch.object(dialog, "activateWindow") as activate, \
+             patch.object(player, "_load_media", wraps=player._load_media) as load:
+            APP.sendEvent(window, QtCore.QEvent(QtCore.QEvent.WinIdChange))
+            APP.processEvents()
+            self.assertIs(handle.transientParent(), window.windowHandle())
+            self.assertTrue(dialog.isVisible())
+            self.assertTrue(dialog.isMaximized())
+            self.assertTrue(player._seq_timer.isActive())
+            self.assertEqual(player._seq_index, 1)
+            self.assertEqual(dialog.windowFlags(), flags)
+            activate.assert_not_called()
+            load.assert_not_called()
+        # A deliberate minimize must also survive a native handle change.
+        dialog.showMinimized()
+        handle.setTransientParent(None)
+        APP.sendEvent(window, QtCore.QEvent(QtCore.QEvent.WinIdChange))
+        APP.processEvents()
+        self.assertTrue(dialog.isMinimized())
+        self.assertIs(handle.transientParent(), window.windowHandle())
+        window.close()
+
+    def test_review_uses_main_window_owner_and_survives_launching_widget_rebuild(self):
+        self.assign()
+        window = QtWidgets.QMainWindow()
+        controls = QtWidgets.QWidget(window)
+        window.setCentralWidget(controls)
+        self.addCleanup(window.deleteLater)
+        dialog = review.open_review(self.model, self.scene, controls, 1)
+        APP.processEvents()
+        self.assertIs(dialog.parentWidget(), window)
+        controls.deleteLater()
+        APP.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+        APP.processEvents()
+        self.assertTrue(dialog.isVisible())
+        self.assertTrue(dialog.player._seq_timer.isActive())
+        self.assertIs(self.model._collection_review_dialog, dialog)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows native window ownership")
+    def test_native_opengl_viewport_recreation_keeps_review_owned_and_visible(self):
+        if APP.platformName() != "windows":
+            self.skipTest("Run with QT_QPA_PLATFORM=windows for native OpenGL regression")
+        import ctypes
+        from PySide6 import QtOpenGLWidgets
+        from shiboken6 import isValid
+        user32 = ctypes.windll.user32
+        user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.GetWindow.restype = ctypes.c_void_p
+        user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        self.assign()
+        window = QtWidgets.QMainWindow()
+        window.resize(500, 400)
+        # Exercise real Windows handles without putting test windows on the desktop.
+        window.move(-20000, -20000)
+        window.setAttribute(QtCore.Qt.WA_ShowWithoutActivating)
+        graph = QtWidgets.QGraphicsView(self.scene)
+        window.setCentralWidget(graph)
+        self.addCleanup(window.deleteLater)
+        window.show()
+        APP.processEvents()
+        dialog = self.widget._review(1)
+        dialog.move(-20000, -20000)
+        APP.processEvents()
+        original_owner = int(window.winId())
+        self.assertEqual(user32.GetWindow(int(dialog.winId()), 4), original_owner)
+        flags = dialog.windowFlags()
+        try:
+            viewport = QtOpenGLWidgets.QOpenGLWidget(window)
+            window.setCentralWidget(viewport)
+            QtTest.QTest.qWait(150)
+            if not viewport.isValid():
+                self.skipTest("Native OpenGL context unavailable")
+            self.assertNotEqual(int(window.winId()), original_owner)
+            self.assertIs(dialog.windowHandle().transientParent(), window.windowHandle())
+            self.assertEqual(user32.GetWindow(int(dialog.winId()), 4), int(window.winId()))
+            self.assertTrue(user32.IsWindowVisible(int(dialog.winId())))
+            self.assertTrue(dialog.isVisible())
+            self.assertTrue(dialog.player._seq_timer.isActive())
+            self.assertEqual(dialog.windowFlags(), flags)
+            dialog.player._stop_playback()
+            dialog.player._show_sequence_frame(1)
+            dialog.approve.click()
+            APP.processEvents()
+            self.assertTrue(dialog.isVisible())
+            self.assertEqual(dialog.player._seq_index, 1)
+        finally:
+            if isValid(dialog):
+                dialog.close()
+            window.close()
 
     def test_review_hotkeys_with_focused_controls_and_saved_approval_colors(self):
         self.assign()

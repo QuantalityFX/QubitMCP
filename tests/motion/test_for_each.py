@@ -559,6 +559,135 @@ class ForEachTests(unittest.TestCase):
         self.assertEqual(runtime.value(self.render.model, "output"), str(self.root / "renders" / "frame.png"))
         window.close()
 
+    def test_single_pass_render_uses_scene_rate_and_accepts_black_output_frames(self):
+        window = QtWidgets.QMainWindow()
+        self.addCleanup(window.close)
+        window.open_scene_assets = Mock(return_value=True)
+        current = {"frame": 0}
+        gl = SimpleNamespace(grabFramebuffer=Mock(), _timeline_fps=24, _timeline_material_fps_override=0,
+            _timeline_current_frame=lambda: current["frame"],
+            _timeline_set_frame_widgets=lambda frame: current.update(frame=frame),
+            _timeline_apply_frame_if_keyed=Mock(), _timeline_apply_other_owner_frames=Mock(), update=Mock())
+        window.gl_view = gl
+        self.assets.append({"kind": "mesh", "fbx_rig_context": {"clip": SimpleNamespace(start_time=0, end_time=4 / 24)}})
+        self.renderer._fps_spin.setValue(30)
+        controls = self.start._plugin_proxies[0].widget()
+        controls.single_pass.setChecked(True)
+        controls.single_iteration.setValue(1)
+        APP.processEvents()
+        image = QtGui.QImage(16, 16, QtGui.QImage.Format_RGBA8888)
+        image.fill(QtGui.QColor("black"))
+        captured = []
+        def capture(*args):
+            captured.append(current["frame"])
+            self.assertEqual(gl._timeline_fps, 24)
+            self.assertEqual(gl._timeline_material_fps_override, 24)
+            self.assertFalse(hasattr(gl, "_mgl_render_fps_override"))
+            return image
+        with patch.object(render, "_dialog_parent", return_value=window), \
+             patch.object(self.renderer, "_grab_frame_supersampled", side_effect=capture), \
+             patch.object(QtWidgets.QMessageBox, "exec", side_effect=AssertionError("No error popup during capture")):
+            self.session.begin()
+            self.finish()
+        self.assertEqual(captured, [0, 1, 2, 3, 4], self.session.records)
+        self.assertEqual(self.session.records[0]["written_frames"], 5)
+        self.assertEqual(self.session.records[0]["frame_rate"], 30)
+        self.assertEqual(self.session.records[0]["status"], "completed")
+        self.assertEqual(gl._timeline_current_frame(), 0)
+        self.assertEqual(gl._timeline_material_fps_override, 0)
+
+    def test_frame_errors_stay_in_dialog_and_manifest_without_growing_nodes_or_cards(self):
+        details = "\n".join(f"Frame {frame}: capture failed." for frame in range(161, 215))
+        outcome = RenderResult("error", "Rendered 160 frames. 54 frames failed.", details=details)
+        heights = self.start.height, self.end.height
+        with patch.object(self.renderer, "render_sequence", return_value=outcome):
+            self.session.begin()
+            self.finish()
+        self.assertEqual(self.session.error_details, details)
+        self.assertNotIn("Frame 161", self.session.status)
+        self.assertEqual(json.loads(self.session.manifest_path.read_text())["takes"][0]["details"], details)
+        for item in (self.start, self.end):
+            body = item._plugin_proxies[0].widget()
+            body.refresh()
+            self.assertNotIn("Frame 214", body.status.text())
+            self.assertFalse(body.error_indicator.isHidden())
+            self.assertEqual(body.error_indicator.details, details)
+            self.assertEqual(body.error_indicator.size(), QtCore.QSize(24, 24))
+            body.error_indicator.click()
+            dialog = body.error_indicator.dialog
+            self.assertTrue(dialog.isVisible())
+            self.assertEqual(dialog.findChild(QtWidgets.QPlainTextEdit, "NodeErrorDetails").toPlainText(), details)
+            dialog.close()
+            card = QtWidgets.QWidget()
+            card._node_ref, card._graph_scene = item.model, self.scene
+            layout = QtWidgets.QVBoxLayout(card)
+            self.assertTrue(spec.footer(card, layout))
+            footer = layout.itemAt(0).widget()
+            if isinstance(footer, spec.StartControls):
+                footer.attach()
+            footer.refresh()
+            self.assertFalse(footer.error_indicator.isHidden())
+            self.assertEqual(footer.error_indicator.details, details)
+            card.deleteLater()
+        self.assertEqual((self.start.height, self.end.height), heights)
+
+    def test_render_stop_remains_responsive_while_waiting_for_cloth(self):
+        window = QtWidgets.QMainWindow()
+        self.addCleanup(window.close)
+        window.open_scene_assets = Mock(return_value=True)
+        current = {"frame": 0}
+        cancelled = {"value": False}
+        def ready(frame):
+            QtCore.QTimer.singleShot(0, lambda: cancelled.update(value=True))
+            return False
+        window.gl_view = SimpleNamespace(grabFramebuffer=Mock(), _timeline_fps=24, _timeline_current_frame=lambda: current["frame"],
+            _timeline_set_frame_widgets=lambda frame: current.update(frame=frame),
+            _timeline_apply_frame_if_keyed=Mock(), _timeline_apply_other_owner_frames=Mock(), update=Mock(),
+            _cloth_render_ready=ready)
+        self.renderer._end_spin.setValue(1)
+        with patch.object(render, "_dialog_parent", return_value=window), \
+             patch.object(self.renderer, "_grab_frame_supersampled") as capture:
+            result = self.renderer.render_sequence(batch=True, cancel_requested=lambda: cancelled["value"])
+        self.assertEqual(result.status, "cancelled", result.message)
+        self.assertEqual(result.written_frames, 0)
+        capture.assert_not_called()
+
+    def test_render_prerolls_and_waits_for_cloth_before_capturing_later_range(self):
+        window = QtWidgets.QMainWindow()
+        self.addCleanup(window.close)
+        window.open_scene_assets = Mock(return_value=True)
+        current = {"frame": 0, "solved": 0}
+        checks = {}
+        def ready(frame):
+            if current["solved"] == frame:
+                return True
+            self.assertEqual(frame, current["solved"] + 1, "A cloth solve frame was skipped")
+            checks[frame] = checks.get(frame, 0) + 1
+            if checks[frame] < 2:
+                return False
+            current["solved"] = frame
+            return True
+        window.gl_view = SimpleNamespace(grabFramebuffer=Mock(), _timeline_fps=24,
+            _timeline_current_frame=lambda: current["frame"],
+            _timeline_set_frame_widgets=lambda frame: current.update(frame=frame),
+            _timeline_apply_frame_if_keyed=Mock(), _timeline_apply_other_owner_frames=Mock(), update=Mock(),
+            _cloth_render_ready=ready, _cloth_render_preroll_start=lambda frame: 0)
+        self.renderer._start_spin.setValue(3)
+        self.renderer._end_spin.setValue(4)
+        image = QtGui.QImage(16, 16, QtGui.QImage.Format_RGBA8888)
+        image.fill(QtGui.QColor("#457fa3"))
+        captured = []
+        def capture(*args):
+            self.assertEqual(current["solved"], current["frame"])
+            captured.append(current["frame"])
+            return image
+        with patch.object(render, "_dialog_parent", return_value=window), \
+             patch.object(self.renderer, "_grab_frame_supersampled", side_effect=capture):
+            result = self.renderer.render_sequence(batch=True)
+        self.assertEqual(result.status, "completed", result.message)
+        self.assertEqual(captured, [3, 4])
+        self.assertEqual(set(checks), {1, 2, 3, 4})
+
     def test_scene_load_failure_stops_before_any_capture(self):
         window = QtWidgets.QMainWindow()
         window.gl_view = SimpleNamespace(grabFramebuffer=Mock())

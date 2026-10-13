@@ -2294,6 +2294,22 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         asset["look_at_constraint"] = dict(look_at_constraint)
                     assets.append(asset)
             continue
+        if kind in ("animation_blend", "animation blend", "anim_blend", "blend_animation", "transforms"):
+            from nodes.animation_blend.spec import build_animation_blend_scene_asset, build_transformed_blend_scene_asset
+            asset = (build_transformed_blend_scene_asset(src_item) if kind == "transforms"
+                     else build_animation_blend_scene_asset(src_item))
+            if asset is not None:
+                owner = str(asset.get("node") or src_name)
+                saved_xform = _lookup_xform(xforms, owner)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = owner not in hidden
+                if look_at_constraint is not None:
+                    asset["look_at_constraint"] = dict(look_at_constraint)
+                assets.append(asset)
+                seen.add(str(asset.get("path") or ""))
+            if asset is not None or kind != "transforms":
+                continue
         if _is_anim_retarget_kind(kind):
             try:
                 from nodes.anim_retarget import spec as _anim_retarget_spec  # type: ignore
@@ -4262,7 +4278,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         title.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(title)
 
-        outliner = QtWidgets.QListWidget()
+        from echograph.ui.scene_outliner import SceneOutliner, ROW_MIME, PARENT_ROLE, ordered_rows, read_order
+        outliner = SceneOutliner(node.name)
         outliner.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         outliner.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         outliner.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
@@ -4273,10 +4290,24 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             "QListWidget::item{padding:2px 6px;}"
             "QListWidget::item:selected{background:#334155;}"
         )
-        outliner.setMinimumHeight(220)
+        outliner.setMinimumHeight(440)
         outliner.setMaximumHeight(900)
         layout.addWidget(outliner)
         card._scene_outliner_widget = outliner
+        def _save_outliner_order(order):
+            # Drop events may still be using row widgets. Rebuild after they finish.
+            def save():
+                if not _outliner_alive():
+                    return
+                scene = getattr(card, "_graph_scene", None)
+                item = getattr(scene, "_node_items", {}).get(node.name)
+                if item is not None:
+                    hidden = item._ui_hidden_params_set() | {"__outliner_order"}
+                    item._set_param_value("__ui_hidden_params", ",".join(sorted(hidden)), rebuild=False, notify_scene=False)
+                    item._set_param_value("__outliner_order", json.dumps(order), rebuild=False)
+                _safe_refresh(scene)
+            QtCore.QTimer.singleShot(0, save)
+        outliner.orderChanged.connect(_save_outliner_order)
         card._scene_outliner_log_enabled = bool(node_debug)
         def _outliner_log(msg: str) -> None:
             if not _footer_debug_enabled():
@@ -5645,6 +5676,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                             "_quick": True,
                             "has_skeleton": bool(
                                 _is_anim_retarget_kind(kind)
+                                or kind in ("animation_blend", "animation blend", "anim_blend", "blend_animation")
                                 or kind in _FBX_KIND_ALIASES
                                 or kind in _FBX_ANIMATION_KIND_ALIASES
                                 or kind in _MOCAP_KIND_ALIASES
@@ -5806,8 +5838,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 _append_look_at_target_row(asset, name)
                 if isinstance(asset.get("cloth"), dict):
                     if not asset["cloth"].get("placement_only"):
-                        rows.append({"name": name, "path": path, "kind": "cloth_collider", "asset": asset,
-                                     "display": "Cloth collider", "indent": 1, "child": True, "parent": name})
+                        from nodes.cloth_solver.spec import collider_owner_slots, params as cloth_params
+                        cfg = asset["cloth"]
+                        solver_item = getattr(scene, "_node_items", {}).get(cfg["solver_node"])
+                        values = cloth_params(solver_item.model) if solver_item is not None else cfg
+                        slots = collider_owner_slots(values, cfg.get("colliders", []))
+                        for collider_index in range(len(slots)):
+                            rows.append({"name": name, "path": path, "kind": "cloth_collider", "asset": asset,
+                                         "display": "Cloth collider", "indent": 1, "child": True, "parent": name,
+                                         "collider_index": collider_index})
                     from echograph.physics.cloth.placement import piece_owner
                     for piece in asset.get("pattern_pieces", []):
                         token = piece_owner(name, piece["id"])
@@ -5837,6 +5876,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     pass
                 return
 
+            outliner.order = read_order(_param_value(node, "__outliner_order"))
+            rows = ordered_rows(rows, outliner.order)
+            outliner.rows = rows
             hidden = _hidden_set()
             row_widgets = []
             visible_row_number = 0
@@ -5964,7 +6006,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     cfg = entry["asset"]["cloth"]
                     solver_item = getattr(scene, "_node_items", {}).get(cfg["solver_node"])
                     row_layout.addWidget(QtWidgets.QLabel("Collider"), 0)
-                    name_edit = ColliderOwnerEdit(solver_item) if solver_item is not None else QtWidgets.QLineEdit("Collider unavailable")
+                    name_edit = (ColliderOwnerEdit(solver_item, slot_index=entry["collider_index"],
+                                                  colliders=cfg.get("colliders", [])) if solver_item is not None
+                                 else QtWidgets.QLineEdit("Collider unavailable"))
                     name_edit.setObjectName("SceneClothColliderEdit")
                 else:
                     name_edit = QtWidgets.QLineEdit(display_name)
@@ -6057,6 +6101,45 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         + margins.left() + margins.right() + 8
                     )
                 row_layout.addWidget(name_edit, 0 if row_kind == "skeleton" else 1)
+                if is_cloth_row and solver_item is not None:
+                    from nodes.cloth_solver.spec import collider_owner_slots, params as cloth_params, set_value as set_cloth_value
+                    collider_index = entry["collider_index"]
+
+                    def _change_collider_row(remove=False, solver=solver_item, index=collider_index, colliders=cfg.get("colliders", [])):
+                        slots = collider_owner_slots(cloth_params(solver.model), colliders)
+                        if remove:
+                            if len(slots) <= 1 or index >= len(slots):
+                                return
+                            slots.pop(index)
+                        else:
+                            slots.insert(index + 1, "")
+                        set_cloth_value(solver, "collider_owner", ",".join(slots))
+
+                    add_collider = QtWidgets.QToolButton()
+                    add_collider.setObjectName("SceneAddClothColliderButton")
+                    add_collider.setAccessibleName(f"Add collider for {owner_name}")
+                    add_collider.setText("+")
+                    add_collider.setAutoRaise(False)
+                    add_collider.setFixedSize(16, 16)
+                    add_collider.setStyleSheet(
+                        "QToolButton#SceneAddClothColliderButton{background:#20242b;color:#cbd5e1;"
+                        "border:1px solid #353c46;border-radius:8px;padding:0;font-size:12px;}"
+                        "QToolButton#SceneAddClothColliderButton:hover{background:#292e36;}"
+                        "QToolButton#SceneAddClothColliderButton:pressed{background:#171b21;}"
+                    )
+                    add_collider.setToolTip("Add a collider below this row")
+                    add_collider.clicked.connect(lambda _checked=False, change=_change_collider_row: change())
+                    row_layout.insertWidget(row_layout.indexOf(name_edit), add_collider, 0)
+                    if len(collider_owner_slots(cloth_params(solver_item.model), cfg.get("colliders", []))) > 1:
+                        remove_collider = QtWidgets.QToolButton()
+                        remove_collider.setObjectName("SceneRemoveClothColliderButton")
+                        remove_collider.setAccessibleName(f"Remove collider {collider_index + 1} for {owner_name}")
+                        remove_collider.setText("×")
+                        remove_collider.setAutoRaise(True)
+                        remove_collider.setFixedSize(20, 20)
+                        remove_collider.setToolTip("Remove this collider")
+                        remove_collider.clicked.connect(lambda _checked=False, change=_change_collider_row: change(True))
+                        row_layout.addWidget(remove_collider, 0)
                 if row_kind == "skeleton":
                     joint_button = QtWidgets.QToolButton()
                     joint_button.setObjectName("SceneSkeletonJointsButton")
@@ -6074,12 +6157,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 row_item = QtWidgets.QListWidgetItem()
                 row_item.setData(QtCore.Qt.UserRole, owner_name)
                 row_item.setData(QtCore.Qt.UserRole + 1, (entry.get("kind") or "mesh"))
+                row_item.setData(PARENT_ROLE, str(entry.get("parent") or ""))
                 if is_child:
                     row_item.setData(QtCore.Qt.UserRole + 2, name)
                 if entry.get("path"):
                     row_item.setToolTip(entry["path"])
                 if is_target_row:
                     row_item.setToolTip(f"Look At target for {owner_name}")
+                elif is_cloth_row:
+                    row_item.setToolTip(f"Cloth collider for {owner_name}")
                 elif row_kind == "pattern_piece":
                     row_item.setToolTip(f"Arrange {display_name} with Move, Rotate, or Scale. Placement is saved in the workflow; changing it resets the cloth.")
                 elif is_child:
@@ -6165,12 +6251,17 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                                     drag_text = f"{owner_text}/Skeleton"
                                 mime = QtCore.QMimeData()
                                 mime.setText(drag_text)
+                                parent = str(self._item.data(PARENT_ROLE) or "")
+                                if not parent or self._row_kind == "pattern_piece":
+                                    mime.setData(ROW_MIME, json.dumps({"scene": node.name,
+                                        "name": child_text or owner_text, "kind": self._row_kind,
+                                        "parent": parent}).encode("utf-8"))
                                 drag = QtGui.QDrag(obj)
                                 drag.setMimeData(mime)
                                 try:
-                                    drag.exec(QtCore.Qt.CopyAction)
+                                    drag.exec(QtCore.Qt.CopyAction | QtCore.Qt.MoveAction, QtCore.Qt.CopyAction)
                                 except Exception:
-                                    drag.exec_(QtCore.Qt.CopyAction)
+                                    drag.exec_(QtCore.Qt.CopyAction | QtCore.Qt.MoveAction, QtCore.Qt.CopyAction)
                                 return True
                             except Exception:
                                 return False

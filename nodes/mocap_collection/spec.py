@@ -263,14 +263,17 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
         self.table.setColumnWidth(2, 64)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setToolTip("Shift selects a range; Ctrl selects individual paths for Update paths. Selection does not change the Use checkboxes. Click an eligible path to make it active.")
+        self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._path_context_menu)
         layout.addWidget(self.table)
         checks = QtWidgets.QHBoxLayout()
         self.all_button = QtWidgets.QPushButton("Check all")
         self.none_button = QtWidgets.QPushButton("Uncheck all")
+        self.explorer_button = QtWidgets.QPushButton("Open in Explorer")
+        self.explorer_button.setToolTip("Show the selected path, or the active output, in its folder")
         self.select_all_button = QtWidgets.QPushButton("Select all")
         self.select_all_button.setToolTip("Select every path without changing its Use checkbox")
-        for button in (self.select_all_button, self.all_button, self.none_button):
+        for button in (self.select_all_button, self.all_button, self.none_button, self.explorer_button):
             button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Fixed)
             checks.addWidget(button)
         self.live_view = QtWidgets.QCheckBox("Live view")
@@ -310,6 +313,7 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         self.remove_button.clicked.connect(self._remove)
         self.all_button.clicked.connect(lambda: self._check_all(True))
         self.none_button.clicked.connect(lambda: self._check_all(False))
+        self.explorer_button.clicked.connect(self._open_selected_path)
         self.select_all_button.clicked.connect(self.table.selectAll)
         self.view_button.clicked.connect(self._view)
         self._live_timer = QtCore.QTimer(self)
@@ -397,8 +401,6 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                     thumbnail.setToolTip("Click to review the assigned render" if row.get("render") else "No render assigned")
                     cells = (check, QtWidgets.QTableWidgetItem(str(i + 1)), thumbnail, QtWidgets.QTableWidgetItem(row["path"]))
                     for column, cell in enumerate(cells):
-                        if column == 3:
-                            cell.setToolTip(row["path"] + "\nDouble-click to rename the BVH and assigned render folders.")
                         self.table.setItem(i, column, cell)
                     if row["path"] in selected_paths:
                         self.table.selectionModel().select(self.table.model().index(i, 3),
@@ -438,7 +440,7 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                 control.setEnabled(bool(eligible))
             if number:
                 self.table.scrollToItem(self.table.item(number - 1, 0))
-        for button in (self.select_all_button, self.all_button, self.none_button):
+        for button in (self.select_all_button, self.all_button, self.none_button, self.explorer_button):
             button.setEnabled(bool(rows))
         self.review_button.setEnabled(bool(rows))
         self.load_renders_button.setEnabled(bool(rows))
@@ -574,6 +576,41 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         if self.live_view.isChecked() and output_number(self.model):
             frame, self._live_frame = self._live_frame, False
             self._view(live=True, frame=frame)
+
+    def _explorer_path(self, row):
+        rows = entries(self.model)
+        if not 0 <= row < len(rows):
+            return None
+        scene = self.graph_scene or getattr(self.model, "_graph_scene", None)
+        base = mocap._workflow_dir_for_node(SimpleNamespace(scene=lambda: scene))
+        return mocap._resolve_existing_path(rows[row]["path"], base)
+
+    def _open_selected_path(self):
+        selected = sorted(index.row() for index in self.table.selectionModel().selectedRows(3))
+        current = self.table.currentRow()
+        row = current if current in selected else (selected[0] if selected else max(0, output_number(self.model) - 1))
+        path = self._explorer_path(row)
+        if path is None:
+            self.status.setText("File unavailable. Update paths to locate it.")
+            return
+        from echograph.ui.node_item import _open_in_explorer
+        _open_in_explorer(str(path))
+
+    def _path_context_menu(self, pos):
+        index = self.table.indexAt(pos)
+        if not index.isValid() or index.row() >= len(entries(self.model)):
+            return
+        path = self._explorer_path(index.row())
+        menu = QtWidgets.QMenu(self._dialog_parent())
+        open_action = menu.addAction("Open in Explorer")
+        open_action.setEnabled(path is not None)
+        # Embedded node widgets cannot map screen coordinates reliably through
+        # the graph's zoom/perspective transform. Qt's cursor is already global.
+        selected = menu.exec(QtGui.QCursor.pos())
+        menu.deleteLater()
+        if selected is open_action and path is not None:
+            from echograph.ui.node_item import _open_in_explorer
+            _open_in_explorer(str(path))
 
     def _clicked(self, row, column):
         if QtWidgets.QApplication.keyboardModifiers() & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier):

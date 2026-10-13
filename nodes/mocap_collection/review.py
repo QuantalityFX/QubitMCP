@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
+import sys
 from types import SimpleNamespace
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -128,9 +130,54 @@ class ReviewPlayer(VideoPlayerWidget):
             self._seq_timer.setInterval(self._frame_interval_ms())
 
 
+def _review_window_owner(parent, scene):
+    """Use the app window rather than a rebuilt node body or floating control."""
+    candidates = [parent] if parent is not None and isValid(parent) else []
+    if scene is not None and isValid(scene):
+        candidates.extend(view.window() for view in scene.views())
+    for candidate in candidates:
+        widget, main = candidate, None
+        while widget is not None:
+            if isinstance(widget, QtWidgets.QMainWindow) and widget.isWindow():
+                main = widget
+            widget = widget.parentWidget()
+        if main is not None:
+            return main
+    for candidate in candidates:
+        window = candidate.window()
+        if window.isWindow() and window.graphicsProxyWidget() is None:
+            return window
+    return None
+
+
+def _restore_windows_owner(handle, owner_handle):
+    """Qt's transient-parent hint alone does not repair an existing Windows HWND."""
+    import ctypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    user32.GetWindow.restype = ctypes.c_void_p
+    hwnd, owner_hwnd = int(handle.winId()), int(owner_handle.winId())
+    if user32.GetWindow(hwnd, 4) == owner_hwnd:  # GW_OWNER
+        return
+    set_owner = (user32.SetWindowLongPtrW if ctypes.sizeof(ctypes.c_void_p) == 8 else
+                 user32.SetWindowLongW)
+    set_owner.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+    set_owner.restype = ctypes.c_ssize_t
+    ctypes.set_last_error(0)
+    previous = set_owner(hwnd, -8, owner_hwnd)  # GWLP_HWNDPARENT sets a top-level window's owner.
+    error = ctypes.get_last_error()
+    if not previous and error:
+        raise ctypes.WinError(error)
+
+
 class ReviewDialog(QtWidgets.QDialog):
     def __init__(self, model, scene, parent=None):
+        parent = _review_window_owner(parent, scene)
         super().__init__(parent)
+        self._window_owner = parent
+        self._owner_rebind_timer = QtCore.QTimer(self)
+        self._owner_rebind_timer.setSingleShot(True)
+        self._owner_rebind_timer.timeout.connect(self._restore_window_owner)
         # Use the normal Windows frame and work-area-aware maximize behavior.
         # A dialog's default frame does not provide all three caption buttons.
         self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.WindowTitleHint
@@ -212,7 +259,34 @@ class ReviewDialog(QtWidgets.QDialog):
         # focus, without intercepting keys in other windows or rename dialogs.
         for widget in [self, *self.findChildren(QtWidgets.QWidget)]:
             widget.installEventFilter(self)
+        if parent is not None:
+            parent.installEventFilter(self)
         self.refresh()
+
+    def _restore_window_owner(self):
+        owner = self._window_owner
+        if owner is None or not isValid(owner):
+            return
+        handle, owner_handle = self.windowHandle(), owner.windowHandle()
+        if handle is None or owner_handle is None:
+            return
+        # Introducing QOpenGLWidget into a shown main window can recreate its
+        # native HWND. Qt drops the review's transient owner in that process;
+        # reconnect to the new handle so Windows keeps review above the app.
+        # Force the update even if the QWindow object itself was reused.
+        handle.setTransientParent(None)
+        handle.setTransientParent(owner_handle)
+        if sys.platform == "win32" and QtWidgets.QApplication.platformName() == "windows":
+            try:
+                _restore_windows_owner(handle, owner_handle)
+            except OSError as exc:
+                logging.getLogger(__name__).warning("Could not restore render review window owner: %s", exc)
+        if self.isVisible() and not self.isMinimized() and owner.isVisible() and not owner.isMinimized():
+            self.raise_()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._restore_window_owner()
 
     @QtCore.Slot(str, list)
     def params_changed(self, name, _params):
@@ -330,6 +404,13 @@ class ReviewDialog(QtWidgets.QDialog):
             self.showFullScreen()
 
     def eventFilter(self, watched, event):
+        if watched is self._window_owner:
+            if (event.type() in (QtCore.QEvent.WinIdChange, QtCore.QEvent.Show)
+                    or (event.type() == QtCore.QEvent.PlatformSurface
+                        and event.surfaceEventType() == QtGui.QPlatformSurfaceEvent.SurfaceCreated)):
+                # Wait until Qt finishes rebuilding the native window. A timer
+                # owned by review also cancels this work when review is closed.
+                self._owner_rebind_timer.start(0)
         if (event.type() in (QtCore.QEvent.ShortcutOverride, QtCore.QEvent.KeyPress, QtCore.QEvent.KeyRelease)
                 and watched.window() is self and event.modifiers() == QtCore.Qt.NoModifier
                 and event.key() in (QtCore.Qt.Key_Space, QtCore.Qt.Key_Up, QtCore.Qt.Key_Down)):
@@ -352,6 +433,9 @@ class ReviewDialog(QtWidgets.QDialog):
         super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        self._owner_rebind_timer.stop()
+        if self._window_owner is not None and isValid(self._window_owner):
+            self._window_owner.removeEventFilter(self)
         self.player._stop_playback()
         if getattr(self.model, "_collection_review_dialog", None) is self:
             self.model._collection_review_dialog = None

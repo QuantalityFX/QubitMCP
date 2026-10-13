@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 import weakref
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 from shiboken6 import isValid
 
 from echograph.patterns.document import PatternDocument, PatternError
@@ -15,7 +15,7 @@ from echograph.patterns.commands import DocumentHistory, delete_points, move_poi
 from echograph.patterns.serialization import file_hash, load_document, resolve_pattern_path, save_document
 from nodes.core import Spec
 
-PATTERN_NODE_W = 640
+PATTERN_NODE_W = 704
 PATTERN_BODY_H = 520
 
 
@@ -113,6 +113,9 @@ class PatternNodeWidget(QtWidgets.QWidget):
         self._edges_deselected = False
         self._render_key = None
         self._file_stat = None
+        self._canvas_help = ""
+        self._control_help = ""
+        self._base_status = "Draw a panel, then save the pattern."
         raw_path = _param(node_item.model, "pattern_path")
         self._auto_fit_on_load = bool(raw_path)
         if raw_path:
@@ -144,6 +147,12 @@ class PatternNodeWidget(QtWidgets.QWidget):
         for title, callback in (("New Pattern", self.new_pattern), ("Open / Locate", self.open_pattern),
                                 ("Save .pattern.json", self.save_pattern), ("Open Full Editor", self.open_editor)):
             button = QtWidgets.QPushButton(title)
+            self._set_help(button, {
+                "New Pattern": "Start a new pattern.",
+                "Open / Locate": "Open or locate a pattern file.",
+                "Save .pattern.json": "Save the pattern and update Scene.",
+                "Open Full Editor": "Open the full pattern editor.",
+            }[title])
             button.clicked.connect(callback)
             row.addWidget(button)
         layout.addLayout(row)
@@ -152,22 +161,26 @@ class PatternNodeWidget(QtWidgets.QWidget):
         self.filename.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         layout.addWidget(self.filename)
 
-        from echograph.ui.pattern_editor.canvas import PatternCanvas, sew_icon
+        from echograph.ui.pattern_editor.canvas import PatternCanvas, sew_icon, elastic_icon
         self.canvas = PatternCanvas()
         self.canvas.sewRequested.connect(self._sew_requested)
+        self.canvas.elasticRequested.connect(self._elastic_requested)
         self.canvas.sewStatusChanged.connect(self._sew_status_changed)
         self.canvas.setMinimumSize(500, 340)
         self.canvas.setMaximumHeight(420)
         self.canvas.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
                                   QtWidgets.QSizePolicy.Policy.Expanding)
-        self.canvas.setToolTip("Click point to select; Ctrl-click adds/toggles; drag on empty canvas box-selects points (Shift-drag works anywhere). Delete removes selected points. Click an edge to select; double-click to insert a point. Middle-drag pans; right-drag right/up zooms in, left/down zooms out.")
+        self.canvas.setMouseTracking(True)
+        self.canvas.viewport().installEventFilter(self)
         layout.addWidget(self.canvas, 1)
         self.canvas.pieceSelected.connect(self._piece_selected, QtCore.Qt.ConnectionType.QueuedConnection)
         self.canvas.layoutEdited.connect(self._layout_dragged, QtCore.Qt.ConnectionType.QueuedConnection)
         self.canvas.handleEdited.connect(self._handle_dragged, QtCore.Qt.ConnectionType.QueuedConnection)
         self.canvas.edgesMoved.connect(self._edges_dragged)
+        self.canvas.pointsMoved.connect(self._points_dragged)
         self.canvas.outlineCreated.connect(self._outline_created)
         self.canvas.drawingChanged.connect(self._drawing_changed)
+        self.canvas.mergeModeChanged.connect(lambda _active: self._update_status_text())
         self.canvas.pointSelectionChanged.connect(self._points_selected)
         self.canvas.pointsSelectionChanged.connect(self._all_points_selected)
         self.canvas.panelsSelected.connect(self._panels_selected, QtCore.Qt.ConnectionType.QueuedConnection)
@@ -204,11 +217,13 @@ class PatternNodeWidget(QtWidgets.QWidget):
                                 ("Close", lambda: self._finish_outline(True)),
                                 ("Undo", self.undo), ("Redo", self.redo)):
             button = QtWidgets.QPushButton(label)
-            button.setToolTip({"Draw Points": "Click canvas points; Enter closes, Shift+Enter keeps an open draft, Escape cancels."}.get(label, label))
+            self._set_help(button, {"Draw Points": "Click: draw · Enter: close · Esc: cancel",
+                                   "Close": "Close the drawn outline.", "Undo": "Undo the last edit.",
+                                   "Redo": "Redo the last edit."}[label])
             button.clicked.connect(callback)
             drawing_row.addWidget(button)
         self.delete_points_button = QtWidgets.QPushButton("Delete Point(s)")
-        self.delete_points_button.setToolTip("Drag on empty canvas to box-select points, then delete. Shift-drag works anywhere.")
+        self._set_help(self.delete_points_button, "Delete selected points · Shift-drag: box select")
         self.delete_points_button.clicked.connect(self.delete_selected_points)
         drawing_row.addWidget(self.delete_points_button)
         self.sew_button = QtWidgets.QToolButton()
@@ -217,10 +232,20 @@ class PatternNodeWidget(QtWidgets.QWidget):
         self.sew_button.setIconSize(QtCore.QSize(22, 22))
         self.sew_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.sew_button.setCheckable(True)
-        self.sew_button.setToolTip("Sew two edges: click the first edge, then its partner. Esc exits.")
+        self._set_help(self.sew_button, "Choose two edges to sew · Esc: exit")
         self.sew_button.toggled.connect(self.canvas.set_sew_mode)
         self.canvas.sewModeChanged.connect(self.sew_button.setChecked)
         drawing_row.addWidget(self.sew_button)
+        self.elastic_button = QtWidgets.QToolButton()
+        self.elastic_button.setText("Elastic")
+        self.elastic_button.setIcon(elastic_icon())
+        self.elastic_button.setIconSize(QtCore.QSize(22, 22))
+        self.elastic_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.elastic_button.setCheckable(True)
+        self._set_help(self.elastic_button, "Click an edge to make it elastic · Esc: exit")
+        self.elastic_button.toggled.connect(self.canvas.set_elastic_mode)
+        self.canvas.elasticModeChanged.connect(self.elastic_button.setChecked)
+        drawing_row.addWidget(self.elastic_button)
         tools.addLayout(template_row)
         tools.addLayout(drawing_row)
         layout.addLayout(tools)
@@ -231,19 +256,26 @@ class PatternNodeWidget(QtWidgets.QWidget):
         curve_row.addWidget(QtWidgets.QLabel("Selected edge"))
         curve_row.addWidget(self.edge_combo, 1)
         self.curve_button = QtWidgets.QPushButton("Make Cubic Curve")
-        self.curve_button.setToolTip("Convert the selected edge to an editable Bezier curve; drag the orange handles on the canvas.")
+        self._set_help(self.curve_button, "Make a curve · Drag orange handles to shape")
         self.curve_button.clicked.connect(self._make_cubic)
         curve_row.addWidget(self.curve_button)
         self.insert_point_button = QtWidgets.QPushButton("Insert Point")
-        self.insert_point_button.setToolTip("Split the selected edge; double-click an edge to insert directly.")
+        self._set_help(self.insert_point_button, "Add a point to the selected edge")
         self.insert_point_button.clicked.connect(self.insert_point_on_edge)
         curve_row.addWidget(self.insert_point_button)
         self.fit_button = QtWidgets.QPushButton("Fit")
-        self.fit_button.setToolTip("Frame all pattern panels in the square canvas.")
+        self._set_help(self.fit_button, "Frame all pattern panels")
         self.fit_button.clicked.connect(self.canvas.fit_pieces)
         curve_row.addWidget(self.fit_button)
         layout.addLayout(curve_row)
-        self.status = QtWidgets.QLabel("Draw directly on the canvas. The file is created when you save.")
+        from echograph.ui.pattern_editor.elastic import ElasticEdgeControls
+        self.elastic_controls = ElasticEdgeControls()
+        self.elastic_controls.edited.connect(self._elastic_edited)
+        self._set_help(self.elastic_controls.enabled, "Enable elastic on the selected edges")
+        self._set_help(self.elastic_controls.strength, "Higher strength pulls harder")
+        self._set_help(self.elastic_controls.rest_length, "80% rest length tightens the edge by 20%")
+        layout.addWidget(self.elastic_controls)
+        self.status = QtWidgets.QLabel(self._base_status)
         self.status.setMinimumWidth(0)
         self.status.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         layout.addWidget(self.status)
@@ -255,6 +287,66 @@ class PatternNodeWidget(QtWidgets.QWidget):
 
     def sizeHint(self):
         return super().sizeHint().expandedTo(QtCore.QSize(PATTERN_NODE_W, PATTERN_BODY_H))
+
+    def _set_help(self, widget, text):
+        widget.setProperty("pattern_help", text)
+        widget.setToolTip("")
+        widget.installEventFilter(self)
+
+    def _canvas_hover_help(self, pixel):
+        from echograph.ui.pattern_editor.canvas import HandleItem, PieceItem
+
+        item = self.canvas.itemAt(pixel)
+        if isinstance(item, HandleItem):
+            return ("Drag: shape curve" if item.control_index >= 0 else
+                    "Drag: move · Ctrl-click: toggle · Delete: remove")
+        if self.canvas._edge_at(pixel):
+            return "Drag: move edge · Double-click: add point"
+        while item is not None:
+            if isinstance(item, PieceItem):
+                return "Drag: move panel · Shift-drag: box select"
+            item = item.parentItem()
+        return "Drag: box select · Middle-drag: pan · Wheel: zoom"
+
+    def _update_status_text(self):
+        if not hasattr(self, "status"):
+            return
+        mode_help = getattr(self, "_sew_status", "")
+        if self.canvas.drawing:
+            mode_help = "Click: draw · Enter: close · Shift+Enter: draft · Esc: cancel"
+        elif self.canvas._merge_source:
+            mode_help = "Fuse: choose another panel's point · Esc: cancel"
+        text = self._control_help or mode_help or self._canvas_help or self._base_status
+        if self.status.text() != text:
+            self.status.setText(text)
+
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and watched is canvas.viewport():
+            if kind in (QtCore.QEvent.Type.Enter, QtCore.QEvent.Type.MouseMove, QtCore.QEvent.Type.ToolTip):
+                pixel = (event.position().toPoint() if hasattr(event, "position") else
+                         event.pos() if hasattr(event, "pos") else
+                         watched.mapFromGlobal(QtGui.QCursor.pos()))
+                self._canvas_help = self._canvas_hover_help(pixel)
+                self._update_status_text()
+            elif kind == QtCore.QEvent.Type.Leave:
+                self._canvas_help = ""
+                self._update_status_text()
+        elif watched.property("pattern_help"):
+            if kind in (QtCore.QEvent.Type.Enter, QtCore.QEvent.Type.ToolTip):
+                self._control_help = watched.property("pattern_help")
+                self._update_status_text()
+            elif kind == QtCore.QEvent.Type.Leave:
+                self._control_help = ""
+                self._update_status_text()
+        else:
+            return super().eventFilter(watched, event)
+        if kind == QtCore.QEvent.Type.ToolTip:
+            QtWidgets.QToolTip.hideText()
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
 
     def _directory(self):
         try:
@@ -406,12 +498,26 @@ class PatternNodeWidget(QtWidgets.QWidget):
             return
         self.node_item.model._pattern_history = self.history
         self.refresh()
-        self.canvas.sewStatusChanged.emit("Edges sewn. Click two more edges to sew another pair; Esc exits.")
+        self.canvas.sewStatusChanged.emit("Sewn · Choose two more edges · Esc: exit")
 
     def _sew_status_changed(self, text):
         self._sew_status = text
         if hasattr(self, "status"):
-            self.refresh()
+            self._update_status_text()
+
+    def _elastic_requested(self, piece_id, edge_id):
+        from echograph.patterns.elastic import elastic_for_edge
+        self._canvas_edge_selected(piece_id, edge_id)
+        if elastic_for_edge(self.history.document, piece_id, edge_id) is None:
+            self._elastic_edited(True, self.elastic_controls.strength.value(),
+                                 self.elastic_controls.rest_length.value() / 100)
+        self.canvas.sewStatusChanged.emit("Elastic edge · Adjust strength and rest length · Esc: exit")
+
+    def _elastic_edited(self, enabled, strength, ratio):
+        from echograph.patterns.elastic import set_elastic_edges
+        selection = set(self._edge_selection)
+        if selection:
+            self._edit("Set elastic edges", lambda doc: set_elastic_edges(doc, selection, enabled, strength, ratio))
 
     def add_rectangle(self):
         width, height = self.width_edit.value(), self.height_edit.value()
@@ -460,7 +566,7 @@ class PatternNodeWidget(QtWidgets.QWidget):
 
     def _drawing_changed(self, drawing):
         if drawing:
-            self.status.setText("Click canvas points · Enter closes · Shift+Enter keeps a draft · Esc cancels")
+            self._update_status_text()
         else:
             self.refresh()
 
@@ -502,6 +608,7 @@ class PatternNodeWidget(QtWidgets.QWidget):
         selection[self._selected_id] = self._selected_points
         self.canvas.show_document(self.history.document, self._selected_id, self._selected_points,
                                   (self._selected_id, self._selected_edge_id), self._selected_panels, selection, self._edge_selection)
+        self.elastic_controls.show_selection(self.history.document, self._edge_selection)
 
     def _fuse_selected_points(self, selection):
         keys = {key for key, ids in selection.items() if ids} or self._selected_panels
@@ -532,6 +639,10 @@ class PatternNodeWidget(QtWidgets.QWidget):
         from echograph.patterns.commands import translate_edges
         self._edit("Move edges", lambda doc: translate_edges(doc, selection, dx, dy))
 
+    def _points_dragged(self, selection, dx, dy):
+        from echograph.patterns.commands import translate_points
+        self._edit("Move points", lambda doc: translate_points(doc, selection, dx, dy))
+
     def _edge_selected(self, _index=None):
         self._selected_edge_id = self.edge_combo.currentData() or ""
         if _index is not None:
@@ -560,6 +671,7 @@ class PatternNodeWidget(QtWidgets.QWidget):
             self.edge_combo.setCurrentIndex(-1)
         self.curve_button.setEnabled(False)
         self.insert_point_button.setEnabled(False)
+        self.elastic_controls.show_selection(self.history.document, ())
         self._selected_id = piece_id
         self._selected_points = set(point_ids)
 
@@ -687,7 +799,8 @@ class PatternNodeWidget(QtWidgets.QWidget):
         if not isValid(self.node_item) or self.graphicsProxyWidget() is None:
             self.timer.stop()
             return
-        if self.canvas._edge_drag is not None or self.canvas.scene().mouseGrabberItem() is not None:
+        if (self.canvas._edge_drag is not None or self.canvas._point_drag is not None
+                or self.canvas.scene().mouseGrabberItem() is not None):
             return
         value = self._param_path()
         try:
@@ -697,21 +810,19 @@ class PatternNodeWidget(QtWidgets.QWidget):
                 self._file_stat = (str(path), stat.st_mtime_ns, stat.st_size)
                 self.filename.setText(path.name)
                 self.filename.setToolTip(str(path))
-                status = "File changed elsewhere; choose Open / Locate to reload safely" if getattr(self, "_external_change", False) else "Saved file; edits here are shared with the full editor"
+                status = "File changed · Open / Locate to reload" if getattr(self, "_external_change", False) else "Saved pattern · Shared with full editor"
             else:
                 self.filename.setText("Unsaved design; choose Save .pattern.json to create its file")
                 self.filename.setToolTip("Draw now. Your separate pattern file is created when you choose Save.")
                 problems = [p for piece in self.history.document.pieces for p in validate_piece(piece)]
-                status = f"{len(self.history.document.pieces)} panel(s); {len(problems)} issue(s); ready to draw"
-            status += "; save to update connected Scene geometry"
+                status = f"{len(self.history.document.pieces)} panels · {len(problems)} issues · Save to create a file"
+            if self.history.dirty and value and not getattr(self, "_external_change", False):
+                status = "Unsaved edits · Save to update Scene"
             scene_error = getattr(self.node_item.model, "_pattern_scene_error", "")
             if scene_error:
                 status += "; Scene: " + scene_error
-            self.status.setText(status + ("; unsaved edits" if self.history.dirty else ""))
-            self.status.setToolTip(self.status.text())
-            if getattr(self, "_sew_status", ""):
-                self.status.setText(self._sew_status)
-                self.status.setToolTip(self._sew_status)
+            self._base_status = status
+            self._update_status_text()
             document = self.history.document
             render_key = (self.history.generation, self._selected_id, tuple(sorted(self._selected_panels)), self._selected_edge_id, self._file_stat,
                           bool(self.canvas.drawing), bool(getattr(self, "_external_change", False)))
@@ -736,7 +847,8 @@ class PatternNodeWidget(QtWidgets.QWidget):
         except (OSError, PatternError) as exc:
             self.filename.setText("Pattern file missing or invalid; choose Open / Locate")
             self.filename.setToolTip(str(exc))
-            self.status.setText("The canvas remains available; saving will create a new file after you choose its name.")
+            self._base_status = "File missing · Open / Locate, or Save As"
+            self._update_status_text()
             render_key = (self.history.generation, self._selected_id, None, False, True)
             if render_key != self._render_key:
                 self._render_key = render_key

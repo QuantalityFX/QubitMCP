@@ -1665,6 +1665,9 @@ void main() {
         )
 
     def _mgl_timeline_frame_index(self) -> int:
+        sample_frame = getattr(self, "_cloth_sample_frame", None)
+        if sample_frame is not None:
+            return max(0, int(sample_frame))
         frame_fn = getattr(self, "_timeline_current_frame", None)
         if not callable(frame_fn):
             return 0
@@ -1674,12 +1677,8 @@ void main() {
             return 0
 
     def _mgl_timeline_fps_value(self) -> float:
-        try:
-            override = float(getattr(self, "_mgl_render_fps_override", 0.0) or 0.0)
-        except Exception:
-            override = 0.0
-        if override > 1.0e-6:
-            return float(override)
+        # Timeline frames, animation samples and cloth caches share this rate.
+        # The Render node's output rate must not retime scene evaluation.
         try:
             fps = float(getattr(self, "_timeline_fps", 24.0) or 24.0)
         except Exception:
@@ -7824,6 +7823,8 @@ void main() {
             int(self._mgl_timeline_frame_index()),
             round(float(sample_seconds), 6),
             int(id(rig_context)),
+            evaluation_cache_token(skeleton),
+            evaluation_cache_token(rig_context.get("clip")),
         )
         cached = payload.get("_groom_collider_runtime")
         if isinstance(cached, dict) and cached.get("frame_key") == frame_key:
@@ -28328,6 +28329,7 @@ void main() {
         previous_mask = self._mgl_mesh_overlay_depth_mask(False)
         try:
             self._paint_mgl_draw_mesh_selection_overlay_contents(mvp=mvp)
+            self._cloth_draw_pins(mvp)
         finally:
             self._mgl_ctx.polygon_offset = (0.0, 0.0)
             self._mgl_ctx.wireframe = False

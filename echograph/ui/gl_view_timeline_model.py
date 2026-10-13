@@ -2570,6 +2570,10 @@ class GraphGLTimelineModelMixin:
             self._timeline_apply_scene_constraints()
         self._timeline_refresh_coord_labels()
 
+        # Scrubbing must also repaint a scene whose animation has no camera or
+        # object keys. Cloth catches up from the new playhead during that paint.
+        self.update()
+
     def _timeline_apply_selected_camera_owner_frame(self, frame: int) -> None:
         if self._timeline_preview_context_active():
             return
@@ -6788,6 +6792,12 @@ class GraphGLTimelineModelMixin:
             cur = int(self._timeline_current_frame())
         except Exception:
             cur = 0
+        cloth = getattr(getattr(self, "_mgl_renderer", None) or self, "_cloth_timeline_ready", None)
+        if callable(cloth) and not cloth(cur):
+            # Poll without blocking Qt; the viewport publishes the worker result
+            # before the next animated collider pose is applied.
+            self.update()
+            return
         try:
             max_frame = int(max(0, self._timeline_max_known_frame()))
         except Exception:
@@ -7296,9 +7306,13 @@ class GraphGLTimelineModelMixin:
             except Exception:
                 pass
         renderer = getattr(self, "_mgl_renderer", None) or self
-        if not allow_aux_updates and not getattr(renderer, "_mgl_scene_look_at_constraints_by_owner", None):
+        cloth_active = getattr(renderer, "_cloth_timeline_active", None)
+        follows_cloth = bool(callable(cloth_active) and cloth_active())
+        if (not allow_aux_updates and not follows_cloth
+                and not getattr(renderer, "_mgl_scene_look_at_constraints_by_owner", None)):
             self._timeline_apply_frame_if_keyed(frame, force=True)
             self._timeline_apply_selected_camera_owner_frame(frame)
+            self.update()
             return
         self._timeline_apply_scene_frame(frame)
         try:

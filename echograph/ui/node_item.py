@@ -1032,6 +1032,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _anim_retarget.register()
             except Exception:
                 pass
+        if (self.model.kind or "").strip().lower() in ("animation_blend", "animation blend", "anim_blend", "blend_animation"):
+            from nodes import animation_blend as _animation_blend
+            _animation_blend.register()
         # Ensure Render spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("render", "render_sequence", "render node"):
             try:
@@ -4332,6 +4335,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._sync_light_param_visibility()
                 self._recompute_height()
             defer_plugin = kind_lower in (
+                "animation_blend", "animation blend", "anim_blend", "blend_animation",
                 "for_each", "for_each_end",
                 "delete_joint",
                 "chatbot",
@@ -4787,6 +4791,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         }
                     )
                     input_label_only = (
+                        (kind in ("animation_blend", "animation blend", "anim_blend", "blend_animation")
+                         and pname_key in ("bind_pose", "animation"))
+                        or
                         (kind == "for_each" and pname_key == "source")
                         or (kind == "for_each_end" and pname_key == "render")
                         or
@@ -5334,6 +5341,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     S = self._current_llm_scale()
                     y_cursor += int(LLM_NODE_H_BASE * S)
 
+            # Custom bodies can widen the node after parameter pins are laid out.
+            # Keep named outputs, hit targets, and wire anchors on the final border.
+            for point, _name in self._output_port_pos.values():
+                if isinstance(point, QtCore.QPointF):
+                    point.setX(float(self.width))
+
             if kind_lower in _LIGHT_NODE_KINDS:
                 # Qt can make a parameter wrapper taller than the nominal row
                 # height (font/DPI/style). Include its actual bottom as well.
@@ -5422,6 +5435,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._import_icon_pm = self._import_icon_for_ext(ext)
 
     def _collect_scene_assets(self) -> list[dict]:
+        if (self.model.kind or "").strip().lower() in ("animation_blend", "animation blend", "anim_blend", "blend_animation"):
+            from nodes.animation_blend.spec import build_animation_blend_scene_asset
+            asset = build_animation_blend_scene_asset(self)
+            return [asset] if asset is not None else []
+        if (self.model.kind or "").strip().lower() in ("transforms", "transform", "transform_node", "transform node"):
+            from nodes.animation_blend.spec import build_transformed_blend_scene_asset
+            asset = build_transformed_blend_scene_asset(self)
+            if asset is not None:
+                return [asset]
         supported = {".fbx", ".bvh", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
         anim_retarget_kinds = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
         splat_physics_kinds = {
@@ -9857,6 +9879,9 @@ body {
             elif kind_lower in ("translator", "translate", "translation", "direct_translator", "direct translator", "voice_translator", "voice translator"):
                 # Translator icon floats above the node body.
                 extra_top = 120.0
+            elif kind_lower in ("animation_blend", "animation blend", "anim_blend", "blend_animation"):
+                # The enlarged icon reaches 96 units above the node at minimum zoom.
+                extra_top = 100.0
             elif kind_lower in (
                 "database",
                 "llm",
@@ -9895,6 +9920,8 @@ body {
                 "anim retarget",
                 "animretarget",
                 "retarget",
+                "delete_joint",
+                "priormdm",
                 "skinned_splat_proxy",
                 "skinned splat proxy",
                 "skinnedsplatproxy",
@@ -10309,6 +10336,12 @@ body {
                 icon_pm = node_icons._genx_icon() or node_icons._mocap_import_icon() or node_icons._import_icon()
             elif kind_lower in ("anim_retarget", "anim retarget", "animretarget", "retarget"):
                 icon_pm = node_icons._anim_retarget_icon() or node_icons._transforms_icon() or node_icons._import_icon()
+            elif kind_lower in ("animation_blend", "animation blend", "anim_blend", "blend_animation"):
+                icon_pm = node_icons._animation_blend_icon() or node_icons._anim_retarget_icon()
+            elif kind_lower == "delete_joint":
+                icon_pm = node_icons._delete_joint_icon()
+            elif kind_lower == "priormdm":
+                icon_pm = node_icons._priormdm_icon()
             elif kind_lower in ("image_gs_splat", "image gs splat", "imagegssplat", "image_to_splat", "image to splat", "image_splat"):
                 icon_pm = node_icons._pixels_to_splat_icon() or node_icons._ply_icon() or node_icons._import_icon()
             elif kind_lower in ("skinned_splat_proxy", "skinned splat proxy", "skinnedsplatproxy", "fbx_to_skinned_splat_proxy", "fbx skinned splat proxy"):
@@ -10464,6 +10497,8 @@ body {
                     scale = 1.0
                 # Grow when zoomed out; clamp with larger max
                 size = int(max(40, min(128, 38 / max(scale, 0.001))))
+                if kind_lower in ("animation_blend", "animation blend", "anim_blend", "blend_animation"):
+                    size = int(size * 1.25)
                 if kind_lower in (
                     "groom_guides", "groom guides", "hair_guides", "hair guides",
                     "groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform",

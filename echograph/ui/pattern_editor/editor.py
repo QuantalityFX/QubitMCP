@@ -10,7 +10,8 @@ from echograph.patterns.document import PatternError
 from echograph.patterns.geometry import bounds, edge_length, validate_piece
 from echograph.patterns.serialization import load_document, save_document
 from echograph.ui import hotkeys_config
-from .canvas import PatternCanvas, sew_icon
+from .canvas import PatternCanvas, sew_icon, elastic_icon
+from .elastic import ElasticEdgeControls
 
 PATTERN_FILTER = "Pattern documents (*.pattern.json);;JSON files (*.json)"
 # Keep standalone editors alive across node rebuilds and workflow switches.
@@ -174,6 +175,10 @@ class PatternEditor(QtWidgets.QMainWindow):
         self.sew_action.setIcon(sew_icon())
         self.sew_action.setCheckable(True)
         self.sew_action.setToolTip("Sew two edges: click the first edge, then its partner. Esc exits.")
+        self.elastic_action = self._action(tools, "Elastic", lambda enabled: self.canvas.set_elastic_mode(enabled))
+        self.elastic_action.setIcon(elastic_icon())
+        self.elastic_action.setCheckable(True)
+        self.elastic_action.setToolTip("Click an edge to make it elastic. Esc exits.")
         self._action(tools, "Close Outline", self.close_outline)
         self._action(tools, "Finish Open", lambda: self.canvas.finish_outline(False))
         self._action(tools, "Cancel Draw", lambda: self.canvas.cancel_outline())
@@ -197,6 +202,8 @@ class PatternEditor(QtWidgets.QMainWindow):
         self.canvas = PatternCanvas()
         self.canvas.sewModeChanged.connect(self.sew_action.setChecked)
         self.canvas.sewRequested.connect(self._sew_requested)
+        self.canvas.elasticModeChanged.connect(self.elastic_action.setChecked)
+        self.canvas.elasticRequested.connect(self._elastic_requested)
         self.canvas.sewStatusChanged.connect(lambda text: self.statusBar().showMessage(text))
         splitter.addWidget(self.canvas)
         scroll = QtWidgets.QScrollArea()
@@ -247,6 +254,7 @@ class PatternEditor(QtWidgets.QMainWindow):
             buttons.addWidget(button)
         side.addLayout(buttons)
         tabs = QtWidgets.QTabWidget()
+        self.property_tabs = tabs
         side.addWidget(tabs)
         properties = QtWidgets.QWidget()
         form = QtWidgets.QFormLayout(properties)
@@ -276,6 +284,7 @@ class PatternEditor(QtWidgets.QMainWindow):
         self.points.itemChanged.connect(self._point_changed)
         tabs.addTab(self.points, "Points")
         edges = QtWidgets.QWidget()
+        self.edges_tab = edges
         edge_form = QtWidgets.QFormLayout(edges)
         self.edges = QtWidgets.QComboBox()
         self.edges.currentIndexChanged.connect(self._edge_selected)
@@ -290,6 +299,9 @@ class PatternEditor(QtWidgets.QMainWindow):
         self.controls_button = QtWidgets.QPushButton("Apply Handles")
         self.controls_button.clicked.connect(self.apply_handles)
         edge_form.addRow(self.controls_button)
+        self.elastic_controls = ElasticEdgeControls(compact=False)
+        self.elastic_controls.edited.connect(self._elastic_edited)
+        edge_form.addRow(self.elastic_controls)
         tabs.addTab(edges, "Edges")
 
         self.diagnostics = QtWidgets.QLabel()
@@ -319,6 +331,7 @@ class PatternEditor(QtWidgets.QMainWindow):
         self.canvas.layoutEdited.connect(self._layout_dragged, queued)
         self.canvas.handleEdited.connect(self._handle_dragged, queued)
         self.canvas.edgesMoved.connect(self._edges_dragged)
+        self.canvas.pointsMoved.connect(self._points_dragged)
         self.canvas.outlineCreated.connect(self._outline_created)
         self.canvas.drawingChanged.connect(self._drawing_changed)
         self.canvas.pointSelectionChanged.connect(self._points_selected)
@@ -353,6 +366,21 @@ class PatternEditor(QtWidgets.QMainWindow):
             return
         self.refresh()
         self.canvas.sewStatusChanged.emit("Edges sewn. Click two more edges to sew another pair; Esc exits.")
+
+    def _elastic_requested(self, piece_id, edge_id):
+        from echograph.patterns.elastic import elastic_for_edge
+        self._canvas_edge_selected(piece_id, edge_id)
+        self.property_tabs.setCurrentWidget(self.edges_tab)
+        if elastic_for_edge(self.document, piece_id, edge_id) is None:
+            self._elastic_edited(True, self.elastic_controls.strength.value(),
+                                 self.elastic_controls.rest_length.value() / 100)
+        self.canvas.sewStatusChanged.emit("Elastic edge selected · Adjust strength and rest length in Edges · Esc: exit")
+
+    def _elastic_edited(self, enabled, strength, ratio):
+        from echograph.patterns.elastic import set_elastic_edges
+        selection = set(self._edge_selection)
+        if selection:
+            self.edit("Set elastic edges", lambda doc: set_elastic_edges(doc, selection, enabled, strength, ratio))
 
     def refresh(self, *, rebuild_pieces=True):
         self._refreshing = True
@@ -474,6 +502,7 @@ class PatternEditor(QtWidgets.QMainWindow):
         selection[self.selected_id] = self._selected_points
         self.canvas.show_document(self.document, self.selected_id, self._selected_points,
                                   (self.selected_id, self._edge_id), self._selected_panels, selection, self._edge_selection)
+        self.elastic_controls.show_selection(self.document, self._edge_selection)
 
     def select_piece(self, piece_id):
         self.selected_id = piece_id
@@ -532,6 +561,7 @@ class PatternEditor(QtWidgets.QMainWindow):
             self.edges.setCurrentIndex(-1)
         self.edge_kind.setEnabled(False)
         self.controls_button.setEnabled(False)
+        self.elastic_controls.show_selection(self.document, ())
         for control in self.controls:
             control.setEnabled(False)
         self.selected_id = piece_id
@@ -769,6 +799,9 @@ class PatternEditor(QtWidgets.QMainWindow):
 
     def _edges_dragged(self, selection, dx, dy):
         self.edit("Move edges", lambda doc: commands.translate_edges(doc, selection, dx, dy))
+
+    def _points_dragged(self, selection, dx, dy):
+        self.edit("Move points", lambda doc: commands.translate_points(doc, selection, dx, dy))
 
     def _point_changed(self, item):
         if self._refreshing or not self.selected_piece():

@@ -15,6 +15,7 @@ except Exception:
 
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
+from echograph.ui.node_error_indicator import ErrorIndicator, short_message
 from .takes import RenderResult, reserve_take_folder
 
 
@@ -533,6 +534,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._cancel_check = lambda: False
         self._output_override = None
         self._result = None
+        self._capture_error = ""
         self._camera_meta: Dict[str, Dict[str, object]] = {}
         self._camera_preferred = ""
 
@@ -542,7 +544,14 @@ class RenderNodeWidget(QtWidgets.QWidget):
 
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
-        layout.addWidget(self._status, 0)
+        self._status.setWordWrap(True)
+        self._status.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
+        self._status.setFixedHeight(36)
+        status_row = QtWidgets.QHBoxLayout()
+        status_row.addWidget(self._status, 1)
+        self._error_indicator = ErrorIndicator()
+        status_row.addWidget(self._error_indicator)
+        layout.addLayout(status_row)
 
         row1 = QtWidgets.QHBoxLayout()
         row1.setContentsMargins(0, 0, 0, 0)
@@ -558,6 +567,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._fps_spin = QtWidgets.QDoubleSpinBox()
         self._fps_spin.setRange(1.0, 240.0)
         self._fps_spin.setValue(30.0)
+        self._fps_spin.setToolTip("Output playback rate. Scene frames, animation and cloth use the scene timeline FPS.")
         self._fps_spin.setKeyboardTracking(False)
         self._fps_spin.valueChanged.connect(self._on_fps_changed)
         row2.addWidget(self._fps_spin, 0)
@@ -683,9 +693,14 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._render_btn.setText("Rendering..." if self._busy else "Render Sequence")
 
     def _show_popup(self, icon, text: str, details: str = "") -> None:
+        if icon in (QtWidgets.QMessageBox.Warning, QtWidgets.QMessageBox.Critical):
+            if self._result is None:
+                self._result = RenderResult("error", short_message(text), details=str(details or text))
+            self._record_error(text, details or text)
+            return
         if self._batch:
             if self._result is None:
-                self._result = RenderResult("error", str(text) + ("\n" + details if details else ""))
+                self._result = RenderResult("error", short_message(text), details=str(details or text))
             return
         parent = _dialog_parent(self._node_item) or self
         box = QtWidgets.QMessageBox(parent)
@@ -701,6 +716,14 @@ class RenderNodeWidget(QtWidgets.QWidget):
             box.exec()
         except Exception:
             box.exec_()
+
+    def _record_error(self, summary="", details=""):
+        model = self._node_item.model
+        model._render_error_summary = short_message(summary)
+        model._render_error_details = str(details or "")
+        self._error_indicator.set_error(summary, details)
+        if details:
+            self._status.setText(short_message(summary))
 
     def _sync_controls_from_params(self):
         model = getattr(self._node_item, "model", None)
@@ -830,12 +853,21 @@ class RenderNodeWidget(QtWidgets.QWidget):
         return _norm_fmt(str(self._format_combo.currentData() or "png"))
 
     def _refresh_status(self):
+        error = getattr(self._node_item.model, "_render_error_details", "")
+        if error and not self._busy:
+            summary = getattr(self._node_item.model, "_render_error_summary", "Render failed.")
+            self._status.setText(short_message(summary))
+            self._error_indicator.set_error(summary, error)
+            self._render_btn.setEnabled(True)
+            return
         assets, err = _collect_scene_assets(self._node_item)
         if err:
-            self._status.setText(err)
+            self._status.setText(short_message(err))
+            self._error_indicator.set_error(short_message(err), err)
             if not self._busy:
                 self._render_btn.setEnabled(True)
             return
+        self._error_indicator.set_error()
         cams = _scene_cameras_from_assets(assets)
         if not cams:
             self._status.setText("Connected Scene has no camera nodes.")
@@ -1004,7 +1036,8 @@ class RenderNodeWidget(QtWidgets.QWidget):
             except Exception:
                 pass
             image = glv.grabFramebuffer()
-        except Exception:
+        except Exception as exc:
+            self._capture_error = f"Framebuffer capture failed: {exc}"
             image = None
         finally:
             try:
@@ -1016,104 +1049,52 @@ class RenderNodeWidget(QtWidgets.QWidget):
             return None
         return image
 
-    def _image_has_black_half(self, image: QtGui.QImage, threshold: int = 4) -> bool:
-        if image is None or image.isNull():
-            return True
-        w = max(1, int(image.width()))
-        h = max(1, int(image.height()))
-        if w < 16 or h < 16:
-            return False
-
-        def sample_region(x0: int, x1: int) -> tuple[float, float, float]:
-            x0 = max(0, min(w - 1, int(x0)))
-            x1 = max(x0 + 1, min(w, int(x1)))
-            cols = 8
-            rows = 8
-            total = 0
-            black = 0
-            lit = 0
-            luma_sum = 0.0
-            for iy in range(rows):
-                y = int(round(((iy + 0.5) / float(rows)) * float(h - 1)))
-                for ix in range(cols):
-                    x = int(round(float(x0) + ((ix + 0.5) / float(cols)) * float(x1 - x0 - 1)))
-                    try:
-                        c = image.pixelColor(x, y)
-                    except Exception:
-                        continue
-                    total += 1
-                    r = int(c.red())
-                    g = int(c.green())
-                    b = int(c.blue())
-                    luma = (0.2126 * float(r)) + (0.7152 * float(g)) + (0.0722 * float(b))
-                    luma_sum += luma
-                    if r <= threshold and g <= threshold and b <= threshold:
-                        black += 1
-                    if luma > float(threshold) * 4.0:
-                        lit += 1
-            if total <= 0:
-                return 1.0, 0.0, 0.0
-            return float(black) / float(total), float(lit) / float(total), luma_sum / float(total)
-
-        left_black, left_lit, left_avg = sample_region(0, w // 2)
-        right_black, right_lit, right_avg = sample_region(w // 2, w)
-        right_clipped = right_black >= 0.92 and (left_lit >= 0.12 or left_avg >= 12.0)
-        left_clipped = left_black >= 0.92 and (right_lit >= 0.12 or right_avg >= 12.0)
-        return bool(left_clipped or right_clipped)
-
     def _image_is_invalid_capture(self, image: QtGui.QImage, threshold: int = 2) -> bool:
-        if image is None or image.isNull():
-            return True
-        w = max(1, int(image.width()))
-        h = max(1, int(image.height()))
-        step_x = max(1, w // 8)
-        step_y = max(1, h // 8)
-        min_r = 255
-        min_g = 255
-        min_b = 255
-        min_a = 255
-        max_r = 0
-        max_g = 0
-        max_b = 0
-        max_a = 0
-        samples = 0
-        for y in range(0, h, step_y):
-            for x in range(0, w, step_x):
-                try:
-                    c = image.pixelColor(int(x), int(y))
-                    samples += 1
-                    rr = int(c.red())
-                    gg = int(c.green())
-                    bb = int(c.blue())
-                    aa = int(c.alpha())
-                    min_r = min(min_r, rr)
-                    min_g = min(min_g, gg)
-                    min_b = min(min_b, bb)
-                    min_a = min(min_a, aa)
-                    max_r = max(max_r, rr)
-                    max_g = max(max_g, gg)
-                    max_b = max(max_b, bb)
-                    max_a = max(max_a, aa)
-                except Exception:
-                    continue
-        if samples <= 0:
-            return True
-        # Uniform flat-color captures are usually failed offscreen renders.
-        if (
-            abs(max_r - min_r) <= 1
-            and abs(max_g - min_g) <= 1
-            and abs(max_b - min_b) <= 1
-            and abs(max_a - min_a) <= 1
-        ):
-            return True
-        # Explicit black-clear capture.
-        if max_r <= int(threshold) and max_g <= int(threshold) and max_b <= int(threshold):
-            return True
-        if self._image_has_black_half(image, threshold=max(4, int(threshold))):
-            return True
-        return False
+        # Empty, dark and flat-color frames are valid scene output. Pixel colors
+        # cannot establish whether an offscreen framebuffer failed.
+        return image is None or image.isNull() or image.width() <= 0 or image.height() <= 0
+
+    def _prepare_scene_frame(self, glv, frame, owner, progress_dialog=None):
+        """Publish this scene frame before capture, keeping Qt and Stop responsive."""
+        def apply_frame():
+            glv._timeline_set_frame_widgets(frame)
+            glv._timeline_apply_frame_if_keyed(frame, force=True)
+            glv._timeline_apply_other_owner_frames(frame)
+            sync_view = getattr(glv, "_sync_selected_scene_camera_view", None)
+            if callable(sync_view):
+                sync_view(owner)
+            glv._mgl_splat_force_sort = True
+
+        apply_frame()
+        renderer = getattr(glv, "_mgl_renderer", None) or glv
+        ready = getattr(renderer, "_cloth_render_ready", None)
+        error = getattr(renderer, "_cloth_render_error", None)
+        started = time.perf_counter()
+        timeout = float(getattr(self, "_frame_wait_seconds", 60))
+        while True:
+            if self._cancel_check() or (progress_dialog is not None and progress_dialog.cancel_requested):
+                return False
+            glv.update()
+            repaint = getattr(glv, "repaint", None)
+            if callable(repaint):
+                repaint()
+            self._process_ui_events(8)
+            if time.perf_counter() - started >= timeout:
+                raise RuntimeError(f"Frame {frame}: cloth did not finish within {timeout:g} seconds.")
+            if int(glv._timeline_current_frame()) != int(frame):
+                # A newly loaded animation cache can queue its saved playhead.
+                # Capture still owns the requested scene frame.
+                apply_frame()
+                continue
+            problem = error(frame) if callable(error) else ""
+            if problem:
+                raise RuntimeError(f"Frame {frame}: {problem}")
+            if not callable(ready) or ready(frame):
+                return True
+            time.sleep(.001)
 
     def _grab_frame_supersampled(self, glv, target_w: int, target_h: int):
+        self._capture_error = ""
         w = max(1, int(target_w))
         h = max(1, int(target_h))
         render_offscreen = getattr(glv, "_mgl_render_to_image", None)
@@ -1141,11 +1122,15 @@ class RenderNodeWidget(QtWidgets.QWidget):
                     self._process_ui_events(12)
                     try:
                         image = render_offscreen(src_w, src_h)
-                    except Exception:
+                    except Exception as exc:
+                        self._capture_error = f"Offscreen render failed: {exc}"
                         image = None
                     if image is not None and (not image.isNull()):
                         if not self._image_is_invalid_capture(image):
                             return image
+                    if not self._capture_error:
+                        self._capture_error = (str(getattr(glv, "_shader_error", "") or "")
+                                               or f"Offscreen renderer returned no image at {src_w} × {src_h}.")
                     try:
                         time.sleep(0.012)
                     except Exception:
@@ -1210,10 +1195,11 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._output_override = Path(output_template) if output_template is not None else None
         self._cancel_check = cancel_requested or (lambda: False)
         self._result = None
+        self._record_error()
         try:
             self._run_sequence()
         except Exception as exc:
-            self._result = RenderResult("error", str(exc))
+            self._result = RenderResult("error", short_message(exc), details=str(exc))
             self._show_popup(QtWidgets.QMessageBox.Critical, f"Render failed: {exc}")
         finally:
             self._executing = False
@@ -1307,10 +1293,6 @@ class RenderNodeWidget(QtWidgets.QWidget):
             old_material_fps_override = float(getattr(glv, "_timeline_material_fps_override", 0.0) or 0.0)
         except Exception:
             old_material_fps_override = 0.0
-        try:
-            old_mgl_render_fps_override = float(getattr(glv, "_mgl_render_fps_override", 0.0) or 0.0)
-        except Exception:
-            old_mgl_render_fps_override = 0.0
         set_material_live_mode = getattr(glv, "_timeline_set_material_live_mode", None)
         set_material_fps_override = getattr(glv, "_timeline_set_material_fps_override", None)
         old_viewport_bg = getattr(glv, "_viewport_bg", None)
@@ -1323,6 +1305,9 @@ class RenderNodeWidget(QtWidgets.QWidget):
             render_fps = max(1.0, float(self._fps_spin.value()))
         except Exception:
             render_fps = 30.0
+        scene_fps_fn = getattr(glv, "_mgl_timeline_fps_value", None)
+        scene_fps = max(1.0, float(scene_fps_fn() if callable(scene_fps_fn)
+                                   else getattr(glv, "_timeline_fps", 24.0)))
 
         self._set_busy(True)
         failures = []
@@ -1404,13 +1389,9 @@ class RenderNodeWidget(QtWidgets.QWidget):
             # Sequence renders must be timeline-driven for deterministic procedural materials.
             try:
                 if callable(set_material_fps_override):
-                    set_material_fps_override(float(render_fps))
+                    set_material_fps_override(scene_fps)
                 else:
-                    glv._timeline_material_fps_override = float(render_fps)
-            except Exception:
-                pass
-            try:
-                glv._mgl_render_fps_override = float(render_fps)
+                    glv._timeline_material_fps_override = scene_fps
             except Exception:
                 pass
             try:
@@ -1436,7 +1417,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
                 glv._mgl_splat_sort_every_frame = True
             except Exception:
                 pass
-            timeline_end = self._auto_end_frame(glv, scene_name, project_path, assets, render_fps)
+            timeline_end = self._auto_end_frame(glv, scene_name, project_path, assets, scene_fps)
             render_start, render_end = self._resolved_frame_range(timeline_end)
             total_frames = max(1, int(render_end) - int(render_start) + 1)
             out_fmt_qt = _FORMAT_QT[_norm_fmt(fmt)]
@@ -1444,24 +1425,25 @@ class RenderNodeWidget(QtWidgets.QWidget):
             progress_dialog = _RenderProgressDialog(int(render_start), int(render_end), parent=parent)
             progress_dialog.show()
             self._process_ui_events(12)
+            renderer = getattr(glv, "_mgl_renderer", None) or glv
+            preroll_fn = getattr(renderer, "_cloth_render_preroll_start", None)
+            preroll = int(preroll_fn(render_start)) if callable(preroll_fn) else int(render_start)
+            for frame in range(preroll, int(render_start)):
+                self._status.setText(f"Preparing cloth at frame {frame}…")
+                if not self._prepare_scene_frame(glv, frame, owner, progress_dialog):
+                    cancelled = True
+                    break
             for idx, frame in enumerate(range(int(render_start), int(render_end) + 1), start=1):
                 self._process_ui_events(8)
-                if self._cancel_check() or (progress_dialog is not None and bool(progress_dialog.cancel_requested)):
+                if cancelled or self._cancel_check() or (progress_dialog is not None and bool(progress_dialog.cancel_requested)):
                     cancelled = True
                     break
                 self._status.setText(
                     f"Rendering frame {int(frame)} ({int(idx)}/{int(total_frames)})..."
                 )
-                try:
-                    glv._timeline_set_frame_widgets(frame)
-                    glv._timeline_apply_frame_if_keyed(frame, force=True)
-                    glv._timeline_apply_other_owner_frames(frame)
-                    sync_view = getattr(glv, "_sync_selected_scene_camera_view", None)
-                    if callable(sync_view):
-                        sync_view(owner)
-                    glv._mgl_splat_force_sort = True
-                except Exception:
-                    pass
+                if not self._prepare_scene_frame(glv, frame, owner, progress_dialog):
+                    cancelled = True
+                    break
                 image = None
                 for _capture_attempt in range(3):
                     if self._cancel_check() or (progress_dialog is not None and bool(progress_dialog.cancel_requested)):
@@ -1478,7 +1460,8 @@ class RenderNodeWidget(QtWidgets.QWidget):
                 if cancelled:
                     break
                 if image is None:
-                    failures.append(f"Frame {frame}: capture failed.")
+                    details = getattr(self, "_capture_error", "")
+                    failures.append(f"Frame {frame}: capture failed." + (f" {details}" if details else ""))
                     processed_frames = int(idx)
                     if progress_dialog is not None:
                         progress_dialog.update_progress(
@@ -1554,10 +1537,6 @@ class RenderNodeWidget(QtWidgets.QWidget):
                         set_material_fps_override(None)
                 else:
                     glv._timeline_material_fps_override = float(old_material_fps_override)
-            except Exception:
-                pass
-            try:
-                glv._mgl_render_fps_override = float(old_mgl_render_fps_override)
             except Exception:
                 pass
             try:
@@ -1648,8 +1627,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
             notify_scene=True,
         )
 
+        summary = (f"Rendered {written} frame(s). {len(failures)} frame(s) failed." if failures else "")
         self._result = RenderResult("cancelled" if cancelled else "error" if failures else "completed",
-                                    "\n".join(failures[:120]), str(out_template), written, render_start, render_end)
+                                    summary, str(out_template), written, render_start, render_end,
+                                    "\n".join(failures))
         if cancelled:
             self._show_popup(
                 QtWidgets.QMessageBox.Information,
@@ -1667,7 +1648,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
             self._show_popup(
                 QtWidgets.QMessageBox.Warning,
                 f"Rendered {written} frame(s) [{int(render_start)}-{int(render_end)}]. {len(failures)} frame(s) failed.",
-                "\n".join(failures[:120]),
+                "\n".join(failures),
             )
             return
         self._show_popup(

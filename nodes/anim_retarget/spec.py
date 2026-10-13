@@ -28,6 +28,12 @@ ANIM_RETARGET_KIND_ALIASES: Tuple[str, ...] = (
     "retarget",
 )
 
+_GENERATED_ANIMATION_KINDS = ANIM_RETARGET_KIND_ALIASES + (
+    "animation_blend", "animation blend", "anim_blend", "blend_animation",
+    "fbx_animation", "fbx animation", "fbxanimation", "fbx_animation_import",
+    "fbx animation import", "fbxanimationimport",
+)
+
 SOURCE_KIND_ALIASES: Tuple[str, ...] = (
     "delete_joint",
     "for_each",
@@ -41,7 +47,7 @@ SOURCE_KIND_ALIASES: Tuple[str, ...] = (
     "fbx_import",
     "fbx import",
     "fbximport",
-)
+) + _GENERATED_ANIMATION_KINDS
 
 TARGET_KIND_ALIASES: Tuple[str, ...] = (
     "delete_joint",
@@ -52,7 +58,7 @@ TARGET_KIND_ALIASES: Tuple[str, ...] = (
     "fbx_import",
     "fbx import",
     "fbximport",
-)
+) + _GENERATED_ANIMATION_KINDS
 
 TRANSFORM_KIND_ALIASES: Tuple[str, ...] = (
     "transforms",
@@ -1073,6 +1079,37 @@ def _transform_context_from_item(
     return out
 
 
+def _generated_animation_context_from_item(node_item, kind, role, errors, warnings, *, _depth=0, _visited=None):
+    if kind in ("animation_blend", "animation blend", "anim_blend", "blend_animation"):
+        from nodes.animation_blend.spec import resolve_context
+        return resolve_context(node_item, errors, warnings, target=role == "target", _depth=_depth, _visited=_visited)
+    model = node_item.model
+    if _depth > 32 or id(node_item) in (_visited or set()) or getattr(model, "_generated_animation_resolving", False):
+        errors.append(f"{role}: animation input chain contains a cycle or is too deep.")
+        return None
+    model._generated_animation_resolving = True
+    try:
+        if kind in ANIM_RETARGET_KIND_ALIASES:
+            asset = build_anim_retarget_scene_asset(node_item)
+        else:
+            from nodes.fbx_animation_import.spec import build_fbx_animation_scene_asset
+            asset = build_fbx_animation_scene_asset(node_item)
+    finally:
+        model._generated_animation_resolving = False
+    rig = (asset or {}).get("fbx_rig_context")
+    if not isinstance(rig, dict) or rig.get("skeleton") is None:
+        errors.append(f"{role}: {kind} has no valid output rig. Check its inputs and animation.")
+        return None
+    clips = list(rig.get("clips") or ([rig["clip"]] if rig.get("clip") is not None else []))
+    return {"node_item": node_item, "model": model, "name": model.name, "kind": kind,
+            "source_format": "bvh" if str(asset.get("ext")).lower() == ".bvh" else "fbx",
+            "path": asset.get("path", ""), "skeleton": rig["skeleton"], "clip": rig.get("clip"),
+            "clips": clips, "meshes": list(rig.get("meshes") or []), "rig_context": dict(rig),
+            "preview_asset": dict(asset), "transform_xform": asset.get("xform"),
+            "joint_count": len(rig["skeleton"].joints), "clip_count": len(clips),
+            "mesh_count": len(rig.get("meshes") or [])}
+
+
 def _context_for_source_item(
     node_item,
     kind: str,
@@ -1082,6 +1119,9 @@ def _context_for_source_item(
     _depth: int = 0,
     _visited: set[int] | None = None,
 ) -> Dict[str, Any] | None:
+    if kind in _GENERATED_ANIMATION_KINDS:
+        return _generated_animation_context_from_item(node_item, kind, "source", errors, warnings,
+                                                     _depth=_depth, _visited=_visited)
     if kind == "for_each":
         from nodes.for_each.runtime import resolve_context
         return resolve_context(node_item, errors, warnings, target=False, _depth=_depth, _visited=_visited)
@@ -1124,6 +1164,9 @@ def _context_for_target_item(
     _depth: int = 0,
     _visited: set[int] | None = None,
 ) -> Dict[str, Any] | None:
+    if kind in _GENERATED_ANIMATION_KINDS:
+        return _generated_animation_context_from_item(node_item, kind, "target", errors, warnings,
+                                                     _depth=_depth, _visited=_visited)
     if kind == "for_each":
         from nodes.for_each.runtime import resolve_context
         return resolve_context(node_item, errors, warnings, target=True, _depth=_depth, _visited=_visited)

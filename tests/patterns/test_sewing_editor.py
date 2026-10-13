@@ -5,6 +5,7 @@ from PySide6 import QtCore, QtGui, QtTest, QtWidgets
 from echograph.model import GraphNode
 from echograph.patterns.commands import DocumentHistory, rectangle
 from echograph.patterns.document import PatternDocument
+from echograph.patterns.elastic import elastic_for_edge
 from echograph.ui.node_item import NodeItem
 from echograph.ui.pattern_editor.canvas import SEW_COLORS
 from echograph.ui.pattern_editor.editor import PatternEditor
@@ -144,11 +145,41 @@ class SewingEditorTests(unittest.TestCase):
         body.canvas._sew_edge_clicked((self.front.id, self.front.segments[1].id))
         body.canvas._sew_edge_clicked((self.back.id, self.back.segments[3].id))
         self.assertEqual(len(self.history.document.metadata["sew_pairs"]), 1)
+        body.elastic_button.click()
+        self.assertTrue(body.canvas.elastic)
+        self.assertFalse(body.canvas.sewing)
+        body.canvas.elasticRequested.emit(self.front.id, self.front.segments[2].id)
+        body.elastic_controls.strength.setValue(2500)
+        self.assertEqual(elastic_for_edge(self.history.document, self.front.id, self.front.segments[2].id)["strength"], 2500)
         rect = proxy.mapRectToParent(proxy.boundingRect())
         self.assertGreaterEqual(node.height + .01, rect.bottom() + node._PADDING)
         self.assertGreaterEqual(node.width + .01, rect.right())
         self.assertLessEqual(body.sew_button.geometry().bottom(), body.height())
+        self.assertLessEqual(body.elastic_controls.geometry().bottom(), body.height())
         graph.clear()
+
+    def test_elastic_tool_edits_edge_strength_and_rest_length_without_splitting(self):
+        canvas = self.editor.canvas
+        edge = self.front.segments[2].id
+        self.editor.elastic_action.trigger()
+        self.assertTrue(canvas.elastic)
+        pixel = self.click_edge(canvas, self.front.id, edge)
+        self.assertEqual(len(canvas.elastic_visuals()), 1)
+        self.assertIs(self.editor.property_tabs.currentWidget(), self.editor.edges_tab)
+        self.editor.elastic_controls.strength.setValue(3500)
+        self.editor.elastic_controls.rest_length.setValue(70)
+        row = elastic_for_edge(self.history.document, self.front.id, edge)
+        self.assertEqual((row["strength"], row["rest_ratio"]), (3500, .7))
+        QtTest.QTest.mouseDClick(canvas.viewport(), QtCore.Qt.MouseButton.LeftButton,
+                                QtCore.Qt.KeyboardModifier.NoModifier, pixel)
+        self.assertEqual(len(self.history.document.piece(self.front.id).segments), 4)
+        self.editor.undo()
+        self.assertEqual(elastic_for_edge(self.history.document, self.front.id, edge)["rest_ratio"], .8)
+        self.editor.elastic_controls.enabled.setChecked(False)
+        self.assertEqual(canvas.elastic_visuals(), [])
+        QtTest.QTest.keyClick(canvas, QtCore.Qt.Key.Key_Escape)
+        self.assertFalse(canvas.elastic)
+        self.assertFalse(self.editor.elastic_action.isChecked())
 
 
 if __name__ == "__main__":

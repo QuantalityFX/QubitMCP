@@ -4,6 +4,7 @@ from PySide6 import QtCore, QtWidgets
 from shiboken6 import isValid
 
 from echograph.model import GraphNode
+from echograph.ui.node_error_indicator import ErrorIndicator, short_message
 from nodes.core import Spec
 from nodes.mocap_import import spec as params
 from .runtime import session_for, value, wrapper_for
@@ -113,9 +114,14 @@ class StartControls(QtWidgets.QWidget):
         self.parameter_box.setVisible(self.mode.currentData() == "parameter")
         self.status = QtWidgets.QLabel("Start OUT → Retarget animation IN. Render OUT → End render IN.")
         self.status.setWordWrap(True)
-        self.status.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
+        self.status.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
+        self.status.setFixedHeight(40)
         self.setToolTip("Collection OUT → Start collection IN. Start OUT → Retarget animation IN.\nOUT always passes the active animation through; Run advances the collection after each render.")
-        layout.addWidget(self.status)
+        status_row = QtWidgets.QHBoxLayout()
+        status_row.addWidget(self.status, 1)
+        self.error_indicator = ErrorIndicator()
+        status_row.addWidget(self.error_indicator)
+        layout.addLayout(status_row)
         buttons = QtWidgets.QHBoxLayout()
         self.run_button = QtWidgets.QPushButton("Run For Each")
         self.run_button.setStyleSheet("QPushButton { background:#2563eb; color:white; padding:6px; border-radius:4px; }")
@@ -195,14 +201,21 @@ class StartControls(QtWidgets.QWidget):
                 self.attach()
             self.session.begin()
         except Exception as exc:
-            self.status.setText(str(exc))
+            if self.session is not None:
+                self.session.status = short_message(exc)
+                self.session.error_details = str(exc)
+                self.refresh()
+            else:
+                self.status.setText(short_message(exc))
+                self.error_indicator.set_error(short_message(exc), str(exc))
             fit_body(self)
 
     def refresh(self):
         if self.session is None:
             return
         running = self.session.running
-        self.status.setText(self.session.status)
+        self.status.setText(short_message(self.session.status))
+        self.error_indicator.set_error(self.session.status if self.session.error_details else "", self.session.error_details)
         if self.session.manifest_path:
             self.status.setToolTip(str(self.session.manifest_path))
         self.run_button.setEnabled(not running)
@@ -230,7 +243,13 @@ class EndControls(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         self.status = QtWidgets.QLabel("Connect Render here. The next iteration waits for completion.")
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        self.status.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
+        self.status.setFixedHeight(40)
+        status_row = QtWidgets.QHBoxLayout()
+        status_row.addWidget(self.status, 1)
+        self.error_indicator = ErrorIndicator()
+        status_row.addWidget(self.error_indicator)
+        layout.addLayout(status_row)
         self.timer = QtCore.QTimer(self)
         self.timer.setInterval(500)
         self.timer.timeout.connect(self.refresh)
@@ -239,7 +258,8 @@ class EndControls(QtWidgets.QWidget):
     def refresh(self):
         session = getattr(self.item.model, "_foreach_session", None)
         if session is not None and isValid(session):
-            self.status.setText(session.status)
+            self.status.setText(short_message(session.status))
+            self.error_indicator.set_error(session.status if session.error_details else "", session.error_details)
             fit_body(self)
 
 

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -13,10 +14,16 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from echograph.model import GraphNode
 from echograph.patterns.commands import rectangle
 from echograph.patterns.document import PatternDocument
+from echograph.patterns.sewing import add_sew_pair
 from echograph.physics.cloth import ClothSettings, build_cloth_asset
 from echograph.physics.cloth.placement import piece_owner
+from echograph.rigging.fbx_canonical import (
+    AnimationClip, Joint, JointAnimationTrack, SkeletalMeshAsset, SkeletonAsset,
+    Vec3Keyframe, VertexInfluence, VertexSkin,
+)
 from echograph.ui.gl_view import GraphGLView
 from nodes.scene import spec as scene_spec
+from nodes.render.spec import RenderNodeWidget
 
 
 @unittest.skipUnless(sys.platform == "win32", "Requires Windows desktop OpenGL")
@@ -28,6 +35,207 @@ class ClothOpenGLTests(unittest.TestCase):
     def test_authored_particles_survive_import_and_deform_real_buffers(self):
         self.exercise_buffers("cpu")
 
+    def test_panel_point_pin_keeps_settled_pose_and_red_markers_stay_out_of_render(self):
+        view = GraphGLView(QtWidgets.QGraphicsScene())
+        self.addCleanup(view.close)
+        view.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
+        view.resize(512, 512)
+        view.show()
+        self.app.processEvents()
+        if not view.isValid() or view._mgl_ctx is None:
+            self.skipTest("OpenGL context unavailable")
+        front, back = rectangle("Front", 100, 100), rectangle("Back", 100, 100)
+        back.layout[0] = 200
+        asset = build_cloth_asset(PatternDocument(pieces=[front, back]), 25)
+        model = GraphNode("Cloth", kind="cloth_solver")
+        config = {"asset": asset, "settings": ClothSettings(device="cpu", self_collision=False, gravity_y=0).to_dict(),
+                  "pins": [], "collider_owner": "", "colliders": [], "cache_path": "", "node_model": model}
+        view._mgl_load_scene_assets([{"node": "Cloth", "kind": "mesh", "path": str(asset.rest_obj()),
+                                     "ext": ".obj", "cloth": config}], frame=True)
+        view.repaint()
+        self.app.processEvents()
+        state = view._cloth_states["Cloth"]
+        state.solver.x[:] += [0, .025, .02]
+        state.solver.time = 6
+        state.display_positions = state.solver.x.copy()
+        state.version += 1
+        view._cloth_mark_initial_pose(state)
+        view.repaint()
+        self.app.processEvents()
+
+        def red_pixels(image):
+            image = image.convertToFormat(QtGui.QImage.Format.Format_RGBA8888)
+            rgba = np.frombuffer(image.bits(), dtype=np.uint8).reshape(image.height(), image.width(), 4)
+            return int(np.count_nonzero((rgba[:, :, 0] > 200) & (rgba[:, :, 1] < 70) & (rgba[:, :, 2] < 70)))
+
+        baseline = red_pixels(view.grabFramebuffer())
+        token = piece_owner("Cloth", back.id)
+        topology = view._mgl_mesh_topology_for_owner(token)
+        local_index = int(np.argmin(np.linalg.norm(asset.positions[topology["vertex_ids"]] - [.25, .05, 0], axis=1)))
+        target = int(topology["vertex_ids"][local_index])
+        view._on_mesh_selection_mode_clicked("point")
+        view._set_mesh_element_selection({"mode": "point", "owner": token, "vertex_index": local_index})
+        before, rest = state.solver.x.copy(), state.solver.rest.copy()
+        model._cloth_commands = [{"action": "pin"}]
+        view.repaint()
+        self.app.processEvents()
+        self.assertIs(view._cloth_states["Cloth"], state)
+        np.testing.assert_array_equal(state.solver.x, before)
+        np.testing.assert_array_equal(state.solver.rest, rest)
+        self.assertEqual(state.solver.time, 6)
+        self.assertEqual(state.solver.pins.tolist(), [target])
+        view._set_mesh_element_selection_many([])
+        view.repaint()
+        self.app.processEvents()
+        self.assertGreater(red_pixels(view.grabFramebuffer()), baseline + 5)
+        self.assertEqual(len(view._cloth_pinned_elements()), 1)
+        view._mgl_render_output_active = True
+        try:
+            view.repaint()
+            self.app.processEvents()
+            self.assertLessEqual(red_pixels(view.grabFramebuffer()), baseline)
+        finally:
+            view._mgl_render_output_active = False
+        # The pin also survives the next solve, including its authored rest shape.
+        state.solver.update_settings(ClothSettings(device="cpu", self_collision=False, stretch=0, bend=0))
+        state.solver.step()
+        np.testing.assert_array_equal(state.solver.x[target], before[target])
+        self.assertLess(state.solver.x[:, 1].mean(), before[:, 1].mean())
+
+    def test_two_timeline_solvers_and_cloth_collider_in_cpu_viewport(self):
+        self.exercise_two_solvers("cpu")
+
+    def test_late_loaded_pants_rewind_and_render_from_saved_pose_on_cpu(self):
+        self.exercise_two_solvers("cpu", late_saved_pants=True)
+
+    def test_late_loaded_pants_rewind_and_render_from_saved_pose_on_cuda(self):
+        try:
+            import warp as wp
+        except ImportError:
+            self.skipTest("Warp runtime unavailable")
+        wp.init()
+        if not wp.is_cuda_available():
+            self.skipTest("Warp CUDA unavailable")
+        self.exercise_two_solvers("cuda", late_saved_pants=True)
+
+    def test_two_timeline_solvers_and_cloth_collider_in_cuda_viewport(self):
+        try:
+            import warp as wp
+        except ImportError:
+            self.skipTest("Warp runtime unavailable")
+        wp.init()
+        if not wp.is_cuda_available():
+            self.skipTest("Warp CUDA unavailable")
+        self.exercise_two_solvers("cuda")
+
+    def exercise_two_solvers(self, device, *, late_saved_pants=False):
+        view = GraphGLView(QtWidgets.QGraphicsScene())
+        self.addCleanup(view.close)
+        view.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
+        view.resize(512, 512)
+        view.show()
+        self.app.processEvents()
+        if not view.isValid() or view._mgl_ctx is None:
+            self.skipTest("OpenGL context unavailable")
+        skeleton = SkeletonAsset("Body Rig", [Joint("Root", -1, inverse_bind_matrix=tuple(np.eye(4).ravel()))])
+        points = [(-1, -.05, -1), (0, -.05, 1), (1, -.05, -1), (0, -1.05, 0)]
+        faces = [0, 1, 2, 0, 2, 3, 0, 3, 1, 1, 3, 2]
+        mesh = SkeletalMeshAsset("Body", skeleton.name, 4, faces,
+            [VertexSkin(i, [VertexInfluence(0, 1)]) for i in range(4)], metadata={"bind_positions": points})
+        rig = {"skeleton": skeleton, "meshes": [mesh], "loop": False, "mesh_skinning_enabled": True,
+               "clip": AnimationClip("Raise Body", 0, 32 / 24, 24, [JointAnimationTrack("Root",
+                   translation_keys=[Vec3Keyframe(0, (0, 0, 0)), Vec3Keyframe(32 / 24, (0, .25, 0))])])}
+        asset = build_cloth_asset(PatternDocument(pieces=[rectangle("Panel", 100, 100)]), 25)
+        configs = {name: {"asset": asset, "settings": ClothSettings(device=device, follow_timeline=True,
+                         self_collision=False, gravity_y=-9.81 if late_saved_pants else 0, substeps=4, iterations=4).to_dict(),
+                         "pins": [], "colliders": [{"node": "Body"}], "collider_owner": "Body", "cache_path": "",
+                         "node_model": GraphNode(name, kind="cloth_solver")} for name in ("Shirt", "Pants")}
+
+        def wait(frame):
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                self.app.processEvents()
+                if view._cloth_timeline_ready(frame):
+                    return
+                time.sleep(.001)
+            self.fail("\n".join(config["node_model"]._cloth_status for config in configs.values()))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "body.obj"
+            path.write_text("v -1 -0.05 -1\nv 0 -0.05 1\nv 1 -0.05 -1\nv 0 -1.05 0\n"
+                            "f 1 2 3\nf 1 3 4\nf 1 4 2\nf 2 4 3\n", encoding="utf-8")
+            # Put the dependent garment first to verify solver order is separate
+            # from scene connections and the user's outliner display ordering.
+            assets = [{"node": name, "kind": "mesh", "path": str(asset.rest_obj()), "ext": ".obj", "cloth": config,
+                       "xform": {"pos": [0, .04 if name == "Shirt" else 0, 0], "rot": [-90, 0, 0], "scl": [1, 1, 1]}}
+                      for name, config in configs.items()]
+            assets.append({"node": "Body", "kind": "mesh", "path": str(path), "ext": ".obj", "fbx_rig_context": rig})
+            view._mgl_load_scene_assets(assets, frame=True)
+            body = next(item for item in view._mgl_scene.iter_by_tag("scene-model") if item.payload["owner"] == "Body")
+            body.payload["fbx_rig_context"] = rig
+            for item in view._cloth_items():
+                if item.payload.get("owner") in configs:
+                    configs[item.payload["owner"]] = item.payload["cloth"]
+            view.repaint()
+            wait(0)
+            if late_saved_pants:
+                pants = view._cloth_states["Pants"]
+                positions, velocity = pants.solver.x.copy(), pants.solver.velocity.copy()
+                pants.cache.clear()
+                view._cloth_restore_saved_state(pants, {"solver_time": 6}, {144: positions}, {144: velocity}, 30)
+                pants.version += 1
+                view.update()
+                wait(0)
+                self.assertEqual(pants.initial_pose[0], 0)
+                np.testing.assert_allclose(pants.solver.x, positions, atol=1e-7)
+                self.assertAlmostEqual(pants.solver.time, 6)
+            view._timeline_play_btn.setChecked(True)
+            view._timeline_play_timer.stop()
+            for frame in range(1, 33):
+                view._timeline_on_play_tick()
+                self.assertEqual(view._timeline_current_frame(), frame)
+                view._timeline_on_play_tick()
+                self.assertEqual(view._timeline_current_frame(), frame)
+                wait(frame)
+                for name, state in view._cloth_states.items():
+                    self.assertEqual(state.frame, frame, configs[name]["node_model"]._cloth_status)
+                    np.testing.assert_allclose(state.collider_previous["Body"][:, 1],
+                                               np.asarray(points)[faces, 1] + .25 * frame / 32, atol=1e-6)
+                    self.assertGreaterEqual(state.solver.x[:, 1].min(), -.05 + .25 * frame / 32 - 1e-5)
+                    self.assertAlmostEqual(state.solver.time, (6 if late_saved_pants and name == "Pants" else 0) + frame / 24)
+                    if device == "cuda":
+                        self.assertTrue(state.solver.backend.startswith("Warp CUDA"), state.solver.backend_detail)
+            view._timeline_stop_playback()
+            shirt, pants = view._cloth_states["Shirt"], view._cloth_states["Pants"]
+            self.assertIsNot(shirt.cache, pants.cache)
+            cached_pants = pants.cache.get(32)[0].copy()
+            initial_shirt = shirt.initial_pose[1].copy()
+            configs["Shirt"]["collider_owner"] = "Body,Pants"
+            view.update()
+            self.app.processEvents()
+            wait(32)
+            self.assertIs(view._cloth_states["Shirt"], shirt)
+            np.testing.assert_allclose(shirt.initial_pose[1], initial_shirt)
+            np.testing.assert_allclose(pants.cache.get(32)[0], cached_pants)
+            np.testing.assert_allclose(shirt.collider_previous["Pants"], cached_pants, atol=1e-6)
+            self.assertGreaterEqual(shirt.solver.x[:, 1].min(), pants.solver.x[:, 1].min() - 1e-5)
+            for frame in (3, 32, 12, 32):
+                view._timeline_on_frame_slider_changed(frame)
+                wait(frame)
+                for state in (shirt, pants):
+                    self.assertEqual(state.frame, frame)
+                    self.assertAlmostEqual(state.solver.time, (6 if late_saved_pants and state is pants else 0) + frame / 24)
+                    if device == "cuda":
+                        self.assertTrue(state.solver.backend.startswith("Warp CUDA"), state.solver.backend_detail)
+            controls = SimpleNamespace(_cancel_check=lambda: False, _frame_wait_seconds=15,
+                _process_ui_events=lambda ms: self.app.processEvents(QtCore.QEventLoop.AllEvents, ms))
+            self.assertTrue(RenderNodeWidget._prepare_scene_frame(controls, view, 34, ""))
+            self.assertTrue(view._cloth_render_ready(34))
+            self.assertEqual(shirt.frame, pants.frame)
+            np.testing.assert_allclose(shirt.collider_previous["Pants"], pants.cache.get(34)[0], atol=1e-6)
+            view.close()
+            view._cloth_executor.shutdown(wait=True, cancel_futures=True)
+
     def test_cuda_worker_deforms_real_opengl_buffers(self):
         try:
             import warp as wp
@@ -37,6 +245,271 @@ class ClothOpenGLTests(unittest.TestCase):
         if not wp.is_cuda_available():
             self.skipTest("Warp CUDA unavailable")
         self.exercise_buffers("cuda")
+
+    def test_timeline_cpu_follows_animated_skin_and_pauses_with_playhead(self):
+        self.exercise_timeline("cpu")
+
+    def test_timeline_cpu_resumes_saved_sewn_state_with_animated_collider(self):
+        self.exercise_timeline("cpu", saved_state=True)
+
+    def test_timeline_cuda_resumes_saved_sewn_state_with_animated_collider(self):
+        try:
+            import warp as wp
+        except ImportError:
+            self.skipTest("Warp runtime unavailable")
+        wp.init()
+        if not wp.is_cuda_available():
+            self.skipTest("Warp CUDA unavailable")
+        self.exercise_timeline("cuda", saved_state=True)
+
+    def test_timeline_cuda_follows_animated_skin_and_pauses_with_playhead(self):
+        try:
+            import warp as wp
+        except ImportError:
+            self.skipTest("Warp runtime unavailable")
+        wp.init()
+        if not wp.is_cuda_available():
+            self.skipTest("Warp CUDA unavailable")
+        self.exercise_timeline("cuda")
+
+    def test_render_preparation_keeps_cpu_cloth_and_skin_at_scene_fps(self):
+        self.exercise_timeline("cpu", saved_state=True, render_frames=True)
+
+    def test_render_preparation_keeps_cuda_cloth_and_skin_at_scene_fps(self):
+        try:
+            import warp as wp
+        except ImportError:
+            self.skipTest("Warp runtime unavailable")
+        wp.init()
+        if not wp.is_cuda_available():
+            self.skipTest("Warp CUDA unavailable")
+        self.exercise_timeline("cuda", saved_state=True, render_frames=True)
+
+    def test_scrub_cpu_reuses_saved_state_and_recalculates_for_changed_animation(self):
+        self.exercise_timeline("cpu", saved_state=True, scrub_frames=True)
+
+    def test_scrub_cuda_reuses_saved_state_and_recalculates_for_changed_animation(self):
+        try:
+            import warp as wp
+        except ImportError:
+            self.skipTest("Warp runtime unavailable")
+        wp.init()
+        if not wp.is_cuda_available():
+            self.skipTest("Warp CUDA unavailable")
+        self.exercise_timeline("cuda", saved_state=True, scrub_frames=True)
+
+    def exercise_timeline(self, device, *, saved_state=False, render_frames=False, scrub_frames=False):
+        view = GraphGLView(QtWidgets.QGraphicsScene())
+        self.addCleanup(view.close)
+        view.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
+        view.resize(512, 512)
+        view.show()
+        self.app.processEvents()
+        if not view.isValid() or view._mgl_ctx is None:
+            self.skipTest("OpenGL context unavailable")
+        skeleton = SkeletonAsset("Body Rig", [Joint("Root", -1, inverse_bind_matrix=tuple(np.eye(4).ravel()))])
+        body_points = [(-1, -.05, -1), (0, -.05, 1), (1, -.05, -1), (0, -1.05, 0)]
+        body_faces = [0, 1, 2, 0, 2, 3, 0, 3, 1, 1, 3, 2]
+        mesh = SkeletalMeshAsset("Body", skeleton.name, 4, body_faces,
+            [VertexSkin(i, [VertexInfluence(0, 1)]) for i in range(4)], metadata={"bind_positions": body_points})
+        bind_heights = np.asarray(body_points)[body_faces, 1]
+        clip = AnimationClip("Raise body", 0, 4 / 24, 24, [JointAnimationTrack("Root",
+            translation_keys=[Vec3Keyframe(0, (0, 0, 0)), Vec3Keyframe(4 / 24, (0, .25, 0))])])
+        rig = {"skeleton": skeleton, "meshes": [mesh], "clip": clip, "loop": False,
+               "mesh_skinning_enabled": True}
+        pattern = PatternDocument(pieces=[rectangle("Panel", 100, 100)])
+        if saved_state:
+            other = rectangle("Back", 100, 100)
+            other.layout[0] = 150
+            front = pattern.pieces[0]
+            pattern.pieces.append(other)
+            add_sew_pair(pattern, front.id, front.segments[1].id, other.id, other.segments[3].id)
+        asset = build_cloth_asset(pattern, 25)
+        model = GraphNode("Cloth", kind="cloth_solver")
+        settings = ClothSettings(device=device, follow_timeline=not saved_state, self_collision=False,
+                                 substeps=4, end_frame=4, seam_seconds=.05, gravity_y=0 if saved_state else -9.81,
+                                 fps=48 if render_frames else 24)
+        config = {"asset": asset, "settings": settings.to_dict(), "pins": [], "colliders": [{"node": "Body"}],
+                  "cache_path": "", "node_model": model}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "body.obj"
+            path.write_text("v -1 -0.05 -1\nv 0 -0.05 1\nv 1 -0.05 -1\nv 0 -1.05 0\n"
+                            "f 1 2 3\nf 1 3 4\nf 1 4 2\nf 2 4 3\n", encoding="utf-8")
+            view._mgl_load_scene_assets([
+                {"node": "Cloth", "kind": "mesh", "path": str(asset.rest_obj()), "ext": ".obj", "cloth": config},
+                {"node": "Body", "kind": "mesh", "path": str(path), "ext": ".obj", "fbx_rig_context": rig},
+            ], frame=True)
+            # OBJ supplies the test buffers; a real FBX import also attaches its
+            # rig context to the draw item, enabling animation of those buffers.
+            body_item = next(item for item in view._mgl_scene.iter_by_tag("scene-model")
+                             if item.payload["owner"] == "Body")
+            body_item.payload["fbx_rig_context"] = rig
+            view.repaint()
+            self.app.processEvents()
+            state = view._cloth_states["Cloth"]
+            self.assertIn("Body", state.collider_previous, getattr(model, "_cloth_status", ""))
+            np.testing.assert_allclose(state.collider_previous["Body"][:, 1], bind_heights, atol=1e-6)
+            initial_time = 0
+            seam_distance = lambda: np.linalg.norm(np.einsum("ni,nij->nj", asset.seam_weights,
+                                                             state.solver.x[asset.seam_indices]), axis=1).mean()
+            if saved_state:
+                # Settle/sew against the bind pose while the animation remains at frame 0.
+                for _ in range(3):
+                    model._cloth_commands = [{"action": "step"}]
+                    view.repaint()
+                    if state.pending is not None:
+                        state.pending.result(timeout=10)
+                    view.repaint()
+                    self.app.processEvents()
+                self.assertEqual(state.frame, 3)
+                self.assertLess(seam_distance(), .003)
+                initial_positions = state.solver.x.copy()
+                initial_velocity = state.solver.velocity.copy()
+                initial_time = state.solver.time
+                cache_path = str(Path(directory) / "sewn_state.npz")
+                model._cloth_commands = [{"action": "save", "path": cache_path}]
+                view.repaint()
+                if state.pending is not None:
+                    state.pending.result(timeout=10)
+                view.repaint()
+                self.app.processEvents()
+                self.assertEqual(view._timeline_current_frame(), 0)
+                self.assertTrue(Path(cache_path).is_file(), model._cloth_status)
+                config["settings"]["follow_timeline"] = True
+                model._cloth_commands = [{"action": "reset"}]
+                view.repaint()
+                state = view._cloth_states["Cloth"]
+                model._cloth_commands = [{"action": "load_cache", "path": cache_path}]
+                view.repaint()
+                self.app.processEvents()
+                self.assertEqual(view._timeline_current_frame(), 0)
+                self.assertEqual(state.frame, 0)
+                np.testing.assert_allclose(state.solver.x, initial_positions, atol=1e-7)
+                np.testing.assert_allclose(state.solver.velocity, initial_velocity, atol=1e-7)
+                self.assertAlmostEqual(state.solver.time, initial_time)
+                np.testing.assert_allclose(state.collider_previous["Body"][:, 1], bind_heights, atol=1e-6)
+                # Enable gravity and tune quality/material after loading the sewn snapshot.
+                stored = Path(cache_path).read_bytes()
+                config["settings"].update(gravity_y=-9.81, gravity_enabled=False, stretch=25000,
+                                          bend=.1, density=.4, substeps=6, iterations=10, collision_quality=3)
+                view.repaint()
+                np.testing.assert_allclose(state.solver.x, initial_positions, atol=1e-7)
+                config["settings"]["gravity_enabled"] = True
+                view.repaint()
+                self.assertIs(view._cloth_states["Cloth"], state)
+                np.testing.assert_allclose(state.solver.x, initial_positions, atol=1e-7)
+                np.testing.assert_allclose(state.solver.velocity, initial_velocity, atol=1e-7)
+                self.assertAlmostEqual(state.solver.time, initial_time)
+                self.assertEqual(state.cache_path, cache_path)
+                self.assertEqual(Path(cache_path).read_bytes(), stored)
+            if render_frames:
+                # Legacy output overrides cannot change the scene or a saved cloth pose.
+                view._mgl_render_fps_override = 30
+                view._mgl_render_output_active = True
+                controls = SimpleNamespace(_cancel_check=lambda: False, _frame_wait_seconds=10,
+                    _process_ui_events=lambda ms: self.app.processEvents(QtCore.QEventLoop.AllEvents, ms))
+                self.assertEqual(view._mgl_timeline_fps_value(), 24)
+            elif not scrub_frames:
+                view._timeline_play_btn.setChecked(True)
+                view._timeline_play_timer.stop()  # Drive actual ticks explicitly for deterministic assertions.
+            if scrub_frames:
+                view._timeline_frame_slider.setSliderDown(True)
+                view._timeline_scrub_aux_last_t = float("inf")  # Exercise the fast-drag throttle path.
+            for frame in ((4, 2, 0, 3, 4) if scrub_frames else range(1, 5)):
+                if render_frames:
+                    self.assertTrue(RenderNodeWidget._prepare_scene_frame(controls, view, frame, ""))
+                    self.assertTrue(view._cloth_render_ready(frame))
+                    image = view._mgl_render_to_image(32, 32)
+                    self.assertIsNotNone(image)
+                    self.assertFalse(RenderNodeWidget._image_is_invalid_capture(controls, image))
+                    body_item = next(item for item in view._mgl_scene.iter_by_tag("scene-model")
+                                     if item.payload["owner"] == "Body")
+                    # The actual character draw buffer matches the collision mesh.
+                    body_entry = body_item.payload["submeshes"][0]
+                    np.testing.assert_allclose(body_entry["points"][:, 1], bind_heights + .25 * frame / 4, atol=1e-6)
+                elif scrub_frames:
+                    view._timeline_on_frame_slider_changed(frame)
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        # The slider must wake an idle viewport on its own;
+                        # process normal Qt events rather than forcing paint.
+                        self.app.processEvents()
+                        if view._cloth_timeline_ready(frame):
+                            break
+                        time.sleep(.001)  # Yield the GIL as QApplication.exec() does while idle.
+                    self.assertTrue(view._cloth_timeline_ready(frame), model._cloth_status)
+                    self.assertEqual(view._timeline_current_frame(), frame)
+                    body_entry = body_item.payload["submeshes"][0]
+                    np.testing.assert_allclose(body_entry["points"][:, 1], bind_heights + .25 * frame / 4, atol=1e-6)
+                else:
+                    view._timeline_on_play_tick()
+                    self.assertEqual(view._timeline_current_frame(), frame)
+                    view._timeline_on_play_tick()
+                    self.assertEqual(view._timeline_current_frame(), frame)
+                    view.repaint()
+                    self.app.processEvents()
+                    if state.pending is not None:
+                        state.pending.result(timeout=10)
+                    view.repaint()
+                    self.app.processEvents()
+                self.assertEqual(state.frame, frame, model._cloth_status)
+                np.testing.assert_allclose(state.collider_previous["Body"][:, 1], bind_heights + .25 * frame / 4, atol=1e-6)
+                self.assertGreaterEqual(state.solver.x[:, 1].min(), -.05 + .25 * frame / 4 - 1e-5)
+                self.assertAlmostEqual(state.solver.time, initial_time + frame / 24)
+                if saved_state:
+                    self.assertLess(seam_distance(), .003)
+            if scrub_frames:
+                cached_positions = state.solver.x.copy()
+                with patch.object(state.solver, "step", wraps=state.solver.step) as solve:
+                    for frame in (1, 4, 2, 4):
+                        view._timeline_on_frame_slider_changed(frame)
+                        view.repaint()
+                        self.app.processEvents()
+                        self.assertTrue(view._cloth_timeline_ready(frame), model._cloth_status)
+                    solve.assert_not_called()
+                    np.testing.assert_allclose(state.solver.x, cached_positions, atol=1e-6)
+                    # Change the actual clip on the existing context at the same
+                    # playhead. Both draw buffers and collider query must refresh.
+                    rig["clip"] = AnimationClip("Changed Body", 0, 4 / 24, 24, [JointAnimationTrack("Root",
+                        translation_keys=[Vec3Keyframe(0, (0, 0, 0)), Vec3Keyframe(4 / 24, (0, .4, 0))])])
+                    for _ in range(20):
+                        view.repaint()
+                        self.app.processEvents()
+                        if state.pending is not None:
+                            state.pending.result(timeout=10)
+                        if view._cloth_timeline_ready(4):
+                            break
+                    self.assertTrue(view._cloth_timeline_ready(4), model._cloth_status)
+                    self.assertEqual(solve.call_count, 4)
+                    self.assertAlmostEqual(state.solver.time, initial_time + 4 / 24)
+                    np.testing.assert_allclose(state.collider_previous["Body"][:, 1], bind_heights + .4, atol=1e-6)
+                    np.testing.assert_allclose(body_item.payload["submeshes"][0]["points"][:, 1], bind_heights + .4, atol=1e-6)
+                    self.assertLess(seam_distance(), .003)
+                    view._timeline_on_frame_slider_changed(0)
+                    view.repaint()
+                    np.testing.assert_allclose(state.solver.x, initial_positions, atol=1e-7)
+                    np.testing.assert_allclose(state.solver.velocity, initial_velocity, atol=1e-7)
+                    self.assertAlmostEqual(state.solver.time, initial_time)
+                    self.assertEqual(solve.call_count, 4)
+                view._timeline_frame_slider.setSliderDown(False)
+            view._timeline_play_btn.setChecked(False)
+            version, positions = state.version, state.solver.x.copy()
+            for _ in range(3):
+                view.repaint()
+                self.app.processEvents()
+            self.assertEqual(state.version, version)
+            np.testing.assert_array_equal(state.solver.x, positions)
+            self.assertNotIn("error", model._cloth_status.lower())
+            if device == "cuda":
+                self.assertTrue(state.solver.backend.startswith("Warp CUDA"), state.solver.backend_detail)
+                self.assertGreater(state.solver.last_gpu_ms, 0)
+            item = next(item for item in view._mgl_scene.iter_by_tag("scene-model") if item.payload["owner"] == "Cloth")
+            view.makeCurrent()
+            try:
+                points = np.frombuffer(item.payload["mesh_entry"]["vbo"].read(), dtype=np.float32).reshape(-1, 3)
+            finally:
+                view.doneCurrent()
+            np.testing.assert_allclose(points, positions, atol=1e-7)
 
     def test_panel_placement_updates_real_buffers_selection_and_gizmo(self):
         view = GraphGLView(QtWidgets.QGraphicsScene())

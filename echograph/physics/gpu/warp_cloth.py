@@ -1,7 +1,23 @@
 """GPU-resident XPBD stepping with CUDA graphs and one viewport transfer per frame."""
+from functools import wraps
+import threading
 import numpy as np
 import warp as wp
 from . import cloth_kernels as kernels
+
+
+_warp_context_lock = threading.RLock()
+
+
+def _serialized_warp(function):
+    @wraps(function)
+    def call(*args, **kwargs):
+        # Warp's ScopedStream changes Device.stream on a shared device object.
+        # Separate viewport workers must not overwrite that scope during graph
+        # capture, uploads or readback, even when each cloth has its own stream.
+        with _warp_context_lock:
+            return function(*args, **kwargs)
+    return call
 
 
 @wp.kernel
@@ -35,10 +51,73 @@ def project_constraints(x: wp.array(dtype=wp.vec3), inverse_mass: wp.array(dtype
                 x[index] += direction * (inverse_mass[index] * w * dl)
 
 
+@wp.kernel
+def project_elastic_bands(x: wp.array(dtype=wp.vec3), inverse_mass: wp.array(dtype=float),
+                          segments: wp.array2d(dtype=int), aliases: wp.array2d(dtype=int),
+                          segment_offsets: wp.array(dtype=int), members: wp.array(dtype=int),
+                          member_offsets: wp.array(dtype=int), band_offsets: wp.array(dtype=int),
+                          rest: wp.array(dtype=float), stiffness: wp.array(dtype=float),
+                          lambdas: wp.array(dtype=float), gradient: wp.array(dtype=wp.vec3),
+                          effective_inverse: wp.array(dtype=float), segment_rest: wp.array(dtype=float),
+                          segment_stiffness: wp.array(dtype=float), clock: wp.array(dtype=float)):
+    # Each band owns disjoint members. Combining sewn endpoint gradients avoids
+    # spending most of the band's correction pulling seam partners apart.
+    band = wp.tid()
+    for vertex in range(band_offsets[band], band_offsets[band + 1]):
+        gradient[vertex] = wp.vec3(0.0)
+        total_mass = float(0.0)
+        pinned = int(0)
+        for member in range(member_offsets[vertex], member_offsets[vertex + 1]):
+            inverse = inverse_mass[members[member]]
+            if inverse > 0.0:
+                total_mass += 1.0 / inverse
+            else:
+                pinned = 1
+        effective_inverse[vertex] = 0.0
+        if pinned == 0 and total_mass > 0.0:
+            effective_inverse[vertex] = 1.0 / total_mass
+    # Segments are stored in the same color order as the CPU fine solve.
+    for segment in range(segment_offsets[band], segment_offsets[band + 1]):
+        a = segments[segment, 0]
+        b = segments[segment, 1]
+        delta = x[a] - x[b]
+        distance = wp.length(delta)
+        direction = delta / wp.max(distance, 1.0e-12)
+        alpha_segment = 1.0 / (segment_stiffness[segment] * clock[0] * clock[0])
+        dl = (-(distance - segment_rest[segment]) - alpha_segment * lambdas[segment]) / (
+            inverse_mass[a] + inverse_mass[b] + alpha_segment)
+        lambdas[segment] += dl
+        x[a] += direction * (inverse_mass[a] * dl)
+        x[b] -= direction * (inverse_mass[b] * dl)
+    length = float(0.0)
+    bias = float(0.0)
+    for segment in range(segment_offsets[band], segment_offsets[band + 1]):
+        delta = x[segments[segment, 0]] - x[segments[segment, 1]]
+        distance = wp.length(delta)
+        length += distance
+        direction = delta / wp.max(distance, 1.0e-12)
+        gradient[aliases[segment, 0]] += direction
+        gradient[aliases[segment, 1]] -= direction
+        bias += lambdas[segment] / (segment_stiffness[segment] * clock[0] * clock[0])
+    alpha = 1.0 / (stiffness[band] * clock[0] * clock[0])
+    denominator = alpha
+    for vertex in range(band_offsets[band], band_offsets[band + 1]):
+        denominator += effective_inverse[vertex] * wp.dot(gradient[vertex], gradient[vertex])
+    dl = (-(length - rest[band]) - bias) / denominator
+    for segment in range(segment_offsets[band], segment_offsets[band + 1]):
+        lambdas[segment] += dl
+    for vertex in range(band_offsets[band], band_offsets[band + 1]):
+        correction = gradient[vertex] * (effective_inverse[vertex] * dl)
+        for member in range(member_offsets[vertex], member_offsets[vertex + 1]):
+            x[members[member]] += correction
+
+
 class WarpCollider:
     """Persistent collider buffers; update motion without rebuilding topology/BVH."""
     def __init__(self, collider, device):
         self.topology = collider.triangles.copy()
+        self.two_sided = collider.two_sided
+        self.surface_thickness = collider.surface_thickness
         previous = collider.previous if collider.previous is not None and collider.previous.shape == collider.vertices.shape else collider.vertices
         self.start = wp.array(np.asarray(previous, dtype=np.float32), dtype=wp.vec3, device=device)
         self.end = wp.array(np.asarray(collider.vertices, dtype=np.float32), dtype=wp.vec3, device=device)
@@ -54,6 +133,7 @@ class WarpCollider:
         self.bvh = wp.Bvh(self.lower, self.upper)
 
     def update(self, collider):
+        self.surface_thickness = collider.surface_thickness
         previous = collider.previous if collider.previous is not None and collider.previous.shape == collider.vertices.shape else collider.vertices
         if not np.array_equal(previous, self.last_start):
             self.start.assign(np.asarray(previous, dtype=np.float32))
@@ -64,6 +144,7 @@ class WarpCollider:
 
 
 class WarpProjector:
+    @_serialized_warp
     def __init__(self, solver, require_cuda=False):
         wp.init()
         if not wp.is_cuda_available():
@@ -73,9 +154,10 @@ class WarpProjector:
         self.label = "Warp CUDA (GPU solve)"
         self.x = wp.array(solver.x.astype(np.float32), dtype=wp.vec3, device=self.device)
         self.old = wp.empty_like(self.x)
-        self.rest = wp.array(solver.rest.astype(np.float32), dtype=wp.vec3, device=self.device)
+        self.rest = wp.array(solver.pin_positions.astype(np.float32), dtype=wp.vec3, device=self.device)
         self.velocity = wp.zeros_like(self.x)
         self.mass = wp.array(solver.inverse_mass.astype(np.float32), dtype=float, device=self.device)
+        self._mass_revision = solver._mass_revision
         self.clock = wp.zeros(2, dtype=float, device=self.device)
         self.progress = wp.zeros(1, dtype=float, device=self.device)
         self.grab_ids = wp.zeros(max(1, len(solver.x)), dtype=int, device=self.device)
@@ -100,6 +182,8 @@ class WarpProjector:
         self._graph_settings = None
         self.groups = []
         for group in solver.groups:
+            if group["kind"] == "elastic":
+                continue
             indices, weights = group["indices"], group["weights"]
             padded_ids = np.zeros((len(indices), 4), dtype=np.int32)
             padded_weights = np.zeros((len(indices), 4), dtype=np.float32)
@@ -111,6 +195,32 @@ class WarpProjector:
                 wp.array(group["rest"].astype(np.float32), dtype=float, device=self.device),
                 wp.zeros(len(indices), dtype=float, device=self.device),
                 [wp.array(rows, dtype=int, device=self.device) for rows in group["colors"]]))
+        self.elastic = None
+        bands = [group for group in solver.groups if group["kind"] == "elastic"]
+        if bands:
+            orders = [np.concatenate(g["colors"]) for g in bands]
+            segment_offsets = np.r_[0, np.cumsum([len(g["indices"]) for g in bands])]
+            band_offsets = np.r_[0, np.cumsum([len(g["member_offsets"]) - 1 for g in bands])]
+            member_starts = np.r_[0, np.cumsum([len(g["members"]) for g in bands])]
+            member_offsets = np.r_[np.concatenate([
+                g["member_offsets"][:-1] + member_starts[i] for i, g in enumerate(bands)]), member_starts[-1]]
+            self.elastic = [
+                wp.array(np.concatenate([g["indices"][order] for g, order in zip(bands, orders)]), dtype=int, device=self.device),
+                wp.array(np.concatenate([g["segment_aliases"][orders[i]] + band_offsets[i] for i, g in enumerate(bands)]),
+                         dtype=int, device=self.device),
+                wp.array(segment_offsets, dtype=int, device=self.device),
+                wp.array(np.concatenate([g["members"] for g in bands]), dtype=int, device=self.device),
+                wp.array(member_offsets, dtype=int, device=self.device),
+                wp.array(band_offsets, dtype=int, device=self.device),
+                wp.array([g["rest"][0] for g in bands], dtype=float, device=self.device),
+                wp.array([g["stiffness"] for g in bands], dtype=float, device=self.device),
+                wp.zeros(int(segment_offsets[-1]), dtype=float, device=self.device),
+                wp.zeros(int(band_offsets[-1]), dtype=wp.vec3, device=self.device),
+                wp.zeros(int(band_offsets[-1]), dtype=float, device=self.device),
+                wp.array(np.concatenate([g["segment_rest"][order] for g, order in zip(bands, orders)]),
+                         dtype=float, device=self.device),
+                wp.array(np.concatenate([g["segment_stiffness"][order] for g, order in zip(bands, orders)]),
+                         dtype=float, device=self.device)]
         # Worker stepping uses an independent CUDA stream, including graph replay
         # and readback. Never share a default stream across viewport/worker threads.
         wp.synchronize_stream(wp.get_stream(self.device))
@@ -142,21 +252,24 @@ class WarpProjector:
 
     def _body_contact(self, friction):
         settings = self.solver.settings
-        margin = max(settings.thickness * (2 + settings.collision_quality), .02)
         for collider in self.colliders:
+            thickness = settings.thickness + collider.surface_thickness
+            margin = max(thickness * (2 + settings.collision_quality), .02)
             self._launch(kernels.mesh_contact, len(self.x), [self.x, self.old, self.mass,
                          collider.current, collider.previous, collider.faces, collider.bvh.id,
-                         settings.thickness, margin, friction])
+                         thickness, margin, friction, int(collider.two_sided)])
 
     def _record_frame(self):
         settings = self.solver.settings
         n = len(self.x)
         for substep in range(settings.substeps):
             self._launch(kernels.integrate, n, [self.x, self.velocity, self.old, self.rest,
-                         self.mass, self.clock, settings.gravity_y, settings.damping,
+                         self.mass, self.clock, settings.effective_gravity_y, settings.damping,
                          settings.seam_seconds, self.progress])
             for _, _, _, _, lambdas, _ in self.groups:
                 lambdas.zero_()
+            if self.elastic is not None:
+                self.elastic[8].zero_()
             for collider in self.colliders:
                 self._launch(kernels.sample_collider, len(collider.end), [collider.start, collider.end,
                              collider.current, collider.previous, (substep + 1) / settings.substeps,
@@ -166,10 +279,15 @@ class WarpProjector:
                 collider.bvh.refit()
             for iteration in range(settings.iterations):
                 for group, ids, weights, rest, lambdas, colors in self.groups:
+                    if group["stiffness"] <= 0:
+                        continue
                     for rows in colors:
                         self._launch(project_constraints, len(rows), [self.x, self.mass, ids, weights,
                                      rest, lambdas, rows, group["stiffness"], self.clock, self.progress,
                                      settings.seam_gap, int(group["kind"] == "seam")])
+                if self.elastic is not None:
+                    self._launch(project_elastic_bands, len(self.elastic[6]),
+                                 [self.x, self.mass, *self.elastic, self.clock])
                 self._launch(kernels.grab, 1, [self.x, self.mass, self.grab_ids, self.grab_weights,
                              self.grab_target, self.grab_count, self.clock])
                 quality = settings.collision_quality
@@ -185,6 +303,7 @@ class WarpProjector:
                 self._body_contact(0.0)
             self._launch(kernels.finish_substep, n, [self.x, self.old, self.velocity, self.mass, self.clock])
 
+    @_serialized_warp
     def step(self, dt, colliders=()):
         solver = self.solver
         with wp.ScopedStream(self.stream):
@@ -192,6 +311,10 @@ class WarpProjector:
             # Upload once per frame; never cross the bridge inside a solve iteration.
             self.x.assign(np.asarray(solver.x, dtype=np.float32))
             self.velocity.assign(np.asarray(solver.velocity, dtype=np.float32))
+            if self._mass_revision != solver._mass_revision:
+                self.mass.assign(np.asarray(solver.inverse_mass, dtype=np.float32))
+                self.rest.assign(np.asarray(solver.pin_positions, dtype=np.float32))
+                self._mass_revision = solver._mass_revision
             self.clock.assign(np.asarray([dt / solver.settings.substeps, solver.time], dtype=np.float32))
             grab = solver.grab
             count = len(grab[0]) if grab is not None else 0
@@ -214,13 +337,15 @@ class WarpProjector:
             else:
                 for index, collider in enumerate(colliders):
                     cached = self.colliders[index]
-                    if len(cached.end) != len(collider.vertices) or not np.array_equal(cached.topology, collider.triangles):
+                    if (len(cached.end) != len(collider.vertices) or cached.two_sided != collider.two_sided
+                            or not np.array_equal(cached.topology, collider.triangles)):
                         self.colliders[index] = WarpCollider(collider, self.device)
                         self.graph = None
                     else:
                         cached.update(collider)
             graph_settings = tuple((key, value) for key, value in solver.settings.to_dict().items()
                                    if key not in {"enabled", "interactive"})
+            graph_settings += (("collider_thickness", tuple(c.surface_thickness for c in self.colliders)),)
             if self.graph is None or self._graph_settings != graph_settings:
                 # Load before capture so first-use compilation and allocations do
                 # not interfere with CUDA capture. Capture does not advance state.
@@ -239,7 +364,7 @@ class WarpProjector:
             raise RuntimeError("CUDA cloth became unstable; reset and increase substeps.")
         solver.x[:] = positions
         solver.velocity[:] = velocity
-        solver.x[solver.pins] = solver.rest[solver.pins]
+        solver.x[solver.pins] = solver.pin_positions[solver.pins]
         solver.velocity[solver.pins] = 0
         solver.last_gpu_ms = gpu_ms
         solver.time += dt

@@ -5,6 +5,26 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 
+def friction_correction(relative, normal, normal_depth, friction):
+    """Coulomb contact: stick below the normal-load limit, otherwise slide."""
+    tangent = relative - normal * np.sum(relative * normal, axis=1)[:, None]
+    length = np.linalg.norm(tangent, axis=1)
+    limit = friction * np.maximum(normal_depth, 0)
+    return tangent * np.minimum(1, limit / np.maximum(length, 1e-30))[:, None]
+
+
+def surface_motion(points, surface, previous):
+    """Motion of the material at each contact, including body deformation."""
+    ab, ac = previous[:, 1] - previous[:, 0], previous[:, 2] - previous[:, 0]
+    ap = points - previous[:, 0]
+    aa, bb, cc = np.sum(ab * ab, axis=1), np.sum(ab * ac, axis=1), np.sum(ac * ac, axis=1)
+    denominator = np.maximum(aa * cc - bb * bb, 1e-30)
+    u = (cc * np.sum(ap * ab, axis=1) - bb * np.sum(ap * ac, axis=1)) / denominator
+    v = (aa * np.sum(ap * ac, axis=1) - bb * np.sum(ap * ab, axis=1)) / denominator
+    motion = surface - previous
+    return motion[:, 0] + u[:, None] * (motion[:, 1] - motion[:, 0]) + v[:, None] * (motion[:, 2] - motion[:, 0])
+
+
 def closest_points(points, triangles, inside_tolerance=0.0):
     """Closest surface points for broadcast pairs (including triangle edges)."""
     a, b, c = triangles[:, 0], triangles[:, 1], triangles[:, 2]
@@ -80,12 +100,16 @@ class MeshCollider:
     vertices: np.ndarray
     triangles: np.ndarray
     previous: np.ndarray | None = None
+    two_sided: bool = False
+    surface_thickness: float = 0.0
 
     def __post_init__(self):
         self.vertices = np.asarray(self.vertices, dtype=float).reshape(-1, 3)
         self.triangles = np.asarray(self.triangles, dtype=np.int32).reshape(-1, 3)
         if not np.isfinite(self.vertices).all():
             raise ValueError("Collider contains non-finite vertices.")
+        if not np.isfinite(self.surface_thickness) or self.surface_thickness < 0:
+            raise ValueError("Collider thickness must be finite and non-negative.")
         if np.any(self.triangles < 0) or np.any(self.triangles >= len(self.vertices)):
             raise ValueError("Collider triangle index is out of range.")
         triangles = self.vertices[self.triangles]
@@ -101,9 +125,11 @@ class MeshCollider:
         if self.previous is None or self.previous.shape != self.vertices.shape:
             return self
         previous = self.previous * (1 - previous_fraction) + self.vertices * previous_fraction
-        return MeshCollider(self.previous * (1 - fraction) + self.vertices * fraction, self.triangles, previous)
+        return MeshCollider(self.previous * (1 - fraction) + self.vertices * fraction, self.triangles,
+                            previous, two_sided=self.two_sided, surface_thickness=self.surface_thickness)
 
     def project(self, x, old, inverse_mass, thickness, friction, quality=2):
+        thickness += self.surface_thickness
         if not len(self.triangles):
             return np.zeros(len(x), dtype=bool)
         if self._broadphase is None:
@@ -130,6 +156,12 @@ class MeshCollider:
                                   previous_surface[:, 2] - previous_surface[:, 0])
             old_normal /= np.maximum(np.linalg.norm(old_normal, axis=1)[:, None], 1e-30)
         old_signed = np.sum((old[rows] - previous_surface[:, 0]) * old_normal, axis=1)
+        # A garment is a thin surface, not a solid body. Preserve the contact's
+        # previous side for crossings in either direction, regardless of winding.
+        side = np.where(old_signed < 0, -1.0, 1.0) if self.two_sided else np.ones(len(rows))
+        normal *= side[:, None]
+        signed *= side
+        old_signed *= side
         # Crossing within the face catches fast cloth motion; small penetration
         # with outward winding also recovers cloth overtaken by a moving body.
         # Body contacts are one-sided. Re-testing an outward escape against the
@@ -151,7 +183,7 @@ class MeshCollider:
                     pose = start[deforming] * (1 - mid[:, None, None]) + end[deforming] * mid[:, None, None]
                     point = old[rows[d]] * (1 - mid[:, None]) + x[rows[d]] * mid[:, None]
                     plane = np.cross(pose[:, 1] - pose[:, 0], pose[:, 2] - pose[:, 0])
-                    positive = np.sum((point - pose[:, 0]) * plane, axis=1) > 0
+                    positive = np.sum((point - pose[:, 0]) * plane, axis=1) * side[d] > 0
                     lo = np.where(positive, mid, lo)
                     hi = np.where(positive, hi, mid)
                 fraction[deforming] = (lo + hi) * .5
@@ -172,12 +204,13 @@ class MeshCollider:
         _, reversed_index = np.unique(rows[selected][::-1], return_index=True)
         chosen = selected[len(selected) - 1 - reversed_index]
         r = rows[chosen]
-        x[r] = target[chosen]
-        relative = x[r] - old[r]
-        if self.previous is not None and self.previous.shape == self.vertices.shape:
-            relative -= (self.vertices[self.triangles[faces[chosen]]] - self.previous[self.triangles[faces[chosen]]]).mean(axis=1)
         n = direction[chosen]
-        tangent = relative - n * np.sum(relative * n, axis=1)[:, None]
-        x[r] -= friction * tangent
+        normal_depth = np.sum((target[chosen] - x[r]) * n, axis=1)
+        x[r] = target[chosen]
+        if friction > 0:
+            relative = x[r] - old[r]
+            if self.previous is not None and self.previous.shape == self.vertices.shape:
+                relative -= surface_motion(old[r], surface[chosen], previous_surface[chosen])
+            x[r] -= friction_correction(relative, n, normal_depth, friction)
         contact[r] = True
         return contact

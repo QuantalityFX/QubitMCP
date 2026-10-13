@@ -1,8 +1,10 @@
 """Pattern preparation and cloth controls. Simulation belongs to physics/viewport."""
 import json
+import math
+import re
 from pathlib import Path
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 from shiboken6 import isValid
 
 from nodes.core import Spec
@@ -55,8 +57,18 @@ def build_cloth_scene_asset(node_item):
             pins = json.loads(str(values.get("pins", "[]")))
             if not isinstance(pins, list) or any(type(p) is not int for p in pins):
                 raise ValueError()
+            if any(p < 0 or p >= len(asset.positions) for p in pins):
+                raise ValueError()
         except (ValueError, TypeError):
             raise PatternError("Cloth pins must be a list of vertex indices.")
+        pin_positions = json.loads(str(values.get("pin_positions", "{}")))
+        if not isinstance(pin_positions, dict):
+            raise PatternError("Cloth pin positions must be a map of vertex IDs to 3D points.")
+        for key, point in pin_positions.items():
+            if (not key.isdigit() or not 0 <= int(key) < len(asset.positions)
+                    or not isinstance(point, list) or len(point) != 3
+                    or any(type(v) not in (int, float) or not math.isfinite(v) for v in point)):
+                raise PatternError("Invalid cloth pin position.")
         source_placements = validate_placements(json.loads(str(params(source.model).get("piece_transforms", "{}"))))
         placements = {**source_placements, **validate_placements(json.loads(str(values.get("piece_transforms", "{}"))))}
         cache_path = str(values.get("cache_path", "") or "").strip()
@@ -70,7 +82,7 @@ def build_cloth_scene_asset(node_item):
                 "cloth": {"asset": asset, "settings": settings.to_dict(), "solver_node": model.name,
                           "pattern_owner": source.model.name, "pattern_path": resolved["path"],
                           "collider_owner": str(values.get("collider_owner", "")), "colliders": colliders,
-                          "pins": pins, "piece_transforms": placements, "cache_path": cache_path,
+                          "pins": pins, "pin_positions": pin_positions, "piece_transforms": placements, "cache_path": cache_path,
                           "node_model": model, "node_item": node_item},
                 "pattern_pieces": [{"id": p["id"], "name": p["name"]} for p in asset.pieces()]}
     except (OSError, PatternError, ValueError, TypeError, RuntimeError) as exc:
@@ -80,7 +92,7 @@ def build_cloth_scene_asset(node_item):
 
 def build_ports(node_item):
     defaults = {**ClothSettings().to_dict(), "collider_owner": "", "pins": "[]", "cache_path": "",
-                "piece_transforms": "{}"}
+                "piece_transforms": "{}", "pin_positions": "{}"}
     existing = params(node_item.model)
     for name, value in defaults.items():
         if name not in existing:
@@ -108,18 +120,38 @@ def set_value(node_item, name, value):
     QtCore.QTimer.singleShot(0, apply)
 
 
+def collider_owner_slots(values, colliders=()):
+    raw = str(values.get("collider_owner", "") or "")
+    if raw:
+        return [owner.strip() for owner in raw.split(",")]
+    return list(dict.fromkeys(str(c.get("node") or "").strip() for c in colliders
+                             if str(c.get("node") or "").strip())) or [""]
+
+
 class ColliderOwnerEdit(QtWidgets.QLineEdit):
-    def __init__(self, node_item, parent=None):
+    def __init__(self, node_item, parent=None, *, slot_index=None, colliders=()):
         super().__init__(parent)
         self.node_item = node_item
+        self.slot_index = slot_index
+        self.colliders = colliders
         self.setAcceptDrops(True)
-        self.setText(str(params(node_item.model).get("collider_owner", "")))
+        values = params(node_item.model)
+        slots = collider_owner_slots(values, colliders)
+        self.setText(str(values.get("collider_owner", "")) if slot_index is None else
+                     slots[slot_index] if slot_index < len(slots) else "")
         self.setPlaceholderText("Drop collider mesh (or type owner)")
-        self.setToolTip("Drop a scene mesh here. Separate multiple mesh owner names with commas. Leave empty to use the collider input.")
+        self.setToolTip("Drop a scene mesh or a cloth parent here." if slot_index is not None else
+                        "Drop scene meshes here. Separate multiple owner names with commas. Leave empty to use the collider input.")
         self.editingFinished.connect(self._commit)
 
     def _commit(self):
         text = self.text().strip()
+        if self.slot_index is not None:
+            slots = collider_owner_slots(params(self.node_item.model), self.colliders)
+            while len(slots) <= self.slot_index:
+                slots.append("")
+            slots[self.slot_index] = text
+            text = ",".join(slots)
         if text != str(params(self.node_item.model).get("collider_owner", "")):
             set_value(self.node_item, "collider_owner", text)
 
@@ -134,6 +166,14 @@ class ColliderOwnerEdit(QtWidgets.QLineEdit):
 
     def dropEvent(self, event):
         text = event.mimeData().text().strip()
+        from echograph.ui.scene_outliner import ROW_MIME
+        if event.mimeData().hasFormat(ROW_MIME):
+            try:
+                row = json.loads(bytes(event.mimeData().data(ROW_MIME)))
+                if row.get("kind") == "pattern_piece" and row.get("parent"):
+                    text = str(row["parent"])
+            except (ValueError, TypeError, AttributeError):
+                pass
         if text:
             # Scene outliner drags carry owner names; ignore skeleton child suffixes.
             self.setText(text.split("/Skeleton", 1)[0])
@@ -173,8 +213,19 @@ def _open_cache_dialog(node_item, save, action="bake"):
     dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptSave if save else QtWidgets.QFileDialog.AcceptOpen)
     dialog.setFileMode(QtWidgets.QFileDialog.AnyFile if save else QtWidgets.QFileDialog.ExistingFile)
     if save:
+        workflow = getattr(parent, "_current_path", None) or getattr(node_item.scene(), "_filename", None)
+        if workflow:
+            try:
+                directory = Path(workflow).expanduser()
+                if not directory.is_dir():
+                    directory = directory.parent
+                if directory.is_dir():
+                    dialog.setDirectory(str(directory.resolve()))
+            except (OSError, ValueError):
+                pass
         dialog.setDefaultSuffix("npz")
-        dialog.selectFile("cloth.cloth.npz")
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(node_item.model.name)).strip(" .") or "cloth"
+        dialog.selectFile(f"{name}.cloth.npz")
     dialog.setWindowModality(QtCore.Qt.WindowModal)
     node_item._cloth_cache_dialog = dialog
 
@@ -206,6 +257,9 @@ class ClothWidget(QtWidgets.QWidget):
     def __init__(self, node_item):
         super().__init__()
         self.node_item = node_item
+        icon_dir = Path(__file__).resolve().parents[2] / "icons"
+        self._play_icon = QtGui.QIcon(str(icon_dir / "PlayButton_icon.png"))
+        self._stop_icon = QtGui.QIcon(str(icon_dir / "StopButton_icon.png"))
         self.setObjectName("ClothSolverBody")
         self.setStyleSheet(
             "QWidget#ClothSolverBody{background:#141c29;}"
@@ -243,6 +297,12 @@ class ClothWidget(QtWidgets.QWidget):
             forms[title], pages[title] = form, page
             tabs.addTab(page, title)
         layout.addWidget(tabs)
+        gravity = QtWidgets.QCheckBox("Gravity")
+        gravity.setObjectName("Cloth_gravity_enabled")
+        gravity.setChecked(settings.gravity_enabled)
+        gravity.setToolTip("Enable gravity without changing its stored strength.")
+        gravity.toggled.connect(lambda checked: set_value(node_item, "gravity_enabled", int(checked)))
+        forms["Simulation"].addRow(gravity)
         controls = [
             ("Stretch stiffness", "stretch", 0, 1000000, 2, " N/m"),
             ("Bend stiffness", "bend", 0, 10000, 4, ""),
@@ -260,15 +320,19 @@ class ClothWidget(QtWidgets.QWidget):
             ("Constraint iterations", "iterations", 1, 64, None, ""),
             ("Collision quality", "collision_quality", 1, 8, None, ""),
             ("FPS", "fps", 1, 240, 2, ""),
-            ("Start frame", "start_frame", 0, 100000, None, ""),
+            ("Start frame / bake", "start_frame", 0, 100000, None, ""),
             ("End frame / bake", "end_frame", 0, 100000, None, ""),
         ]
         hints = {
             "substeps": "More substeps reduce motion per solve step. Try 8 for dressing, or 16 for fast body motion.",
             "collision_quality": "More contact passes improve separation around folds and tight body features. Try 4; higher values take longer.",
             "thickness": "Surface clearance in meters, also used for self collision. 0.003 m is 3 mm; try 0.003–0.005 m for body clearance.",
-            "scene_units_per_meter": "Use 1 for a scene modeled in meters, or 100 for centimeters. This also affects collision thickness and gravity.",
+            "friction": "Contact friction: 0 is slippery. Resists sliding where the fabric presses against a collider.",
+            "density": "Fabric mass per square meter. 0.2 kg/m² is 200 g/m²; gravity acceleration does not depend on density.",
+            "gravity_y": "Earth gravity is −9.81 m/s². Use Scene units / meter to set scale instead of reducing gravity.",
+            "scene_units_per_meter": "Default: 1 scene unit = 1 meter (the primitive cube is 1 m wide). Use 100 for centimeter scenes.",
             "seam_seconds": "Increase the closure time to pull sewn edges together more gently. Try 1–2 seconds when sewing around a body.",
+            "fps": "Frame rate for real-time simulation and baking. Timeline simulation uses the viewport timeline frame rate.",
         }
         for title, name, low, high, decimals, suffix in controls:
             group = ("Simulation" if name in {"gravity_y", "substeps", "iterations", "fps", "start_frame", "end_frame"}
@@ -293,9 +357,13 @@ class ClothWidget(QtWidgets.QWidget):
         device.currentTextChanged.connect(lambda value: set_value(node_item, "device", value))
         forms["Simulation"].addRow("Backend", device)
         forms["Collision"].addRow("Collider owner", ColliderOwnerEdit(node_item))
-        for title, name in [("Enabled", "enabled"), ("Self collision", "self_collision"), ("Ground plane Y = 0", "ground"), ("Grab cloth with mouse", "interactive")]:
+        for title, name in [("Enabled", "enabled"), ("Self collision", "self_collision"), ("Ground plane Y = 0", "ground"),
+                            ("Simulate with timeline", "follow_timeline"), ("Grab cloth with mouse", "interactive")]:
             check = QtWidgets.QCheckBox(title)
+            check.setObjectName(f"Cloth_{name}")
             check.setChecked(getattr(settings, name))
+            if name == "follow_timeline":
+                check.setToolTip("Play or scrub to simulate from the current or loaded pose. Calculated frames stay in memory until the collider animation changes.")
             check.toggled.connect(lambda checked, key=name: set_value(node_item, key, int(checked)))
             if name in {"self_collision", "ground"}:
                 forms["Collision"].addRow(check)
@@ -303,10 +371,15 @@ class ClothWidget(QtWidgets.QWidget):
                 layout.addWidget(check)
         buttons = QtWidgets.QHBoxLayout()
         layout.addLayout(buttons)
-        for title, action in [("Play / Pause", "toggle"), ("Step", "step"), ("Reset", "reset")]:
+        for title, action in [("Play", "toggle"), ("Step", "step"), ("Reset", "reset")]:
             button = QtWidgets.QPushButton(title)
             if action == "toggle":
-                button.setToolTip("Play or pause live simulation. During a bake, stop and save completed frames.")
+                self.play_button = button
+                button.setObjectName("ClothRealtimePlayButton")
+                button.setIconSize(QtCore.QSize(18, 18))
+                button.setMinimumWidth(80)
+            elif action == "step":
+                button.setToolTip("Advance one simulation step, or one animation frame when timeline simulation is enabled.")
             button.clicked.connect(lambda checked=False, key=action: request_command(node_item, key))
             buttons.addWidget(button)
         pin_buttons = QtWidgets.QHBoxLayout()
@@ -328,7 +401,7 @@ class ClothWidget(QtWidgets.QWidget):
         save_buttons = QtWidgets.QHBoxLayout()
         layout.addLayout(save_buttons)
         save_state = QtWidgets.QPushButton("Save state…")
-        save_state.setToolTip("Pause and save the current cloth pose and velocity. Load it later; Play continues the simulation.")
+        save_state.setToolTip("Save the cloth pose, velocity and sewing progress. Load it later to continue at the current timeline frame.")
         save_state.clicked.connect(self._save_state)
         save_buttons.addWidget(save_state)
         self.stop_bake = QtWidgets.QPushButton("Stop & save")
@@ -347,18 +420,51 @@ class ClothWidget(QtWidgets.QWidget):
         self.status.setFixedHeight(64)
         self.status.setStyleSheet("color:#94a3b8")
         layout.addWidget(self.status)
-        tip = QtWidgets.QLabel("Select named pieces in the Scene outliner to arrange the garment. Reset uses those placements. Save state keeps a draped pose; Bake records a range. Alt navigates the camera.")
+        self.seek_progress = QtWidgets.QProgressBar()
+        self.seek_progress.setObjectName("ClothTimelineProgress")
+        self.seek_progress.setFixedHeight(18)
+        self.seek_progress.setRange(0, 1)
+        self.seek_progress.setValue(0)
+        self.seek_progress.setFormat("Timeline cache idle")
+        self.seek_progress.setToolTip("Temporary memory cache. Scrub again to reuse calculated frames; a changed collider animation recalculates from the starting pose.")
+        layout.addWidget(self.seek_progress)
+        tip = QtWidgets.QLabel("Arrange pieces, then Reset. Play settles cloth. Simulate with timeline lets you play or scrub the animation. Alt navigates the camera.")
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#94a3b8; font-size:10px")
         layout.addWidget(tip)
         self.timer = QtCore.QTimer(self)
-        self.timer.setInterval(500)
+        self.timer.setInterval(200)
         self.timer.timeout.connect(self._status)
         self.timer.start()
+        self._status()
 
     def _status(self):
-        self.stop_bake.setEnabled(bool(getattr(self.node_item.model, "_cloth_baking", False)))
-        path = str(params(self.node_item.model).get("cache_path", ""))
+        model = self.node_item.model
+        progress = getattr(model, "_cloth_seek_progress", None)
+        if progress is not None:
+            start, frame, target = progress
+            self.seek_progress.setRange(0, max(1, target - start))
+            self.seek_progress.setValue(max(0, min(frame - start, target - start)))
+            self.seek_progress.setFormat(f"Calculating frame {min(frame + 1, target)} / {target} · %p%")
+        else:
+            self.seek_progress.setRange(0, 1)
+            self.seek_progress.setValue(1 if "Preview cache" in str(getattr(model, "_cloth_status", "")) else 0)
+            self.seek_progress.setFormat("Frame cached" if self.seek_progress.value() else "Timeline cache idle")
+        baking = bool(getattr(model, "_cloth_baking", False))
+        values = params(model)
+        settings = ClothSettings.from_dict(values)
+        running = bool(getattr(model, "_cloth_playing", False)) or baking
+        self.play_button.setText("Stop" if running else "Play")
+        self.play_button.setIcon(self._stop_icon if running else self._play_icon)
+        self.play_button.setEnabled(baking or (settings.enabled and not settings.follow_timeline
+                                              and not getattr(model, "_cloth_saving", False)))
+        self.play_button.setToolTip("Use the viewport timeline controls to play or pause the simulation."
+                                    if settings.follow_timeline and not baking else
+                                    "Stop and save completed bake frames." if baking else
+                                    "Stop real-time simulation and keep the current pose." if running else
+                                    "Play real-time simulation to settle the cloth.")
+        self.stop_bake.setEnabled(baking)
+        path = str(values.get("cache_path", ""))
         if self.cache_file.text() != path:
             self.cache_file.setText(path)
             self.cache_file.setToolTip(path or "No cache loaded")
@@ -388,6 +494,10 @@ class ClothWidget(QtWidgets.QWidget):
 
 def render_node_body(node_item, y_cursor):
     body = ClothWidget(node_item)
+    body.ensurePolished()
+    node_item.prepareGeometryChange()
+    node_item.width = max(node_item.width, body.minimumSizeHint().width())
+    body.setFixedWidth(int(node_item.width))
     proxy = QtWidgets.QGraphicsProxyWidget(node_item)
     proxy.setWidget(body)
     proxy.setPos(0, y_cursor)

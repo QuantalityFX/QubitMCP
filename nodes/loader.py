@@ -632,6 +632,14 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Anim Retarget plugin import failed:", e)
 
+    # Animation Blend
+    try:
+        from nodes import animation_blend
+        animation_blend.register()
+        _safe_probe("animation_blend")
+    except Exception as e:
+        print("[EchoGraph] Animation Blend plugin import failed:", e)
+
     # 13.95) Skinned Splat Proxy
     try:
         from nodes import skinned_splat_proxy

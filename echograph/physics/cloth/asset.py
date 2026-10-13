@@ -1,5 +1,5 @@
 """Build immutable cloth topology and interpolated sewing constraints."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 import hashlib
 import json
@@ -13,6 +13,7 @@ from echograph.patterns.document import PatternDocument, PatternError
 from echograph.patterns.geometry import sample_segment, validate_piece
 from echograph.patterns.mesh import panel_mesh
 from echograph.patterns.sewing import validate_sewing
+from echograph.patterns.elastic import validate_elastic
 
 
 @dataclass
@@ -28,6 +29,12 @@ class ClothAsset:
     vertex_pieces: tuple
     signature: str
     piece_names: tuple = ()
+    elastic_indices: np.ndarray = field(default_factory=lambda: np.empty((0, 2), dtype=np.int32))
+    elastic_strengths: np.ndarray = field(default_factory=lambda: np.empty(0))
+    elastic_ratios: np.ndarray = field(default_factory=lambda: np.empty(0))
+    topology_signature: str = ""
+    elastic_bands: tuple = ()
+    elastic_welds: tuple = ()
 
     def pieces(self):
         """Stable panel IDs survive names, layout changes, and sewing."""
@@ -45,7 +52,7 @@ class ClothAsset:
     def rest_obj(self):
         directory = Path(tempfile.gettempdir()) / "EchoGraph" / "cloth"
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / ("cloth_v2_" + self.signature + ".obj")
+        path = directory / ("cloth_v2_" + (self.topology_signature or self.signature) + ".obj")
         if not path.exists():
             lines = ["# Cloth rest mesh, meters; named pattern pieces"]
             lines.extend("v %.9g %.9g %.9g" % tuple(p) for p in self.positions)
@@ -80,6 +87,43 @@ def _interpolate(indices, positions, samples):
     return np.c_[indices[interval], indices[interval + 1]], np.c_[1 - fraction, fraction]
 
 
+def _elastic_connectivity(edges, seam_indices, seam_weights):
+    """Join elastic runs across sewn vertices without merging cloth mesh particles."""
+    vertices = set(int(i) for edge in edges for i in edge)
+    connected = {i: i for i in vertices}
+    welded = dict(connected)
+
+    def find(parent, index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(parent, a, b):
+        parent[find(parent, b)] = find(parent, a)
+
+    for a, b in edges:
+        union(connected, int(a), int(b))
+    for ids, weights in zip(seam_indices, seam_weights):
+        left = {int(i) for i, w in zip(ids[:2], weights[:2]) if abs(w) > 1e-8}
+        right = {int(i) for i, w in zip(ids[2:], weights[2:]) if abs(w) > 1e-8}
+        if len(left) == len(right) == 1:
+            a, b = next(iter(left)), next(iter(right))
+            if a in vertices and b in vertices:
+                union(connected, a, b)
+                union(welded, a, b)
+    bands, welds = {}, {}
+    for index, (a, _) in enumerate(edges):
+        bands.setdefault(find(connected, int(a)), []).append(index)
+    for vertex in sorted(vertices):
+        welds.setdefault(find(welded, vertex), []).append(vertex)
+    arrays = [np.asarray(rows, dtype=np.int32) for rows in bands.values()]
+    aliases = [np.asarray(rows, dtype=np.int32) for rows in welds.values() if len(rows) > 1]
+    for array in (*arrays, *aliases):
+        array.setflags(write=False)
+    return tuple(arrays), tuple(aliases)
+
+
 def build_cloth_asset(document, spacing_mm=15.0):
     """Cache topology by geometry AND sewing; editor-only metadata is excluded."""
     spacing_mm = float(spacing_mm)
@@ -89,6 +133,8 @@ def build_cloth_asset(document, spacing_mm=15.0):
     relevant = document.to_dict()
     relevant.update(document_id="cloth", name="Cloth", revision=0,
                     metadata={"sew_pairs": document.metadata.get("sew_pairs", [])})
+    if document.metadata.get("elastic_edges"):
+        relevant["metadata"]["elastic_edges"] = document.metadata["elastic_edges"]
     for piece in relevant["pieces"]:
         piece["metadata"] = {}
     return _build_cached(json.dumps(relevant, sort_keys=True), float(spacing_mm))
@@ -99,6 +145,7 @@ def _build_cached(serialized, spacing):
     data = json.loads(serialized)
     document = PatternDocument.from_dict(data)
     validate_sewing(document)
+    validate_elastic(document)
     diagnostics = [d for p in document.pieces for d in validate_piece(p)]
     if diagnostics or not document.pieces:
         raise PatternError(diagnostics[0].message if diagnostics else "Save a closed pattern first.")
@@ -148,11 +195,27 @@ def _build_cached(serialized, spacing):
         seam_indices.extend(np.c_[li, ri])
         seam_weights.extend(np.c_[lw, -rw])
         seam_numbers.extend([pair["number"]] * len(samples))
+    elastic_indices, elastic_strengths, elastic_ratios = [], [], []
+    for row in document.metadata.get("elastic_edges", []):
+        boundary = edge_lookup[(row["piece"], row["edge"])]
+        segments = np.c_[boundary[:-1], boundary[1:]]
+        elastic_indices.extend(segments)
+        # Springs in series: preserve the edge's overall strength as mesh density changes.
+        elastic_strengths.extend([row["strength"] * len(segments)] * len(segments))
+        elastic_ratios.extend([row["rest_ratio"]] * len(segments))
     signature = hashlib.sha256((serialized + str(spacing)).encode()).hexdigest()[:24]
+    data["metadata"].pop("elastic_edges", None)
+    topology_signature = hashlib.sha256((json.dumps(data, sort_keys=True) + str(spacing)).encode()).hexdigest()[:24]
     arrays = [positions, faces, np.asarray(list(adjacent), dtype=np.int32).reshape(-1, 2),
               np.asarray(bends, dtype=np.int32).reshape(-1, 4), np.asarray(coefficients).reshape(-1, 4),
               np.asarray(seam_indices, dtype=np.int32).reshape(-1, 4),
               np.asarray(seam_weights).reshape(-1, 4), np.asarray(seam_numbers, dtype=np.int32)]
     for array in arrays:
         array.setflags(write=False)
-    return ClothAsset(*arrays, tuple(owners), signature, tuple((p.id, p.name) for p in document.pieces))
+    elastic_arrays = [np.asarray(elastic_indices, dtype=np.int32).reshape(-1, 2),
+                      np.asarray(elastic_strengths), np.asarray(elastic_ratios)]
+    for array in elastic_arrays:
+        array.setflags(write=False)
+    bands, welds = _elastic_connectivity(elastic_arrays[0], arrays[5], arrays[6])
+    return ClothAsset(*arrays, tuple(owners), signature, tuple((p.id, p.name) for p in document.pieces),
+                      *elastic_arrays, topology_signature, bands, welds)

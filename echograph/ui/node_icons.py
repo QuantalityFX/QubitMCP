@@ -60,6 +60,9 @@ _TASKS_ICON = None
 _GENX_ICON = None
 _MOCAP_IMPORT_ICON = None
 _ANIM_RETARGET_ICON = None
+_ANIMATION_BLEND_ICON = None
+_DELETE_JOINT_ICON = None
+_PRIORMDM_ICON = None
 _PIXELS_TO_SPLAT_ICON = None
 
 
@@ -168,6 +171,27 @@ def _anim_retarget_icon():
         return _ANIM_RETARGET_ICON
     _ANIM_RETARGET_ICON = _load_pm("anim_retarget_Icon_s.png")
     return _ANIM_RETARGET_ICON
+
+
+def _animation_blend_icon():
+    global _ANIMATION_BLEND_ICON
+    if _ANIMATION_BLEND_ICON is None:
+        _ANIMATION_BLEND_ICON = _load_pm("BlendAnimation_Icon.png")
+    return _ANIMATION_BLEND_ICON
+
+
+def _delete_joint_icon():
+    global _DELETE_JOINT_ICON
+    if _DELETE_JOINT_ICON is None:
+        _DELETE_JOINT_ICON = _load_pm("Delete_Joint_Icon.png")
+    return _DELETE_JOINT_ICON
+
+
+def _priormdm_icon():
+    global _PRIORMDM_ICON
+    if _PRIORMDM_ICON is None:
+        _PRIORMDM_ICON = _load_pm("PromptToAnimation_Icon.png")
+    return _PRIORMDM_ICON
 
 
 def _pixels_to_splat_icon():

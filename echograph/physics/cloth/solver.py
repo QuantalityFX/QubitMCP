@@ -3,6 +3,7 @@ import time
 import numpy as np
 from scipy.spatial import cKDTree
 from .settings import ClothSettings
+from .collisions import friction_correction
 
 
 def constraint_colors(indices, weights):
@@ -22,21 +23,23 @@ def constraint_colors(indices, weights):
 
 
 class ClothSolver:
-    def __init__(self, asset, settings=None, world_positions=None, pins=()):
+    def __init__(self, asset, settings=None, world_positions=None, pins=(), *, defer_backend=False):
         self.asset = asset
         self.settings = settings or ClothSettings()
         self.rest = np.array(asset.positions if world_positions is None else world_positions, dtype=float, copy=True)
+        self.pin_positions = self.rest.copy()
         self.x = self.rest.copy()
         self.velocity = np.zeros_like(self.x)
         tri = self.rest[asset.triangles]
         area = np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1) * 0.5
-        masses = np.zeros(len(self.x))
-        np.add.at(masses, asset.triangles.ravel(), np.repeat(area * self.settings.density / 3, 3))
-        self.inverse_mass = 1 / np.maximum(masses, 1e-8)
+        self._particle_areas = np.zeros(len(self.x))
+        np.add.at(self._particle_areas, asset.triangles.ravel(), np.repeat(area / 3, 3))
+        self.inverse_mass = 1 / np.maximum(self._particle_areas * self.settings.density, 1e-8)
         self.pins = np.asarray(sorted(set(int(i) for i in pins if 0 <= int(i) < len(self.x))), dtype=np.int32)
         self.inverse_mass[self.pins] = 0
+        self._mass_revision = 0
         self.groups = []
-        self._add_group(asset.edges, np.tile([1.0, -1.0], (len(asset.edges), 1)), self.settings.stretch, "stretch")
+        self._add_stretch_elastic_groups()
         self._add_group(asset.bends, asset.bend_weights, self.settings.bend, "bend")
         self._add_group(asset.seam_indices, asset.seam_weights, self.settings.seam_stiffness, "seam")
         self.time = 0.0
@@ -58,6 +61,17 @@ class ClothSolver:
             self._neighbors[b].add(a)
         self._neighbor_keys = np.asarray(sorted(vertex * len(self.x) + neighbor
             for vertex, neighbors in enumerate(self._neighbors) for neighbor in neighbors), dtype=np.int64)
+        self._backend_device = None
+        if not defer_backend:
+            self._configure_backend()
+        elif self.settings.device != "cpu":
+            self.backend = "CUDA pending"
+            self.backend_detail = "GPU initialization starts with the first solve."
+
+    def _configure_backend(self):
+        self._backend_device = self.settings.device
+        self._accelerator = None
+        self.backend, self.backend_detail, self.last_gpu_ms = "CPU XPBD", "", 0.0
         if self.settings.device != "cpu":
             try:
                 from echograph.physics.gpu.warp_cloth import WarpProjector
@@ -69,8 +83,111 @@ class ClothSolver:
                 else:
                     self.backend_detail = "Warp unavailable; CPU fallback: " + str(exc)
 
+    def update_settings(self, settings):
+        """Apply controls between solves, preserving positions, velocity and clock."""
+        previous = self.settings
+        if settings == previous:
+            return
+        self.settings = settings
+        stiffness = {"stretch": settings.stretch, "bend": settings.bend, "seam": settings.seam_stiffness}
+        if settings.density != previous.density:
+            self.inverse_mass[:] = 1 / np.maximum(self._particle_areas * settings.density, 1e-8)
+            self.inverse_mass[self.pins] = 0
+            self._mass_revision += 1
+        for group in self.groups:
+            group["stiffness"] = stiffness.get(group["kind"], group["stiffness"])
+            group["lambda"].fill(0)
+            if settings.density != previous.density:
+                batches = []
+                for rows, ids, weights, _, _, active in group["batches"]:
+                    mass = self.inverse_mass[ids]
+                    batches.append((rows, ids, weights, mass, np.sum(weights * weights * mass, axis=1), active))
+                group["batches"] = batches
+        if settings.device != previous.device:
+            # Build the new GPU backend on the solve worker, not the Qt thread.
+            self._backend_device = None
+            self._accelerator = None
+            self.backend, self.backend_detail, self.last_gpu_ms = "CPU XPBD", "", 0.0
+
+    def _refresh_constraint_mass(self):
+        for group in self.groups:
+            group["lambda"].fill(0)
+            group["batches"] = [(rows, ids, weights, self.inverse_mass[ids],
+                                np.sum(weights * weights * self.inverse_mass[ids], axis=1), active)
+                               for rows, ids, weights, _, _, active in group["batches"]]
+
+    def update_pins(self, pins, positions=None):
+        """Pin the current pose without changing fabric rest lengths or resetting the solve."""
+        pins = np.asarray(sorted(set(int(i) for i in pins)), dtype=np.int32)
+        if np.any(pins < 0) or np.any(pins >= len(self.x)):
+            raise ValueError("Invalid cloth pin vertices.")
+        anchors = self.pin_positions.copy()
+        added = np.setdiff1d(pins, self.pins)
+        anchors[added] = self.x[added]
+        for index in pins:
+            value = (positions or {}).get(str(index), (positions or {}).get(int(index)))
+            if value is not None:
+                value = np.asarray(value, dtype=float)
+                if value.shape != (3,) or not np.isfinite(value).all():
+                    raise ValueError("Cloth pin positions must be finite 3D points.")
+                anchors[index] = value
+        if np.array_equal(pins, self.pins) and np.array_equal(anchors[pins], self.pin_positions[pins]):
+            return False
+        self.pins = pins
+        self.pin_positions[:] = anchors
+        self.inverse_mass[:] = 1 / np.maximum(self._particle_areas * self.settings.density, 1e-8)
+        self.inverse_mass[pins] = 0
+        self.x[pins] = anchors[pins]
+        self.velocity[pins] = 0
+        self._mass_revision += 1
+        self._refresh_constraint_mass()
+        return True
+
+    def _add_stretch_elastic_groups(self):
+        asset = self.asset
+        elastic = {tuple(sorted(edge)) for edge in asset.elastic_indices}
+        ordinary = np.asarray([edge for edge in asset.edges if tuple(edge) not in elastic], dtype=np.int32).reshape(-1, 2)
+        self._add_group(ordinary, np.tile([1.0, -1.0], (len(ordinary), 1)), self.settings.stretch, "stretch")
+        for rows in asset.elastic_bands:
+            indices = asset.elastic_indices[rows]
+            vertices = np.unique(indices)
+            roots = vertices.copy()
+            for weld in asset.elastic_welds:
+                mask = np.isin(vertices, weld)
+                if np.any(mask):
+                    roots[mask] = weld[0]
+            _, aliases = np.unique(roots, return_inverse=True)
+            order = np.argsort(aliases, kind="stable")
+            lengths = np.linalg.norm(self.rest[indices[:, 0]] - self.rest[indices[:, 1]], axis=1)
+            segment_rest = lengths * asset.elastic_ratios[rows]
+            self.groups.append({"kind": "elastic", "indices": indices, "vertices": vertices,
+                "aliases": aliases, "segment_aliases": aliases[np.searchsorted(vertices, indices)],
+                "members": vertices[order], "member_offsets": np.r_[0, np.cumsum(np.bincount(aliases))],
+                "rest": np.array([segment_rest.sum()]), "segment_rest": segment_rest,
+                "segment_stiffness": asset.elastic_strengths[rows],
+                "stiffness": float(1 / np.sum(1 / asset.elastic_strengths[rows])),
+                "lambda": np.zeros(len(indices)), "batches": [],
+                "colors": constraint_colors(indices, np.tile([1.0, -1.0], (len(indices), 1)))})
+
+    def update_elastic(self, asset):
+        """Apply edge material edits to an existing settled garment with identical topology."""
+        if asset.signature == self.asset.signature:
+            return False
+        if ((asset.topology_signature or asset.signature) !=
+                (self.asset.topology_signature or self.asset.signature)):
+            raise ValueError("Elastic updates require unchanged cloth topology.")
+        self.asset = asset
+        others = [group for group in self.groups if group["kind"] not in {"stretch", "elastic"}]
+        self.groups = []
+        self._add_stretch_elastic_groups()
+        self.groups.extend(others)
+        # New constraint buffers are built on the solve worker on its next step.
+        self._backend_device = None
+        self._accelerator = None
+        return True
+
     def _add_group(self, indices, weights, stiffness, kind):
-        if not len(indices) or stiffness <= 0:
+        if not len(indices):
             return
         # Duplicate indices at sample endpoints must be merged before computing
         # effective mass or allocating colored kernels.
@@ -112,6 +229,10 @@ class ClothSolver:
 
     def _project(self, h):
         for group in self.groups:
+            if group["stiffness"] <= 0:
+                continue
+            if group["kind"] == "elastic":
+                continue
             alpha = 1 / (group["stiffness"] * h * h)
             target = group["rest"]
             if group["kind"] == "seam":
@@ -127,6 +248,43 @@ class ClothSolver:
                 correction = mass[:, :, None] * w[:, :, None] * dl[:, None, None] * direction[:, None]
                 # Coloring guarantees unique active indices in this batch.
                 self.x[ids[active]] += correction[active]
+        for group in self.groups:
+            if group["kind"] == "elastic":
+                self._project_elastic_band(group, h)
+
+    def _project_elastic_band(self, group, h):
+        """Local elastic strain plus a coarse solve for tension around sewn bands."""
+        indices, aliases = group["indices"], group["segment_aliases"]
+        compliance = 1 / (group["segment_stiffness"] * h * h)
+        for rows in group["colors"]:
+            a, b = indices[rows].T
+            delta = self.x[a] - self.x[b]
+            lengths = np.linalg.norm(delta, axis=1)
+            direction = delta / np.maximum(lengths[:, None], 1e-12)
+            wa, wb = self.inverse_mass[a], self.inverse_mass[b]
+            dl = (-(lengths - group["segment_rest"][rows]) - compliance[rows] * group["lambda"][rows]) / (
+                wa + wb + compliance[rows])
+            group["lambda"][rows] += dl
+            self.x[a] += direction * (wa * dl)[:, None]
+            self.x[b] -= direction * (wb * dl)[:, None]
+        delta = self.x[indices[:, 0]] - self.x[indices[:, 1]]
+        lengths = np.linalg.norm(delta, axis=1)
+        direction = delta / np.maximum(lengths[:, None], 1e-12)
+        count = len(group["member_offsets"]) - 1
+        gradient = np.zeros((count, 3))
+        np.add.at(gradient, aliases[:, 0], direction)
+        np.add.at(gradient, aliases[:, 1], -direction)
+        inverse = self.inverse_mass[group["vertices"]]
+        mass = np.divide(1.0, inverse, out=np.full_like(inverse, np.inf), where=inverse > 0)
+        effective_inverse = 1 / np.bincount(group["aliases"], weights=mass, minlength=count)
+        alpha = 1 / (group["stiffness"] * h * h)
+        denominator = np.sum(effective_inverse[:, None] * gradient * gradient) + alpha
+        # The coarse correction updates the SAME multipliers as the short
+        # springs. This propagates tension without adding a second stiffness.
+        dl = (-(lengths.sum() - group["rest"][0]) - np.dot(compliance, group["lambda"])) / denominator
+        group["lambda"] += dl
+        local = group["aliases"]
+        self.x[group["vertices"]] += effective_inverse[local, None] * gradient[local] * dl
 
     def _project_grab(self, h):
         if self.grab is None:
@@ -220,6 +378,8 @@ class ClothSolver:
         dt = 1 / self.settings.fps if dt is None else float(dt)
         if not np.isfinite(dt) or dt <= 0 or dt > 1:
             raise ValueError("Cloth timestep must be between zero and one second.")
+        if self._backend_device != self.settings.device:
+            self._configure_backend()
         if self._accelerator is not None:
             try:
                 self._accelerator.step(dt, colliders)
@@ -235,10 +395,10 @@ class ClothSolver:
         h = dt / self.settings.substeps
         for substep in range(self.settings.substeps):
             old = self.x.copy()
-            self.velocity[:, 1] += self.settings.gravity_y * h
+            self.velocity[:, 1] += self.settings.effective_gravity_y * h
             self.velocity *= np.exp(-self.settings.damping * h)
             self.x += self.velocity * h
-            self.x[self.pins] = self.rest[self.pins]
+            self.x[self.pins] = self.pin_positions[self.pins]
             for group in self.groups:
                 group["lambda"].fill(0)
             sampled = [c.interpolate((substep + 1) / self.settings.substeps,
@@ -259,9 +419,11 @@ class ClothSolver:
                             self._self_contact(old)
                         if self.settings.ground:
                             active = (self.x[:, 1] < self.settings.ground_height + self.settings.thickness) & (self.inverse_mass > 0)
+                            depth = self.settings.ground_height + self.settings.thickness - self.x[active, 1]
                             self.x[active, 1] = self.settings.ground_height + self.settings.thickness
-                            self.x[active, 0::2] -= (self.x[active, 0::2] - old[active, 0::2]) * self.settings.friction
-                self.x[self.pins] = self.rest[self.pins]
+                            self.x[active] -= friction_correction(self.x[active] - old[active],
+                                np.array([[0.0, 1.0, 0.0]]), depth, self.settings.friction)
+                self.x[self.pins] = self.pin_positions[self.pins]
             if self.settings.self_collision or self.settings.ground:
                 # Finish the substep with body clearance after all constraints.
                 # One guard pass avoids doubling the configured contact budget

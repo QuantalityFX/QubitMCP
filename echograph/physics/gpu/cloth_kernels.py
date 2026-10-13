@@ -49,15 +49,22 @@ def grab(x: wp.array(dtype=wp.vec3), mass: wp.array(dtype=float),
         x[ids[j]] += mass[ids[j]] * weights[j] * correction
 
 
+@wp.func
+def contact_friction(relative: wp.vec3, normal: wp.vec3, depth: float, friction: float):
+    tangent = relative - normal * wp.dot(relative, normal)
+    limit = friction * wp.max(depth, 0.0)
+    return tangent * wp.min(1.0, limit / wp.max(wp.length(tangent), 1.0e-30))
+
+
 @wp.kernel
 def ground_contact(x: wp.array(dtype=wp.vec3), old: wp.array(dtype=wp.vec3),
                    mass: wp.array(dtype=float), height: float, friction: float):
     i = wp.tid()
     p = x[i]
     if mass[i] > 0.0 and p[1] < height:
+        depth = height - p[1]
         p[1] = height
-        p[0] -= (p[0] - old[i][0]) * friction
-        p[2] -= (p[2] - old[i][2]) * friction
+        p -= contact_friction(p - old[i], wp.vec3(0.0, 1.0, 0.0), depth, friction)
         x[i] = p
 
 
@@ -117,7 +124,7 @@ def closest_triangle(p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, inside_tole
 @wp.func
 def inward_sweep(before: wp.vec3, point: wp.vec3, previous_a: wp.vec3, previous_b: wp.vec3,
                  previous_c: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3,
-                 old_signed: float, signed: float):
+                 old_signed: float, signed: float, side: float):
     result = bool(False)
     if old_signed >= 0.0 and signed < 0.0:
         fraction = old_signed / wp.max(old_signed - signed, 1.0e-30)
@@ -129,7 +136,7 @@ def inward_sweep(before: wp.vec3, point: wp.vec3, previous_a: wp.vec3, previous_
                 mid = (lo + hi) * 0.5
                 ma, mb, mc = wp.lerp(previous_a, a, mid), wp.lerp(previous_b, b, mid), wp.lerp(previous_c, c, mid)
                 mp = wp.lerp(before, point, mid)
-                if wp.dot(mp - ma, wp.cross(mb - ma, mc - ma)) > 0.0:
+                if wp.dot(mp - ma, wp.cross(mb - ma, mc - ma)) * side > 0.0:
                     lo = mid
                 else:
                     hi = mid
@@ -141,11 +148,23 @@ def inward_sweep(before: wp.vec3, point: wp.vec3, previous_a: wp.vec3, previous_
     return result
 
 
+@wp.func
+def surface_motion(point: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3,
+                   previous_a: wp.vec3, previous_b: wp.vec3, previous_c: wp.vec3):
+    ab, ac, ap = previous_b - previous_a, previous_c - previous_a, point - previous_a
+    aa, bb, cc = wp.dot(ab, ab), wp.dot(ab, ac), wp.dot(ac, ac)
+    denominator = wp.max(aa * cc - bb * bb, 1.0e-30)
+    u = (cc * wp.dot(ap, ab) - bb * wp.dot(ap, ac)) / denominator
+    v = (aa * wp.dot(ap, ac) - bb * wp.dot(ap, ab)) / denominator
+    da, db, dc = a - previous_a, b - previous_b, c - previous_c
+    return da + u * (db - da) + v * (dc - da)
+
+
 @wp.kernel
 def mesh_contact(x: wp.array(dtype=wp.vec3), old: wp.array(dtype=wp.vec3),
                  mass: wp.array(dtype=float), surface: wp.array(dtype=wp.vec3),
                  previous: wp.array(dtype=wp.vec3), faces: wp.array2d(dtype=int),
-                 bvh: wp.uint64, thickness: float, margin: float, friction: float):
+                 bvh: wp.uint64, thickness: float, margin: float, friction: float, two_sided: int):
     i = wp.tid()
     if mass[i] > 0.0:
         p, before = x[i], old[i]
@@ -165,8 +184,14 @@ def mesh_contact(x: wp.array(dtype=wp.vec3), old: wp.array(dtype=wp.vec3),
             old_cross = wp.cross(previous[b] - previous[a], previous[c] - previous[a])
             old_normal = old_cross / wp.max(wp.length(old_cross), 1.0e-30)
             old_signed = wp.dot(before - previous[a], old_normal)
+            side = float(1.0)
+            if two_sided == 1 and old_signed < 0.0:
+                side = -1.0
+                normal = -normal
+                old_signed = -old_signed
+                signed = -signed
             swept = inward_sweep(before, p, previous[a], previous[b], previous[c],
-                                 surface[a], surface[b], surface[c], old_signed, signed)
+                                 surface[a], surface[b], surface[c], old_signed, signed, side)
             penetrated = inside and signed < 0.0 and signed > -margin
             if swept or distance < thickness or penetrated:
                 direction = delta / wp.max(distance, 1.0e-12)
@@ -178,11 +203,13 @@ def mesh_contact(x: wp.array(dtype=wp.vec3), old: wp.array(dtype=wp.vec3),
                     deepest = depth
                     chosen = candidate
                     chosen_direction = direction
-                    motion = (surface[a] + surface[b] + surface[c] - previous[a] - previous[b] - previous[c]) / 3.0
+                    if friction > 0.0:
+                        motion = surface_motion(before, surface[a], surface[b], surface[c],
+                                                previous[a], previous[b], previous[c])
         if deepest >= 0.0:
             relative = chosen - before - motion
-            tangent = relative - chosen_direction * wp.dot(relative, chosen_direction)
-            x[i] = chosen - friction * tangent
+            depth = wp.dot(chosen - p, chosen_direction)
+            x[i] = chosen - contact_friction(relative, chosen_direction, depth, friction)
 
 
 @wp.func

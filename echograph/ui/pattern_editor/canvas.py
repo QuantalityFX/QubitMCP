@@ -6,11 +6,26 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from echograph.patterns.commands import move_point, translate_edges
+from echograph.patterns.commands import move_point, translate_edges, translate_points
 from echograph.patterns.document import PatternError
 from echograph.patterns.geometry import validate_piece
 
 SEW_COLORS = ("#f4a261", "#85d6ff", "#d5a6ff", "#a8e6a3", "#ff8eab", "#ffe082")
+ELASTIC_COLOR = "#70e0b1"
+
+
+def elastic_icon():
+    pixmap = QtGui.QPixmap(24, 24)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    painter.setPen(QtGui.QPen(QtGui.QColor(ELASTIC_COLOR), 2))
+    path = QtGui.QPainterPath(QtCore.QPointF(2, 12))
+    for x, y in ((5, 12), (7, 6), (10, 18), (13, 6), (16, 18), (19, 12), (22, 12)):
+        path.lineTo(x, y)
+    painter.drawPath(path)
+    painter.end()
+    return QtGui.QIcon(pixmap)
 
 
 def sew_icon():
@@ -144,6 +159,7 @@ class PatternCanvas(QtWidgets.QGraphicsView):
     layoutEdited = QtCore.Signal(str, float, float)
     handleEdited = QtCore.Signal(str, str, int, float, float)
     edgesMoved = QtCore.Signal(object, float, float)
+    pointsMoved = QtCore.Signal(object, float, float)
     outlineCreated = QtCore.Signal(object, bool)
     drawingChanged = QtCore.Signal(bool)
     pointClicked = QtCore.Signal(str, str, bool)
@@ -162,6 +178,8 @@ class PatternCanvas(QtWidgets.QGraphicsView):
     sewRequested = QtCore.Signal(str, str, str, str)
     sewModeChanged = QtCore.Signal(bool)
     sewStatusChanged = QtCore.Signal(str)
+    elasticRequested = QtCore.Signal(str, str)
+    elasticModeChanged = QtCore.Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -196,7 +214,9 @@ class PatternCanvas(QtWidgets.QGraphicsView):
         self._selection_origin = None
         self._selection_item = None
         self._edge_drag = None
+        self._point_drag = None
         self.sewing = False
+        self.elastic = False
         self._sew_source = None
         self.pointClicked.connect(self._on_point_clicked)
         self.setMinimumSize(400, 350)
@@ -279,6 +299,7 @@ class PatternCanvas(QtWidgets.QGraphicsView):
         if self._document is None:
             return
         self.set_sew_mode(False)
+        self.set_elastic_mode(False)
         self.cancel_outline()
         self._merge_source = (piece_id, point_id)
         self.show_document(self._document, self._active_piece_id,
@@ -306,6 +327,7 @@ class PatternCanvas(QtWidgets.QGraphicsView):
 
     def start_outline(self):
         self.set_sew_mode(False)
+        self.set_elastic_mode(False)
         if self._merge_source:
             self.cancel_point_merge()
         self.drawing = True
@@ -360,6 +382,14 @@ class PatternCanvas(QtWidgets.QGraphicsView):
             self._sew_edge_clicked(self._edge_at(event.position().toPoint()))
             event.accept()
             return
+        if self.elastic and event.button() == QtCore.Qt.MouseButton.LeftButton:
+            edge = self._edge_at(event.position().toPoint())
+            if edge:
+                self.elasticRequested.emit(*edge)
+            else:
+                self.sewStatusChanged.emit("Elastic: click an edge · Esc: exit")
+            event.accept()
+            return
         if self._merge_source and event.button() == QtCore.Qt.MouseButton.LeftButton:
             source_piece, source_point = self._merge_source
             pixel = event.position().toPoint()
@@ -392,6 +422,19 @@ class PatternCanvas(QtWidgets.QGraphicsView):
             event.accept()
             return
         pressed_item = self.itemAt(event.position().toPoint())
+        if (event.button() == QtCore.Qt.MouseButton.LeftButton
+                and not event.modifiers() & (QtCore.Qt.KeyboardModifier.ShiftModifier | QtCore.Qt.KeyboardModifier.ControlModifier)
+                and isinstance(pressed_item, HandleItem) and pressed_item.control_index < 0
+                and pressed_item.entity_id in self._selected_points.get(pressed_item.owner.piece.id, ())
+                and sum(len(ids) for ids in self._selected_points.values()) > 1):
+            self._on_point_clicked(pressed_item.owner.piece.id, pressed_item.entity_id, True, toggle=False)
+            self._point_drag = {
+                "document": deepcopy(self._document), "selection": deepcopy(self._selected_points),
+                "pixel": event.position(), "origin": self.mapToScene(event.position().toPoint()),
+                "delta": QtCore.QPointF(), "moved": False,
+            }
+            event.accept()
+            return
         if (event.button() == QtCore.Qt.MouseButton.LeftButton and
                 (event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier or pressed_item is None)):
             self._selection_origin = self.mapToScene(event.position().toPoint())
@@ -424,6 +467,10 @@ class PatternCanvas(QtWidgets.QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._point_drag is not None:
+            self._preview_selection_drag(event.position(), self._point_drag, translate_points)
+            event.accept()
+            return
         if self._edge_drag is not None:
             self._preview_edge_drag(event.position())
             event.accept()
@@ -460,6 +507,14 @@ class PatternCanvas(QtWidgets.QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._point_drag is not None and event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self._preview_selection_drag(event.position(), self._point_drag, translate_points)
+            drag, self._point_drag = self._point_drag, None
+            self.unsetCursor()
+            if drag["moved"] and not drag["delta"].isNull():
+                self.pointsMoved.emit(drag["selection"], drag["delta"].x(), drag["delta"].y())
+            event.accept()
+            return
         if self._edge_drag is not None and event.button() == QtCore.Qt.MouseButton.LeftButton:
             self._preview_edge_drag(event.position())
             drag, self._edge_drag = self._edge_drag, None
@@ -529,18 +584,23 @@ class PatternCanvas(QtWidgets.QGraphicsView):
             return
         if event.button() == QtCore.Qt.MouseButton.MiddleButton:
             self._pan_origin = None
-            self.setCursor(QtCore.Qt.CursorShape.CrossCursor if self.drawing or self.sewing else QtCore.Qt.CursorShape.ArrowCursor)
+            self.setCursor(QtCore.Qt.CursorShape.CrossCursor if self.drawing or self.sewing or self.elastic else QtCore.Qt.CursorShape.ArrowCursor)
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
+        if self.elastic and event.key() == QtCore.Qt.Key.Key_Escape:
+            self.set_elastic_mode(False)
+            event.accept()
+            return
         if self.sewing and event.key() == QtCore.Qt.Key.Key_Escape:
             self.set_sew_mode(False)
             event.accept()
             return
-        if self._edge_drag is not None and event.key() == QtCore.Qt.Key.Key_Escape:
-            drag, self._edge_drag = self._edge_drag, None
+        if (self._edge_drag is not None or self._point_drag is not None) and event.key() == QtCore.Qt.Key.Key_Escape:
+            drag = self._edge_drag if self._edge_drag is not None else self._point_drag
+            self._edge_drag = self._point_drag = None
             self.unsetCursor()
             self.show_document(drag["document"], self._active_piece_id,
                                self._selected_points.get(self._active_piece_id, ()), self.selected_edge,
@@ -630,14 +690,16 @@ class PatternCanvas(QtWidgets.QGraphicsView):
                     self.scene().removeItem(child)
 
     def _preview_edge_drag(self, position):
+        self._preview_selection_drag(position, self._edge_drag, translate_edges)
+
+    def _preview_selection_drag(self, position, drag, operation):
         from echograph.patterns.relationships import reconcile_relationships
-        drag = self._edge_drag
         if not drag["moved"] and (position - drag["pixel"]).manhattanLength() < QtWidgets.QApplication.startDragDistance():
             return
         drag["moved"] = True
         drag["delta"] = self.snap(self.mapToScene(position.toPoint()) - drag["origin"])
         preview = deepcopy(drag["document"])
-        translate_edges(preview, drag["selection"], drag["delta"].x(), drag["delta"].y())
+        operation(preview, drag["selection"], drag["delta"].x(), drag["delta"].y())
         try:
             reconcile_relationships(drag["document"], preview)
         except PatternError:
@@ -667,7 +729,7 @@ class PatternCanvas(QtWidgets.QGraphicsView):
         return None
 
     def mouseDoubleClickEvent(self, event):
-        if self.sewing:
+        if self.sewing or self.elastic:
             event.accept()
             return
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
@@ -713,6 +775,7 @@ class PatternCanvas(QtWidgets.QGraphicsView):
     def set_sew_mode(self, enabled):
         enabled = bool(enabled)
         if enabled:
+            self.set_elastic_mode(False)
             self.cancel_outline()
             if self._merge_source:
                 self.cancel_point_merge()
@@ -723,6 +786,28 @@ class PatternCanvas(QtWidgets.QGraphicsView):
         self.sewModeChanged.emit(enabled)
         self.sewStatusChanged.emit("Sew: click the first edge, then its partner. Esc exits." if enabled else "")
         self.viewport().update()
+
+    def set_elastic_mode(self, enabled):
+        enabled = bool(enabled)
+        if enabled:
+            self.set_sew_mode(False)
+            self.cancel_outline()
+            if self._merge_source:
+                self.cancel_point_merge()
+            self.setFocus()
+        self.elastic = enabled
+        self.setCursor(QtCore.Qt.CursorShape.CrossCursor if enabled else QtCore.Qt.CursorShape.ArrowCursor)
+        self.elasticModeChanged.emit(enabled)
+        self.sewStatusChanged.emit("Elastic: click an edge · Adjust strength and rest length · Esc: exit" if enabled else "")
+        self.viewport().update()
+
+    def elastic_visuals(self):
+        if self._document is None:
+            return []
+        rows = {(row["piece"], row["edge"]): row for row in self._document.metadata.get("elastic_edges", [])}
+        return [(rows[item.piece.id, edge.id], item.sceneTransform().map(edge_path(item.piece, edge)))
+                for item in self._piece_items for edge in item.piece.segments
+                if (item.piece.id, edge.id) in rows]
 
     def _sew_edge_clicked(self, edge):
         if not edge or not self._document:
@@ -809,4 +894,24 @@ class PatternCanvas(QtWidgets.QGraphicsView):
                 if edge:
                     path = transform.map(item.sceneTransform().map(edge_path(item.piece, edge)))
                     mark_edge(path, QtGui.QColor("#ffe082"), "?")
+        for row, path in self.elastic_visuals():
+            path = transform.map(path)
+            color = QtGui.QColor(ELASTIC_COLOR)
+            painter.setPen(QtGui.QPen(color, 2))
+            spring = QtGui.QPainterPath()
+            count = max(4, min(200, int(path.length() / 7)))
+            for index in range(count + 1):
+                fraction = index / count
+                point = at(path, fraction)
+                tangent = at(path, min(1, fraction + .005)) - at(path, max(0, fraction - .005))
+                normal = QtCore.QPointF(-tangent.y(), tangent.x()) / max(math.hypot(tangent.x(), tangent.y()), 1e-9)
+                if 0 < index < count:
+                    point += normal * (4 if index % 2 else -4)
+                if index == 0:
+                    spring.moveTo(point)
+                else:
+                    spring.lineTo(point)
+            painter.drawPath(spring)
+            painter.setPen(color)
+            painter.drawText(at(path, .5) + QtCore.QPointF(7, 15), "E")
         painter.restore()

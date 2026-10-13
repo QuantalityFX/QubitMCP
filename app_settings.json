@@ -15,7 +15,7 @@
   "two_sided_shadows": true,
   "ambient_light": true,
   "unlit_view": false,
-  "work_light_view": true,
+  "work_light_view": false,
   "ambient_light_strength": 0.1,
   "scene_skeleton_joint_names": false,
   "create_node_dialog_size": {
@@ -99,7 +99,7 @@
       },
       "left_shoulder": {
         "bend_min": 0.0,
-        "bend_max": 80.0,
+        "bend_max": 40.0,
         "twist_min": -100.0,
         "twist_max": 100.0
       },

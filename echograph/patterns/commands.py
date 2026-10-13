@@ -103,12 +103,19 @@ def translate_edges(document: PatternDocument, selection, dx: float, dy: float) 
         piece = document.piece(piece_id)
         edge = piece.segment(edge_id)
         grouped.setdefault(piece_id, set()).update((edge.start, edge.end))
-    for piece_id, vertices in grouped.items():
+    translate_points(document, grouped, dx, dy)
+
+
+def translate_points(document: PatternDocument, selection, dx: float, dy: float) -> None:
+    """Move selected points across panels by the same sheet-space offset."""
+    if not all(math.isfinite(value) for value in (dx, dy)):
+        raise PatternError("Point movement must use finite coordinates.")
+    for piece_id, vertices in selection.items():
         piece = document.piece(piece_id)
         angle = math.radians(piece.layout[2])
         c, s = math.cos(angle), math.sin(angle)
         local_dx, local_dy = dx * c + dy * s, -dx * s + dy * c
-        for point_id in vertices:
+        for point_id in set(vertices):
             point = piece.point(point_id)
             move_point(piece, point_id, point.x + local_dx, point.y + local_dy)
 

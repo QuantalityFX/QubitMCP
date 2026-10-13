@@ -361,12 +361,18 @@ def reconcile_relationships(previous, document):
     from .sewing import reconcile_sewing
 
     reconcile_sewing(previous, document)
+    from .elastic import reconcile_elastic
+
+    reconcile_elastic(previous, document)
 
 
 def validate_relationships(document):
     from .sewing import validate_sewing
 
     validate_sewing(document)
+    from .elastic import validate_elastic
+
+    validate_elastic(document)
     pieces = {p.id: p for p in document.pieces}
     active = set()
     seen = set()

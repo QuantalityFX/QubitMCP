@@ -11,11 +11,12 @@ class ClothSettings:
     seam_stiffness: float = 20000.0
     seam_seconds: float = 0.5
     seam_gap: float = 0.001
+    gravity_enabled: bool = True
     gravity_y: float = -9.81
     damping: float = 0.5
     density: float = 0.2
-    thickness: float = 0.002
-    friction: float = 0.3
+    thickness: float = 0.003
+    friction: float = 0.6
     substeps: int = 4
     iterations: int = 8
     collision_quality: int = 2
@@ -28,10 +29,15 @@ class ClothSettings:
     end_frame: int = 120
     device: str = "auto"
     interactive: bool = False
+    follow_timeline: bool = False
     scene_units_per_meter: float = 1.0
 
     def to_dict(self):
         return asdict(self)
+
+    @property
+    def effective_gravity_y(self):
+        return self.gravity_y if self.gravity_enabled else 0.0
 
     @classmethod
     def from_dict(cls, values):

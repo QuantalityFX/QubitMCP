@@ -237,6 +237,8 @@ def _sample_vec3_channel(
 
     right = keys[lo]
     left = keys[lo - 1]
+    if t >= float(right.time) - _TIME_EPSILON:
+        return tuple(right.value)
     if left.interpolation == "step":
         return tuple(left.value)
     dt = max(_TIME_EPSILON, float(right.time) - float(left.time))
@@ -274,6 +276,8 @@ def _sample_quat_channel(
 
     right = keys[lo]
     left = keys[lo - 1]
+    if t >= float(right.time) - _TIME_EPSILON:
+        return _quat_normalize(tuple(right.value))
     if left.interpolation == "step":
         return _quat_normalize(tuple(left.value))
     dt = max(_TIME_EPSILON, float(right.time) - float(left.time))
