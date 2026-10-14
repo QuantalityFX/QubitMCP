@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Draft reusable garment patterns, pair sewing edges, arrange panels, simulate cloth, and save or bake the result in the Qubit Field workbench." />
+    <title>Patterns and Cloth | Qubit Field Workbench</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to guide</a>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <img class="brand-logo" src="../icons/QubitMCP_Icon_s.png" alt="" />
+          <div class="brand-title">Qubit Field</div>
+          <div class="brand-sub">Patterns and cloth</div>
+          <a class="back-link" href="index.html">&larr; Workbench overview</a>
+          <a class="back-link" href="nodes.html">Search all nodes</a>
+        </div>
+        <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="guide-nav" hidden>Browse this guide</button>
+        <nav class="nav" id="guide-nav" aria-label="Guide sections">
+          <a href="#workflow">Workflow</a><a href="#draft">Draft a pattern</a>
+          <a href="#sew">Sewing and elastic edges</a><a href="#placement">Place the panels</a>
+          <a href="#simulate">Simulate cloth</a><a href="#animation">Add character motion</a>
+          <a href="#cache">Save and bake</a><a href="#troubleshooting">Troubleshooting</a>
+          <a href="motion.html">Motion guide &rarr;</a>
+        </nav>
+      </aside>
+      <main class="content guide-content" id="main-content" tabindex="-1">
+        <header class="guide-header" id="workflow">
+          <p class="eyebrow">Create · Simulate · Reuse</p>
+          <h1>From a 2D pattern to a moving garment</h1>
+          <p class="lead">Pattern Design and Cloth Solver connect garment drafting to the scene viewport. Keep the pattern as a reusable document, arrange its panels around a character, then preview or bake the simulation.</p>
+          <p class="workflow-path">Pattern Design → Cloth Solver → Scene<br />Character mesh or animation → Cloth Solver collider</p>
+          <p><a href="nodes.html?node=pattern-design">Pattern Design reference</a> · <a href="nodes.html?node=cloth-solver">Cloth Solver reference</a> · Updated 13 October 2026</p>
+        </header>
+        <figure class="screenshot-card">
+          <a href="UISnapshot/RealtimeClothSolver.png"><img src="UISnapshot/RealtimeClothSolver.png" width="2550" height="1350" alt="Clothed character in the scene viewport beside pattern, cloth, animation, and rendering nodes" decoding="async" /></a>
+          <figcaption><strong>A garment inside the workbench</strong><span>Use the same graph for panels, character motion, cloth, lighting, and render review. Select any screenshot to view it at full size.</span></figcaption>
+        </figure>
+
+        <section class="section" id="draft">
+          <h2>1. Draft and save the pattern</h2>
+          <ol class="steps">
+            <li>Add <strong>Pattern Design</strong> (<code>pattern_design</code>) from the node picker. Choose <strong>New Pattern</strong> to begin in the embedded canvas, or <strong>Open / Locate</strong> to load an existing file.</li>
+            <li>Use <strong>Rectangle</strong>, <strong>Trapezoid</strong>, or <strong>Draw Outline</strong>. Work in millimeters. Close the boundary when the panel is ready; open outlines can remain as drafts.</li>
+            <li>Choose <strong>Open Full Editor</strong> for a larger workspace. Edit point coordinates, cubic curve handles, panel dimensions, and sheet arrangement. Duplicate, mirror, combine, and fuse operations support undo/redo.</li>
+            <li>Use <strong>Mirror</strong> for a linked partner: shape edits propagate across the pair while names and sheet placement remain independent. The symmetry control beside a panel toggles the link.</li>
+            <li>Choose <strong>Save .pattern.json</strong> in the node, or <strong>Save Pattern</strong> / <strong>Ctrl+S</strong> in the full editor. Only saved, closed, valid panels are published to downstream scene and cloth nodes.</li>
+          </ol>
+          <p class="callout">The pattern is a separate <code>.pattern.json</code> file. Saving the workflow stores its reference; it does not save unsaved pattern edits or copy the pattern file. Share the pattern with the graph and use Open / Locate if its path changes.</p>
+          <figure class="screenshot-card">
+            <a href="UISnapshot/PatternDesign_FullEditor.png"><img src="UISnapshot/PatternDesign_FullEditor.png" width="1445" height="921" alt="Pattern editor with front and back shirt panels, curved neckline, dimension controls, and paired seam markings" loading="lazy" decoding="async" /></a>
+            <figcaption><strong>Precise drafting with visible seam pairs</strong><span>Panel dimensions, editable outlines, and sewing annotations stay with the pattern document.</span></figcaption>
+          </figure>
+        </section>
+
+        <section class="section" id="sew">
+          <h2>2. Define sewing and elastic edges</h2>
+          <p>Use <strong>Sew</strong> in the pattern editor to pair panel boundary edges. Inspect the colored pairing marks before saving. The solver uses these pairs to pull the panels together over the configured sewing duration.</p>
+          <p>Use the <strong>Elastic</strong> tool to mark boundary edges that should contract. These annotations are stored in the pattern alongside sewing pairs. Save after changing either so downstream nodes use the updated document.</p>
+          <p>Keep the distinction between the flat pattern and 3D placement: sheet X/Y and rotation organize the drawing; placing the panel in Scene determines where cloth simulation starts.</p>
+        </section>
+
+        <section class="section" id="placement">
+          <h2>3. Arrange the panels in the scene</h2>
+          <ol class="steps">
+            <li>Connect Pattern Design's <code>pattern</code> output to Cloth Solver's <code>pattern</code> input, then connect Cloth Solver to <strong>Scene</strong>.</li>
+            <li>Connect a static or animated character mesh to the solver's <code>collider</code> input. Use the collider-owner controls when selecting scene objects for collision.</li>
+            <li>Arrange individual pattern pieces in 3D around the character before starting the solve. Pattern Design can also connect directly to Scene for placement without running simulation.</li>
+            <li>Check scale and spacing. Pattern dimensions and mesh spacing are in millimeters, while solver distances are in meters; <strong>Scene units per meter</strong> controls conversion to the scene.</li>
+          </ol>
+          <p>Begin with panels separated from the body and each other. Keep the intended front/back orientation and inspect seam pairings before increasing mesh density.</p>
+        </section>
+
+        <section class="section" id="simulate">
+          <h2>4. Preview and tune the cloth</h2>
+          <p>Choose <strong>auto</strong>, <strong>cpu</strong>, or <strong>cuda</strong> as the backend. Auto can use the available accelerated backend; explicit CUDA needs a compatible NVIDIA GPU and runtime. CPU remains available for smaller scenes and troubleshooting.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Control</th><th scope="col">Purpose</th></tr></thead>
+              <tbody>
+                <tr><td>Play, Step, Reset</td><td>Run a preview, advance one step, or return to the arranged starting state.</td></tr>
+                <tr><td>Stretch, bend, damping, density</td><td>Adjust how the fabric resists deformation and settles.</td></tr>
+                <tr><td>Sewing stiffness, duration, gap</td><td>Control how paired edges come together.</td></tr>
+                <tr><td>Mesh spacing, substeps, iterations</td><td>Balance detail and solver work. Denser meshes and more iterations cost more time.</td></tr>
+                <tr><td>Thickness, friction, collision quality</td><td>Tune contact against connected colliders.</td></tr>
+                <tr><td>Self collision, ground, gravity</td><td>Control contact within the garment and interaction with the ground and gravity.</td></tr>
+                <tr><td>Pin selected points / Unpin selected</td><td>Select cloth vertices in the viewport's point mode, then constrain or release them. Pin edits retain the displayed pose and recalculate subsequent frames.</td></tr>
+                <tr><td>Grab cloth with mouse</td><td>Enable interactive manipulation while previewing the cloth.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>The solver is an iterative cloth model, so the result depends on mesh resolution, scale, starting placement, and motion. Review a short preview before baking a longer sequence.</p>
+        </section>
+
+        <section class="section" id="animation">
+          <h2>5. Introduce character motion gradually</h2>
+          <p>Use <a href="motion.html#animation-blend">Animation Blend</a> to transition from the character's bind pose into motion. Connect the character to <code>bind_pose</code>, the compatible motion to <code>animation</code>, and use the resulting animation in Scene and the cloth collider path.</p>
+          <p>Set hold frames and blend frames to provide time for the garment to settle before the character begins moving. Keep FPS consistent with the scene and cloth settings.</p>
+          <p>Enable <strong>Simulate with timeline</strong> to drive cloth from viewport playback and scrubbing. Calculated frames are retained in a temporary memory cache. Changing simulation settings such as substeps, iterations, collision quality, friction, or gravity clears that history and recalculates from the starting pose. A changed collider or its animation also requires recalculation. A loaded state can provide a settled starting pose.</p>
+        </section>
+
+        <section class="section" id="cache">
+          <h2>6. Save a state or bake a sequence</h2>
+          <div class="grid two">
+            <article class="card"><h3>Continue from a settled pose</h3><p><strong>Save state</strong> stores the cloth pose, velocity, and sewing progress. Use <strong>Load cache</strong> to restore it and continue at the current timeline frame.</p><p>Use this when you want to reuse a draped garment before trying another animation.</p></article>
+            <article class="card"><h3>Reuse a simulated sequence</h3><p>Set Start, End, and FPS, then choose <strong>Bake</strong> to calculate the range from the arranged pattern. <strong>Stop &amp; save</strong> keeps the frames completed so far.</p><p><strong>Load cache</strong> loads a saved pose or sequence. <strong>Clear cache</strong> unloads it and returns to the arranged pattern. Save the cache file with the project.</p></article>
+          </div>
+          <p>Simulation-setting changes invalidate calculated timeline frames and unload outdated baked playback. The next timeline preview or render recalculates with the new settings. Saved cache files remain on disk, and a separately loaded drape remains the starting condition. Bake again to save an updated sequence.</p>
+        </section>
+
+        <section class="section" id="troubleshooting">
+          <h2>Common checks</h2>
+          <ul class="bullet">
+            <li><strong>Nothing reaches Scene:</strong> save the pattern, close unfinished outlines, and resolve validation messages. Downstream nodes do not consume unsaved editor geometry.</li>
+            <li><strong>Missing collider:</strong> connect a mesh or animated mesh and verify the intended collider owner.</li>
+            <li><strong>Explosive or tangled cloth:</strong> check scale, initial overlaps, seam pairing, thickness, and substeps before adding detail.</li>
+            <li><strong>Preview is slow:</strong> start with a coarser mesh, a shorter range, and fewer collision candidates; confirm the selected backend.</li>
+            <li><strong>CUDA is unavailable:</strong> choose CPU or inspect the node's backend status and runtime setup.</li>
+            <li><strong>Different results after moving the project:</strong> locate the pattern, collider assets, and any cache files again.</li>
+          </ul>
+        </section>
+        <footer class="site-footer"><a href="index.html">Workbench manual</a> · <a href="nodes.html">Node catalog</a> · <a href="motion.html">Motion and batch rendering</a></footer>
+      </main>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

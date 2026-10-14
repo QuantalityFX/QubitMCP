@@ -59,6 +59,55 @@ class PanelViewport(QtWidgets.QWidget, MGLRendererMixin):
 
 
 class PreviewSettingsTests(unittest.TestCase):
+    def test_collar_controls_clamp_authored_pose_reset_and_save(self):
+        view=PanelViewport()
+        self.addCleanup(view.deleteLater)
+        panel=RigPreviewPanel(view)
+        for joint,sign in ((13,1),(14,-1)):
+            name=JOINT_NAMES[joint]
+            axis=np.array([float(sign),0.,0.])
+            panel.sync(view.data(name),name)
+            self.assertTrue(all(field.isEnabled() for field in panel.fields.values()))
+            self.assertEqual(panel.fields['bend_max'].value(),15.)
+            self.assertEqual(panel.fields['twist_min'].value(),-15.)
+            self.assertEqual(panel.fields['twist_max'].value(),15.)
+            token=view._mgl_scene_skeleton_joint_owner_token('Rig',name)
+            view._set_owner_rot_deg(token,(sign*70,0,60),False)
+            pose=evaluate_rig_at_time(view.context['skeleton'],view.context['clip'],0)
+            swing,twist=rotation_parts(pose.local_transforms[joint].rotation,axis)
+            self.assertAlmostEqual(np.degrees(swing.magnitude()),15.,places=4)
+            self.assertAlmostEqual(np.degrees(twist),15.,places=4)
+            panel.fields['bend_max'].setValue(12)
+            panel.fields['twist_max'].setValue(6)
+            pose=evaluate_rig_at_time(view.context['skeleton'],view.context['clip'],0)
+            swing,twist=rotation_parts(pose.local_transforms[joint].rotation,axis)
+            self.assertAlmostEqual(np.degrees(swing.magnitude()),12.,places=4)
+            self.assertAlmostEqual(np.degrees(twist),6.,places=4)
+            with tempfile.TemporaryDirectory() as folder:
+                settings=Path(folder)/'app_settings.json'
+                with patch('echograph.motion.rig_preview_settings.APP_SETTINGS_PATH',settings):
+                    panel.save_button.click()
+                self.assertEqual(preview_limit_fields(joint,load_preview_limits(settings)[joint]),
+                                 dict(bend_min=0,bend_max=12,twist_min=-15,twist_max=6))
+            panel.reset_button.click()
+            self.assertEqual(panel.fields['bend_max'].value(),15.)
+            self.assertEqual(panel.fields['twist_max'].value(),15.)
+
+    def test_older_saved_settings_gain_collar_limits_without_losing_custom_ranges(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'app_settings.json'
+            saved=dict(preview_rig=dict(version=1,joint_limits={
+                'left_shoulder':dict(bend_max=55,twist_min=-30,twist_max=45)}))
+            path.write_text(json.dumps(saved),encoding='utf-8')
+            limits=load_preview_limits(path)
+            for joint in (13,14):
+                self.assertIn(joint,limits)
+                self.assertEqual(preview_limit_fields(joint,limits[joint]),
+                                 dict(bend_min=0,bend_max=15,twist_min=-15,twist_max=15))
+            self.assertEqual(preview_limit_fields(16,limits[16]),
+                             dict(bend_min=0,bend_max=55,twist_min=-30,twist_max=45))
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')),saved)
+
     def test_standalone_preview_rotates_selected_parent_and_child_with_individual_limits(self):
         for parent, child, axis in (('left_shoulder','left_elbow',(0,-1,0)),
                                     ('left_hip','left_knee',(1,0,0))):

@@ -1,8 +1,38 @@
-/* Keep sidebar highlight in sync with clicks and scroll position. */
+/* Mobile navigation is enhanced only when JavaScript is available. */
+document.querySelectorAll(".nav-toggle").forEach((button) => {
+  const sidebar = button.closest(".sidebar");
+  const nav = document.getElementById(button.getAttribute("aria-controls"));
+  if (!sidebar || !nav) return;
+  button.hidden = false;
+  sidebar.classList.add("has-nav-toggle");
+  function closeNavigation() {
+    button.setAttribute("aria-expanded", "false");
+    sidebar.classList.remove("nav-open");
+  }
+  button.addEventListener("click", () => {
+    const expanded = button.getAttribute("aria-expanded") !== "true";
+    button.setAttribute("aria-expanded", String(expanded));
+    sidebar.classList.toggle("nav-open", expanded);
+  });
+  nav.addEventListener("click", (event) => {
+    if (!event.target.closest("a")) return;
+    if (window.matchMedia("(max-width: 960px)").matches) button.focus();
+    closeNavigation();
+  });
+  sidebar.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeNavigation();
+      button.focus();
+    }
+  });
+});
+
+/* Keep local section links in sync; cross-page links stay ordinary links. */
 const links = Array.from(document.querySelectorAll(".nav a"));
 const pairs = links
   .map((link) => {
-    const target = document.querySelector(link.getAttribute("href"));
+    const href = link.getAttribute("href") || "";
+    const target = href.startsWith("#") ? document.getElementById(href.slice(1)) : null;
     return target ? { link, target } : null;
   })
   .filter(Boolean);
@@ -55,7 +85,7 @@ window.addEventListener("hashchange", () => {
   }
 });
 
-if (location.hash && document.querySelector(location.hash)) {
+if (location.hash && document.getElementById(location.hash.slice(1))) {
   setActive(location.hash);
 } else {
   updateActiveFromScroll();

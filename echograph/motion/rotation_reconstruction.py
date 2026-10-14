@@ -137,11 +137,11 @@ def stabilize_joint(joint, source, target, local, previous, fps):
     Root rotation is unrestricted, so flips and spins remain possible.
     Spine stabilization also covers multi-child frames in the caller.
     Knees/elbows retain the measured flexion angle on their anatomical hinge;
-    feet/neck use a local swing cone. Inconsistent source poses are corrected
+    feet/neck/collars use a local swing cone. Inconsistent source poses are corrected
     rather than transferring sideways or backward knee bends into a skin.
     The XYZ archive is retained separately from this fixed-bone reconstruction.
     """
-    axis = {4: 1, 5: 1, 18: 0, 19: 0, 7: 2, 8: 2, 12: 1}.get(joint)
+    axis = {4: 1, 5: 1, 18: 0, 19: 0, 7: 2, 8: 2, 12: 1, 13: 0, 14: 0}.get(joint)
     if axis is None:
         return local
     # Reversal handling can retain some pole roll. These joints have no measured
@@ -160,7 +160,7 @@ def stabilize_joint(joint, source, target, local, previous, fps):
         # Fast airborne flexion is measured motion, not unobserved roll. A
         # rate cap here would make the feet/hands lag behind a backflip.
         return local
-    elif joint in (7, 8, 12):
+    elif joint in (7, 8, 12, 13, 14):
         vector = Rotation.from_matrix(local).as_rotvec()
         angle = float(np.linalg.norm(vector))
         limit = np.deg2rad(JOINT_LIMITS[joint]['swing'])

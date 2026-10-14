@@ -20,7 +20,7 @@ from .gl_view_cloth_panels import ClothPanelsMixin
 
 def cloth_signature(config, matrix, *, include_settings=True, include_colliders=True, include_pins=None):
     physical_settings = {k: v for k, v in config["settings"].items()
-                         if k not in {"interactive", "enabled", "follow_timeline", "gravity_enabled"}}
+                         if k not in {"interactive", "enabled", "follow_timeline"}}
     if not include_settings:
         physical_settings = {}
     include_pins = include_settings if include_pins is None else include_pins
@@ -878,18 +878,41 @@ class ClothViewportMixin(ClothPanelsMixin):
         self._cloth_mark_initial_pose(state)
         state.note = "Saved state loaded. Play continues from this pose."
 
-    def _cloth_apply_settings(self, state, settings):
+    def _cloth_invalidate_simulation(self, state, config):
+        """Discard solved history while retaining the authored starting pose."""
+        had_baked_frames = bool(state.disk_frames) or state.disk_metadata.get("cache_type") == "bake"
+        state.cache.clear()
+        state.disk_frames.clear()
+        state.disk_velocities.clear()
+        state.cache_playback = False
+        if had_baked_frames:
+            # Do not reload the outdated animation on the next scene rebuild.
+            # The file remains on disk; a saved drape is still a valid input.
+            self._cloth_cache_path(config, "")
+            state.cache_path = ""
+            state.disk_metadata.clear()
+        state.bake = None  # Never mix settings within a running bake.
+        state.seek_start = state.seek_target = None
+        state.animation_signature = ""
+        state.collider_previous.clear()
+        if state.timeline_cache_valid and state.initial_pose is not None:
+            frame, positions, velocity, clock = state.initial_pose
+            self._cloth_restore_preview(state, frame, (positions, velocity), clock, publish=False)
+        state.cache.put(state.frame, state.solver.x, state.solver.velocity, simulation_time=state.solver.time)
+        state.display_positions = state.solver.x.copy()
+        state.version += 1
+        # Cloth used as a collider must also invalidate dependent garments.
+        state.pose_revision += 1
+        state.note = "Simulation changed. Timeline cache cleared; frames will be recalculated."
+
+    def _cloth_apply_settings(self, state, settings, config):
         previous = state.solver.settings
         if previous == settings:
             return
         state.solver.update_settings(settings)
         controls = {k for k in settings.to_dict() if k not in {"enabled", "interactive", "follow_timeline"}}
         if any(getattr(previous, key) != getattr(settings, key) for key in controls):
-            # Preview frames remain reusable until the collider animation changes.
-            # Edited controls apply to frames that have not yet been calculated.
-            state.cache_playback = False
-            state.cache.put(state.frame, state.solver.x, state.solver.velocity, simulation_time=state.solver.time)
-            state.note = "Settings updated. Cached frames retained; new frames use these settings."
+            self._cloth_invalidate_simulation(state, config)
         if previous.scene_units_per_meter != settings.scene_units_per_meter:
             state.version += 1
             state.collider_previous.clear()
@@ -1000,8 +1023,8 @@ class ClothViewportMixin(ClothPanelsMixin):
                     # Adding/removing a collider changes preview animation, not
                     # the garment's loaded, sewn initial condition.
                     state.geometry_signature = signature
-                    state.collider_previous.clear()
-                self._cloth_apply_settings(state, settings)
+                    self._cloth_invalidate_simulation(state, config)
+                self._cloth_apply_settings(state, settings, config)
                 self._cloth_apply_constraints(state, config)
                 if state.follow_timeline != settings.follow_timeline:
                     state.follow_timeline = settings.follow_timeline

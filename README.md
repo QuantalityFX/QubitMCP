@@ -1,112 +1,83 @@
-# QubitMCP
+# Qubit Field · QubitMCP
 
-QubitMCP is a node-based desktop workspace for building AI-assisted creative, technical, and production workflows. It combines visual node graphs, asset management, documentation tools, and Unreal Engine integration in a Windows Python/PySide6 application.
+### A visual workbench for ideas, tools, and production.
+
+Qubit Field brings AI, knowledge, automation, media, and 3D creation into one node-based desktop workbench. Connect tools in a visual graph, inspect their results, and build reusable workflows that move from research and planning to animation, simulation, and delivery.
+
+**QubitMCP is the source repository for the Qubit Field application.** Built for Windows with Python and PySide6, the workbench supports both local tools and connected services. Unreal Engine is one of its integrations, alongside workflows that run entirely in the desktop app.
+
+[Documentation](https://quantalityfx.com/docs/qubit-mcp/) · [Node catalog](https://quantalityfx.com/docs/qubit-mcp/nodes.html) · [Download for Windows](https://github.com/QuantalityFX/QubitMCP/raw/refs/heads/Latest/downloads/QubitFieldInstaller.exe) · [Website](https://quantality.com) · [Discord](https://discord.com/invite/zJSKYZYZ)
+
+![Qubit Field workbench with connected AI, voice, automation, and Gantt planning workflows](Doc/UISnapshot/AiWorkflow.png)
+
+## One workbench, many workflows
+
+| Area | What you can do |
+| --- | --- |
+| **AI and knowledge** | Connect local or cloud language models, chat with voice, search documents with Librarian, organize facts in Data Nexus, and turn Skills and Task workflows into HTML decks and PDF output. |
+| **Automation and planning** | Combine Python nodes, Mediator agents, Qubit Deck actions, keyboard sequences, serial/Pico controls, notes, and Gantt schedules. Use For Each to render collections or parameter variations. |
+| **Motion and characters** | Generate motion from text with PriorMDM, extract mocap from video, organize BVH collections, retarget rigs, inspect joint limits, and blend from a bind pose into animation. |
+| **Patterns and cloth** | Draft garment panels in a 2D editor, define sewing and elastic edges, arrange pieces in 3D, and simulate cloth with CPU or CUDA backends, collisions, pins, and saved caches. |
+| **3D and visual effects** | Assemble scenes, model and select geometry, build materials and textures, groom guide curves, work with Gaussian splats, and preview lighting and animation in the viewport. |
+| **Media and delivery** | Capture and translate audio, generate speech or video, review images and clips, render sequences, apply post effects, and export MP4, OBJ, or FBX assets. |
+
+The graph is the common workspace: a document workflow can feed an agent, a motion collection can drive a render batch, and a pattern can become a simulated garment in the same scene as an animated character.
+
+## Recent additions
+
+- **Pattern Design and Cloth Solver** — reusable `.pattern.json` documents, mirrored panels, sewing tools, interactive cloth placement, animated colliders, timeline simulation, baking, and resumable saved states.
+- **PriorMDM and rig previews** — text-to-motion generation, optional HandMDM hand gestures, and editable bend/twist limits with collision guides. Hand articulation remains a preview feature.
+- **Mocap Collection and batch rendering** — BVH folder import, path relocation, render review, rename/archive tools, and paired For Each nodes for repeatable render runs.
+- **Animation Blend, Delete Joint, and Look At** — a controlled transition into animation, derived skeleton cleanup, and object or joint targeting for scene constraints.
+- **Voice and viewport improvements** — continuous audio capture with buffered speech recognition and app-audio exclusion, expanded rig editing, lighting controls, and selection previews.
+
+Read the [current feature guide](https://quantalityfx.com/docs/qubit-mcp/#latest-updates), [pattern and cloth workflow](https://quantalityfx.com/docs/qubit-mcp/patterns-cloth.html), or [motion and batch-rendering workflow](https://quantalityfx.com/docs/qubit-mcp/motion.html). The editable documentation lives in [`Doc/`](Doc/).
+
+## Inside the workbench
+
+Click a screenshot to inspect the full interface.
+
+| Pattern design | Cloth simulation |
+| --- | --- |
+| [![Full pattern editor showing shirt panels, curved outlines, dimensions, and paired sewing edges](Doc/UISnapshot/PatternDesign_FullEditor.png)](Doc/UISnapshot/PatternDesign_FullEditor.png) | [![Clothed character in the viewport beside garment, animation, and rendering nodes](Doc/UISnapshot/RealtimeClothSolver.png)](Doc/UISnapshot/RealtimeClothSolver.png) |
+| Draft, mirror, and sew reusable 2D panels. | Bring garments into an animated 3D scene. |
+
+| Rig constraints and motion review | Animation workflows |
+| --- | --- |
+| [![Skeleton with bend and twist guides, Preview Rig controls, and a mocap collection](Doc/UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png)](Doc/UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png) | [![Animation workflow with a 3D viewport and connected processing nodes](Doc/UISnapshot/AnimationWorkflow.png)](Doc/UISnapshot/AnimationWorkflow.png) |
+| Inspect joint limits and review motion takes. | Connect motion, characters, and scene tools. |
+
+[![Animated Gaussian splat character with effects, timeline controls, and a connected node graph](Doc/UISnapshot/GaussianSplatFX.png)](Doc/UISnapshot/GaussianSplatFX.png)
+
+*Gaussian splats, motion, and effects in the same workbench.*
+
+## Get started
+
+**Windows 10/11, 64-bit.** Use the [Windows installer](https://github.com/QuantalityFX/QubitMCP/raw/refs/heads/Latest/downloads/QubitFieldInstaller.exe), or clone the repository with Git and run these commands from its root:
+
+```powershell
+.\setup.bat
+.\Run_QubitMCP.bat
+```
+
+Setup prepares the application and Librarian environments, dependencies, and voice support. It provisions an app-private Python 3.10 runtime when available. Internet access is needed for dependency and model downloads; GPU requirements and service credentials depend on the nodes you choose.
+
+Press **Tab** to add a node, connect its ports, and use its controls to run or preview the result. Save the graph as a reusable workflow. Browse [`ExampleWorkflow/`](ExampleWorkflow/) for examples; update asset paths and service settings for your machine.
+
+For launch troubleshooting and optional runtimes, see [Setup and Launch](https://quantalityfx.com/docs/qubit-mcp/#setup-launch). FBX support can be installed from the FBX node when needed. To read the docs locally, open [`Doc/index.html`](Doc/index.html) in a browser.
+
+## Explore and extend
+
+- [`nodes/`](nodes/) — node definitions and integrations.
+- [`echograph/`](echograph/) — graph editor, viewport, motion, rigging, patterns, and physics code.
+- [`Skills/`](Skills/) — templates and guides used by knowledge and agent workflows.
+- [`Unreal/Plugins/MaterialGenerator/`](Unreal/Plugins/MaterialGenerator/) — Unreal material integration.
+- [`Doc/`](Doc/) — static documentation website; open locally or export with `scripts\export_doc_childsite.bat` for the documentation host.
+
+The README is the presentation shown on the GitHub repository home page. The hosted documentation is a separate static site: pushing changes updates the repository, and the `Doc/` site must also be exported and uploaded to update the documentation host.
 
 ## Connect
 
-[![Website](https://img.shields.io/badge/Website-quantality.com-111111?style=for-the-badge)](https://quantality.com)
-[![Documentation](https://img.shields.io/badge/Docs-Open-2E7D32?style=for-the-badge)](Doc/index.html)
-[![Email](https://img.shields.io/badge/Email-quantalityfx%40gmail.com-D14836?style=for-the-badge)](mailto:quantalityfx@gmail.com)
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/invite/zJSKYZYZ)
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Ernesto%20Marrero-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/ernesto-marrero-7760092a/)
-[![Instagram](https://img.shields.io/badge/Instagram-%40vimpassion-E4405F?style=for-the-badge&logo=instagram&logoColor=white)](https://www.instagram.com/vimpassion/)
-[![YouTube](https://img.shields.io/badge/YouTube-%40vimpassion-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/@vimpassion)
+[Website](https://quantality.com) · [Email](mailto:quantalityfx@gmail.com) · [Discord](https://discord.com/invite/zJSKYZYZ) · [YouTube](https://www.youtube.com/@vimpassion) · [LinkedIn](https://www.linkedin.com/in/ernesto-marrero-7760092a/) · [Instagram](https://www.instagram.com/vimpassion/)
 
-## UI Examples
-
-| AI Workflow | Animation Workflow |
-| --- | --- |
-| ![AI workflow UI snapshot](Doc/UISnapshot/AiWorkflow.png) | ![Animation workflow UI snapshot](Doc/UISnapshot/AnimationWorkflow.png) |
-
-## Requirements
-
-1. Windows 10/11
-2. Git
-3. Python 3.x with `py` launcher available on PATH
-
-## Quick Start (Recommended)
-
-1. Clone the repository and open a terminal in the repo root.
-2. Run:
-```bat
-setup.bat
-```
-3. Start the app (choose one):
-With launcher batch:
-```bat
-Run_QubitMCP.bat
-```
-Or run the script directly:
-```bat
-.\.venv\Scripts\python.exe echograph_app.py
-```
-
-`setup.bat` prepares:
-- `.venv` for the main app
-- `nodes/librarian/.venv` for librarian dependencies
-- Voice Actor speech dependencies, including local Kokoro-82M and the bundled Japanese MeCab dictionary
-
-## Optional: Autodesk FBX SDK Runtime
-
-For full FBX compatibility (beyond pyassimp fallback), install Autodesk FBX runtime files into the app venv.
-
-In-app easiest path:
-
-1. Create an `FBX Import` node.
-2. Click `Install FBX Support` in the setup prompt.
-3. The app will download Autodesk's installer, run it, auto-detect SDK files, and install runtime files into the app venv.
-
-Official Windows FBX Python SDK installer:
-
-`https://damassets.autodesk.net/content/dam/autodesk/www/files/fbx202039_fbxpythonsdk_win.exe`
-
-Check status:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\check_fbx_sdk.ps1
-```
-
-Install from a local SDK folder using either layout:
-
-- `fbx-*.whl` + `FbxCommon.py`
-- `fbx*.pyd` + `FbxCommon.py` (optional `libfbxsdk.dll`)
-
-Then run:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install_fbx_sdk.ps1 -SourceDir "C:\path\to\fbx_runtime"
-```
-
-You can also wire this into setup:
-
-```bat
-setup.bat full "C:\path\to\fbx_runtime"
-```
-
-Or (for automation/non-interactive installs):
-
-```bat
-set FBX_SDK_SOURCE=C:\path\to\fbx_runtime
-setup.bat
-```
-
-If you do not pass a path, `setup.bat` will now prompt for the FBX runtime folder when SDK check fails.
-
-## Manual Run (Without Launcher .bat)
-
-After `setup.bat` completes:
-
-```bat
-.\.venv\Scripts\python.exe echograph_app.py
-```
-
-## Troubleshooting
-
-1. `setup.bat` fails with Python not found:
-   Install Python 3 and ensure `py` or `python` is on PATH.
-2. Pip install errors:
-   Check internet/proxy/firewall settings, then rerun `setup.bat`.
-3. Double-click launch gives no window:
-   Run from terminal with `.\.venv\Scripts\python.exe echograph_app.py` to see errors.
-4. Japanese Kokoro voice reports a MeCab dictionary error:
-   Rerun `setup.bat`; it installs `unidic-lite`, the compact dictionary required by Kokoro Japanese speech.
+Qubit Field is **source-available** under the [Qubit MCP Source-Available License](LICENSE). See the license for permitted uses and restrictions.

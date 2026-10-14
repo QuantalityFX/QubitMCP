@@ -11,6 +11,18 @@ from echograph.ui.priormdm_rig_overlay import pick_guide_joint
 
 
 class PreviewLimitTests(unittest.TestCase):
+    def test_collar_bend_and_twist_are_bounded_on_both_sides(self):
+        for joint, axis in ((13,np.array([1.,0.,0.])),(14,np.array([-1.,0.,0.]))):
+            for bend in (0,10,60):
+                for twist in (-80,-8,0,8,80):
+                    with self.subTest(joint=JOINT_NAMES[joint],bend=bend,twist=twist):
+                        desired=(Rotation.from_euler('z',bend,degrees=True)*
+                                 Rotation.from_rotvec(axis*np.deg2rad(twist))).as_quat()
+                        actual=clamp_preview_rotation(joint,desired,axis)
+                        swing,angle=rotation_parts(actual,axis)
+                        self.assertAlmostEqual(np.degrees(swing.magnitude()),min(bend,15.))
+                        self.assertAlmostEqual(np.degrees(angle),np.clip(twist,-15.,15.))
+
     def test_spine_preview_twists_90_degrees_without_changing_generation_policy(self):
         for joint in (3,6,9):
             for angle in (-120,-90,45,90,120):
@@ -23,13 +35,14 @@ class PreviewLimitTests(unittest.TestCase):
     def test_combined_cones_and_twist_dials_follow_the_posed_bone_axis(self):
         offsets=preview_offsets('standardman')
         rest,_=build_guide(offsets)
-        for joint in (1,2,3,6,9,7,8,12,16,17):
+        for joint in (1,2,3,6,9,7,8,12,13,14,16,17):
             child=next(i for i,p in enumerate(PARENTS) if p==joint)
             axis=offsets[child]/np.linalg.norm(offsets[child])
             transverse=np.cross(axis,np.eye(3)[np.argmin(abs(axis))])
             local=np.tile(np.eye(3),(22,1,1))
             local[0]=Rotation.from_euler('xyz',[20,30,40],degrees=True).as_matrix()
-            local[joint]=(Rotation.from_rotvec(transverse*np.deg2rad(30))*Rotation.from_rotvec(axis*np.deg2rad(20))).as_matrix()
+            twist=min(20.,PREVIEW_JOINT_LIMITS[joint]['twist']/2)
+            local[joint]=(Rotation.from_rotvec(transverse*np.deg2rad(30))*Rotation.from_rotvec(axis*np.deg2rad(twist))).as_matrix()
             points,world=world_pose(local,offsets,rest[0])
             matrices=np.tile(np.eye(4),(22,1,1))
             matrices[:,:3,:3],matrices[:,:3,3]=world,points
@@ -45,7 +58,7 @@ class PreviewLimitTests(unittest.TestCase):
     def test_twist_pointer_reaches_both_boundaries_after_bending_and_parent_rotation(self):
         offsets=preview_offsets('standardman')
         rest,_=build_guide(offsets)
-        for joint in (1,2,3,6,9,7,8,12,16,17):
+        for joint in (1,2,3,6,9,7,8,12,13,14,16,17):
             child=next(i for i,p in enumerate(PARENTS) if p==joint)
             axis=offsets[child]/np.linalg.norm(offsets[child])
             transverse=np.cross(axis,np.eye(3)[np.argmin(abs(axis))])
@@ -154,7 +167,7 @@ class PreviewLimitTests(unittest.TestCase):
             np.testing.assert_array_equal(clamp_preview_rotation(0,q,[0,1,0]),q)
 
     def test_fast_drag_cannot_jump_to_the_opposite_bend_or_twist_limit(self):
-        for joint in (1,2,3,6,9,7,8,12,16,17):
+        for joint in (1,2,3,6,9,7,8,12,13,14,16,17):
             child=next(i for i,p in enumerate(PARENTS) if p==joint)
             axis=REST_DIRECTIONS[child]
             bend_axis=np.cross(axis,np.eye(3)[np.argmin(abs(axis))])
@@ -174,7 +187,7 @@ class PreviewLimitTests(unittest.TestCase):
     def test_bend_cones_face_outward_and_the_pointer_stops_on_the_rim(self):
         offsets=preview_offsets('standardman')
         rest,_=build_guide(offsets)
-        for joint in (1,2,3,6,9,7,8,12,16,17):
+        for joint in (1,2,3,6,9,7,8,12,13,14,16,17):
             with self.subTest(joint=JOINT_NAMES[joint]):
                 child=next(i for i,p in enumerate(PARENTS) if p==joint)
                 axis=offsets[child]/np.linalg.norm(offsets[child])

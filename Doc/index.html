@@ -3,22 +3,28 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Qubit Field 1.2.5 Documentation</title>
+    <title>Qubit Field | Visual Workbench Documentation</title>
+    <meta name="description" content="Explore the Qubit Field workbench: AI and knowledge, automation, motion, pattern design, cloth simulation, Gaussian splats, and media workflows." />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <div class="layout">
       <aside class="sidebar">
         <div class="brand">
           <img class="brand-logo" src="../icons/QubitMCP_Icon_s.png" alt="Qubit Field icon" />
-          <div class="brand-title">Qubit Field 1.2.5</div>
-          <div class="brand-sub">Docs + Download</div>
+          <div class="brand-title">Qubit Field</div>
+          <div class="brand-sub">Workbench documentation</div>
         </div>
-        <nav class="nav">
+        <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="docs-nav" hidden>Browse documentation</button>
+        <nav class="nav" id="docs-nav" aria-label="Documentation">
           <a href="#home">Home</a>
           <a href="#download">Download</a>
           <a href="#overview">Overview</a>
+          <a href="#guides">Choose a Workflow</a>
+          <a href="#gallery">Screenshots</a>
           <a href="#latest-updates">Latest Updates</a>
+          <a href="nodes.html">Search All Nodes &rarr;</a>
           <a href="#quick-start">Quick Start</a>
           <a href="#setup-launch">Setup and Launch</a>
           <a href="#ui-tour">UI Tour</a>
@@ -44,21 +50,19 @@
         </nav>
       </aside>
 
-      <main class="content">
+      <main class="content" id="main-content" tabindex="-1">
         <header id="home" class="landing-hero">
           <canvas class="hero-canvas" aria-hidden="true"></canvas>
-          <button class="hero-debug-toggle" type="button" aria-pressed="false">Debug Off</button>
-          <div class="hero-kicker">Windows desktop node workspace</div>
+          <div class="hero-kicker">A visual workbench for ideas, tools, and production</div>
           <h1>Qubit Field</h1>
           <p class="lead hero-lead">
-            Build AI-assisted creative, production, mocap, asset, and Unreal workflows
-            with a visual graph, a 3D viewport, librarian tools, voice automation,
-            and a growing node ecosystem.
+            Connect AI, knowledge, automation, media, and 3D creation in one desktop workbench.
+            Build a graph, inspect the results, and turn the process into a workflow you can reuse.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="https://github.com/QuantalityFX/QubitMCP/raw/refs/heads/Latest/downloads/QubitFieldInstaller.exe" download data-installer-download>Download Setup</a>
             <a class="button" href="https://github.com/QuantalityFX/QubitMCP" target="_blank" rel="noreferrer">GitHub Repository</a>
-            <a class="button ghost" href="#nodes">Browse Nodes</a>
+            <a class="button ghost" href="nodes.html">Find a Node</a>
           </div>
         </header>
 
@@ -84,26 +88,70 @@
         </section>
 
         <section id="overview" class="section">
-          <h2>Overview</h2>
-          <div class="callout">
-            <strong>What Qubit Field does:</strong> connect nodes, process text and AI workflows,
-            assemble 3D scenes, drive automation, process mocap, generate grooming assets,
-            and export results from a single graph.
+          <p class="eyebrow">One graph. Many disciplines.</p>
+          <h2>A workbench that grows with your process</h2>
+          <p class="section-intro">Qubit Field brings tools and their outputs into a shared workspace. Research a topic, prepare a presentation, automate an application, or build an animated scene using the same graph editor. QubitMCP is the application's source repository.</p>
+          <div class="grid node-catalog-grid capability-grid">
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/DataNexus_Icon.png" alt="" /> AI and knowledge</h3><p>Local and cloud language models, document search, Data Nexus knowledge maps, Skills templates, and Task-driven HTML decks and PDF output.</p><a class="text-link" href="index.html#agents">Knowledge and agent workflows &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/Calendar_Icon.png" alt="" /> Automation and planning</h3><p>Python, Mediator agents, Qubit Deck, keyboard and serial/Pico controls, notes, Gantt schedules, and repeatable batch rendering.</p><a class="text-link" href="nodes.html#core-and-utility">Utility nodes &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/anim_retarget_Icon_s.png" alt="" /> Motion and characters</h3><p>Text-to-motion, video mocap, BVH collections, rig cleanup, retargeting, joint constraints, and transitions into animation.</p><a class="text-link" href="motion.html">Motion guide &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/Sew_Icon.png" alt="" /> Patterns and cloth</h3><p>Draft and sew reusable panels, arrange them around characters, and simulate garments with pins, collisions, timeline playback, and saved states.</p><a class="text-link" href="patterns-cloth.html">Pattern and cloth guide &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/Scene_Icon.png" alt="" /> 3D and effects</h3><p>Scene assembly, modeling selections, materials, textures, grooming, skinned proxies, Gaussian splats, lighting, and viewport animation.</p><a class="text-link" href="nodes.html#3d-rigging-and-scene-processing">Scene and geometry nodes &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/RenderNode_Icon.png" alt="" /> Media and delivery</h3><p>Audio capture and translation, speech and video generation, image and clip review, rendered sequences, post effects, and MP4 or asset export.</p><a class="text-link" href="nodes.html#media-and-review">Media nodes &rarr;</a></article>
           </div>
-          <ul class="bullet">
-            <li>Node graph editor with links, grouping, and per node info cards.</li>
-            <li>3D viewport with camera controls, grid, wireframe, and gizmos.</li>
-            <li>AI stack with Local Server, LLM Prompt, Chatbot, Voice Actor, Audio Capture, Mediator, Database, Librarian, and Qubit Deck control.</li>
-            <li>3D stack with import, FBX ingest, mocap ingest, Gen-X video mocap, retargeting, primitives, curves, modeler selection, lighting, texturing, masks, normals, transforms, scene assembly, render, post-process, and export nodes.</li>
-            <li>Character and hair stack with groom guides, guide deformation, guide pose/simulation, guide tubes, skinned volume collision meshes, and skinned splat render proxies.</li>
-            <li>Automation stack with Keyboard Sequence actions, Serial COM/Pico HID support, and voice-driven Qubit Deck commands.</li>
-            <li>Configurable hotkeys saved in <code>hotkeys.json</code>.</li>
-          </ul>
+          <p class="callout">Unreal Engine is one integration in this broader workbench. Knowledge, automation, motion, cloth, and media workflows can run in the desktop application independently of Unreal. Some nodes need separate models, a compatible GPU, or service credentials.</p>
+        </section>
+
+        <section id="guides" class="section">
+          <h2>Choose a workflow</h2>
+          <p class="section-intro">Start with an outcome, then explore the nodes that connect it.</p>
+          <div class="grid node-catalog-grid">
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/librarian_search_Icon.png" alt="" /> Build a knowledge workflow</h3><p>Index documents, connect model and agent tools, organize facts, and prepare a reviewed deck.</p><a class="text-link" href="index.html#pipelines">AI and planning recipes &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/Sew_Icon.png" alt="" /> Create and simulate a garment</h3><p>Draft a pattern, pair seams, place the panels, add a collider, and save the simulation.</p><a class="text-link" href="patterns-cloth.html">Follow the garment workflow &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/PromptToAnimation_Icon.png" alt="" /> Generate, retarget, and render motion</h3><p>Create a take, review a collection, prepare the character rig, and render a batch.</p><a class="text-link" href="motion.html">Follow the motion workflow &rarr;</a></article>
+          </div>
+        </section>
+
+        <section id="gallery" class="section">
+          <div class="section-heading"><div><p class="eyebrow">Inside the workbench</p><h2>See the workflows</h2></div><p class="muted">Select an image to open it at full size.</p></div>
+          <div class="screenshot-grid">
+            <figure class="screenshot-card">
+              <a href="UISnapshot/AiWorkflow.png"><img src="UISnapshot/AiWorkflow.png" width="2551" height="1366" alt="A node graph linking chatbot, Librarian, voice, Mediator, and Gantt tools" loading="lazy" decoding="async" /></a>
+              <figcaption><strong>AI, knowledge, and automation</strong><span>Chat, Librarian, voice control, and planning workflows connected on one canvas.</span></figcaption>
+            </figure>
+            <figure class="screenshot-card">
+              <a href="UISnapshot/RealtimeClothSolver.png"><img src="UISnapshot/RealtimeClothSolver.png" width="2550" height="1350" alt="A clothed character in the viewport beside garment simulation and rendering nodes" loading="lazy" decoding="async" /></a>
+              <figcaption><strong>Garments in motion</strong><span>Pattern pieces, cloth solvers, character animation, and render review in one scene.</span></figcaption>
+            </figure>
+            <figure class="screenshot-card">
+              <a href="UISnapshot/PatternDesign_FullEditor.png"><img src="UISnapshot/PatternDesign_FullEditor.png" width="1445" height="921" alt="Shirt front and back panels with dimensions, curve handles, and color coded sewing pairs" loading="lazy" decoding="async" /></a>
+              <figcaption><strong>Pattern Design</strong><span>Draft curved panels, edit dimensions, and pair sewing edges in the full editor.</span></figcaption>
+            </figure>
+            <figure class="screenshot-card">
+              <a href="UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png"><img src="UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png" width="2286" height="1219" alt="Skeleton joint limit guides, Preview Rig controls, and a mocap collection with render thumbnails" loading="lazy" decoding="async" /></a>
+              <figcaption><strong>Rig constraints and motion review</strong><span>Inspect bend and twist guides while organizing motion takes and their renders.</span></figcaption>
+            </figure>
+            <figure class="screenshot-card">
+              <a href="UISnapshot/AnimationWorkflow.png"><img src="UISnapshot/AnimationWorkflow.png" width="2558" height="1364" alt="Animation workflow with a 3D viewport and connected nodes" loading="lazy" decoding="async" /></a>
+              <figcaption><strong>Animation workflows</strong><span>Connect source motion, character processing, and scene tools in a reusable graph.</span></figcaption>
+            </figure>
+            <figure class="screenshot-card">
+              <a href="UISnapshot/GaussianSplatFX.png"><img src="UISnapshot/GaussianSplatFX.png" width="2559" height="1366" alt="Colored Gaussian splat character with animation curves, effects nodes, and render previews" loading="lazy" decoding="async" /></a>
+              <figcaption><strong>Gaussian splats and effects</strong><span>Explore animated splat characters, visual effects, and timeline controls.</span></figcaption>
+            </figure>
+          </div>
         </section>
 
         <section id="latest-updates" class="section">
-          <h2>Latest Updates</h2>
+          <p class="eyebrow">Documentation refreshed · 13 October 2026</p>
+          <h2>New in the workbench</h2>
           <div class="grid latest-grid">
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/Sew_Icon.png" alt="" /> Pattern Design + Cloth Solver</h3><p>Embedded and full-size pattern editing, linked mirrors, sewing and elastic edges, 3D placement, CPU/CUDA cloth, animated colliders, self collision, pins, baking, and resumable states.</p><a class="text-link" href="patterns-cloth.html">Draft, sew, and simulate &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/PromptToAnimation_Icon.png" alt="" /> PriorMDM + rig constraints</h3><p>Generate motion from text, add optional HandMDM gestures, and use Preview Rig to inspect collision guides and edit bend/twist limits. Hand articulation is a preview feature.</p><a class="text-link" href="motion.html#generation">Generate and inspect motion &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/BVH_Mocap_Icon_s.png" alt="" /> Mocap Collection + For Each</h3><p>Import BVH folders, relocate paths, review assigned renders, rename or archive takes, and run collection or parameter batches with paired loop nodes.</p><a class="text-link" href="motion.html#batch-rendering">Organize and render takes &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/BlendAnimation_Icon.png" alt="" /> Animation Blend + rig cleanup</h3><p>Blend a bind pose into a chosen animation frame with hold time and easing. Delete Joint creates a derived skeleton for cleanup; Look At supports object and skeleton-joint targets.</p><a class="text-link" href="motion.html#prepare-rig">Prepare animation for a scene &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/AudioCapture_Icon.png" alt="" /> Continuous audio workflows</h3><p>Audio Capture adds continuous streaming, buffered speech recognition, exclusion of Qubit Field playback, and Test &amp; Listen monitoring alongside source and phrase controls.</p><a class="text-link" href="nodes.html?node=audio-capture">Audio Capture reference &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/Scene_Icon.png" alt="" /> Viewport and scene editing</h3><p>Updated area lights, camera handoff, gizmo visibility, multi-joint rotation, rig previews, and point/edge/face selection support scene and character work.</p><a class="text-link" href="index.html#viewport">Explore the viewport &rarr;</a></article>
             <div class="card feature-card">
               <h3><img class="inline-icon" src="../icons/DataNexus_Icon.png" alt="Data Nexus icon" /> Data Nexus Sales Prep Loop</h3>
               <ul class="bullet">
@@ -285,12 +333,13 @@
             <li>Create nodes with <strong>Create - Node</strong> or press <strong>Tab</strong>.</li>
             <li>Connect outputs to inputs by dragging from one port to another.</li>
             <li>Select a node to edit parameters in the info panel and run its actions.</li>
+            <li>Save the graph as a workflow. Keep referenced assets and standalone pattern files with your project; saving the graph does not copy those files.</li>
           </ol>
         </section>
 
         <section id="setup-launch" class="section">
           <h2>Setup and Launch</h2>
-          <p>Run from repository root: <code>V:\Source\Repos\QubitMCP</code>.</p>
+          <p>Use Windows 10/11 (64-bit). Run these commands from the folder where you cloned the repository. Setup can provision its own Python 3.10 runtime and prepares the application environments.</p>
 
           <h3>One time setup</h3>
           <pre><code>setup.bat</code></pre>
@@ -305,7 +354,7 @@
             <li>Runs a <code>keyboard_sequence</code> sanity check so Keyboard Auto Runner can load its runtime.</li>
             <li>Checks Serial COM dependencies used by Pico/COM automation paths.</li>
             <li>Checks Mediator runtime support for <code>tools\codex.ps1</code>, Node.js, and <code>npx</code>.</li>
-            <li>Checks or prompts for Autodesk FBX SDK runtime files used by full FBX import and retargeting workflows.</li>
+            <li>Leaves Autodesk FBX support to the FBX nodes, which offer installation when it is needed.</li>
             <li>Downloads and prepares the optional Image-GS runtime under <code>%QUBITMCP_HOME%\third_party\image-gs</code> for image-to-splat workflows, including the Image-GS Python dependencies, fused-ssim, and bundled gsplat package.</li>
           </ul>
 
@@ -317,9 +366,15 @@
           <pre><code>nodes\image_gs\setup_image_gs.bat</code></pre>
           <p>The main setup calls this automatically. It clones <code>https://github.com/NYU-ICL/image-gs.git</code> into the writable app home, creates a separate Image-GS environment, and installs the runtime used by <code>image_gs_splat</code>; set <code>QUBITMCP_SKIP_IMAGE_GS=1</code> before setup to skip it.</p>
 
-          <h3>Optional FBX SDK setup</h3>
-          <pre><code>setup.bat full "C:\path\to\fbx_runtime"</code></pre>
-          <p>FBX runtime source folders can contain either <code>fbx-*.whl</code> plus <code>FbxCommon.py</code>, or <code>fbx*.pyd</code> plus <code>FbxCommon.py</code> and optional <code>libfbxsdk.dll</code>.</p>
+          <h3>Optional node runtimes</h3>
+          <p>PriorMDM and HandMDM have setup controls in the PriorMDM node. Local video models have their own setup controls and GPU requirements; cloud nodes need provider credentials. Cloth offers <strong>auto</strong>, <strong>cpu</strong>, and <strong>cuda</strong> backends. See the <a href="motion.html">motion guide</a> and <a href="patterns-cloth.html">cloth guide</a> for practical setup.</p>
+          <details id="fbx-support"><summary>FBX support and manual troubleshooting</summary>
+            <p>Create an <strong>FBX Import</strong> node and choose <strong>Install FBX Support</strong> when prompted. This optional runtime is used for full FBX compatibility.</p>
+            <p>To check an existing installation from the repository root:</p>
+            <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File .\check_fbx_sdk.ps1</code></pre>
+            <p>To install from a local SDK folder containing <code>fbx-*.whl</code> or <code>fbx*.pyd</code>, plus <code>FbxCommon.py</code> and any required runtime DLL:</p>
+            <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File .\install_fbx_sdk.ps1 -SourceDir "C:\path\to\fbx_runtime"</code></pre>
+          </details>
 
           <h3>Launch app</h3>
           <pre><code>Run_QubitMCP.bat</code></pre>
@@ -665,119 +720,135 @@
 
         <section id="nodes" class="section">
           <h2>Node Catalog</h2>
-          <p class="muted">Current kinds available from Create Node and plugin registration. Click a node to open its focused catalog page.</p>
-
+          <p class="section-intro">The catalog includes the current node picker and additional registered tools, with connection notes for the newest workflows. Search by name or capability, filter by category, or share a direct link to a node.</p>
+          <p><a class="button primary" href="nodes.html">Search the node catalog</a></p>
           <div class="grid node-catalog-grid">
             <div class="card">
               <h3>Core and Utility</h3>
+              <p>Notes, scheduling, Python, switches, outputs, and For Each / For Each End.</p>
               <ul class="node-list">
-                <li><a class="node-catalog-link" href="nodes.html?node=note"><img class="node-inline-icon" src="../icons/Electric_Pen_Icon.png" alt="Note icon" /><span><strong>note</strong>: note tasks and text content with per-parameter controls.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=node"><img class="node-inline-icon" src="../icons/TabIcon.png" alt="Node icon" /><span><strong>node</strong>: standard general-purpose parameter node.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=append"><img class="node-inline-icon" src="../icons/append_icon.png" alt="Append icon" /><span><strong>append</strong>: ordered input aggregation; can drive Gantt group order.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=switch"><img class="node-inline-icon" src="../icons/Switch_Icon.png" alt="Switch icon" /><span><strong>switch</strong>: single-branch selection from multiple upstream nodes.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=gantt-chart"><img class="node-inline-icon" src="../icons/Calendar_Icon.png" alt="Gantt icon" /><span><strong>gantt_chart</strong>: scheduling board with multi-note grouping, collapse persistence, and CSV copy/paste transfer.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=python"><img class="node-inline-icon" src="../icons/Python_Icon.png" alt="Python icon" /><span><strong>python</strong>: run custom scripts in graph context.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=output"><img class="node-inline-icon" src="../icons/Out_Node_Icon.png" alt="Output icon" /><span><strong>output</strong>: terminal collector for final graph output.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=for-each"><img class="node-inline-icon" src="../icons/LoopArrows_Icon_s.png" alt="" /><span><strong>for_each</strong>: Loop over Mocap Collection outputs, checked BVH paths, or a numeric parameter range. The start node passes the active animation downstream.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=for-each-end"><img class="node-inline-icon" src="../icons/LoopArrows_Icon_s.png" alt="" /><span><strong>for_each_end</strong>: Complete a For Each iteration when its connected Render job finishes.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=note"><img class="node-inline-icon" src="../icons/Electric_Pen_Icon.png" alt="" /><span><strong>note</strong>: Note tasks and text content with per-parameter controls.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=node"><img class="node-inline-icon" src="../icons/TabIcon.png" alt="" /><span><strong>node</strong>: Standard general-purpose parameter node.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=append"><img class="node-inline-icon" src="../icons/append_icon.png" alt="" /><span><strong>append</strong>: Ordered input aggregation; can drive Gantt group order.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=switch"><img class="node-inline-icon" src="../icons/Switch_Icon.png" alt="" /><span><strong>switch</strong>: Single-branch selection from multiple upstream nodes.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=gantt-chart"><img class="node-inline-icon" src="../icons/Calendar_Icon.png" alt="" /><span><strong>gantt_chart</strong>: Scheduling board with multi-note grouping, collapse state persistence, and CSV copy/paste transfer.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=python"><img class="node-inline-icon" src="../icons/Python_Icon.png" alt="" /><span><strong>python</strong>: Run custom scripts in graph context.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=output"><img class="node-inline-icon" src="../icons/Out_Node_Icon.png" alt="" /><span><strong>output</strong>: Terminal collector for final graph output.</span></a></li>
               </ul>
+              <a class="text-link" href="nodes.html#core-and-utility">Browse utility nodes →</a>
             </div>
-
             <div class="card">
               <h3>AI and Knowledge</h3>
+              <p>Models, chat, documents, Data Nexus, Skills, and Task.</p>
               <ul class="node-list">
-                <li><a class="node-catalog-link" href="nodes.html?node=local-server"><img class="node-inline-icon" src="../icons/Server_Icon.png" alt="Local server icon" /><span><strong>local_server</strong>: local server endpoint configuration.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=llm-prompt"><img class="node-inline-icon" src="../icons/LLM_Icon.png" alt="Prompt icon" /><span><strong>llm_prompt</strong>: OpenAI or Ollama/DeepSeek model settings and response generation for Chatbot workflows.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=chatbot"><img class="node-inline-icon" src="../icons/Chatbot_Icon.png" alt="Chatbot icon" /><span><strong>chatbot</strong>: conversation workflows with Database history, Voice Actor input, LLM Prompt runtime, and optional <code>mediator_input</code>.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=database"><img class="node-inline-icon" src="../icons/Database_Icon.png" alt="Database icon" /><span><strong>database</strong>: persistence layer for graph and chat data.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=data-nexus"><img class="node-inline-icon" src="../icons/DataNexus_Icon.png" alt="Data Nexus icon" /><span><strong>data_nexus</strong>: folder-aware knowledge canvas for points, vault files, graph relationships, question refs, slide refs, and answer links.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=skills"><img class="node-inline-icon" src="../icons/skills_Icon_s.png" alt="Skills icon" /><span><strong>skills</strong>: local Skills library browser for templates, task guides, approval state, review diffs, and deck generation.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=task"><img class="node-inline-icon" src="../icons/Tasks_Icon_s.png" alt="Task icon" /><span><strong>task</strong>: workflow step controller for readiness, questions, drafts, HTML refresh, slide indexing, and status.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=librarian"><img class="node-inline-icon" src="../icons/librarian_search_Icon.png" alt="Librarian icon" /><span><strong>librarian</strong>: document indexing, search, summarize, and analysis.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=local-server"><img class="node-inline-icon" src="../icons/Server_Icon.png" alt="" /><span><strong>local_server</strong>: Local server endpoint configuration.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=llm-prompt"><img class="node-inline-icon" src="../icons/LLM_Icon.png" alt="" /><span><strong>llm_prompt</strong>: OpenAI or Ollama/DeepSeek model settings and response generation for Chatbot workflows.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=chatbot"><img class="node-inline-icon" src="../icons/Chatbot_Icon.png" alt="" /><span><strong>chatbot</strong>: Conversation workflows with Database history, Voice Actor input, LLM Prompt runtime, and optional mediator_input .</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=database"><img class="node-inline-icon" src="../icons/Database_Icon.png" alt="" /><span><strong>database</strong>: Persistence layer for graph and chat data.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=data-nexus"><img class="node-inline-icon" src="../icons/DataNexus_Icon.png" alt="" /><span><strong>data_nexus</strong>: Folder-aware knowledge canvas for points, vault files, graph relationships, question and slide point types, review rings, references, and answer-to-question links.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=skills"><img class="node-inline-icon" src="../icons/skills_Icon_s.png" alt="" /><span><strong>skills</strong>: Local Skills library browser for human templates, agent templates, task guides, approval state, validation warnings, review diffs, and Sales Agent deck generation.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=task"><img class="node-inline-icon" src="../icons/Tasks_Icon_s.png" alt="" /><span><strong>task</strong>: Workflow step controller that reads Skills, Data Nexus, and optional Mediator AI; checks readiness, writes questions, generates drafts, refreshes HTML, and indexes slides.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=librarian"><img class="node-inline-icon" src="../icons/librarian_search_Icon.png" alt="" /><span><strong>librarian</strong>: Document indexing, search, summarize, and analysis.</span></a></li>
               </ul>
+              <a class="text-link" href="nodes.html#ai-and-knowledge">Browse knowledge nodes →</a>
             </div>
-
             <div class="card">
               <h3>Automation, Voice, and Control</h3>
+              <p>Speech, translation, agents, Qubit Deck, keyboard actions, and serial connections.</p>
               <ul class="node-list">
-                <li><a class="node-catalog-link" href="nodes.html?node=voice-actor"><img class="node-inline-icon" src="../icons/TanyaAI_Icon.png" alt="Voice Actor icon" /><span><strong>voice_actor</strong>: speech-to-text and text-to-speech node with Auto Respond, Ask First, and Manual send modes.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=audio-capture"><img class="node-inline-icon" src="../icons/AudioCapture_Icon.png" alt="Audio capture icon" /><span><strong>audio_capture</strong>: captures output device, input device, or application audio with phrase controls.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=translator"><img class="node-inline-icon" src="../icons/LLM_Icon.png" alt="" /><span><strong>translator</strong>: translate incoming text or voice transcripts with language, style, and automatic translation controls.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=openai-realtime-translate"><img class="node-inline-icon" src="../icons/Mic_Icon.png" alt="" /><span><strong>openai_realtime_translate</strong>: translate live microphone speech with spoken output and a live translation transcript.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=minimax-tts-api"><img class="node-inline-icon" src="../icons/TanyaAI_Icon.png" alt="" /><span><strong>minimax_tts_api</strong>: generate speech audio from text through the MiniMax Speech API.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=mediator-agent"><img class="node-inline-icon" src="../icons/Mediator_Icon_1_s.png" alt="Mediator icon" /><span><strong>mediator_agent</strong>: agent profile layer and technical executor for voice workflows, Chatbot handoff, and Sales Agent AI review.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=codex-sandbox"><img class="node-inline-icon" src="../icons/Sandbox_Icon.png" alt="Sandbox icon" /><span><strong>codex_sandbox</strong>: future Mediator execution-policy node for sandbox, approval, working directory, network, and output capture settings.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=qubit-deck-controller"><img class="node-inline-icon" src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="Qubit Deck icon" /><span><strong>qubit_deck_controller</strong>: list or execute Qubit Deck actions from manual fields or Mediator JSON.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=keyboard-sequence"><img class="node-inline-icon" src="../icons/KeyboardActionRunner_Icon_s.png.png" alt="Keyboard sequence icon" /><span><strong>keyboard_sequence</strong>: Keyboard Auto Runner for timed key/action sequences.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=serial-com"><img class="node-inline-icon" src="../icons/SerialCom_Icon_s.png" alt="Serial COM icon" /><span><strong>serial_com</strong>: COM port, baud, and timeout settings for serial/Pico HID automation paths.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=voice-actor"><img class="node-inline-icon" src="../icons/TanyaAI_Icon.png" alt="" /><span><strong>voice_actor</strong>: Speech-to-text and text-to-speech node with Auto Respond, Ask First, and Manual send modes.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=audio-capture"><img class="node-inline-icon" src="../icons/AudioCapture_Icon.png" alt="" /><span><strong>audio_capture</strong>: Capture output-device, input-device, or application audio with source, backend, sample-rate, threshold, silence, and phrase controls. Continuous streaming supports buffered speech recognition, exclusion of Qubit Field playback, and Test &amp; Listen monitoring.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=translator"><img class="node-inline-icon" src="../icons/LLM_Icon.png" alt="" /><span><strong>translator</strong>: Translate incoming text or voice transcripts with language, style, and automatic translation controls.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=openai-realtime-translate"><img class="node-inline-icon" src="../icons/Mic_Icon.png" alt="" /><span><strong>openai_realtime_translate</strong>: Translate live microphone speech with spoken output and a live translation transcript.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=minimax-tts-api"><img class="node-inline-icon" src="../icons/TanyaAI_Icon.png" alt="" /><span><strong>minimax_tts_api</strong>: Generate speech audio from text through the MiniMax Speech API.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=mediator-agent"><img class="node-inline-icon" src="../icons/Mediator_Icon_1_s.png" alt="" /><span><strong>mediator_agent</strong>: Agent profile layer and technical executor for direct voice workflows, Chatbot-origin tool handoff, and Sales Agent AI task review.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=codex-sandbox"><img class="node-inline-icon" src="../icons/Sandbox_Icon.png" alt="" /><span><strong>codex_sandbox</strong>: Future Mediator execution-policy node for Codex sandbox, approval, working directory, network, and output capture settings.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=qubit-deck-controller"><img class="node-inline-icon" src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="" /><span><strong>qubit_deck_controller</strong>: List or execute Qubit Deck actions from manual fields or Mediator JSON.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=keyboard-sequence"><img class="node-inline-icon" src="../icons/KeyboardActionRunner_Icon_s.png.png" alt="" /><span><strong>keyboard_sequence</strong>: Keyboard Auto Runner for timed key/action sequences with lead-in, hold time, delays, and injection mode.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=serial-com"><img class="node-inline-icon" src="../icons/SerialCom_Icon_s.png" alt="" /><span><strong>serial_com</strong>: Stores COM port, baud, and timeout settings for serial/Pico HID automation paths.</span></a></li>
               </ul>
+              <a class="text-link" href="nodes.html#automation-voice-and-control">Browse automation nodes →</a>
             </div>
-
             <div class="card">
               <h3>3D, Rigging, and Scene Processing</h3>
+              <p>Imports, PriorMDM, collections, retargeting, Animation Blend, constraints, scenes, and exports.</p>
               <ul class="node-list">
-                <li><a class="node-catalog-link" href="nodes.html?node=import"><img class="node-inline-icon" src="../icons/Import_File_Icon.png" alt="Import icon" /><span><strong>import</strong>: load mesh or splat assets.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=fbx-import"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX import icon" /><span><strong>fbx_import</strong>: ingest and validate FBX rest geometry, capture pose, and animated pose roles.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=fbx-animation"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="" /><span><strong>fbx_animation</strong>: import an FBX animation clip with skeleton validation and a viewport preview.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=genx-video-mocap"><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="Gen-X icon" /><span><strong>genx_video_mocap</strong>: run GEN-X/GEM-X video mocap and create downstream BVH import nodes.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=mocap-import"><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="Mocap icon" /><span><strong>mocap_import</strong>: import and validate BVH mocap clips with skeleton, frame, and clip summaries.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=anim-retarget"><img class="node-inline-icon" src="../icons/anim_retarget_Icon_s.png" alt="Retarget icon" /><span><strong>anim_retarget</strong>: connect a mocap/FBX source to a target FBX rig with joint mapping and preview options.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=camera"><img class="node-inline-icon" src="../icons/Camera_icon.png" alt="Camera icon" /><span><strong>camera</strong>: scene camera placement/control node.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=light"><img class="node-inline-icon" src="../icons/LightSource_Icon_s.png" alt="Light icon" /><span><strong>light</strong>: directional, point, spot, and area light setup with intensity, range, and shadow parameters.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=instance"><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Instance icon" /><span><strong>instance</strong>: create repeated scene instances.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=copy-to-points"><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Copy to points icon" /><span><strong>copy_to_points</strong>: copy source geometry onto point inputs with instancing and material/texture support.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=primitive"><img class="node-inline-icon" src="../icons/Primitive_Icon.png" alt="Primitive icon" /><span><strong>primitive</strong>: generate procedural primitive geometry.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=curve"><img class="node-inline-icon" src="../icons/StreightCurve_Icon.png" alt="Curve icon" /><span><strong>curve</strong>: create line, circle, or spiral curve scene assets.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=modeler"><img class="node-inline-icon" src="../icons/ObjectSelect_Icon.png" alt="Modeler icon" /><span><strong>modeler</strong>: inspect model object names, hide/isolate submeshes, and save object/point/edge/face selection groups.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=transforms"><img class="node-inline-icon" src="../icons/TranformNode_Icon.png" alt="Transform icon" /><span><strong>transforms</strong>: apply translate/rotate/scale offsets in-chain.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=ply-sequence"><img class="node-inline-icon" src="../icons/PLT_Icon.png" alt="PLY sequence icon" /><span><strong>ply_sequence</strong>: sequence playback/control for PLY streams and splat frame workflows.</span></a></li>
-                <li><a class="node-catalog-link" href="image_gs_splat.html"><img class="node-inline-icon" src="../icons/PixelsToSplat_Icon.png" alt="Image-GS splat icon" /><span><strong>image_gs_splat</strong>: download a URL or local image, run Image-GS, preview the generated Gaussian result, and output a viewport-ready PLY splat.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=scene"><img class="node-inline-icon" src="../icons/Scene_Icon.png" alt="Scene icon" /><span><strong>scene</strong>: assemble and manage multi-asset scenes.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=export-fbx"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX icon" /><span><strong>export_fbx</strong>: export scene geometry to FBX.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=export-fbx-animation"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX animation icon" /><span><strong>export_fbx_animation</strong>: export validated FBX rigs with skeletons, skinned meshes, animation ranges, FPS, and optional joint-scale curves.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=export-obj"><img class="node-inline-icon" src="../icons/OBJ_Icon.png" alt="OBJ icon" /><span><strong>export_obj</strong>: export to OBJ/MTL.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=look-at"><img class="node-inline-icon" src="../icons/WorldGizmoOn_Icon.png" alt="" /><span><strong>look_at</strong>: Aim or constrain a scene object to another object or a skeleton joint.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=animation-blend"><img class="node-inline-icon" src="../icons/BlendAnimation_Icon.png" alt="" /><span><strong>animation_blend</strong>: Build a transition from a character bind pose into a skeletal animation, useful for settling a garment before motion begins.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=delete-joint"><img class="node-inline-icon" src="../icons/Delete_Joint_Icon.png" alt="" /><span><strong>delete_joint</strong>: Remove selected joints from a derived FBX or BVH skeleton and preview the result.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=mocap-collection"><img class="node-inline-icon" src="../icons/BVH_Mocap_Icon_s.png" alt="" /><span><strong>mocap_collection</strong>: Organize BVH takes with an active output, Use checkboxes, Checked only filtering, and live preview. Load individual files or scan a folder recursively.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=priormdm"><img class="node-inline-icon" src="../icons/PromptToAnimation_Icon.png" alt="" /><span><strong>priormdm</strong>: Generate a humanoid motion take from text with duration, seed, guidance, and device controls. Preview the reconstructed BVH or add completed takes to a Mocap Collection.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=import"><img class="node-inline-icon" src="../icons/Import_File_Icon.png" alt="" /><span><strong>import</strong>: Load mesh or splat assets.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=fbx-import"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="" /><span><strong>fbx_import</strong>: Ingest and validate FBX rest geometry, capture pose, and animated pose roles for rigging workflows.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=fbx-animation"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="" /><span><strong>fbx_animation</strong>: Import an FBX animation clip with skeleton validation and a viewport preview.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=genx-video-mocap"><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="" /><span><strong>genx_video_mocap</strong>: Run GEN-X/GEM-X video mocap and create downstream BVH import nodes.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=mocap-import"><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="" /><span><strong>mocap_import</strong>: Import and validate BVH mocap clips with skeleton, frame, and clip summaries.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=anim-retarget"><img class="node-inline-icon" src="../icons/anim_retarget_Icon_s.png" alt="" /><span><strong>anim_retarget</strong>: Connect a mocap/FBX source to a target FBX rig with joint mapping, root controls, pose offsets, preview options, and rig bend/twist constraints. Preview and adjust the rig before exporting or using it as an animated cloth collider.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=camera"><img class="node-inline-icon" src="../icons/Camera_icon.png" alt="" /><span><strong>camera</strong>: Scene camera placement/control node.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=light"><img class="node-inline-icon" src="../icons/LightSource_Icon_s.png" alt="" /><span><strong>light</strong>: Directional, point, spot, and area light setup with intensity, range, and shadow parameters. The node picker also offers directional_light , point_light , spot_light , and area_light presets.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=instance"><img class="node-inline-icon" src="../icons/instance_icon.png" alt="" /><span><strong>instance</strong>: Create repeated scene instances.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=copy-to-points"><img class="node-inline-icon" src="../icons/instance_icon.png" alt="" /><span><strong>copy_to_points</strong>: Copy source geometry onto point inputs with instancing and material/texture support.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=primitive"><img class="node-inline-icon" src="../icons/Primitive_Icon.png" alt="" /><span><strong>primitive</strong>: Generate procedural primitive geometry.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=curve"><img class="node-inline-icon" src="../icons/StreightCurve_Icon.png" alt="" /><span><strong>curve</strong>: Create line, circle, or spiral curve scene assets.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=modeler"><img class="node-inline-icon" src="../icons/ObjectSelect_Icon.png" alt="" /><span><strong>modeler</strong>: Inspect model object names, hide/isolate submeshes, and save object/point/edge/face selection groups.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=transforms"><img class="node-inline-icon" src="../icons/TranformNode_Icon.png" alt="" /><span><strong>transforms</strong>: Apply translate/rotate/scale offsets in-chain.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=ply-sequence"><img class="node-inline-icon" src="../icons/PLT_Icon.png" alt="" /><span><strong>ply_sequence</strong>: Sequence playback/control for PLY streams and splat frame workflows.</span></a></li>
+                <li><a class="node-catalog-link" href="image_gs_splat.html"><img class="node-inline-icon" src="../icons/PixelsToSplat_Icon.png" alt="" /><span><strong>image_gs_splat</strong>: Download a URL or local image, run Image-GS, preview the generated Gaussian result in the node, and output a viewport-ready PLY splat.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=scene"><img class="node-inline-icon" src="../icons/Scene_Icon.png" alt="" /><span><strong>scene</strong>: Assemble and manage multi-asset scenes.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=export-fbx"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="" /><span><strong>export_fbx</strong>: Export scene geometry to FBX.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=export-fbx-animation"><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="" /><span><strong>export_fbx_animation</strong>: Export validated FBX rigs with skeletons, skinned meshes, animation ranges, FPS, and optional joint-scale curves.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=export-obj"><img class="node-inline-icon" src="../icons/OBJ_Icon.png" alt="" /><span><strong>export_obj</strong>: Export to OBJ/MTL.</span></a></li>
               </ul>
+              <a class="text-link" href="nodes.html#3d-rigging-and-scene-processing">Browse scene nodes →</a>
             </div>
-
             <div class="card">
               <h3>Mesh, Materials, and Grooming</h3>
+              <p>Pattern Design, Cloth Solver, UVs, textures, masks, guides, proxies, and splat effects.</p>
               <ul class="node-list">
-                <li><a class="node-catalog-link" href="nodes.html?node=uv-unwrap"><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="UV icon" /><span><strong>uv_unwrap</strong>: UV workflow stage.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=normals"><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="Normals icon" /><span><strong>normals</strong>: smooth mesh normals and cache an updated OBJ for downstream texture, mask, and scene workflows.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=texture"><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="Texture icon" /><span><strong>texture</strong>: base texturing stage.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=texture-pro"><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="Texture pro icon" /><span><strong>texture_pro</strong>: expanded texture processing controls.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=texture-layer"><img class="node-inline-icon" src="../icons/layer_Texture_Icon.png" alt="Texture layer icon" /><span><strong>texture_layer</strong>: layered texture compositing.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=material"><img class="node-inline-icon" src="../icons/MaterialGenerator_Icon_S.png" alt="Material icon" /><span><strong>material</strong>: material setup and conversion utilities.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=mask"><img class="node-inline-icon" src="../icons/PaintBrush_Off_Icon.png" alt="Mask icon" /><span><strong>mask</strong>: paint foreground/background mesh masks with brush, falloff, invert, clear, and preview controls.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=split-volume"><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="Volume split icon" /><span><strong>split_volume</strong> / <strong>volume_selector</strong>: filter/split geometry by volume.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=fx"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="FX icon" /><span><strong>fx</strong>: post-process and trail-style pipeline stage.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=fx-splat-physics"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="" /><span><strong>fx_splat_physics</strong>: add motion lag, gravity, noise, and fading trails to animated skinned splats.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=fx-splat-fx"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="" /><span><strong>fx_splat_fx</strong>: apply audio-driven glow and traveling wave effects to Gaussian splats.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=colorize"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="" /><span><strong>colorize</strong>: recolor splats with a three-color ramp driven by their shape or height.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=fx-music-effects"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="" /><span><strong>fx_music_effects</strong>: drive mesh displacement from an audio track, including animated character geometry.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=wire"><img class="node-inline-icon" src="../icons/StreightArrow_Icon.png" alt="Wire icon" /><span><strong>wire</strong>: wire and curve-based geometry path workflows.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=groom-guides"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom guides icon" /><span><strong>groom_guides</strong>: generate guide curves from a painted mask and source mesh.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=groom-deform"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom deform icon" /><span><strong>groom_deform</strong>: bind guide curves to FBX/retarget rigs and optionally hide the deformer geometry.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=groom-guide-pose"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom pose icon" /><span><strong>groom_guide_pose</strong>: pose guide curves from animation frames with XPBD-style strand settings and optional GPU support.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=groom-guide-sim"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Groom simulation icon" /><span><strong>groom_guide_sim</strong>: simulate guides with frame, FPS, substep, stretch, bend, gravity, wind, and collider controls.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=groom-guide-tube"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="Guide tube icon" /><span><strong>groom_guide_tube</strong>: convert guide curves into tube geometry with radius ramp, subdivisions, caps, smoothing, and source-guide display.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=skinned-volume-mesh"><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="Skinned volume mesh icon" /><span><strong>skinned_volume_mesh</strong>: generate skinned voxel collision meshes from rig contexts for grooming simulation and viewport collision.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=skinned-splat-proxy"><img class="node-inline-icon" src="../icons/PointID_Icon.png" alt="Skinned splat proxy icon" /><span><strong>skinned_splat_proxy</strong>: generate skinned splat proxies from retargeted rigs, FBX imports, or guide tubes.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=cloth-solver"><img class="node-inline-icon" src="../icons/Sew_Icon.png" alt="" /><span><strong>cloth_solver</strong>: Simulate saved pattern panels with CPU or CUDA, sewing, elastic edges, stretch and bend controls, collisions, self collision, gravity, and pins.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=pattern-design"><img class="node-inline-icon" src="../icons/CurveEditor_Icon.png" alt="" /><span><strong>pattern_design</strong>: Draft garment panels in an embedded canvas or Open Full Editor. Edit millimeter dimensions, points, cubic curves, linked mirrors, combined outlines, sewing pairs, and elastic edges.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=uv-unwrap"><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="" /><span><strong>uv_unwrap</strong>: UV workflow stage.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=normals"><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="" /><span><strong>normals</strong>: Smooth mesh normals and cache an updated OBJ for downstream texture, mask, and scene workflows.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=texture"><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="" /><span><strong>texture</strong>: Base texturing stage.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=texture-pro"><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="" /><span><strong>texture_pro</strong>: Expanded texture processing controls.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=texture-layer"><img class="node-inline-icon" src="../icons/layer_Texture_Icon.png" alt="" /><span><strong>texture_layer</strong>: Layered texture compositing.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=material"><img class="node-inline-icon" src="../icons/MaterialGenerator_Icon_S.png" alt="" /><span><strong>material</strong>: Material setup and conversion utilities.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=mask"><img class="node-inline-icon" src="../icons/PaintBrush_Off_Icon.png" alt="" /><span><strong>mask</strong>: Paint foreground/background mesh masks with brush, falloff, invert, clear, and preview controls.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=split-volume"><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="" /><span><strong>split_volume / volume_selector</strong>: Filter/split geometry by volume.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=fx"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="" /><span><strong>fx</strong>: Post-process and trail-style pipeline stage.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=fx-splat-physics"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="" /><span><strong>fx_splat_physics</strong>: Add motion lag, gravity, noise, and fading trails to animated skinned splats.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=fx-splat-fx"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="" /><span><strong>fx_splat_fx</strong>: Apply audio-driven glow and traveling wave effects to Gaussian splats.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=colorize"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="" /><span><strong>colorize</strong>: Recolor splats with a three-color ramp driven by their shape or height.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=fx-music-effects"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="" /><span><strong>fx_music_effects</strong>: Drive mesh displacement from an audio track, including animated character geometry.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=wire"><img class="node-inline-icon" src="../icons/StreightArrow_Icon.png" alt="" /><span><strong>wire</strong>: Wire and curve-based geometry path workflows.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=groom-guides"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="" /><span><strong>groom_guides</strong>: Generate guide curves from a painted mask and source mesh.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=groom-deform"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="" /><span><strong>groom_deform</strong>: Bind guide curves to FBX/retarget rigs and optionally hide the deformer geometry.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=groom-guide-pose"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="" /><span><strong>groom_guide_pose</strong>: Pose guide curves from animation frames with XPBD-style strand settings and optional GPU support.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=groom-guide-sim"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="" /><span><strong>groom_guide_sim</strong>: Simulate guides with frame, FPS, substep, stretch, bend, gravity, wind, and collider controls.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=groom-guide-tube"><img class="node-inline-icon" src="../icons/GroomGuides_Icon_1.png" alt="" /><span><strong>groom_guide_tube</strong>: Convert guide curves into tube geometry with radius ramp, subdivisions, caps, smoothing, and source-guide display.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=skinned-volume-mesh"><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="" /><span><strong>skinned_volume_mesh</strong>: Generate skinned voxel collision meshes from rig contexts for grooming simulation and viewport collision.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=skinned-splat-proxy"><img class="node-inline-icon" src="../icons/PointID_Icon.png" alt="" /><span><strong>skinned_splat_proxy</strong>: Generate skinned splat proxies from retargeted rigs, FBX imports, or guide tubes.</span></a></li>
               </ul>
+              <a class="text-link" href="nodes.html#mesh-materials-and-grooming">Browse creation nodes →</a>
             </div>
-
             <div class="card">
               <h3>Media and Review</h3>
+              <p>HTML, images, audio/video generation, render sequences, post effects, and MP4 delivery.</p>
               <ul class="node-list">
-                <li><a class="node-catalog-link" href="nodes.html?node=html-preview"><img class="node-inline-icon" src="../icons/HTML_Preview.png" alt="HTML icon" /><span><strong>html_preview</strong>: in-node HTML rendering with PDF export for generated decks and other upstream HTML artifacts.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=image-collection"><img class="node-inline-icon" src="../icons/PhotoCollection.png" alt="Image collection icon" /><span><strong>image_collection</strong>: assemble and preview image sets.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=video-player"><img class="node-inline-icon" src="../icons/ReelVideo_Icon.png" alt="Video icon" /><span><strong>video_player</strong>: timeline playback and clip inspection.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=youtube-downloader"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /><span><strong>youtube_downloader</strong>: download a YouTube video as MP4, extract MP3 audio, and optionally save a Markdown transcript.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=minimax-h3-video"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /><span><strong>minimax_h3_video</strong>: generate video from a prompt and optional first/last images through a local MiniMax H3 runtime.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=minimax-h3-api-video"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /><span><strong>minimax_h3_api_video</strong>: generate MiniMax H3 video through the cloud API using a prompt, frame images, or reference images.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=wan22-video"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /><span><strong>wan22_video</strong>: run local Wan 2.2 TI2V-5B text-to-video or image-to-video generation and output an MP4.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=render"><img class="node-inline-icon" src="../icons/RenderNode_Icon.png" alt="Render icon" /><span><strong>render</strong>: render sequence/export pipeline stage.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=post-process"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="Post process icon" /><span><strong>post_process</strong>: apply image-sequence effects such as ordered dithering and produce an output frame pattern.</span></a></li>
-                <li><a class="node-catalog-link" href="nodes.html?node=sequence-to-mp4"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="Sequence to MP4 icon" /><span><strong>sequence_to_mp4</strong>: encode image sequences to MP4 with FPS, codec, and bitrate settings.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=html-preview"><img class="node-inline-icon" src="../icons/HTML_Preview.png" alt="" /><span><strong>html_preview</strong>: In-node HTML rendering with a path input and PDF export for generated decks and other upstream HTML artifacts.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=image-collection"><img class="node-inline-icon" src="../icons/PhotoCollection.png" alt="" /><span><strong>image_collection</strong>: Assemble and preview image sets.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=video-player"><img class="node-inline-icon" src="../icons/ReelVideo_Icon.png" alt="" /><span><strong>video_player</strong>: Timeline playback and clip inspection.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=youtube-downloader"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /><span><strong>youtube_downloader</strong>: Download a YouTube video as MP4, extract MP3 audio, and optionally save a Markdown transcript.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=minimax-h3-video"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /><span><strong>minimax_h3_video</strong>: Generate video from a prompt and optional first/last images through a local MiniMax H3 runtime.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=minimax-h3-api-video"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /><span><strong>minimax_h3_api_video</strong>: Generate MiniMax H3 video through the cloud API using a prompt, frame images, or reference images.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=wan22-video"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /><span><strong>wan22_video</strong>: Run local Wan 2.2 TI2V-5B text-to-video or image-to-video generation and output an MP4.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=render"><img class="node-inline-icon" src="../icons/RenderNode_Icon.png" alt="" /><span><strong>render</strong>: Render sequence/export pipeline stage.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=post-process"><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="" /><span><strong>post_process</strong>: Apply image-sequence effects such as ordered dithering and produce an output frame pattern.</span></a></li>
+                <li><a class="node-catalog-link" href="nodes.html?node=sequence-to-mp4"><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /><span><strong>sequence_to_mp4</strong>: Encode image sequences to MP4 with FPS, codec, and bitrate settings.</span></a></li>
               </ul>
+              <a class="text-link" href="nodes.html#media-and-review">Browse media nodes →</a>
             </div>
           </div>
           <p class="muted">Aliases also exist for many node kinds, including <code>scene_assembly</code>, <code>scene_outliner</code>, <code>exportfbx</code>, <code>export fbx animation</code>, <code>video player</code>, <code>bvh_import</code>, <code>retarget</code>, <code>gpt_prompt</code>, <code>copy to points</code>, <code>hair guides</code>, <code>guide_tube</code>, <code>serial_port</code>, and legacy <code>medigator_agent</code>.</p>
@@ -853,6 +924,7 @@
 
         <section id="pipelines" class="section">
           <h2>Common Pipelines</h2>
+          <div class="callout"><strong>New workflow guides:</strong> <a href="patterns-cloth.html">Pattern Design → Cloth Solver → Scene</a> and <a href="motion.html">PriorMDM / Mocap Collection → Retarget → For Each rendering</a>.</div>
           <div class="grid pipeline-grid">
             <div class="card">
               <h3>Skills + Data Nexus + Task Sales Deck</h3>
@@ -1012,7 +1084,7 @@
             <li>Wireframe default is <code>H</code>; if not, verify <code>gl_wireframe_toggle</code> in <code>hotkeys.json</code>.</li>
             <li>Gantt copy/paste debugging: inspect CSV transfer logs under <code>gantt_chart\transfer_logs</code>.</li>
             <li>If Gantt group order is stale after append reorder, press <strong>Apply Order</strong> on the append node so downstream charts refresh.</li>
-            <li>FBX import or retarget validation issues: run <code>check_fbx_sdk.ps1</code>, or rerun <code>setup.bat full "C:\path\to\fbx_runtime"</code> with the Autodesk FBX runtime folder.</li>
+            <li>FBX import or retarget validation issues: use <strong>Install FBX Support</strong> in the FBX node, or follow the <a href="#fbx-support">optional FBX runtime checks</a>.</li>
             <li>Sequence to MP4 issues: confirm setup reported bundled ffmpeg as ready, or install ffmpeg on <code>PATH</code>.</li>
             <li>Voice Actor speech issues: rerun <code>setup.bat</code> so voice dependencies are installed; Local Whisper requires <code>faster-whisper</code>, Tanya/Google voice uses <code>gTTS</code> plus <code>pygame</code>, and Japanese Kokoro-82M requires the bundled <code>unidic-lite</code> MeCab dictionary.</li>
             <li>Audio Capture issues: rerun <code>setup.bat</code>; output-device capture needs <code>soundcard</code> plus <code>numpy</code>, and input-device capture needs a working audio backend such as PyAudio.</li>
@@ -1035,6 +1107,7 @@
 
         <section id="developer" class="section">
           <h2>Developer Guide (High Level)</h2>
+          <p>Patterns live in <code>echograph/patterns</code>, cloth simulation in <code>echograph/physics/cloth</code>, and motion generation in <code>echograph/motion</code>. Node UI and connection behavior live alongside their node definitions.</p>
           <ul class="bullet">
             <li>Node specs are registered through <code>nodes/core</code> and plugin bootstrap in <code>nodes/loader.py</code>.</li>
             <li>Create Node kinds are defined in <code>echograph/ui/dialogs.py</code>.</li>
@@ -1050,6 +1123,7 @@
             <li>Serial/Pico automation helpers are exposed through <code>serial_com</code> and consumed by downstream automation paths such as <code>keyboard_sequence</code>.</li>
           </ul>
         </section>
+        <footer class="site-footer"><p>Qubit Field · QubitMCP · A visual workbench by Quantality Effects</p><p><a href="https://github.com/QuantalityFX/QubitMCP">Source repository</a> · <a href="nodes.html">Node catalog</a> · <a href="https://discord.com/invite/zJSKYZYZ">Community</a></p><p>To publish documentation updates, run <code>scripts\export_doc_childsite.bat</code> from a source checkout and upload the exported site to the documentation host. Pushing the README updates the repository home page separately.</p></footer>
       </main>
     </div>
 

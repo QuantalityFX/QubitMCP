@@ -386,7 +386,7 @@ class ClothWidget(QtWidgets.QWidget):
         layout.addLayout(pin_buttons)
         for title, action in [("Pin selected points", "pin"), ("Unpin selected", "unpin"), ("Clear pins", "clear_pins")]:
             button = QtWidgets.QPushButton(title)
-            button.setToolTip("Select cloth vertices in the viewport's point mode. Pin changes reset the simulation.")
+            button.setToolTip("Select cloth vertices in the viewport's point mode. Pin changes retain the current pose and recalculate subsequent frames.")
             button.clicked.connect(lambda checked=False, key=action: request_command(node_item, key))
             pin_buttons.addWidget(button)
         cache_buttons = QtWidgets.QHBoxLayout()
@@ -426,7 +426,7 @@ class ClothWidget(QtWidgets.QWidget):
         self.seek_progress.setRange(0, 1)
         self.seek_progress.setValue(0)
         self.seek_progress.setFormat("Timeline cache idle")
-        self.seek_progress.setToolTip("Temporary memory cache. Scrub again to reuse calculated frames; a changed collider animation recalculates from the starting pose.")
+        self.seek_progress.setToolTip("Temporary memory cache. Changing simulation settings or collider animation clears calculated frames and recalculates from the starting pose.")
         layout.addWidget(self.seek_progress)
         tip = QtWidgets.QLabel("Arrange pieces, then Reset. Play settles cloth. Simulate with timeline lets you play or scrub the animation. Alt navigates the camera.")
         tip.setWordWrap(True)

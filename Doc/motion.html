@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Generate motion with PriorMDM, organize BVH takes, edit rig constraints, retarget animation, and batch render collections in Qubit Field." />
+    <title>Motion and Batch Rendering | Qubit Field Workbench</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to guide</a>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <img class="brand-logo" src="../icons/QubitMCP_Icon_s.png" alt="" />
+          <div class="brand-title">Qubit Field</div>
+          <div class="brand-sub">Motion and batch rendering</div>
+          <a class="back-link" href="index.html">&larr; Workbench overview</a>
+          <a class="back-link" href="nodes.html">Search all nodes</a>
+        </div>
+        <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="guide-nav" hidden>Browse this guide</button>
+        <nav class="nav" id="guide-nav" aria-label="Guide sections">
+          <a href="#workflow">Workflow</a><a href="#generation">Generate motion</a>
+          <a href="#collections">Organize takes</a><a href="#prepare-rig">Prepare the rig</a>
+          <a href="#animation-blend">Blend into animation</a><a href="#batch-rendering">Batch rendering</a>
+          <a href="#review">Review and deliver</a><a href="#troubleshooting">Common checks</a>
+          <a href="patterns-cloth.html">Pattern and cloth guide &rarr;</a>
+        </nav>
+      </aside>
+      <main class="content guide-content" id="main-content" tabindex="-1">
+        <header class="guide-header" id="workflow">
+          <p class="eyebrow">Generate · Review · Retarget · Render</p>
+          <h1>Build a reusable motion pipeline</h1>
+          <p class="lead">Bring generated motion, video mocap, or existing clips into one graph. Organize takes, prepare the character rig, and reuse the same scene for a single preview or a collection of renders.</p>
+          <p class="workflow-path">PriorMDM / video mocap / BVH files → Mocap Collection<br />Collection → For Each → Anim Retarget → Scene → Render → For Each End</p>
+          <p><a href="nodes.html#3d-rigging-and-scene-processing">Motion and scene nodes</a> · Updated 13 October 2026</p>
+        </header>
+
+        <section class="section" id="generation">
+          <h2>1. Generate or import a motion take</h2>
+          <div class="grid two">
+            <article class="card"><h3>Text to motion with PriorMDM</h3>
+              <ol class="steps">
+                <li>Add <a href="nodes.html?node=priormdm">PriorMDM</a> and run <strong>Setup PriorMDM</strong>. Confirm its model, normalization data, inference Python, and output folders; use Advanced paths for an existing installation.</li>
+                <li>Describe one character's motion. Set duration, seed, guidance, and device, then choose <strong>Generate</strong>. The base motion controls use a 20 FPS time scale and support durations up to 9.8 seconds.</li>
+                <li>Choose <strong>Create MocapBVH</strong> for a connected BVH preview, or <strong>Add to Collection</strong> to append the completed result to connected collections or create one.</li>
+                <li>Use <strong>Create T-pose BVH</strong> or <strong>Create A-pose BVH</strong> to create a separate single-frame reference from the last generated skeleton.</li>
+              </ol>
+              <p>Generated BVH uses reconstructed rotations for skeleton preview and blocking. Review and retarget each take before treating it as finished character animation.</p>
+            </article>
+            <article class="card"><h3>Existing motion or video</h3>
+              <p><a href="nodes.html?node=mocap-import">Mocap Import</a> loads and validates BVH. <a href="nodes.html?node=fbx-animation">FBX Animation</a> loads a skeletal FBX clip. Both provide a way to inspect the motion before using it downstream.</p>
+              <p><a href="nodes.html?node=genx-video-mocap">GEN-X VideoMocap</a> uses the separate GEM-X runtime to extract motion from video and can create a downstream BVH import. Prepare that runtime using <code>Mocap\setup.bat</code>.</p>
+              <p>Choose the source that fits the task, then bring the result into the same collection, retargeting, scene, and review tools.</p>
+            </article>
+          </div>
+          <h3>Optional hand articulation</h3>
+          <p>PriorMDM exposes <strong>Setup HandMDM</strong> and <strong>Animate Hands</strong>. Configure the hand side, gesture description, time window, and blend duration. The gesture plays, holds, then blends out. This is a preview pipeline: precise palm orientation and character hand retargeting still need refinement.</p>
+          <h3>Preview the rig before a run</h3>
+          <p>Use <strong>Preview Rig</strong> and its collision/limit display options to inspect the skeleton. Select joints to edit bend cones and twist ranges; multi-joint controls help adjust several joints together. Save the rig settings to reuse the adjustments.</p>
+          <figure class="screenshot-card">
+            <a href="UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png"><img src="UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png" width="2286" height="1219" alt="Skeleton with collision guides, bend cones, twist rings, Preview Rig settings, and BVH collection render thumbnails" loading="lazy" decoding="async" /></a>
+            <figcaption><strong>Inspect constraints in context</strong><span>Rig guides, motion collections, and render workflows share the graph and viewport.</span></figcaption>
+          </figure>
+        </section>
+
+        <section class="section" id="collections">
+          <h2>2. Organize takes in Mocap Collection</h2>
+          <p><a href="nodes.html?node=mocap-collection">Mocap Collection</a> keeps BVH paths, their active output, and review tools together.</p>
+          <ul class="bullet">
+            <li><strong>Load BVH files / Load BVH folder:</strong> add individual clips or recursively scan a folder. Existing paths are skipped.</li>
+            <li><strong>Use checkboxes / Checked only:</strong> choose which takes participate in the output list. The output control selects the active take; Live view previews changes.</li>
+            <li><strong>Update paths:</strong> select rows and locate their BVH files under a new parent folder after moving a collection.</li>
+            <li><strong>Load renders / Review renders:</strong> associate rendered results with the source takes and compare them visually.</li>
+            <li><strong>Rename / Archive:</strong> manage the active or selected BVH run folders and their assigned render folders. These actions operate on folders on disk.</li>
+          </ul>
+          <p>Row selection and Use checkboxes have different roles: select rows for management actions; check files to control the eligible output or batch list.</p>
+        </section>
+
+        <section class="section" id="prepare-rig">
+          <h2>3. Prepare the character and constraints</h2>
+          <p>Use <a href="nodes.html?node=anim-retarget">Anim Retarget</a> to map source BVH/FBX motion to a target FBX character. Validate the imported rest geometry, capture pose, and animation roles, then inspect joint mapping, root controls, offsets, and constraint settings in the preview.</p>
+          <div class="grid two">
+            <article class="card"><h3>Delete Joint</h3><p>Connect a supported rig to <code>delete_joint.rig</code>, choose <strong>Select joints</strong>, and use <strong>View</strong> to inspect the derived skeleton. Use it to prepare a skeleton for the next stage while retaining the original imported file.</p><a href="nodes.html?node=delete-joint">Node reference &rarr;</a></article>
+            <article class="card"><h3>Look At</h3><p>Connect a scene object and select another object or a skeleton joint as its target. Configure aim/up axes, look-at or copy rotation, position matching, offsets, and live updates for tracking cameras or scene objects.</p><a href="nodes.html?node=look-at">Node reference &rarr;</a></article>
+          </div>
+          <p>Rig constraints and collision guides help inspect problematic poses. Review the actual animated result, particularly the pelvis, limbs, and hands, before export or cloth simulation.</p>
+        </section>
+
+        <section class="section" id="animation-blend">
+          <h2>4. Blend from a bind pose into animation</h2>
+          <p><a href="nodes.html?node=animation-blend">Animation Blend</a> creates a transition into a clip. It is useful when a character should begin in a dressing pose while cloth settles.</p>
+          <ol class="steps">
+            <li>Connect the character's skeleton/mesh source to <code>bind_pose</code> and the compatible animated source to <code>animation</code>. Retarget mismatched source rigs first.</li>
+            <li>Set <strong>hold frames</strong>, <strong>blend frames</strong>, FPS, and the blend curve. Enable the target-frame option to choose a later pose in the source animation.</li>
+            <li>Connect the resulting <code>animation</code> output to Scene or the animated collider chain used by Cloth Solver.</li>
+            <li>Preview the transition with the garment and camera before baking or rendering.</li>
+          </ol>
+          <p>See <a href="patterns-cloth.html#animation">adding character motion to cloth</a> for the corresponding garment setup.</p>
+        </section>
+
+        <section class="section" id="batch-rendering">
+          <h2>5. Render a collection with For Each</h2>
+          <ol class="steps">
+            <li>Create <a href="nodes.html?node=for-each">For Each</a>. It creates a paired <a href="nodes.html?node=for-each-end">For Each End</a> and a comment wrapper for the loop.</li>
+            <li>Connect the collection to the start node's <code>source</code> input. Route its output through the animation/retargeting nodes, Scene, and Render.</li>
+            <li>Connect Render to the end node's <code>render</code> input. This completion connection lets the loop wait for each render before advancing.</li>
+            <li>Choose <strong>Collection outputs</strong> to follow Checked only, <strong>Checked paths</strong> to visit only checked clips, or <strong>Parameter range</strong> to vary a numeric parameter.</li>
+            <li>Set <strong>Loop Limit</strong>, or use <strong>Single pass</strong> to test one iteration. <strong>Start at iteration</strong> begins partway through the eligible list. Iteration numbers are 1-based.</li>
+            <li>Choose <strong>Run For Each</strong>. Monitor progress and use <strong>Stop</strong> when needed. The start node also passes the active animation through for ordinary preview.</li>
+          </ol>
+          <p class="callout">Verify one take and its output location first. A wrapper organizes the graph visually; the Render → For Each End connection defines when a batch iteration completes.</p>
+        </section>
+
+        <section class="section" id="review">
+          <h2>6. Review and deliver</h2>
+          <p>Associate renders with Mocap Collection for review, or connect outputs to Video Player and Image Collection. Use <strong>Post Process</strong> for sequence effects and <strong>Sequence to MP4</strong> for video delivery. <strong>Export FBX Animation</strong> handles a validated rig and animation range for downstream character work.</p>
+          <p>Motion can also drive grooming, skinned meshes, and splat effects. These are workbench workflows; export to Unreal or another application when the project requires it.</p>
+          <figure class="screenshot-card">
+            <a href="UISnapshot/GaussianSplatFX.png"><img src="UISnapshot/GaussianSplatFX.png" width="2559" height="1366" alt="Animated Gaussian splat character with timeline curves, visual effects nodes, and render previews" loading="lazy" decoding="async" /></a>
+            <figcaption><strong>Take motion beyond the rig</strong><span>Combine animation with Gaussian splats, visual effects, scene lighting, and media output.</span></figcaption>
+          </figure>
+        </section>
+
+        <section class="section" id="troubleshooting">
+          <h2>Common checks</h2>
+          <ul class="bullet">
+            <li><strong>Generation cannot start:</strong> check the node's setup result, model checkpoint, inference Python, data folders, and selected device.</li>
+            <li><strong>Hands are missing:</strong> configure the separate HandMDM runtime and enable Animate Hands; review its time window and side.</li>
+            <li><strong>A collection is empty or missing files:</strong> inspect Use checkboxes, Checked only, and path relocation after moving assets.</li>
+            <li><strong>The batch does not advance:</strong> check the Render → End connection and the render's completion/error status.</li>
+            <li><strong>A blend fails:</strong> confirm both inputs provide skeletons, the animation input has a clip, and the rigs are compatible.</li>
+            <li><strong>FBX needs its runtime:</strong> use Install FBX Support in the FBX node; see <a href="index.html#fbx-support">optional FBX setup</a>.</li>
+          </ul>
+        </section>
+        <footer class="site-footer"><a href="index.html">Workbench manual</a> · <a href="nodes.html">Node catalog</a> · <a href="patterns-cloth.html">Patterns and cloth</a></footer>
+      </main>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

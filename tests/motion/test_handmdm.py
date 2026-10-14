@@ -131,7 +131,7 @@ class HandConversionTests(unittest.TestCase):
             original = {p: p.read_bytes() for p in root.iterdir() if p.is_file()}
             rebuilt = rebuild_generated_motion(root, root / "rebuilt")
             _, rebuilt_clip = load_animation(rebuilt.animation_path)
-            self.assertEqual(rebuilt.metadata["rotation_reconstruction_version"], 3)
+            self.assertEqual(rebuilt.metadata["rotation_reconstruction_version"], 4)
             self.assertEqual(
                 [t.to_dict() for t in clip.tracks if t.joint_name in FINGER_NAMES],
                 [t.to_dict() for t in rebuilt_clip.tracks if t.joint_name in FINGER_NAMES])

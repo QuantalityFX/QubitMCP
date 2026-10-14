@@ -89,6 +89,10 @@ JOINT_LIMITS = {
     7: dict(swing=85., twist=0., speed=540.),
     8: dict(swing=85., twist=0., speed=540.),
     12: dict(swing=70., twist=0., speed=360.),
+    # Collar motion is small relative to the shoulder. Position-only motion
+    # measures its bend, but cannot establish axial twist.
+    13: dict(swing=15., twist=0., speed=180.),
+    14: dict(swing=15., twist=0., speed=180.),
 }
 
 # Interactive pose inspection permits authored twist, unlike conservative
@@ -101,6 +105,8 @@ for _joint in (1,2):
     PREVIEW_JOINT_LIMITS[_joint] = dict(swing=60.,twist=UPPER_LIMB_ROLL)
 for _joint in (16,17):
     PREVIEW_JOINT_LIMITS[_joint] = dict(swing=80.,twist=UPPER_LIMB_ROLL)
+for _joint in (13,14):
+    PREVIEW_JOINT_LIMITS[_joint]['twist'] = 15.
 for _joint in (7,8):
     PREVIEW_JOINT_LIMITS[_joint]['swing'] = 25.
     PREVIEW_JOINT_LIMITS[_joint]['twist'] = 35.

@@ -749,14 +749,37 @@ class ViewportTests(unittest.TestCase):
                 self.assertEqual(self.state.cache_path, path)
                 self.assertEqual(Path(path).read_bytes(), stored)
 
-    def test_cached_frames_survive_settings_edits_and_timeline_toggle(self):
+    def test_simulation_settings_recalculate_cached_frames_before_rendering(self):
+        self.config["settings"]["follow_timeline"] = True
+        self.view._mgl_update_cloth()
+        changes = {"substeps": 6, "iterations": 12, "collision_quality": 4,
+                   "self_collision": True, "thickness": .006, "friction": .9,
+                   "bend": .3, "gravity_enabled": False, "gravity_y": 0}
+        for key, value in changes.items():
+            with self.subTest(control=key):
+                self.finish_seek(9)
+                self.finish_seek(2)
+                self.config["settings"][key] = value
+                self.assertFalse(self.view._cloth_render_ready(2))
+                with patch.object(self.state.solver, "step", wraps=self.state.solver.step) as solve:
+                    self.finish_seek(6)
+                    self.assertEqual(solve.call_count, 6)
+                    self.assertIsNone(self.state.cache.get(9))
+                    self.assertTrue(self.view._cloth_render_ready(6))
+                    self.finish_seek(2)
+                    self.finish_seek(6)
+                    self.assertEqual(solve.call_count, 6)  # Only the new history is reusable.
+
+    def test_playback_and_interaction_toggles_keep_valid_timeline_frames(self):
         self.config["settings"]["follow_timeline"] = True
         self.view._mgl_update_cloth()
         self.finish_seek(6)
         positions = self.state.solver.x.copy()
         self.finish_seek(2)
-        self.config["settings"].update(gravity_y=0, substeps=6, friction=.9, bend=.3)
         with patch.object(self.state.solver, "step", wraps=self.state.solver.step) as solve:
+            self.config["settings"].update(enabled=False, interactive=False)
+            self.view._mgl_update_cloth()
+            self.config["settings"]["enabled"] = True
             self.view._mgl_update_cloth()
             self.config["settings"]["follow_timeline"] = False
             self.view._mgl_update_cloth()
@@ -768,6 +791,55 @@ class ViewportTests(unittest.TestCase):
             solve.assert_not_called()
             self.finish_seek(7)
             self.assertEqual(solve.call_count, 1)
+
+    def test_settings_changed_while_timeline_is_off_recalculate_on_resume(self):
+        self.config["settings"]["follow_timeline"] = True
+        self.view._mgl_update_cloth()
+        initial = self.state.initial_pose[1].copy()
+        self.finish_seek(6)
+        self.config["settings"]["follow_timeline"] = False
+        self.view._mgl_update_cloth()
+        self.config["settings"].update(gravity_enabled=False, substeps=8)
+        self.view._mgl_update_cloth()
+        self.assertEqual(set(self.state.cache.frames), {0})
+        self.config["settings"]["follow_timeline"] = True
+        with patch.object(self.state.solver, "step", wraps=self.state.solver.step) as solve:
+            self.finish_seek(6)
+            self.assertEqual(solve.call_count, 6)
+            np.testing.assert_allclose(self.state.solver.x, initial, atol=1e-7)
+
+    def test_settings_edit_during_timeline_worker_cannot_restore_stale_frames(self):
+        self.config["settings"]["follow_timeline"] = True
+        self.view._mgl_update_cloth()
+        initial = self.state.initial_pose[1].copy()
+        self.finish_seek(3)
+        started, release = threading.Event(), threading.Event()
+        original = self.state.solver.step
+
+        def slow_step(*args, **kwargs):
+            started.set()
+            if not release.wait(5):
+                raise RuntimeError("Test worker timed out")
+            return original(*args, **kwargs)
+
+        try:
+            with patch.object(self.state.solver, "step", side_effect=slow_step) as solve:
+                self.view.frame = 6
+                MGLRendererMixin._mgl_update_cloth(self.view)
+                self.assertTrue(started.wait(1))
+                pending = self.state.pending
+                self.config["settings"].update(gravity_enabled=False, substeps=8)
+                MGLRendererMixin._mgl_update_cloth(self.view)
+                self.assertIs(self.state.pending, pending)
+                self.assertFalse(self.view._cloth_render_ready(6))
+                release.set()
+                pending.result(timeout=10)
+                self.finish_seek(6)
+                self.assertEqual(solve.call_count, 7)  # Old in-flight step, then six new solves.
+                np.testing.assert_allclose(self.state.solver.x, initial, atol=1e-7)
+                self.assertTrue(self.view._cloth_render_ready(6))
+        finally:
+            release.set()
 
     def test_scrub_retargets_active_worker_and_displays_only_completed_target(self):
         self.config["settings"]["follow_timeline"] = True
@@ -1110,7 +1182,7 @@ class ViewportTests(unittest.TestCase):
             self.view._mgl_update_cloth()
             np.testing.assert_allclose(self.state.solver.x, positions, atol=1e-7)
 
-    def test_editing_gravity_after_loading_state_preserves_pose_and_history(self):
+    def test_editing_gravity_recalculates_from_saved_drape_without_changing_file(self):
         self.config["settings"].update(follow_timeline=True, gravity_y=0)
         self.view._mgl_update_cloth()
         with tempfile.TemporaryDirectory() as temp:
@@ -1122,33 +1194,24 @@ class ViewportTests(unittest.TestCase):
             original_file = Path(path).read_bytes()
             self.config["cache_path"] = path
             self.view._mgl_update_cloth()
-            for frame in (1, 2):
-                self.view.frame = frame
-                self.view._mgl_update_cloth()
-            self.view.frame = 1
-            self.view._mgl_update_cloth()
-            held = self.state.solver.x.copy()
-            clock = self.state.solver.time
+            self.finish_seek(6)
+            self.finish_seek(2)
             self.config["settings"]["gravity_y"] = -9.81
-            self.view._mgl_update_cloth()
+            with patch.object(self.state.solver, "step", wraps=self.state.solver.step) as solve:
+                self.finish_seek(2)
+                self.assertEqual(solve.call_count, 2)
             self.assertIs(self.state, self.view._cloth_states["Cloth"])
-            np.testing.assert_array_equal(self.state.solver.x, held)
-            self.assertEqual(self.state.solver.time, clock)
+            self.assertLess(self.state.solver.x[:, 1].mean(), positions[:, 1].mean())
+            self.assertAlmostEqual(self.state.solver.time, 5 + 2 / 24)
+            np.testing.assert_allclose(self.state.initial_pose[1], positions, atol=1e-7)
             self.assertIsNotNone(self.state.cache.get(0))
+            self.assertIsNone(self.state.cache.get(6))
             self.assertEqual(self.state.cache_path, path)
-            self.view.frame = 2
-            self.view._mgl_update_cloth()
-            np.testing.assert_allclose(self.state.solver.x, held, atol=1e-7)
-            self.view.frame = 3  # New frames use the edited gravity; old previews stay cached.
-            self.view._mgl_update_cloth()
-            self.assertLess(self.state.solver.x[:, 1].mean(), held[:, 1].mean())
             self.assertEqual(Path(path).read_bytes(), original_file)
             self.config["settings"]["gravity_enabled"] = False
-            held = self.state.solver.x.copy()
-            velocity = self.state.solver.velocity.copy()
-            self.view._mgl_update_cloth()
-            np.testing.assert_array_equal(self.state.solver.x, held)
-            np.testing.assert_array_equal(self.state.solver.velocity, velocity)
+            self.finish_seek(2)
+            np.testing.assert_allclose(self.state.solver.x, positions, atol=1e-7)
+            np.testing.assert_allclose(self.state.solver.velocity, 0, atol=1e-7)
             self.assertEqual(self.state.solver.settings.gravity_y, -9.81)
             # Reload at a different gravity setting and keep the saved drape.
             self.model._cloth_commands = [{"action": "load_cache", "path": path}]
@@ -1223,7 +1286,7 @@ class ViewportTests(unittest.TestCase):
         finally:
             release.set()
 
-    def test_editing_baked_cloth_settings_continues_from_displayed_cache_frame(self):
+    def test_editing_baked_cloth_settings_discards_playback_and_recalculates(self):
         self.config["settings"]["follow_timeline"] = True
         self.view._mgl_update_cloth()
         with tempfile.TemporaryDirectory() as temp:
@@ -1232,19 +1295,24 @@ class ViewportTests(unittest.TestCase):
             write_bake(path, {"signature": self.state.signature, "geometry_signature": self.state.geometry_signature,
                               "cache_type": "bake", "resume_frame": 1, "solver_time": 2},
                        [0, 1, 2], [positions, positions, positions], [np.zeros_like(positions)] * 3)
+            original_file = Path(path).read_bytes()
+            initial = self.state.initial_pose[1].copy()
             self.config["cache_path"] = path
             self.view._mgl_update_cloth()
             self.app.processEvents()
             self.assertEqual(self.view.frame, 1)
-            self.config["settings"]["gravity_y"] = -5
-            self.view._mgl_update_cloth()
-            np.testing.assert_allclose(self.state.solver.x, positions, atol=1e-7)
-            self.view.frame = 2
-            self.view._mgl_update_cloth()
-            self.assertAlmostEqual(self.state.solver.time, 2 + 1 / 24)
-            self.assertLess(self.state.solver.x[:, 1].mean(), positions[:, 1].mean())
-            self.assertEqual(self.state.cache_path, path)
-            self.assertEqual(set(self.state.disk_frames), {0, 1, 2})
+            self.config["settings"].update(gravity_enabled=False, collision_quality=4)
+            with patch.object(self.state.solver, "step", wraps=self.state.solver.step) as solve:
+                self.finish_seek(2)
+                self.assertEqual(solve.call_count, 2)
+            np.testing.assert_allclose(self.state.solver.x, initial, atol=1e-7)
+            self.assertAlmostEqual(self.state.solver.time, 2 / 24)
+            self.assertEqual(self.state.cache_path, "")
+            self.assertEqual(self.config["cache_path"], "")
+            self.assertFalse(self.state.disk_frames)
+            self.assertFalse(self.state.disk_velocities)
+            self.assertFalse(self.state.cache_playback)
+            self.assertEqual(Path(path).read_bytes(), original_file)
 
     def test_timeline_playback_waits_for_worker_and_never_skips_collider_poses(self):
         self.config["settings"]["follow_timeline"] = True

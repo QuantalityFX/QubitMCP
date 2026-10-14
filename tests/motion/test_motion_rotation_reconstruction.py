@@ -24,6 +24,37 @@ def bent_pose():
 
 
 class StableRotationTests(unittest.TestCase):
+    def test_collar_reversals_are_bounded_without_axial_twist_or_snapping(self):
+        from echograph.motion.rig_limits import rotation_parts
+        from echograph.motion.self_collision import world_pose
+        offsets=REST_DIRECTIONS*.2
+        positions=[]
+        for frame in range(30):
+            local=np.tile(np.eye(3),(22,1,1))
+            local[0]=Rotation.from_euler('y',frame*5,degrees=True).as_matrix()
+            for joint in (13,14):
+                local[joint]=Rotation.from_euler('xyz',
+                    [90,170*(-1)**frame,40],degrees=True).as_matrix()
+            positions.append(world_pose(local,offsets,np.zeros(3))[0])
+        _,_,result,_=reconstruct_animation(np.array(positions),20,{})
+        for joint,axis in ((13,[1,0,0]),(14,[-1,0,0])):
+            rotations=Rotation.from_matrix(result[:,joint])
+            for quaternion in rotations.as_quat():
+                swing,twist=rotation_parts(quaternion,axis)
+                self.assertLessEqual(np.degrees(swing.magnitude()),15.+1e-6)
+                self.assertAlmostEqual(twist,0.,places=7)
+            self.assertLessEqual(np.max(np.degrees((rotations[:-1].inv()*rotations[1:]).magnitude())),9.+1e-6)
+
+    def test_small_collar_bends_survive_reconstruction(self):
+        from echograph.motion.self_collision import world_pose
+        offsets=REST_DIRECTIONS*.2
+        local=np.tile(np.eye(3),(22,1,1))
+        for joint,angle in ((13,15),(14,-15)):
+            local[joint]=Rotation.from_euler('z',angle,degrees=True).as_matrix()
+        pose=world_pose(local,offsets,np.zeros(3))[0]
+        _,_,result,_=reconstruct_animation(np.repeat(pose[None],3,axis=0),20,{})
+        np.testing.assert_allclose(result[:,[13,14]],np.tile(local[[13,14]],(3,1,1,1)),atol=1e-8)
+
     def test_spine_reversals_and_chest_flips_are_bounded_without_snapping(self):
         positions = []
         offsets = REST_DIRECTIONS * .2
