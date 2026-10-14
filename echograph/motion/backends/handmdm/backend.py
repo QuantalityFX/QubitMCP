@@ -1,7 +1,7 @@
 """HandMDM file/process boundary. Importing this module never loads ML packages."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
 import math
@@ -14,16 +14,34 @@ import tempfile
 from ...types import GenerationPlan
 
 ROOT = Path(__file__).resolve().parents[4]
-REPOSITORY = ROOT / "third_party/HandMDM"
+from ..priormdm.paths import storage_root
+
+
+def default_repository():
+    return storage_root() / "third_party/HandMDM"
+
+
+REPOSITORY = default_repository()
 
 
 @dataclass(frozen=True)
 class HandMDMConfig:
-    repository: Path = REPOSITORY
-    python: Path = REPOSITORY / ".venv/Scripts/python.exe"
-    checkpoint: Path = REPOSITORY / "models/mdm_bobsl3dt_phonology_hms/checkpoints/last.ckpt"
+    repository: Path = field(default_factory=default_repository)
+    python: Path = field(default_factory=lambda: default_repository() / ".venv/Scripts/python.exe")
+    checkpoint: Path = field(default_factory=lambda: default_repository() / "models/mdm_bobsl3dt_phonology_hms/checkpoints/last.ckpt")
     output_root: Path = Path(tempfile.gettempdir()) / "EchoGraph" / "handmdm"
     device: str = "cuda:0"
+
+
+    def __post_init__(self):
+        legacy = (ROOT / "third_party/HandMDM").resolve()
+        target = default_repository()
+        if (self.repository.resolve() == legacy and target.resolve() != legacy
+                and not (legacy / "src/model/gaussian.py").is_file()):
+            for key in ("repository", "python", "checkpoint"):
+                path = getattr(self, key).resolve()
+                if path.is_relative_to(legacy):
+                    object.__setattr__(self, key, target / path.relative_to(legacy))
 
 
 @dataclass(frozen=True)

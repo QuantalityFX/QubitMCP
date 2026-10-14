@@ -6,6 +6,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from echograph.motion.backends.handmdm.backend import HandMDMConfig, ROOT
 from echograph.motion.backends.priormdm import PriorMDMConfig
+from echograph.motion.backends.priormdm.paths import storage_root
 from .setup_ui import SetupSession, bootstrap_python
 
 _SESSION = None
@@ -13,7 +14,7 @@ _NODES = []
 
 
 class HandSetupSession(SetupSession):
-    log_directory = ROOT / "logs/motion/handmdm/setup"
+    log_directory = storage_root() / "logs/motion/handmdm/setup"
 
     def __init__(self, parent=None):
         hand = HandMDMConfig()

@@ -21,16 +21,21 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import zipfile
+from urllib.request import urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REPOSITORY = ROOT / "third_party" / "HandMDM"
-LOGS = ROOT / "logs" / "FeatureAdchitecture" / "HandMDM"
+# Direct script execution must also find the application-owned helpers.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from echograph.motion.backends.priormdm.paths import storage_root
+from echograph.motion.backends.priormdm.installer import extract_new_files
+
+REPOSITORY = storage_root() / "third_party" / "HandMDM"
+LOGS = storage_root() / "logs" / "motion" / "handmdm" / "setup"
+SOURCE_REVISION = "ed146a853ecabac9f3ac879050700acd1880847d"
 MODEL_NAME = "mdm_bobsl3dt_phonology_hms"
-CORE = {
-    "priorMDM": "https://github.com/priorMDM/priorMDM.git",
-    "HandMDM": "https://github.com/leorebensabath/HandMDM.git",
-}
 # These URLs are the explicit repository links in the user's hand roadmap.
 # Cloning reference source does not download datasets, weights, or install it.
 REFERENCES = {
@@ -72,6 +77,47 @@ def clone_missing(destination: Path, url: str):
     run(["git", "clone", url, destination])
 
 
+def ensure_source():
+    required = ("inference.py", "requirements.txt", "src/model/gaussian.py",
+                "motion_stats/bobsl3dt/mean.pt", "motion_stats/bobsl3dt/std.pt",
+                "text_stats/bobsl3dt/clip/mean.pt", "text_stats/bobsl3dt/clip/std.pt")
+    if all((REPOSITORY / name).is_file() and (REPOSITORY / name).stat().st_size
+           for name in required):
+        return
+    archive = REPOSITORY / "downloads" / f"handmdm-source-{SOURCE_REVISION}.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    if not archive.is_file():
+        url = f"https://codeload.github.com/leorebensabath/HandMDM/zip/{SOURCE_REVISION}"
+        print(f"Downloading HandMDM source: {url}", flush=True)
+        partial = archive.with_suffix(".partial")
+        try:
+            with urlopen(url, timeout=60) as response, partial.open("wb") as output:
+                shutil.copyfileobj(response, output)
+            with zipfile.ZipFile(partial) as zipped:
+                if zipped.testzip() is not None:
+                    raise ValueError("HandMDM source download is corrupt; retry setup.")
+            partial.replace(archive)
+        finally:
+            partial.unlink(missing_ok=True)
+    prefix = f"HandMDM-{SOURCE_REVISION}"
+    with zipfile.ZipFile(archive) as zipped:
+        if not all(f"{prefix}/{name}" in zipped.namelist() for name in required):
+            raise ValueError("HandMDM source archive is missing required source or statistics.")
+    extract_new_files(archive, REPOSITORY, resume=True, strip_prefix=prefix)
+
+
+def inference_requirements() -> Path:
+    # pip's git+ URL requires a Git executable even when source came from ZIP.
+    source = (REPOSITORY / "requirements.txt").read_text(encoding="utf-8")
+    source = source.replace(
+        "git+https://github.com/openai/CLIP.git@a1d071733d7111c9c014f024669f959182114e33",
+        "https://github.com/openai/CLIP/archive/a1d071733d7111c9c014f024669f959182114e33.zip")
+    LOGS.mkdir(parents=True, exist_ok=True)
+    target = LOGS / "requirements-inference.txt"
+    target.write_text(source, encoding="utf-8")
+    return target
+
+
 def runtime_python() -> Path:
     return REPOSITORY / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
@@ -99,7 +145,7 @@ def install_environment(base_python: Path):
     run(pip + ["pip==24.3.1", "setuptools==69.5.1", "wheel==0.43.0"])
     run(pip + ["torch==2.4.1", "torchvision==0.19.1", "--index-url",
                "https://download.pytorch.org/whl/cu118"])
-    run(pip + ["--no-build-isolation", "-r", REPOSITORY / "requirements.txt", "gdown==5.2.0"])
+    run(pip + ["--no-build-isolation", "-r", inference_requirements(), "gdown==5.2.0"])
     run([python, "-m", "pip", "check"])
     LOGS.mkdir(parents=True, exist_ok=True)
     (LOGS / "environment-freeze.txt").write_text(
@@ -149,6 +195,8 @@ def download_folder(name: str):
 PROBE = r'''
 import json
 import sys
+import zipfile
+from urllib.request import urlopen
 from pathlib import Path
 import torch, torchvision, pytorch_lightning, hydra, clip
 from src.model.gaussian import GaussianDiffusion
@@ -189,7 +237,7 @@ def inspect_resources(*, application=False) -> dict:
                  for name in ("mean", "std")]
     for path in required:
         if not path.is_file() or path.stat().st_size == 0:
-            missing.append(f"Missing or empty: {path.relative_to(ROOT)}")
+            missing.append(f"Missing or empty: {path}")
     if config_path.is_file():
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -253,24 +301,23 @@ def inspect_resources(*, application=False) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--clone", action="store_true", help="Clone missing core repositories; keep existing checkouts.")
-    parser.add_argument("--install", action="store_true", help="Clone if needed and install only HandMDM/.venv.")
+    parser.add_argument("--clone", action="store_true", help="Download missing HandMDM source without Git.")
+    parser.add_argument("--install", action="store_true", help="Download source if needed and install only HandMDM/.venv.")
     parser.add_argument("--base-python", type=Path, default=Path(sys.executable), help="Python 3.9 or 3.10 for venv creation.")
     parser.add_argument("--download-models", action="store_true", help="Download the official models folder (may contain multiple checkpoints).")
     parser.add_argument("--download-annotations", action="store_true", help="Download annotations including text embeddings required by the stock CLI.")
     parser.add_argument("--references", choices=("none", "manipulation", "all"), default="none",
                         help="Optional roadmap sources only, under third_party/motion_research.")
     parser.add_argument("--application", action="store_true", help="Check the app worker, which does not preload annotations or import the renderer.")
-    parser.add_argument("--report", type=Path, help="Optional report path within this repository's logs folder.")
+    parser.add_argument("--report", type=Path, help="Optional report path within the shared logs folder.")
     args = parser.parse_args(argv)
     target = (args.report or LOGS / "setup_readiness.json").resolve()
-    if not target.is_relative_to((ROOT / "logs").resolve()):
-        parser.error("Setup reports must be under the repository's logs folder.")
+    if not target.is_relative_to((storage_root() / "logs").resolve()):
+        parser.error("Setup reports must be under the shared logs folder.")
     action_error = None
     try:
         if args.clone or args.install:
-            for name, url in CORE.items():
-                clone_missing(ROOT / "third_party" / name, url)
+            ensure_source()
         if args.references != "none":
             names = MANIPULATION if args.references == "manipulation" else REFERENCES
             for name in names:
@@ -280,7 +327,7 @@ def main(argv=None) -> int:
         for name in DOWNLOADS:
             if getattr(args, "download_" + name):
                 download_folder(name)
-    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, zipfile.BadZipFile, RuntimeError, subprocess.SubprocessError) as exc:
         action_error = str(exc)
         print(f"Setup action failed: {action_error}", file=sys.stderr, flush=True)
     report = inspect_resources(application=args.application)
