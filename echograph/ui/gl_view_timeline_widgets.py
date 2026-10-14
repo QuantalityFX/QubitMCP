@@ -201,6 +201,39 @@ class _TimelineAudioWaveformWidget(QtWidgets.QWidget):
         p.end()
 
 
+class _TimelineHeaderLayout(QtWidgets.QGridLayout):
+    """Keep transport controls together and wrap the tools after Loop."""
+
+    def __init__(self):
+        super().__init__()
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setHorizontalSpacing(8)
+        self.setVerticalSpacing(6)
+        self.primary = QtWidgets.QHBoxLayout()
+        self.secondary = QtWidgets.QHBoxLayout()
+        for row in (self.primary, self.secondary):
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+        self.addLayout(self.primary, 0, 0)
+        self.addLayout(self.secondary, 0, 1)
+        self.setColumnStretch(1, 1)
+        self.wrapped = False
+
+    def reflow(self, width):
+        required = self.primary.sizeHint().width() + self.secondary.sizeHint().width() + self.horizontalSpacing()
+        wrapped = width < required
+        if wrapped != self.wrapped:
+            self.removeItem(self.secondary)
+            if wrapped:
+                self.addLayout(self.secondary, 1, 0, 1, 2)
+            else:
+                self.addLayout(self.secondary, 0, 1)
+            self.wrapped = wrapped
+            self.invalidate()
+        return (min(self.primary.sizeHint().height(), self.secondary.sizeHint().height())
+                + self.verticalSpacing()) if wrapped else 0
+
+
 class GraphGLTimelineWidgetsMixin:
     def _bottom_overlay_height(self) -> float:
         h = 0.0
@@ -228,12 +261,21 @@ class GraphGLTimelineWidgetsMixin:
 
         panel = getattr(self, "_timeline_panel", None)
         if panel is not None and panel.isVisible():
+            header = panel._header_layout
+            margins = panel.layout().contentsMargins()
+            extra_h = header.reflow(view_w - margins.left() - margins.right())
+            previous_extra_h = getattr(panel, "_header_extra_height", 0)
+            panel._header_extra_height = extra_h
+            panel.layout().activate()
             pref_h = 0
             try:
                 pref_h = int(panel.sizeHint().height())
             except Exception:
                 pref_h = 0
-            h = int(max(88, int(getattr(self, "_timeline_h", 72) or 72), pref_h))
+            # Add room for the second row without shrinking the tracks, and
+            # release that room again when the viewport becomes wide enough.
+            base_h = int(getattr(self, "_timeline_h", 72) or 72) - previous_extra_h
+            h = int(max(88, base_h, pref_h - extra_h) + extra_h)
             self._timeline_h = h
             y = max(0, int(y_cursor) - int(h))
             panel.setGeometry(0, y, view_w, h)
@@ -263,6 +305,7 @@ class GraphGLTimelineWidgetsMixin:
             has_curves_btn = isinstance(getattr(self, "_timeline_curves_btn", None), QtWidgets.QPushButton)
             has_material_btn = isinstance(getattr(self, "_timeline_material_live_btn", None), QtWidgets.QPushButton)
             has_fx_btn = isinstance(getattr(self, "_timeline_fx_instances_btn", None), QtWidgets.QPushButton)
+            has_cloth_btn = isinstance(getattr(self, "_timeline_cloth_btn", None), QtWidgets.QPushButton)
             has_handle_straight_btn = isinstance(getattr(self, "_timeline_handle_straight_btn", None), QtWidgets.QPushButton)
             has_handle_tied_btn = isinstance(getattr(self, "_timeline_handle_tied_btn", None), QtWidgets.QPushButton)
             has_handle_untied_btn = isinstance(getattr(self, "_timeline_handle_untied_btn", None), QtWidgets.QPushButton)
@@ -297,6 +340,7 @@ class GraphGLTimelineWidgetsMixin:
                 and has_curves_btn
                 and has_material_btn
                 and has_fx_btn
+                and has_cloth_btn
                 and has_handle_straight_btn
                 and has_handle_tied_btn
                 and has_handle_untied_btn
@@ -326,6 +370,7 @@ class GraphGLTimelineWidgetsMixin:
                     pass
                 try:
                     self._update_timeline_fx_instances_button()
+                    self._update_timeline_cloth_button()
                 except Exception:
                     pass
                 try:
@@ -377,6 +422,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_back_btn = None
             self._timeline_material_live_btn = None
             self._timeline_fx_instances_btn = None
+            self._timeline_cloth_btn = None
             self._timeline_handle_straight_btn = None
             self._timeline_handle_tied_btn = None
             self._timeline_handle_untied_btn = None
@@ -441,6 +487,9 @@ class GraphGLTimelineWidgetsMixin:
                     "#GLTimelinePanel QPushButton#GLTimelineFXInstancesButton{padding:0px;background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineFXInstancesButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineFXInstancesButton:checked{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineClothButton{padding:0px;background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineClothButton:hover{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineClothButton:checked{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton{padding:0px;background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton:checked{background:transparent;border:0px;}",
@@ -473,9 +522,9 @@ class GraphGLTimelineWidgetsMixin:
             root.setContentsMargins(10, 6, 10, 8)
             root.setSpacing(6)
 
-            header = QtWidgets.QHBoxLayout()
-            header.setContentsMargins(0, 0, 0, 0)
-            header.setSpacing(8)
+            header_rows = _TimelineHeaderLayout()
+            panel._header_layout = header_rows
+            header = header_rows.primary
 
             frame_lbl = QtWidgets.QLabel("Frame")
             header.addWidget(frame_lbl, 0)
@@ -516,6 +565,18 @@ class GraphGLTimelineWidgetsMixin:
             fps_spin.valueChanged.connect(self._timeline_on_fps_changed)
             header.addWidget(fps_spin, 0)
             self._timeline_fps_spin = fps_spin
+
+            seed_lbl = QtWidgets.QLabel("Seed", panel)
+            header.addWidget(seed_lbl, 0)
+
+            seed_spin = QtWidgets.QSpinBox(panel)
+            seed_spin.setRange(0, 999999)
+            seed_spin.setValue(int(getattr(self, "_timeline_texture_seed", 0) or 0))
+            seed_spin.setFixedWidth(52)
+            seed_spin.setToolTip("Shared procedural texture seed for the scene view.")
+            seed_spin.valueChanged.connect(self._timeline_on_texture_seed_changed)
+            header.addWidget(seed_spin, 0)
+            self._timeline_texture_seed_spin = seed_spin
 
             speed_lbl = QtWidgets.QLabel("Speed", panel)
             header.addWidget(speed_lbl, 0)
@@ -572,6 +633,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_set_loop_enabled(bool(getattr(self, "_timeline_loop_enabled", True)), save=False)
             self._timeline_update_range_button_tooltips()
 
+            header = header_rows.secondary
             master_btn = QtWidgets.QPushButton("Master", panel)
             master_btn.setObjectName("GLTimelineMasterButton")
             master_btn.setCheckable(True)
@@ -603,17 +665,16 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_fx_instances_btn = fx_btn
             self._update_timeline_fx_instances_button()
 
-            seed_lbl = QtWidgets.QLabel("Seed", panel)
-            header.addWidget(seed_lbl, 0)
-
-            seed_spin = QtWidgets.QSpinBox(panel)
-            seed_spin.setRange(0, 999999)
-            seed_spin.setValue(int(getattr(self, "_timeline_texture_seed", 0) or 0))
-            seed_spin.setFixedWidth(52)
-            seed_spin.setToolTip("Shared procedural texture seed for the scene view.")
-            seed_spin.valueChanged.connect(self._timeline_on_texture_seed_changed)
-            header.addWidget(seed_spin, 0)
-            self._timeline_texture_seed_spin = seed_spin
+            cloth_btn = QtWidgets.QPushButton(panel)
+            cloth_btn.setObjectName("GLTimelineClothButton")
+            cloth_btn.setAccessibleName("Simulate cloth with timeline")
+            cloth_btn.setCheckable(True)
+            cloth_btn.setFixedSize(42, 34)
+            cloth_btn.setFlat(True)
+            cloth_btn.toggled.connect(self._timeline_on_cloth_toggled)
+            header.addWidget(cloth_btn, 0)
+            self._timeline_cloth_btn = cloth_btn
+            self._update_timeline_cloth_button()
 
             curves_btn = QtWidgets.QPushButton("Curves", panel)
             curves_btn.setObjectName("GLTimelineCurvesButton")
@@ -687,7 +748,7 @@ class GraphGLTimelineWidgetsMixin:
                     pass
             key_btn.clicked.connect(self._timeline_on_set_key_clicked)
             header.addWidget(key_btn, 0)
-            root.addLayout(header, 0)
+            root.addLayout(header_rows, 0)
 
             tracks_grid = QtWidgets.QGridLayout()
             tracks_grid.setContentsMargins(0, 0, 0, 0)
@@ -2631,6 +2692,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_back_btn = None
             self._timeline_material_live_btn = None
             self._timeline_fx_instances_btn = None
+            self._timeline_cloth_btn = None
             self._timeline_handle_straight_btn = None
             self._timeline_handle_tied_btn = None
             self._timeline_handle_untied_btn = None

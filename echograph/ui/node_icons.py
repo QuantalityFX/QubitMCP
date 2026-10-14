@@ -42,6 +42,7 @@ _GROOM_GUIDES_ICON = None
 _MATERIAL_NODE_ICON = None
 _UV_UNWRAP_ICON = None
 _TRANSFORMS_ICON = None
+_LOOK_AT_ICON = None
 _GANTT_ICON = None
 _KEYBOARD_SEQUENCE_ICON = None
 _SERIAL_COM_ICON = None
@@ -62,6 +63,8 @@ _MOCAP_IMPORT_ICON = None
 _ANIM_RETARGET_ICON = None
 _ANIMATION_BLEND_ICON = None
 _DELETE_JOINT_ICON = None
+_RIG_LIMITER_ICON = None
+_CLOTH_SOLVER_ICON = None
 _PRIORMDM_ICON = None
 _PIXELS_TO_SPLAT_ICON = None
 
@@ -192,6 +195,20 @@ def _priormdm_icon():
     if _PRIORMDM_ICON is None:
         _PRIORMDM_ICON = _load_pm("PromptToAnimation_Icon.png")
     return _PRIORMDM_ICON
+
+
+def _rig_limiter_icon():
+    global _RIG_LIMITER_ICON
+    if _RIG_LIMITER_ICON is None:
+        _RIG_LIMITER_ICON = _load_pm("RigLimiter_Icon.png")
+    return _RIG_LIMITER_ICON
+
+
+def _cloth_solver_icon():
+    global _CLOTH_SOLVER_ICON
+    if _CLOTH_SOLVER_ICON is None:
+        _CLOTH_SOLVER_ICON = _load_pm("Microchip_Icon.png")
+    return _CLOTH_SOLVER_ICON
 
 
 def _pixels_to_splat_icon():
@@ -438,6 +455,13 @@ def _uv_unwrap_icon():
         return _UV_UNWRAP_ICON
     _UV_UNWRAP_ICON = _load_pm("UvUnwrapNode_Icon.png")
     return _UV_UNWRAP_ICON
+
+
+def _look_at_icon():
+    global _LOOK_AT_ICON
+    if _LOOK_AT_ICON is None:
+        _LOOK_AT_ICON = _load_pm("LookAt_Icon.png")
+    return _LOOK_AT_ICON
 
 
 def _transforms_icon():

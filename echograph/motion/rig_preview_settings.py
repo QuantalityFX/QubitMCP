@@ -31,7 +31,26 @@ def load_preview_limits(path=None):
     return limits
 
 
-def save_preview_limits(limits, path=None):
+def load_preview_volumes(path=None):
+    from .rig_volumes import volume_settings
+    try:
+        data = json.loads(Path(path or APP_SETTINGS_PATH).read_text(encoding='utf-8'))
+        saved = data[SETTINGS_CATEGORY].get('volumes', {})
+        return volume_settings(saved if isinstance(saved, dict) else {})
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return volume_settings()
+
+
+def load_preview_hand_limits(path=None):
+    from .hand_rig import hand_limits_from_fields
+    try:
+        data = json.loads(Path(path or APP_SETTINGS_PATH).read_text(encoding='utf-8'))
+        return hand_limits_from_fields(data[SETTINGS_CATEGORY].get('joint_limits',{}))
+    except (OSError,ValueError,KeyError,TypeError,AttributeError):
+        return hand_limits_from_fields()
+
+
+def save_preview_limits(limits, path=None, *, volumes=None, names=JOINT_NAMES):
     path = Path(path or APP_SETTINGS_PATH)
     try:
         settings = json.loads(path.read_text(encoding='utf-8'))
@@ -39,9 +58,20 @@ def save_preview_limits(limits, path=None):
         settings = {}
     if not isinstance(settings,dict):
         raise ValueError('Application settings must be a JSON object.')
-    settings[SETTINGS_CATEGORY] = dict(version=1,joint_limits={
-        JOINT_NAMES[j]:preview_limit_fields(j,preview_limit_from_fields(j,preview_limit_fields(j,limit)))
-        for j,limit in limits.items() if j in PREVIEW_JOINT_LIMITS})
+    category = settings.get(SETTINGS_CATEGORY)
+    category = dict(category) if isinstance(category, dict) else {}
+    from .hand_rig import named_limit_default
+    saved = category.get('joint_limits')
+    saved = dict(saved) if isinstance(saved,dict) else {}
+    for j,limit in limits.items():
+        default = named_limit_default(names[j])
+        if default:
+            saved[names[j]] = preview_limit_fields(j,preview_limit_from_fields(j,preview_limit_fields(j,limit),defaults=default))
+    category.update(version=3,joint_limits=saved)
+    if volumes is not None:
+        from .rig_volumes import volume_settings
+        category['volumes'] = volume_settings(volumes)
+    settings[SETTINGS_CATEGORY] = category
     path.parent.mkdir(parents=True,exist_ok=True)
     temporary = None
     try:

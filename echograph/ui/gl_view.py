@@ -980,6 +980,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_speed_spin = None
         self._timeline_material_live_btn = None
         self._timeline_fx_instances_btn = None
+        self._timeline_cloth_btn = None
         self._timeline_handle_straight_btn = None
         self._timeline_handle_tied_btn = None
         self._timeline_handle_untied_btn = None
@@ -1003,6 +1004,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_icon_fx_switch = None
         self._timeline_icon_fx_switch_on = None
         self._timeline_icon_fx_switch_off = None
+        self._timeline_icon_cloth_on = None
+        self._timeline_icon_cloth_off = None
         self._timeline_icon_handle_straight = None
         self._timeline_icon_handle_tied = None
         self._timeline_icon_handle_untied = None

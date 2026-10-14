@@ -3,13 +3,15 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from echograph.motion.conversion import JOINT_NAMES
+from echograph.motion.conversion import JOINT_NAMES, PARENTS
 from echograph.motion.rig_limits import PREVIEW_JOINT_LIMITS, preview_limit_fields, preview_limit_from_fields
 from echograph.motion.rig_preview_settings import save_preview_limits
+from echograph.motion.rig_volumes import volume_settings, rig_scale
+from echograph.motion.hand_rig import named_limit_default
 
 PANEL_WIDTH = 320
 PANEL_HEIGHT = 320
-JOINT_SECTION_HEIGHT = 200
+JOINT_SECTION_HEIGHT = 285
 SECTION_SPACING = 8
 
 
@@ -39,7 +41,8 @@ class RigJointSection(QtWidgets.QFrame):
         super().__init__(panel.content)
         self.panel = panel
         self.name = name
-        self.joint = JOINT_NAMES.index(name) if name in JOINT_NAMES else None
+        names = panel.data['rig_guide'].get('joint_names',JOINT_NAMES)
+        self.joint = names.index(name) if name in names else None
         self._binding = None
         self.setObjectName('PreviewRigJoint')
         self.setFixedHeight(JOINT_SECTION_HEIGHT)
@@ -71,7 +74,8 @@ class RigJointSection(QtWidgets.QFrame):
         self.bend_label = QtWidgets.QLabel('Bend cone')
         self.bend_label.setToolTip('Angle away from the resting bone. A positive minimum excludes the inner cone.')
         grid.addWidget(self.bend_label,1,0)
-        grid.addWidget(QtWidgets.QLabel('Twist circle'),2,0)
+        self.twist_label = QtWidgets.QLabel('Twist circle')
+        grid.addWidget(self.twist_label,2,0)
         self.fields = {}
         for row,kind in ((1,'bend'),(2,'twist')):
             for column,end in ((1,'min'),(2,'max')):
@@ -89,6 +93,20 @@ class RigJointSection(QtWidgets.QFrame):
                 self.fields[key] = spin
                 grid.addWidget(spin,row,column)
         layout.addLayout(grid)
+        volume_grid = QtWidgets.QGridLayout()
+        volume_grid.addWidget(QtWidgets.QLabel('Capsule radius'),0,0,1,2)
+        self.volume_fields = []
+        for column, label in enumerate(('Start end', 'Far end')):
+            volume_grid.addWidget(QtWidgets.QLabel(label),1,column)
+            spin = _LimitSpinBox()
+            spin.setDecimals(4)
+            spin.setKeyboardTracking(False)
+            spin.setAccessibleName(name+' capsule '+label+' radius')
+            spin.setToolTip('Radius in input rig units. Each capsule end can be sized independently.')
+            spin.valueChanged.connect(lambda value,index=column:self._volume_edited(index,value))
+            volume_grid.addWidget(spin,2,column)
+            self.volume_fields.append(spin)
+        layout.addLayout(volume_grid)
 
     def sync(self, guide, detail):
         editable = self.joint in guide['joint_limits']
@@ -98,33 +116,54 @@ class RigJointSection(QtWidgets.QFrame):
             limit = guide['joint_limits'].get(self.joint,{})
             values = preview_limit_fields(self.joint,limit) if editable else dict.fromkeys(self.fields,0.)
             hinge = 'flex' in limit
+            self.twist_label.setText('Spread' if 'spread_axis' in limit else 'Twist circle')
             self.bend_label.setText('Hinge bend' if hinge else 'Bend cone')
             for key,spin in self.fields.items():
                 blocker = QtCore.QSignalBlocker(spin)
                 spin.setRange(0. if key.startswith('bend') else -179.,
                               (179. if hinge else 89.) if key.startswith('bend') else 179.)
                 spin.setValue(values[key])
-                spin.setEnabled(editable and (not hinge or key.startswith('bend')))
+                spin.setEnabled(editable and (not hinge or 'spread_axis' in limit or key.startswith('bend')))
                 del blocker
-            self.reset_button.setEnabled(editable)
+            scale = rig_scale(guide['offsets'])
+            radii = guide.get('volumes', {}).get(self.name)
+            for index,spin in enumerate(self.volume_fields):
+                blocker = QtCore.QSignalBlocker(spin)
+                spin.setRange(.001*scale,scale)
+                spin.setSingleStep(.005*scale)
+                spin.setValue(radii[index]*scale if radii else .001*scale)
+                spin.setEnabled(radii is not None)
+                del blocker
+            self.reset_button.setEnabled(editable or radii is not None)
         if self.name and detail.startswith(self.name+': '):
             detail = detail[len(self.name)+2:]
         if self.detail.text() != detail:
             self.detail.setText(detail)
 
     def _edited(self, key, value):
-        if self.joint not in PREVIEW_JOINT_LIMITS:
+        default = named_limit_default(self.name)
+        if not default:
             return
         values = {k:spin.value() for k,spin in self.fields.items()}
         kind,end = key.split('_')
         other = kind+('_max' if end=='min' else '_min')
         if values[kind+'_min'] > values[kind+'_max']:
             values[other] = value
-        self.panel._apply_limit(self.joint,preview_limit_from_fields(self.joint,values))
+        self.panel._apply_limit(self.joint,preview_limit_from_fields(self.joint,values,defaults=default))
 
     def reset_joint(self):
-        if self.joint in PREVIEW_JOINT_LIMITS:
-            self.panel._apply_limit(self.joint,preview_limit_from_fields(self.joint,{}))
+        defaults = volume_settings()
+        if self.name in defaults:
+            self.panel._apply_volume(self.name,defaults[self.name])
+        default = named_limit_default(self.name)
+        if default and self.joint in self.panel.data['rig_guide']['joint_limits']:
+            self.panel._apply_limit(self.joint,preview_limit_from_fields(self.joint,{},defaults=default))
+
+    def _volume_edited(self,index,value):
+        guide = self.panel.data['rig_guide']
+        radii = list(guide['volumes'][self.name])
+        radii[index] = value/rig_scale(guide['offsets'])
+        self.panel._apply_volume(self.name,radii)
 
 
 class RigPreviewPanel(QtWidgets.QFrame):
@@ -142,6 +181,7 @@ class RigPreviewPanel(QtWidgets.QFrame):
             QScrollArea, QWidget#PreviewRigContent { background:transparent; border:0; }
             QFrame#PreviewRigJoint { border:0; border-bottom:1px solid #334155; }
             QLabel { color:#e2e8f0; font-size:11px; }
+            QCheckBox { color:#e2e8f0; font-size:11px; }
             QLabel#PreviewRigTitle { font-size:13px; font-weight:600; }
             QLabel#PreviewRigJointTitle { color:#7dd3fc; font-size:13px; font-weight:600; }
             QDoubleSpinBox { color:#e2e8f0; background:#1e293b; border:1px solid #475569;
@@ -159,10 +199,14 @@ class RigPreviewPanel(QtWidgets.QFrame):
         self.title.setObjectName('PreviewRigTitle')
         header.addWidget(self.title,1)
         icons = Path(__file__).resolve().parents[2]/'icons'
-        self.save_button = _icon_button(icons/'save_preset_icon.png','Save all Preview Rig joint limits to application settings')
+        self.save_button = _icon_button(icons/'save_preset_icon.png','Save all joint limits and capsule radii')
         self.save_button.clicked.connect(self.save)
         header.addWidget(self.save_button)
         outer.addLayout(header)
+        self.collision_check = QtWidgets.QCheckBox('Collision preview (blocks rotations)')
+        self.collision_check.setToolTip('Show capsules and stop manual rotations at contact with another body volume.')
+        self.collision_check.toggled.connect(self._collision_toggled)
+        outer.addWidget(self.collision_check)
         self.legend = QtWidgets.QLabel('Gold: bend  ·  Purple: twist  ·  Red: at limit')
         self.legend.setWordWrap(True)
         outer.addWidget(self.legend)
@@ -201,12 +245,19 @@ class RigPreviewPanel(QtWidgets.QFrame):
             self._error = ''
         self.data = data
         guide = data['rig_guide']
+        guide.setdefault('volumes',volume_settings())
+        guide.setdefault('_saved_volumes',{n:list(r) for n,r in guide.get('saved_volumes',guide['volumes']).items()})
+        guide.setdefault('_saved_collisions',bool(guide.get('collisions',True)))
+        blocker = QtCore.QSignalBlocker(self.collision_check)
+        self.collision_check.setChecked(bool(guide.get('collisions',True)))
+        del blocker
         guide.setdefault('joint_limits',{j:dict(v) for j,v in PREVIEW_JOINT_LIMITS.items()})
         guide.setdefault('_saved_limit_fields',{j:preview_limit_fields(j,v) for j,v in
                          guide.get('saved_joint_limits',guide['joint_limits']).items()})
-        names = list(dict.fromkeys(name for name in (data.get('selected_joints') or []) if name in JOINT_NAMES))
+        joint_names = guide.get('joint_names',JOINT_NAMES)
+        names = list(dict.fromkeys(name for name in (data.get('selected_joints') or []) if name in joint_names))
         active = data.get('selected','')
-        if active in JOINT_NAMES and active not in names:
+        if active in joint_names and active not in names:
             names.append(active)
         selection = tuple(reversed(names)) or ('',)
         selection_changed = selection != self._selection
@@ -228,7 +279,7 @@ class RigPreviewPanel(QtWidgets.QFrame):
         labels[active] = detail
         for name,section in self.sections.items():
             section.sync(guide,labels.get(name,'No editable limits for this joint.'))
-        title = 'Preview Rig'+(f' · {len(names)} joints' if len(names)>1 else '')
+        title = guide.get('title','Preview Rig')+(f' · {len(names)} joints' if len(names)>1 else '')
         if self.title.text() != title:
             self.title.setText(title)
         if guide_changed or selection_changed:
@@ -254,7 +305,9 @@ class RigPreviewPanel(QtWidgets.QFrame):
         return max(PANEL_HEIGHT+(visible-1)*(JOINT_SECTION_HEIGHT+SECTION_SPACING),cards+chrome+4)
 
     def _update_status(self):
-        dirty = self._snapshot() != self.data['rig_guide']['_saved_limit_fields']
+        guide = self.data['rig_guide']
+        dirty = (self._snapshot() != guide['_saved_limit_fields'] or guide['volumes'] != guide['_saved_volumes']
+                 or (callable(guide.get('save_settings')) and guide['collisions'] != guide['_saved_collisions']))
         text = self._error or ('Unsaved changes' if dirty else 'Preview Rig settings')
         if self.status.text() != text:
             self.status.setText(text)
@@ -265,7 +318,8 @@ class RigPreviewPanel(QtWidgets.QFrame):
         guide['joint_limits'][joint] = limit
         guide['limits_revision'] = guide.get('limits_revision',0)+1
         guide.pop('_posed_shapes',None)
-        _,base = build_guide(guide['offsets'],joint_limits=guide['joint_limits'])
+        _,base = build_guide(guide['offsets'],joint_limits=guide['joint_limits'],volumes=guide['volumes'],
+                           names=guide.get('joint_names',JOINT_NAMES),parents=guide.get('parents',PARENTS),end_sites=guide.get('end_sites'))
         guide.update(shapes=base['shapes'],labels=base['labels'])
         self._error = ''
         try:
@@ -275,12 +329,32 @@ class RigPreviewPanel(QtWidgets.QFrame):
         self.sync(self.data,guide['labels'].get(self.data.get('selected',''),''))
         self.renderer.update()
 
+    def _apply_volume(self, name, radii):
+        guide = self.data['rig_guide']
+        guide['volumes'][name] = volume_settings({name:radii})[name]
+        guide['limits_revision'] = guide.get('limits_revision',0)+1
+        guide.pop('_posed_shapes',None)
+        from echograph.motion.rig_preview import build_guide
+        _,base = build_guide(guide['offsets'],joint_limits=guide['joint_limits'],volumes=guide['volumes'],
+                           names=guide.get('joint_names',JOINT_NAMES),parents=guide.get('parents',PARENTS),end_sites=guide.get('end_sites'))
+        guide.update(shapes=base['shapes'],labels=base['labels'])
+        self._error = ''
+        self.sync(self.data,guide['labels'].get(self.data.get('selected',''),''))
+        self.renderer.update()
+
+    def _collision_toggled(self, enabled):
+        if self.data:
+            self.data['rig_guide']['collisions'] = bool(enabled)
+            self._error = ''
+            self._update_status()
+            self.renderer.update()
+
     def _constrain_pose(self, joint):
         context = self.data.get('rig_context')
         if not context:
             return
         renderer = self.renderer
-        name = JOINT_NAMES[joint]
+        name = self.data['rig_guide'].get('joint_names',JOINT_NAMES)[joint]
         token = renderer._mgl_scene_skeleton_joint_owner_token(self.data['owner'],name)
         values = renderer._mgl_scene_skeleton_joint_values(token)
         keys = {f:dict(row) for f,row in (context.get('_scene_skeleton_joint_overrides') or {}).get(name,{}).items()}
@@ -308,13 +382,20 @@ class RigPreviewPanel(QtWidgets.QFrame):
         if not self.data:
             return
         for section in self.sections.values():
-            for spin in section.fields.values():
+            for spin in [*section.fields.values(),*section.volume_fields]:
                 spin.interpretText()
         try:
-            save_preview_limits(self.data['rig_guide']['joint_limits'])
+            guide = self.data['rig_guide']
+            callback = guide.get('save_settings')
+            if callable(callback):
+                callback(guide)
+            else:
+                save_preview_limits(guide['joint_limits'],volumes=guide['volumes'],names=guide.get('joint_names',JOINT_NAMES))
+            guide['_saved_volumes'] = {n:list(r) for n,r in guide['volumes'].items()}
+            guide['_saved_collisions'] = guide['collisions']
             self.data['rig_guide']['_saved_limit_fields'] = self._snapshot()
             self.data['rig_guide']['saved_joint_limits'] = {j:dict(v) for j,v in self.data['rig_guide']['joint_limits'].items()}
-            self._error = 'Saved Preview Rig settings'
+            self._error = 'Saved '+guide.get('title','Preview Rig')+' settings'
         except (OSError,ValueError,TypeError) as exc:
             self._error = 'Could not save: '+str(exc)
         self._update_status()

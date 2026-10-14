@@ -93,6 +93,7 @@ AGENTS.md
 !/tests/ui/test_render_node_layout.py
 !/tests/ui/test_look_at_node.py
 !/tests/ui/test_look_at_viewport.py
+!/tests/ui/test_timeline_header.py
 !/tests/ui/test_fbx_normal_deformation.py
 !/tests/voice/
 /tests/voice/*

@@ -5213,6 +5213,8 @@ class GraphGLTimelineModelMixin:
         icon_fx_switch = None
         icon_fx_switch_on = None
         icon_fx_switch_off = None
+        icon_cloth_on = None
+        icon_cloth_off = None
         icon_handle_straight = None
         icon_handle_tied = None
         icon_handle_untied = None
@@ -5234,6 +5236,8 @@ class GraphGLTimelineModelMixin:
             material_live_legacy_path = root / "icons" / "MaterialGenerator_Icon_S.png"
             fx_switch_on_path = root / "icons" / "fx_switch_On_icon.png"
             fx_switch_off_path = root / "icons" / "fx_switch_off_icon.png"
+            cloth_on_path = root / "icons" / "Microship_Toggle_On_Icon.png"
+            cloth_off_path = root / "icons" / "Microship_Toggle_Off_Icon.png"
             handle_straight_path = root / "icons" / "StreightCurve_Icon.png"
             handle_tied_path = root / "icons" / "Tiehandles_Icon.png"
             handle_untied_path = root / "icons" / "Untiedhandle_Icon.png"
@@ -5269,6 +5273,13 @@ class GraphGLTimelineModelMixin:
             if icon_fx_switch_off is None:
                 icon_fx_switch_off = icon_fx_switch_on
             icon_fx_switch = icon_fx_switch_on
+            if cloth_on_path.exists():
+                icon_cloth_on = QtGui.QIcon(str(cloth_on_path))
+                icon_cloth_on.addFile(str(cloth_on_path), QtCore.QSize(), QtGui.QIcon.Disabled)
+            if cloth_off_path.exists():
+                icon_cloth_off = QtGui.QIcon(str(cloth_off_path))
+                # The supplied off artwork already communicates the state.
+                icon_cloth_off.addFile(str(cloth_off_path), QtCore.QSize(), QtGui.QIcon.Disabled)
             if handle_straight_path.exists():
                 icon_handle_straight = QtGui.QIcon(str(handle_straight_path))
             if handle_tied_path.exists():
@@ -5303,6 +5314,8 @@ class GraphGLTimelineModelMixin:
             icon_fx_switch = None
             icon_fx_switch_on = None
             icon_fx_switch_off = None
+            icon_cloth_on = None
+            icon_cloth_off = None
             icon_handle_straight = None
             icon_handle_tied = None
             icon_handle_untied = None
@@ -5323,6 +5336,8 @@ class GraphGLTimelineModelMixin:
         self._timeline_icon_fx_switch = icon_fx_switch
         self._timeline_icon_fx_switch_on = icon_fx_switch_on
         self._timeline_icon_fx_switch_off = icon_fx_switch_off
+        self._timeline_icon_cloth_on = icon_cloth_on
+        self._timeline_icon_cloth_off = icon_cloth_off
         self._timeline_icon_handle_straight = icon_handle_straight
         self._timeline_icon_handle_tied = icon_handle_tied
         self._timeline_icon_handle_untied = icon_handle_untied
@@ -5850,6 +5865,66 @@ class GraphGLTimelineModelMixin:
             btn.setToolTip(f"{tip} | Proxy Rings: {proxy_tip} (right-click to change)")
         except Exception:
             pass
+
+    def _timeline_cloth_configs(self):
+        items = getattr(self, "_cloth_items", lambda: [])()
+        return [config for item in items
+                if isinstance(config := item.payload.get("cloth"), dict) and not config.get("placement_only")]
+
+    @staticmethod
+    def _timeline_cloth_follows(config):
+        value = config.get("settings", {}).get("follow_timeline", False)
+        model = config.get("node_model")
+        if model is not None:
+            value = next((p.get("value") for p in model.params if p.get("name") == "follow_timeline"), value)
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _timeline_on_cloth_toggled(self, checked: bool) -> None:
+        from nodes.cloth_solver.spec import set_value
+        from shiboken6 import isValid
+
+        value = "1" if checked else "0"
+        notified = set()
+        for config in self._timeline_cloth_configs():
+            config.setdefault("settings", {})["follow_timeline"] = bool(checked)
+            model = config.get("node_model")
+            if model is not None:
+                parameter = next((p for p in model.params if p.get("name") == "follow_timeline"), None)
+                if parameter is None:
+                    model.params.append({"name": "follow_timeline", "value": value})
+                else:
+                    parameter["value"] = value
+            item = config.get("node_item")
+            if item is not None and isValid(item) and id(item) not in notified:
+                notified.add(id(item))
+                # Notify after the click; graph refreshes can replace scene assets.
+                set_value(item, "follow_timeline", value)
+        self._update_timeline_cloth_button()
+        self.update()
+
+    def _update_timeline_cloth_button(self) -> None:
+        button = getattr(self, "_timeline_cloth_btn", None)
+        if button is None:
+            return
+        configs = self._timeline_cloth_configs()
+        following = sum(self._timeline_cloth_follows(config) for config in configs)
+        enabled = following > 0
+        blocker = QtCore.QSignalBlocker(button)
+        button.setChecked(enabled)
+        button.setEnabled(bool(configs))
+        del blocker
+        self._load_timeline_button_icons()
+        icon = getattr(self, "_timeline_icon_cloth_on" if enabled else "_timeline_icon_cloth_off", None)
+        button.setIcon(icon if icon is not None else QtGui.QIcon())
+        button.setText("" if icon is not None else "Cloth")
+        button.setIconSize(QtCore.QSize(32, 32))
+        if not configs:
+            tip = "Cloth timeline simulation: no cloth solvers in this view"
+        else:
+            action = "Disable" if enabled else "Enable"
+            tip = (f"Cloth timeline simulation: {following} / {len(configs)} solvers enabled. "
+                   f"{action} Simulate with timeline for all cloth solvers in this view.")
+        button.setToolTip(tip)
 
     def _update_timeline_material_live_button(self) -> None:
         btn = getattr(self, "_timeline_material_live_btn", None)

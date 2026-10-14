@@ -11258,12 +11258,15 @@ void main() {
             return rot_deg
         from echograph.motion.conversion import JOINT_NAMES, PARENTS, REST_DIRECTIONS
         from echograph.motion.rig_limits import clamp_preview_rotation
-        if decoded[1] not in JOINT_NAMES:
-            return rot_deg
-        joint = JOINT_NAMES.index(decoded[1])
-        child = next((i for i,p in enumerate(PARENTS) if p == joint),joint)
-        axis = REST_DIRECTIONS[child]
+        from echograph.motion.hand_rig import primary_child
         guide = context['priormdm_rig_debug']
+        names = guide.get('joint_names',JOINT_NAMES)
+        parents = guide.get('parents',PARENTS)
+        if decoded[1] not in names:
+            return rot_deg
+        joint = names.index(decoded[1])
+        child = primary_child(joint,names,parents)
+        axis = REST_DIRECTIONS[child] if child < len(REST_DIRECTIONS) else np.array([1.,0.,0.])
         offsets = guide.get('offsets')
         if offsets is not None and np.linalg.norm(offsets[child]) > 1e-8:
             axis = np.asarray(offsets[child])/np.linalg.norm(offsets[child])
@@ -11273,6 +11276,19 @@ void main() {
                     if interactive else None)
         limited = clamp_preview_rotation(joint,self._mgl_scene_skeleton_quat_from_euler_deg(rot_deg),axis,previous,
                                          limits=guide.get('joint_limits'))
+        if interactive and guide.get('collisions') and context.get('skeleton') is not None:
+            from echograph.motion.rig_volumes import constrain_volume_rotation
+            from scipy.spatial.transform import Rotation
+            seconds = self._mgl_fbx_context_timeline_sample_seconds(context, decoded[0])
+            evaluation = evaluate_rig_at_time(context['skeleton'],context.get('clip'),float(seconds),
+                                               loop=bool(context.get('loop',False)))
+            lookup = {j.name:i for i,j in enumerate(context['skeleton'].joints)}
+            indices = [lookup[name] for name in names]
+            local = Rotation.from_quat([evaluation.local_transforms[i].rotation for i in indices]).as_matrix()
+            translations = np.asarray([evaluation.local_transforms[i].translation for i in indices])
+            limited = constrain_volume_rotation(joint,limited,local,translations,
+                                                 limits=guide.get('joint_limits'),volumes=guide.get('volumes'),
+                                                 names=names,parents=parents,end_sites=guide.get('end_sites'))
         return self._mgl_scene_skeleton_euler_from_quat_continuous(limited,rot_deg)
 
     def _mgl_scene_skeleton_local_rotation_for_global(self, owner: str, quat_xyzw):

@@ -196,6 +196,9 @@ def build_transformed_blend_scene_asset(item, *, _depth=0, _visited=None):
     kind = str(upstream.model.kind).strip().lower()
     if kind in KIND_ALIASES:
         asset = build_animation_blend_scene_asset(upstream)
+    elif kind == "rig_limiter":
+        from nodes.rig_limiter.spec import build_scene_asset
+        asset = build_scene_asset(upstream)
     elif kind in retarget.TRANSFORM_KIND_ALIASES:
         asset = build_transformed_blend_scene_asset(upstream, _depth=_depth + 1, _visited=visited)
     else:

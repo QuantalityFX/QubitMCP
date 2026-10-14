@@ -2294,10 +2294,14 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         asset["look_at_constraint"] = dict(look_at_constraint)
                     assets.append(asset)
             continue
-        if kind in ("animation_blend", "animation blend", "anim_blend", "blend_animation", "transforms"):
+        if kind in ("animation_blend", "animation blend", "anim_blend", "blend_animation", "transforms", "rig_limiter"):
             from nodes.animation_blend.spec import build_animation_blend_scene_asset, build_transformed_blend_scene_asset
-            asset = (build_transformed_blend_scene_asset(src_item) if kind == "transforms"
-                     else build_animation_blend_scene_asset(src_item))
+            if kind == "rig_limiter":
+                from nodes.rig_limiter.spec import build_scene_asset
+                asset = build_scene_asset(src_item)
+            else:
+                asset = (build_transformed_blend_scene_asset(src_item) if kind == "transforms"
+                         else build_animation_blend_scene_asset(src_item))
             if asset is not None:
                 owner = str(asset.get("node") or src_name)
                 saved_xform = _lookup_xform(xforms, owner)

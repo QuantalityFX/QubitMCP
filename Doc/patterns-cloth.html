@@ -33,7 +33,7 @@
           <h1>From a 2D pattern to a moving garment</h1>
           <p class="lead">Pattern Design and Cloth Solver connect garment drafting to the scene viewport. Keep the pattern as a reusable document, arrange its panels around a character, then preview or bake the simulation.</p>
           <p class="workflow-path">Pattern Design → Cloth Solver → Scene<br />Character mesh or animation → Cloth Solver collider</p>
-          <p><a href="nodes.html?node=pattern-design">Pattern Design reference</a> · <a href="nodes.html?node=cloth-solver">Cloth Solver reference</a> · Updated 13 October 2026</p>
+          <p><a href="nodes.html?node=pattern-design">Pattern Design reference</a> · <a href="nodes.html?node=cloth-solver">Cloth Solver reference</a> · Updated 14 October 2026</p>
         </header>
         <figure class="screenshot-card">
           <a href="UISnapshot/RealtimeClothSolver.png"><img src="UISnapshot/RealtimeClothSolver.png" width="2550" height="1350" alt="Clothed character in the scene viewport beside pattern, cloth, animation, and rendering nodes" decoding="async" /></a>
@@ -100,6 +100,9 @@
           <p>Use <a href="motion.html#animation-blend">Animation Blend</a> to transition from the character's bind pose into motion. Connect the character to <code>bind_pose</code>, the compatible motion to <code>animation</code>, and use the resulting animation in Scene and the cloth collider path.</p>
           <p>Set hold frames and blend frames to provide time for the garment to settle before the character begins moving. Keep FPS consistent with the scene and cloth settings.</p>
           <p>Enable <strong>Simulate with timeline</strong> to drive cloth from viewport playback and scrubbing. Calculated frames are retained in a temporary memory cache. Changing simulation settings such as substeps, iterations, collision quality, friction, or gravity clears that history and recalculates from the starting pose. A changed collider or its animation also requires recalculation. A loaded state can provide a settled starting pose.</p>
+          <p><img class="inline-icon" src="../icons/Microship_Toggle_On_Icon.png" alt="Cloth timeline simulation on" /> Use the <strong>cloth simulation toggle beside FX</strong> to change this setting for every cloth solver in the current view. It stays synchronized with each node's checkbox, and saving the graph preserves the node settings. Switching timeline simulation off and back on keeps the calculated frames available.</p>
+          <p>The toggle is on when any solver follows the timeline, and its tooltip shows how many do. Click once to disable them all; click again to enable them all. With no cloth solvers in the view, the control is unavailable and still displays its original off icon. On narrow viewports, the controls after Loop move to a second row. See the <a href="index.html#animation-timeline">timeline controls</a>.</p>
+          <p>For generated clips with body or finger intersections, use <a href="motion.html#rig-limiter">Rig Limiter before retargeting</a>, then inspect the character motion before adding it to the cloth collider chain.</p>
         </section>
 
         <section class="section" id="cache">

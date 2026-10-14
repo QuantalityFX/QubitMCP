@@ -57,6 +57,16 @@ class CacheFileDialog(QtWidgets.QFileDialog):
         self.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
 
 
+class TimelineControls(QtWidgets.QWidget, GraphGLTimelineModelMixin):
+    def __init__(self, items):
+        super().__init__()
+        self._cloth_items = items
+        self._timeline_cloth_btn = QtWidgets.QPushButton(self)
+        self._timeline_cloth_btn.setCheckable(True)
+        self._timeline_cloth_btn.toggled.connect(self._timeline_on_cloth_toggled)
+        self._update_timeline_cloth_button()
+
+
 class NodeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -92,6 +102,53 @@ class NodeTests(unittest.TestCase):
                 rect = proxy.mapRectToParent(proxy.boundingRect())
                 self.assertLessEqual(rect.right(), node.width + .01)
                 self.assertLessEqual(rect.bottom() + 9.99, node.height)
+        graph.clear()
+
+    def test_timeline_toggle_saves_all_nodes_and_reflects_node_edits(self):
+        graph = Graph()
+        nodes = [NodeItem(GraphNode(name, kind="cloth_solver")) for name in ("Shirt", "Pants")]
+        for node in nodes:
+            graph.addItem(node)
+        configs = [{"node_item": node, "node_model": node.model, "settings": ClothSettings().to_dict()}
+                   for node in nodes]
+        placement = {"placement_only": True, "settings": {"follow_timeline": False}}
+        items = [SimpleNamespace(payload={"cloth": config}) for config in configs + [placement]]
+        controls = TimelineControls(lambda: items)
+        self.addCleanup(controls.deleteLater)
+        button = controls._timeline_cloth_btn
+        self.assertFalse(button.isChecked())
+        self.assertFalse(button.icon().isNull())
+        off_icon = button.icon().cacheKey()
+        button.click()
+        self.app.processEvents()
+        self.assertTrue(button.isChecked())
+        self.assertNotEqual(button.icon().cacheKey(), off_icon)
+        self.assertFalse(placement["settings"]["follow_timeline"])
+        self.assertEqual(set(graph.changes), {"Shirt", "Pants"})
+        for node in nodes:
+            widget = node._plugin_proxies[0].widget()
+            widget._status()
+            self.assertTrue(widget.findChild(QtWidgets.QCheckBox, "Cloth_follow_timeline").isChecked())
+            saved = _node_to_dict(node.model)
+            self.assertEqual(next(p["value"] for p in saved["params"] if p["name"] == "follow_timeline"), "1")
+        nodes[0]._plugin_proxies[0].widget().findChild(QtWidgets.QCheckBox, "Cloth_follow_timeline").setChecked(False)
+        self.app.processEvents()
+        controls._update_timeline_cloth_button()
+        self.assertTrue(button.isChecked())
+        self.assertIn("1 / 2", button.toolTip())
+        button.click()
+        self.app.processEvents()
+        for node, config in zip(nodes, configs):
+            widget = node._plugin_proxies[0].widget()
+            widget._status()
+            self.assertFalse(widget.findChild(QtWidgets.QCheckBox, "Cloth_follow_timeline").isChecked())
+            self.assertFalse(config["settings"]["follow_timeline"])
+        items[:] = [SimpleNamespace(payload={"cloth": placement})]
+        controls._update_timeline_cloth_button()
+        self.assertFalse(button.isChecked())
+        self.assertFalse(button.isEnabled())
+        self.assertEqual(button.icon().pixmap(32, 32, QtGui.QIcon.Disabled).toImage(),
+                         button.icon().pixmap(32, 32, QtGui.QIcon.Normal).toImage())
         graph.clear()
 
     def test_saved_pattern_to_scene_and_outliner_collider_drop(self):
@@ -791,6 +848,34 @@ class ViewportTests(unittest.TestCase):
             solve.assert_not_called()
             self.finish_seek(7)
             self.assertEqual(solve.call_count, 1)
+
+    def test_timeline_button_stops_both_solvers_and_preserves_their_cache(self):
+        other_config, other, _ = self.second_cloth()
+        controls = TimelineControls(self.view._cloth_items)
+        self.addCleanup(controls.deleteLater)
+        button = controls._timeline_cloth_btn
+        button.click()
+        self.view._mgl_update_cloth()
+        self.finish_seek(2)
+        poses = [state.solver.x.copy() for state in (self.state, other)]
+        button.click()
+        self.assertFalse(self.view._cloth_timeline_active())
+        with patch.object(self.state.solver, "step", wraps=self.state.solver.step) as shirt_step, \
+             patch.object(other.solver, "step", wraps=other.solver.step) as pants_step:
+            self.view.frame = 5
+            self.view._mgl_update_cloth()
+            for state, pose in zip((self.state, other), poses):
+                np.testing.assert_allclose(state.solver.x, pose, atol=1e-7)
+            self.view.frame = 2
+            button.click()
+            self.finish_seek(2)
+            shirt_step.assert_not_called()
+            pants_step.assert_not_called()
+            self.finish_seek(3)
+            self.assertEqual(shirt_step.call_count, 1)
+            self.assertEqual(pants_step.call_count, 1)
+        self.assertTrue(self.config["settings"]["follow_timeline"])
+        self.assertTrue(other_config["settings"]["follow_timeline"])
 
     def test_settings_changed_while_timeline_is_off_recalculate_on_resume(self):
         self.config["settings"]["follow_timeline"] = True

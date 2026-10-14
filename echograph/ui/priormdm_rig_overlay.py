@@ -12,7 +12,15 @@ def pick_guide_joint(data, handles, px, py, dpr):
     candidates = [(float(p['x']-x)**2+float(p['y']-y)**2,p) for p in data.get('points',[]) if isinstance(p,dict)]
     candidates = [(distance,p) for distance,p in candidates if distance <= 9.**2 and -1 <= p.get('z',0) <= 1]
     if not candidates:
-        return None
+        guide = data.get('rig_guide') or {}
+        if not guide.get('collisions'):
+            return None
+        volumes = [(depth,name) for poly,depth,name in guide.get('_pick_volumes',[])
+                   if poly.containsPoint(QtCore.QPointF(x,y),QtCore.Qt.OddEvenFill)]
+        if not volumes:
+            return None
+        _,name = min(volumes)
+        return next((dict(h) for h in handles if h.get('name')==name),None)
     _,point = min(candidates,key=lambda pair:(pair[0],pair[1].get('z',0)))
     return next((dict(h) for h in handles if h.get('name')==point.get('name')),None)
 
@@ -71,14 +79,19 @@ def draw_rig_guide(renderer, painter, data):
     if context is not None:
         from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
         from echograph.motion.rig_preview import build_guide
+        from echograph.motion.conversion import JOINT_NAMES, PARENTS
         seconds = renderer._mgl_fbx_context_timeline_sample_seconds(context,data['owner'])
         evaluation = evaluate_rig_at_time(context['skeleton'],context.get('clip'),float(seconds),
                                           loop=bool(context.get('loop',False)))
         matrices = np.asarray(evaluation.global_matrices,dtype=float).reshape(-1,4,4)
+        if 'joint_indices' in guide:
+            matrices = matrices[guide['joint_indices']]
         pose_key = (matrices.tobytes(),guide.get('limits_revision',0))
         cached = guide.get('_posed_shapes')
         if cached is None or cached[0] != pose_key:
-            _, posed = build_guide(guide['offsets'],matrices,joint_limits=guide.get('joint_limits'))
+            _, posed = build_guide(guide['offsets'],matrices,joint_limits=guide.get('joint_limits'),volumes=guide.get('volumes'),
+                                   names=guide.get('joint_names',JOINT_NAMES),parents=guide.get('parents',PARENTS),
+                                   end_sites=guide.get('end_sites'))
             cached = (pose_key,posed)
             guide['_posed_shapes'] = cached
         shapes = cached[1]['shapes']
@@ -118,6 +131,7 @@ def draw_rig_guide(renderer, painter, data):
         painter.setClipRect(QtCore.QRectF(x,y,w,h),QtCore.Qt.IntersectClip)
         painter.setRenderHint(QtGui.QPainter.Antialiasing,True)
         faces, wires = [], []
+        guide['_pick_volumes'] = []
         for shape in shapes:
             kind = shape['kind']
             if kind == 'collision' and not guide['collisions']:
@@ -129,6 +143,8 @@ def draw_rig_guide(renderer, painter, data):
                 if projected:
                     poly, depth = projected
                     faces.append((depth,poly,kind))
+                    if kind == 'collision':
+                        guide['_pick_volumes'].append((poly,depth,shape['joint']))
             for projected in projected_sets[len(shape['faces']):]:
                 if projected:
                     wires.append((projected[0],kind))

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Generate motion with PriorMDM, organize BVH takes, edit rig constraints, retarget animation, and batch render collections in Qubit Field." />
+    <meta name="description" content="Generate motion with PriorMDM, repair body and finger collisions with Rig Limiter, organize BVH takes, retarget animation, and batch render collections in Qubit Field." />
     <title>Motion and Batch Rendering | Qubit Field Workbench</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -22,6 +22,7 @@
         <nav class="nav" id="guide-nav" aria-label="Guide sections">
           <a href="#workflow">Workflow</a><a href="#generation">Generate motion</a>
           <a href="#collections">Organize takes</a><a href="#prepare-rig">Prepare the rig</a>
+          <a href="#rig-limiter">Rig Limiter</a>
           <a href="#animation-blend">Blend into animation</a><a href="#batch-rendering">Batch rendering</a>
           <a href="#review">Review and deliver</a><a href="#troubleshooting">Common checks</a>
           <a href="patterns-cloth.html">Pattern and cloth guide &rarr;</a>
@@ -33,7 +34,7 @@
           <h1>Build a reusable motion pipeline</h1>
           <p class="lead">Bring generated motion, video mocap, or existing clips into one graph. Organize takes, prepare the character rig, and reuse the same scene for a single preview or a collection of renders.</p>
           <p class="workflow-path">PriorMDM / video mocap / BVH files → Mocap Collection<br />Collection → For Each → Anim Retarget → Scene → Render → For Each End</p>
-          <p><a href="nodes.html#3d-rigging-and-scene-processing">Motion and scene nodes</a> · Updated 13 October 2026</p>
+          <p><a href="nodes.html#3d-rigging-and-scene-processing">Motion and scene nodes</a> · Updated 14 October 2026</p>
         </header>
 
         <section class="section" id="generation">
@@ -58,6 +59,9 @@
           <p>PriorMDM exposes <strong>Setup HandMDM</strong> and <strong>Animate Hands</strong>. Configure the hand side, gesture description, time window, and blend duration. The gesture plays, holds, then blends out. This is a preview pipeline: precise palm orientation and character hand retargeting still need refinement.</p>
           <h3>Preview the rig before a run</h3>
           <p>Use <strong>Preview Rig</strong> and its collision/limit display options to inspect the skeleton. Select joints to edit bend cones and twist ranges; multi-joint controls help adjust several joints together. Save the rig settings to reuse the adjustments.</p>
+          <p>Each selected joint also exposes <strong>Capsule radius</strong> controls for its <strong>Start end</strong> and <strong>Far end</strong>, expressed in the input rig's units. The two radii form a tapered collision volume. Hand guides include palms and finger segments, with bend limits and spread controls where supported. Capsules can be picked directly in the viewport.</p>
+          <p>Both Preview Rig and Rig Limiter include foot capsules running from each ankle to the foot joint. Select the ankle or its capsule to adjust the two radii. These volumes follow animation poses and participate in manual collision blocking and IK repair.</p>
+          <p><strong>Collision preview (blocks rotations)</strong> shows the volumes and stops manual joint rotations at contact. Turn it off to pose without that collision blocking. The Save button stores Preview Rig limits and capsule radii in application settings; the same panel in Rig Limiter saves that node's settings with the workflow.</p>
           <figure class="screenshot-card">
             <a href="UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png"><img src="UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png" width="2286" height="1219" alt="Skeleton with collision guides, bend cones, twist rings, Preview Rig settings, and BVH collection render thumbnails" loading="lazy" decoding="async" /></a>
             <figcaption><strong>Inspect constraints in context</strong><span>Rig guides, motion collections, and render workflows share the graph and viewport.</span></figcaption>
@@ -79,10 +83,25 @@
 
         <section class="section" id="prepare-rig">
           <h2>3. Prepare the character and constraints</h2>
+          <h3 id="rig-limiter"><img class="inline-icon" src="../icons/RigLimiter_Icon.png" alt="" /> Repair existing takes with Rig Limiter</h3>
+          <p><a href="nodes.html?node=rig-limiter">Rig Limiter</a> processes an existing animation; it does not need another motion-generation run. Connect a compatible Mocap Import or Mocap Collection to its <code>animation</code> input. Its <code>animation</code> output can feed Anim Retarget, Animation Blend, Transforms, or Scene.</p>
+          <p class="workflow-path">PriorMDM/HumanML BVH → Mocap Import / Mocap Collection → Rig Limiter → Anim Retarget → Scene</p>
+          <ol class="steps">
+            <li>Use a PriorMDM/HumanML skeleton with its original joint hierarchy and rest axes. Apply Rig Limiter before retargeting: it requires fixed bone lengths and unscaled bone transforms. Supported hand joints are included when present.</li>
+            <li>Choose <strong>Preview / Repair</strong> to calculate and inspect a corrected clip. Select body or finger joints, adjust bend/twist or spread limits and capsule radii, and save the node's settings. Run Preview / Repair again after adjusting them.</li>
+            <li>Enable <strong>Correct capsule intersections</strong> and <strong>IK repair</strong> to correct contact as well as angular limits. Repair tries finger adjustments before moving the arm. With IK repair off, only bend/twist limits are applied. Root motion, clip timing, and bone lengths are preserved.</li>
+            <li>Read the summary for corrected frames, finger capsule count, frames adjusted by arm IK, and frames with remaining capsule overlap. Contact that cannot be resolved within the joint limits remains reported for review.</li>
+            <li>Choose <strong>Export corrected BVH</strong> for the active take. For a batch, connect Mocap Collection directly, check the desired takes, and use <strong>Export checked collection</strong>. Both actions write uniquely named <code>_limited_</code> BVHs in the chosen folder and leave the source files and collection entries intact.</li>
+          </ol>
+          <p>Saving capsule radii, limits, collision options, or the workflow does not run a repair. <strong>Preview / Repair turns red</strong> when the input or saved settings need recalculation. The last repair for the same input remains visible until you click the button; a new input or reopened workflow shows the source animation until its first repair. Successful repair clears the red indicator; cancellation keeps the last result and pending state.</p>
+          <p><strong>Export corrected BVH</strong> requires an up-to-date Preview / Repair result. <strong>Export checked collection</strong> is an explicit batch operation that repairs and writes the checked takes using the saved settings.</p>
+          <p>Export preserves the skeleton hierarchy, root motion, timing, and BVH End Sites used for fingertip segments. Repair runs with progress and cancellation controls; already completed files remain available if a collection export is interrupted. Use <strong>Reset limits and volumes</strong> to restore defaults, then preview again.</p>
+          <p class="callout">Capsules approximate the body and fingers. A lower overlap count is useful feedback, but inspect the character mesh after retargeting before rendering or using it as a cloth collider.</p>
+          <h3>Retarget and assemble the character</h3>
           <p>Use <a href="nodes.html?node=anim-retarget">Anim Retarget</a> to map source BVH/FBX motion to a target FBX character. Validate the imported rest geometry, capture pose, and animation roles, then inspect joint mapping, root controls, offsets, and constraint settings in the preview.</p>
           <div class="grid two">
             <article class="card"><h3>Delete Joint</h3><p>Connect a supported rig to <code>delete_joint.rig</code>, choose <strong>Select joints</strong>, and use <strong>View</strong> to inspect the derived skeleton. Use it to prepare a skeleton for the next stage while retaining the original imported file.</p><a href="nodes.html?node=delete-joint">Node reference &rarr;</a></article>
-            <article class="card"><h3>Look At</h3><p>Connect a scene object and select another object or a skeleton joint as its target. Configure aim/up axes, look-at or copy rotation, position matching, offsets, and live updates for tracking cameras or scene objects.</p><a href="nodes.html?node=look-at">Node reference &rarr;</a></article>
+            <article class="card"><h3><img class="inline-icon" src="../icons/LookAt_Icon.png" alt="" /> Look At</h3><p>Connect a scene object and select another object or a skeleton joint as its target. Configure aim/up axes, look-at or copy rotation, position matching, offsets, and live updates for tracking cameras or scene objects.</p><a href="nodes.html?node=look-at">Node reference &rarr;</a></article>
           </div>
           <p>Rig constraints and collision guides help inspect problematic poses. Review the actual animated result, particularly the pelvis, limbs, and hands, before export or cloth simulation.</p>
         </section>
@@ -130,6 +149,8 @@
             <li><strong>A collection is empty or missing files:</strong> inspect Use checkboxes, Checked only, and path relocation after moving assets.</li>
             <li><strong>The batch does not advance:</strong> check the Render → End connection and the render's completion/error status.</li>
             <li><strong>A blend fails:</strong> confirm both inputs provide skeletons, the animation input has a clip, and the rigs are compatible.</li>
+            <li><strong>Rig Limiter rejects an input:</strong> use the original PriorMDM/HumanML hierarchy and rest axes before retargeting; check for animated non-root translations or bone scales.</li>
+            <li><strong>Capsule overlap remains:</strong> check both collision/IK toggles, capsule sizes, and joint limits, then Preview / Repair again. Unreachable contact is reported without stretching bones or moving the root.</li>
             <li><strong>FBX needs its runtime:</strong> use Install FBX Support in the FBX node; see <a href="index.html#fbx-support">optional FBX setup</a>.</li>
           </ul>
         </section>

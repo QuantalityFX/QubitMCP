@@ -114,6 +114,9 @@ class PreviewSettingsTests(unittest.TestCase):
             for names in ([parent,child],[child,parent]):
                 with self.subTest(selection=names):
                     view=PanelViewport()
+                    # This exercises angular limits in isolation. Collision-enabled
+                    # drags now stop earlier when a forearm meets the torso.
+                    view.context['priormdm_rig_debug']['collisions']=False
                     self.addCleanup(view.close)
                     view._xform_hist_start=None
                     view._mgl_scene_skeleton_active_owner='Rig'
@@ -238,7 +241,7 @@ class PreviewSettingsTests(unittest.TestCase):
             swing,twist=rotation_parts(pose.local_transforms[7].rotation,[0,0,1])
             self.assertAlmostEqual(np.degrees(swing.magnitude()),12.)
             self.assertAlmostEqual(np.degrees(twist),5.)
-            self.assertEqual(context['priormdm_rig_debug']['joint_limits'],limits)
+            self.assertEqual({j:context['priormdm_rig_debug']['joint_limits'][j] for j in limits},limits)
 
     def test_panel_edit_reclamps_pose_reset_save_and_selection(self):
         view=PanelViewport()
@@ -295,6 +298,7 @@ class PreviewSettingsTests(unittest.TestCase):
 
     def test_multiple_joint_sections_grow_upward_then_scroll_without_resetting(self):
         view=PanelViewport()
+        view.resize(800,950)
         self.addCleanup(view.deleteLater)
         view.show()
         names=['left_ankle','right_ankle','left_knee','neck']
@@ -302,6 +306,7 @@ class PreviewSettingsTests(unittest.TestCase):
         bottoms=[]
         for count in (1,2,4):
             data=view.data(names[count-1])
+            data['rig_viewport']=(0,0,800,950)
             data['selected_joints']=names[:count]
             labels={name:f'{name}: Current bend {i+1}°' for i,name in enumerate(names)}
             show_rig_panel(view,data,labels[data['selected']],labels=labels)

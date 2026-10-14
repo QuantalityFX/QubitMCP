@@ -592,6 +592,12 @@ def bootstrap_plugins():
 
     # Mocap Collection
     try:
+        from nodes import rig_limiter
+        rig_limiter.register()
+    except Exception as e:
+        print("[EchoGraph] Rig Limiter plugin import failed:", e)
+
+    try:
         from nodes import mocap_collection
         mocap_collection.register()
         _safe_probe("mocap_collection")

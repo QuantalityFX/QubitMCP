@@ -143,11 +143,13 @@
         </section>
 
         <section id="latest-updates" class="section">
-          <p class="eyebrow">Documentation refreshed · 13 October 2026</p>
+          <p class="eyebrow">Documentation refreshed · 14 October 2026</p>
           <h2>New in the workbench</h2>
           <div class="grid latest-grid">
             <article class="card feature-card"><h3><img class="inline-icon" src="../icons/Sew_Icon.png" alt="" /> Pattern Design + Cloth Solver</h3><p>Embedded and full-size pattern editing, linked mirrors, sewing and elastic edges, 3D placement, CPU/CUDA cloth, animated colliders, self collision, pins, baking, and resumable states.</p><a class="text-link" href="patterns-cloth.html">Draft, sew, and simulate &rarr;</a></article>
-            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/PromptToAnimation_Icon.png" alt="" /> PriorMDM + rig constraints</h3><p>Generate motion from text, add optional HandMDM gestures, and use Preview Rig to inspect collision guides and edit bend/twist limits. Hand articulation is a preview feature.</p><a class="text-link" href="motion.html#generation">Generate and inspect motion &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/RigLimiter_Icon.png" alt="" /> Rig Limiter</h3><p>Repair existing PriorMDM/HumanML clips with joint limits, tapered body and finger capsules, and optional IK correction. Preview the result or export corrected BVHs for one take or a checked collection without replacing the sources.</p><a class="text-link" href="motion.html#rig-limiter">Repair and export motion &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/PromptToAnimation_Icon.png" alt="" /> PriorMDM + rig constraints</h3><p>Generate motion from text and add optional HandMDM gestures. Preview Rig now includes finger bend/spread limits, independently sized capsule ends, and a collision preview that stops manual rotations at contact. Hand generation and retargeting remain preview features.</p><a class="text-link" href="motion.html#generation">Generate and inspect motion &rarr;</a></article>
+            <article class="card feature-card"><h3><img class="inline-icon" src="../icons/Microchip_Icon.png" alt="" /> Cloth toggle + adaptable timeline</h3><p>Switch timeline simulation for all cloth solvers in the current view beside the FX toggle. Seed sits before Speed, and controls after Loop move to a second row when the viewport narrows. Cloth Solver, Rig Limiter, and Look At have dedicated node icons.</p><a class="text-link" href="#animation-timeline">Timeline controls &rarr;</a></article>
             <article class="card feature-card"><h3><img class="inline-icon" src="../icons/BVH_Mocap_Icon_s.png" alt="" /> Mocap Collection + For Each</h3><p>Import BVH folders, relocate paths, review assigned renders, rename or archive takes, and run collection or parameter batches with paired loop nodes.</p><a class="text-link" href="motion.html#batch-rendering">Organize and render takes &rarr;</a></article>
             <article class="card feature-card"><h3><img class="inline-icon" src="../icons/BlendAnimation_Icon.png" alt="" /> Animation Blend + rig cleanup</h3><p>Blend a bind pose into a chosen animation frame with hold time and easing. Delete Joint creates a derived skeleton for cleanup; Look At supports object and skeleton-joint targets.</p><a class="text-link" href="motion.html#prepare-rig">Prepare animation for a scene &rarr;</a></article>
             <article class="card feature-card"><h3><img class="inline-icon" src="../icons/AudioCapture_Icon.png" alt="" /> Continuous audio workflows</h3><p>Audio Capture adds continuous streaming, buffered speech recognition, exclusion of Qubit Field playback, and Test &amp; Listen monitoring alongside source and phrase controls.</p><a class="text-link" href="nodes.html?node=audio-capture">Audio Capture reference &rarr;</a></article>
@@ -575,6 +577,10 @@
             <li>Use <code>mocap_import</code>, <code>fbx_import</code>, and <code>anim_retarget</code> for skeleton/animation retargeting workflows before scene preview or render.</li>
             <li>Timeline sessions are context-aware and load per active scene (and selected scene owner when applicable).</li>
             <li>Use <strong>[</strong> and <strong>]</strong> controls for start/end range and the loop control for playback looping.</li>
+            <li>The input order is <strong>Frame, End, FPS, Seed, Speed</strong>, followed by playback, range, and <strong>Loop</strong> controls. Seed is the shared procedural texture seed; Speed controls the selected Scene item's playback rate.</li>
+            <li>When there is insufficient width for one row, every control after <strong>Loop</strong> moves below the input fields. Widen the viewport to restore the single row. The timeline makes room for the extra row while preserving the track area and control values.</li>
+            <li>The <strong>cloth simulation toggle</strong> beside FX switches <strong>Simulate with timeline</strong> on every cloth solver in the current view. Node checkboxes stay synchronized, and the setting is saved with the nodes when you save the graph. Switching it off and on preserves calculated frames; changing solver or collider settings can still invalidate that cache.</li>
+            <li>The cloth toggle shows its on icon when at least one solver follows the timeline; its tooltip reports the count. Clicking it then disables all solvers in the view. When none follow the timeline, clicking enables them all. With no cloth solvers loaded, it is unavailable and keeps the original off artwork without an extra gray tint.</li>
           </ul>
           <div class="tool-wrap">
             <div class="tool-grid">
@@ -587,6 +593,8 @@
               <div class="tool-item"><img src="../icons/Untiedhandle_Icon.png" alt="Untied handle icon" /><span>Untied Handles</span></div>
               <div class="tool-item"><img src="../icons/LiveMaterial_Icon.png" alt="Material live icon" /><span>Material Live Mode</span></div>
               <div class="tool-item"><img src="../icons/fx_switch_On_icon.png" alt="FX instances icon" /><span>FX Instances Toggle</span></div>
+              <div class="tool-item"><img src="../icons/Microship_Toggle_On_Icon.png" alt="Cloth timeline simulation on" /><span>Cloth Simulation On</span></div>
+              <div class="tool-item"><img src="../icons/Microship_Toggle_Off_Icon.png" alt="Cloth timeline simulation off" /><span>Cloth Simulation Off</span></div>
             </div>
           </div>
         </section>
@@ -1123,7 +1131,7 @@
             <li>Serial/Pico automation helpers are exposed through <code>serial_com</code> and consumed by downstream automation paths such as <code>keyboard_sequence</code>.</li>
           </ul>
         </section>
-        <footer class="site-footer"><p>Qubit Field · QubitMCP · A visual workbench by Quantality Effects</p><p><a href="https://github.com/QuantalityFX/QubitMCP">Source repository</a> · <a href="nodes.html">Node catalog</a> · <a href="https://discord.com/invite/zJSKYZYZ">Community</a></p><p>To publish documentation updates, run <code>scripts\export_doc_childsite.bat</code> from a source checkout and upload the exported site to the documentation host. Pushing the README updates the repository home page separately.</p></footer>
+        <footer class="site-footer"><p>Qubit Field · QubitMCP · A visual workbench by Quantality Effects</p><p><a href="https://github.com/QuantalityFX/QubitMCP">Source repository</a> · <a href="nodes.html">Node catalog</a> · <a href="https://discord.gg/KewkErnazm">Community</a></p><p>To publish documentation updates, run <code>scripts\export_doc_childsite.bat</code> from a source checkout and upload the exported site to the documentation host. Pushing the README updates the repository home page separately.</p></footer>
       </main>
     </div>
 

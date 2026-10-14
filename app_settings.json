@@ -6,7 +6,7 @@
     "audio": false,
     "profiler": false
   },
-  "view_mode": "2d",
+  "view_mode": "split",
   "voice_audio_mode": "bilateral",
   "voice_mic_device_index": 23,
   "shadow_quality": "ultra",
@@ -23,7 +23,7 @@
     "height": 901
   },
   "preview_rig": {
-    "version": 1,
+    "version": 3,
     "joint_limits": {
       "spine1": {
         "bend_min": 0.0,
@@ -99,7 +99,7 @@
       },
       "left_shoulder": {
         "bend_min": 0.0,
-        "bend_max": 40.0,
+        "bend_max": 80.0,
         "twist_min": -100.0,
         "twist_max": 100.0
       },
@@ -108,7 +108,393 @@
         "bend_max": 80.0,
         "twist_min": -100.0,
         "twist_max": 100.0
+      },
+      "left_collar": {
+        "bend_min": 0.0,
+        "bend_max": 15.0,
+        "twist_min": -15.0,
+        "twist_max": 15.0
+      },
+      "right_collar": {
+        "bend_min": 0.0,
+        "bend_max": 15.0,
+        "twist_min": -15.0,
+        "twist_max": 15.0
+      },
+      "left_wrist": {
+        "bend_min": 0.0,
+        "bend_max": 65.0,
+        "twist_min": -45.0,
+        "twist_max": 45.0
+      },
+      "right_wrist": {
+        "bend_min": 0.0,
+        "bend_max": 65.0,
+        "twist_min": -45.0,
+        "twist_max": 45.0
+      },
+      "left_index1": {
+        "bend_min": 0.0,
+        "bend_max": 90.0,
+        "twist_min": -20.0,
+        "twist_max": 20.0
+      },
+      "left_index2": {
+        "bend_min": 0.0,
+        "bend_max": 110.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_index3": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_middle1": {
+        "bend_min": 0.0,
+        "bend_max": 90.0,
+        "twist_min": -20.0,
+        "twist_max": 20.0
+      },
+      "left_middle2": {
+        "bend_min": 0.0,
+        "bend_max": 110.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_middle3": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_pinky1": {
+        "bend_min": 0.0,
+        "bend_max": 90.0,
+        "twist_min": -20.0,
+        "twist_max": 20.0
+      },
+      "left_pinky2": {
+        "bend_min": 0.0,
+        "bend_max": 110.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_pinky3": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_ring1": {
+        "bend_min": 0.0,
+        "bend_max": 90.0,
+        "twist_min": -20.0,
+        "twist_max": 20.0
+      },
+      "left_ring2": {
+        "bend_min": 0.0,
+        "bend_max": 110.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_ring3": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_thumb1": {
+        "bend_min": 0.0,
+        "bend_max": 60.0,
+        "twist_min": -35.0,
+        "twist_max": 35.0
+      },
+      "left_thumb2": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "left_thumb3": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_index1": {
+        "bend_min": 0.0,
+        "bend_max": 90.0,
+        "twist_min": -20.0,
+        "twist_max": 20.0
+      },
+      "right_index2": {
+        "bend_min": 0.0,
+        "bend_max": 110.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_index3": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_middle1": {
+        "bend_min": 0.0,
+        "bend_max": 90.0,
+        "twist_min": -20.0,
+        "twist_max": 20.0
+      },
+      "right_middle2": {
+        "bend_min": 0.0,
+        "bend_max": 110.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_middle3": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_pinky1": {
+        "bend_min": 0.0,
+        "bend_max": 90.0,
+        "twist_min": -20.0,
+        "twist_max": 20.0
+      },
+      "right_pinky2": {
+        "bend_min": 0.0,
+        "bend_max": 110.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_pinky3": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_ring1": {
+        "bend_min": 0.0,
+        "bend_max": 90.0,
+        "twist_min": -20.0,
+        "twist_max": 20.0
+      },
+      "right_ring2": {
+        "bend_min": 0.0,
+        "bend_max": 110.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_ring3": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_thumb1": {
+        "bend_min": 0.0,
+        "bend_max": 60.0,
+        "twist_min": -35.0,
+        "twist_max": 35.0
+      },
+      "right_thumb2": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
+      },
+      "right_thumb3": {
+        "bend_min": 0.0,
+        "bend_max": 80.0,
+        "twist_min": -0.0,
+        "twist_max": 0.0
       }
+    },
+    "volumes": {
+      "pelvis": [
+        0.115,
+        0.115
+      ],
+      "spine1": [
+        0.14,
+        0.14
+      ],
+      "spine3": [
+        0.12,
+        0.12
+      ],
+      "neck": [
+        0.045,
+        0.045
+      ],
+      "left_hip": [
+        0.075,
+        0.075
+      ],
+      "right_hip": [
+        0.075,
+        0.075
+      ],
+      "left_knee": [
+        0.05,
+        0.05
+      ],
+      "right_knee": [
+        0.05,
+        0.05
+      ],
+      "right_shoulder": [
+        0.04,
+        0.04
+      ],
+      "right_elbow": [
+        0.035,
+        0.035
+      ],
+      "head": [
+        0.09,
+        0.09
+      ],
+      "left_shoulder": [
+        0.04,
+        0.04
+      ],
+      "left_elbow": [
+        0.035,
+        0.035
+      ],
+      "left_wrist": [
+        0.022,
+        0.028
+      ],
+      "right_wrist": [
+        0.022,
+        0.028
+      ],
+      "left_index1": [
+        0.0095,
+        0.00836
+      ],
+      "left_index2": [
+        0.00836,
+        0.00722
+      ],
+      "left_index3": [
+        0.00722,
+        0.00608
+      ],
+      "left_middle1": [
+        0.0095,
+        0.00836
+      ],
+      "left_middle2": [
+        0.00836,
+        0.00722
+      ],
+      "left_middle3": [
+        0.00722,
+        0.00608
+      ],
+      "left_pinky1": [
+        0.008,
+        0.00704
+      ],
+      "left_pinky2": [
+        0.00704,
+        0.00608
+      ],
+      "left_pinky3": [
+        0.00608,
+        0.00512
+      ],
+      "left_ring1": [
+        0.0095,
+        0.00836
+      ],
+      "left_ring2": [
+        0.00836,
+        0.00722
+      ],
+      "left_ring3": [
+        0.00722,
+        0.00608
+      ],
+      "left_thumb1": [
+        0.011,
+        0.00968
+      ],
+      "left_thumb2": [
+        0.00968,
+        0.00836
+      ],
+      "left_thumb3": [
+        0.00836,
+        0.007039999999999999
+      ],
+      "right_index1": [
+        0.0095,
+        0.00836
+      ],
+      "right_index2": [
+        0.00836,
+        0.00722
+      ],
+      "right_index3": [
+        0.00722,
+        0.00608
+      ],
+      "right_middle1": [
+        0.0095,
+        0.00836
+      ],
+      "right_middle2": [
+        0.00836,
+        0.00722
+      ],
+      "right_middle3": [
+        0.00722,
+        0.00608
+      ],
+      "right_pinky1": [
+        0.008,
+        0.00704
+      ],
+      "right_pinky2": [
+        0.00704,
+        0.00608
+      ],
+      "right_pinky3": [
+        0.00608,
+        0.00512
+      ],
+      "right_ring1": [
+        0.0095,
+        0.00836
+      ],
+      "right_ring2": [
+        0.00836,
+        0.00722
+      ],
+      "right_ring3": [
+        0.00722,
+        0.00608
+      ],
+      "right_thumb1": [
+        0.011,
+        0.00968
+      ],
+      "right_thumb2": [
+        0.00968,
+        0.00836
+      ],
+      "right_thumb3": [
+        0.00836,
+        0.007039999999999999
+      ]
     }
   }
 }

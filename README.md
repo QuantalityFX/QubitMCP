@@ -6,7 +6,7 @@ Qubit Field brings AI, knowledge, automation, media, and 3D creation into one no
 
 **QubitMCP is the source repository for the Qubit Field application.** Built for Windows with Python and PySide6, the workbench supports both local tools and connected services. Unreal Engine is one of its integrations, alongside workflows that run entirely in the desktop app.
 
-[Documentation](https://quantalityfx.com/docs/qubit-mcp/) · [Node catalog](https://quantalityfx.com/docs/qubit-mcp/nodes.html) · [Download for Windows](https://github.com/QuantalityFX/QubitMCP/raw/refs/heads/Latest/downloads/QubitFieldInstaller.exe) · [Website](https://quantality.com) · [Discord](https://discord.com/invite/zJSKYZYZ)
+[Documentation](https://quantalityfx.com/docs/qubit-mcp/) · [Node catalog](https://quantalityfx.com/docs/qubit-mcp/nodes.html) · [Download for Windows](https://github.com/QuantalityFX/QubitMCP/raw/refs/heads/Latest/downloads/QubitFieldInstaller.exe) · [Website](https://quantality.com) · [Discord](https://discord.gg/KewkErnazm)
 
 ![Qubit Field workbench with connected AI, voice, automation, and Gantt planning workflows](Doc/UISnapshot/AiWorkflow.png)
 
@@ -27,6 +27,8 @@ The graph is the common workspace: a document workflow can feed an agent, a moti
 
 - **Pattern Design and Cloth Solver** — reusable `.pattern.json` documents, mirrored panels, sewing tools, interactive cloth placement, animated colliders, timeline simulation, baking, and resumable saved states.
 - **PriorMDM and rig previews** — text-to-motion generation, optional HandMDM hand gestures, and editable bend/twist limits with collision guides. Hand articulation remains a preview feature.
+- **Rig Limiter and collision editing** — repair existing PriorMDM/HumanML clips with body/finger limits, tapered capsules, and optional IK; preview or export corrected takes and checked collections while preserving source BVHs. Edit capsule end radii and block manual joint rotations at contact.
+- **Timeline controls and node icons** — a cloth simulation toggle beside FX stays synchronized with node settings and preserves cached frames. Seed now precedes Speed, controls after Loop wrap on narrow viewports, and Cloth Solver, Rig Limiter, and Look At have dedicated icons.
 - **Mocap Collection and batch rendering** — BVH folder import, path relocation, render review, rename/archive tools, and paired For Each nodes for repeatable render runs.
 - **Animation Blend, Delete Joint, and Look At** — a controlled transition into animation, derived skeleton cleanup, and object or joint targeting for scene constraints.
 - **Voice and viewport improvements** — continuous audio capture with buffered speech recognition and app-audio exclusion, expanded rig editing, lighting controls, and selection previews.
@@ -78,6 +80,6 @@ The README is the presentation shown on the GitHub repository home page. The hos
 
 ## Connect
 
-[Website](https://quantality.com) · [Email](mailto:quantalityfx@gmail.com) · [Discord](https://discord.com/invite/zJSKYZYZ) · [YouTube](https://www.youtube.com/@vimpassion) · [LinkedIn](https://www.linkedin.com/in/ernesto-marrero-7760092a/) · [Instagram](https://www.instagram.com/vimpassion/)
+[Website](https://quantality.com) · [Email](mailto:quantalityfx@gmail.com) · [Discord](https://discord.gg/KewkErnazm) · [YouTube](https://www.youtube.com/@vimpassion) · [LinkedIn](https://www.linkedin.com/in/ernesto-marrero-7760092a/) · [Instagram](https://www.instagram.com/vimpassion/)
 
 Qubit Field is **source-available** under the [Qubit MCP Source-Available License](LICENSE). See the license for permitted uses and restrictions.

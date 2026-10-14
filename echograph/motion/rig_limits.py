@@ -41,7 +41,7 @@ def _project_preview_rotation(joint, quaternion, axis, previous=None, *, limits)
     """Clamp a single pose; previous selects continuous hinge/twist angles."""
     import numpy as np
     from scipy.spatial.transform import Rotation
-    if joint in (15,20,21):
+    if joint in (15,20,21) and joint not in limits:
         return np.array([0.,0.,0.,1.])
     limit = limits.get(joint)
     if limit is None:
@@ -52,7 +52,15 @@ def _project_preview_rotation(joint, quaternion, axis, previous=None, *, limits)
         if previous is not None:
             _, old = rotation_parts(previous,hinge)
             angle = old + (angle-old+np.pi)%(2*np.pi)-np.pi
-        return Rotation.from_rotvec(hinge*np.clip(angle,np.deg2rad(limit.get('flex_min',0.)),np.deg2rad(limit['flex']))).as_quat()
+        bend = Rotation.from_rotvec(hinge*np.clip(angle,np.deg2rad(limit.get('flex_min',0.)),np.deg2rad(limit['flex'])))
+        if 'spread_axis' in limit:
+            swing,_ = rotation_parts(quaternion,hinge)
+            spread_axis = np.asarray(limit['spread_axis'])
+            spread = np.clip(swing.as_rotvec()@spread_axis,
+                             np.deg2rad(limit.get('twist_min',-limit['twist'])),
+                             np.deg2rad(limit.get('twist_max',limit['twist'])))
+            bend = Rotation.from_rotvec(spread_axis*spread)*bend
+        return bend.as_quat()
     swing, twist = rotation_parts(quaternion,axis)
     if previous is not None:
         _, old = rotation_parts(previous,axis)
@@ -122,14 +130,14 @@ def preview_limit_fields(joint, limit=None):
                 twist_max=limit.get('twist_max',limit.get('twist',0.)))
 
 
-def preview_limit_from_fields(joint, fields):
+def preview_limit_from_fields(joint, fields, *, defaults=None):
     """Validate persisted/user ranges, retaining this joint's anatomical type."""
     import math
-    limit = dict(PREVIEW_JOINT_LIMITS[joint])
-    defaults = preview_limit_fields(joint)
+    limit = dict(PREVIEW_JOINT_LIMITS[joint] if defaults is None else defaults)
+    defaults = preview_limit_fields(joint,limit)
     bend = 'flex' if 'flex' in limit else 'swing'
     for kind,lower,upper in (('bend',0.,179. if bend=='flex' else 89.),('twist',-179.,179.)):
-        if kind == 'twist' and bend == 'flex':
+        if kind == 'twist' and bend == 'flex' and 'spread_axis' not in limit:
             continue
         try:
             lo,hi = (float(fields.get(kind+suffix,defaults[kind+suffix])) for suffix in ('_min','_max'))

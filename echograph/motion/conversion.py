@@ -141,7 +141,7 @@ def reconstruct_animation(positions: np.ndarray, fps: float, metadata: dict, *, 
 
 
 def write_bvh(path: Path, positions: np.ndarray, fps: float, local_rot: np.ndarray, offsets: np.ndarray,
-              *, names=JOINT_NAMES, parents=PARENTS) -> None:
+              *, names=JOINT_NAMES, parents=PARENTS, end_sites=None) -> None:
     lines = ["HIERARCHY"]
     order = []
 
@@ -156,7 +156,16 @@ def write_bvh(path: Path, positions: np.ndarray, fps: float, local_rot: np.ndarr
         for child in children:
             visit(child, depth + 1)
         if not children:
-            lines.extend([indent + "  End Site", indent + "  {", indent + "    OFFSET 0 0 0", indent + "  }"])
+            tip = np.zeros(3)
+            if isinstance(end_sites,dict) and names[index] in end_sites:
+                try:
+                    candidate = np.asarray(end_sites[names[index]],dtype=float).reshape(-1,3)[0]
+                    if np.isfinite(candidate).all():
+                        tip = candidate
+                except (TypeError,ValueError,IndexError):
+                    pass
+            lines.extend([indent + "  End Site", indent + "  {",
+                          indent + "    OFFSET " + " ".join(f"{v:.9f}" for v in tip), indent + "  }"])
         lines.append(indent + "}")
 
     visit(0, 0)

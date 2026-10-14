@@ -454,6 +454,11 @@ class ClothWidget(QtWidgets.QWidget):
         values = params(model)
         settings = ClothSettings.from_dict(values)
         running = bool(getattr(model, "_cloth_playing", False)) or baking
+        timeline_check = self.findChild(QtWidgets.QCheckBox, "Cloth_follow_timeline")
+        if timeline_check is not None and timeline_check.isChecked() != settings.follow_timeline:
+            blocker = QtCore.QSignalBlocker(timeline_check)
+            timeline_check.setChecked(settings.follow_timeline)
+            del blocker
         self.play_button.setText("Stop" if running else "Play")
         self.play_button.setIcon(self._stop_icon if running else self._play_icon)
         self.play_button.setEnabled(baking or (settings.enabled and not settings.follow_timeline

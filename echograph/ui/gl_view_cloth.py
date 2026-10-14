@@ -958,6 +958,9 @@ class ClothViewportMixin(ClothPanelsMixin):
 
     def _mgl_update_cloth(self):
         items = self._cloth_items()
+        refresh_toggle = getattr(self, "_update_timeline_cloth_button", None)
+        if callable(refresh_toggle):
+            refresh_toggle()
         states = getattr(self, "_cloth_states", None)
         if states is None:
             states = self._cloth_states = {}
