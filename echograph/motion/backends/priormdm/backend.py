@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -11,7 +11,7 @@ import tempfile
 
 from ...types import GeneratedMotion, GenerationPlan, MotionRequest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+from .paths import PROJECT_ROOT, default_repository
 UPSTREAM_URL = "https://github.com/priorMDM/priorMDM.git"
 INSPECTED_REVISION = "176fbee62a4d62ae007399138bfc3b1722b58715"
 FPS = 20.0
@@ -20,10 +20,10 @@ MAX_FRAMES = 196
 
 @dataclass(frozen=True)
 class PriorMDMConfig:
-    repository: Path = PROJECT_ROOT / "third_party" / "PriorMDM"
-    python: Path = PROJECT_ROOT / "third_party" / "PriorMDM" / ".venv" / "Scripts" / "python.exe"
+    repository: Path = field(default_factory=default_repository)
+    python: Path = field(default_factory=lambda: default_repository() / ".venv" / "Scripts" / "python.exe")
     checkpoint: Path | None = None
-    dataset: Path = PROJECT_ROOT / "third_party" / "PriorMDM" / "dataset" / "HumanML3D"
+    dataset: Path = field(default_factory=lambda: default_repository() / "dataset" / "HumanML3D")
     output_root: Path = Path(tempfile.gettempdir()) / "EchoGraph"
     device: str = "cuda:0"
     download_cache: Path | None = None

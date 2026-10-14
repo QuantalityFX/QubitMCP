@@ -96,6 +96,7 @@ def schedule_live_preview(model, scene):
 
 def add_paths(model, paths, scene=None) -> int:
     """Append once per path; select the last added/requested file."""
+    from .archive import is_archived
     base = mocap._workflow_dir_for_node(SimpleNamespace(scene=lambda: scene))
     def path_key(raw):
         resolved = mocap._resolve_existing_path(raw, base)
@@ -107,6 +108,8 @@ def add_paths(model, paths, scene=None) -> int:
         resolved = mocap._resolve_existing_path(path, base)
         if Path(path).suffix.lower() != ".bvh" or resolved is None or not resolved.is_file():
             raise ValueError(f"Select an existing BVH file: {path}")
+        if is_archived(resolved):
+            raise ValueError(f"This BVH is archived and cannot be added to the collection: {path}")
     rows = entries(model)
     known = {path_key(row["path"]): i for i, row in enumerate(rows)}
     number, added = output_number(model), 0
@@ -124,15 +127,21 @@ def add_paths(model, paths, scene=None) -> int:
 
 def bvh_paths_in_folder(folder) -> list[Path]:
     """Collect BVHs recursively in a repeatable order, including uppercase extensions."""
+    from .archive import is_archived
     root = Path(folder).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"Select an existing folder: {folder}")
+    if is_archived(root):
+        return []
 
     def scan_error(error):
         raise error
 
     paths = []
-    for directory, _subfolders, filenames in os.walk(root, onerror=scan_error, followlinks=False):
+    for directory, subfolders, filenames in os.walk(root, onerror=scan_error, followlinks=False):
+        if (Path(directory) / "archive.json").is_file():
+            subfolders.clear()
+            continue
         for filename in filenames:
             if Path(filename).suffix.lower() == ".bvh":
                 paths.append(Path(directory) / filename)
@@ -156,9 +165,8 @@ def relocate_paths(model, selected_rows, root, scene=None):
     if not root.is_dir():
         raise ValueError("Choose an existing parent folder.")
     candidates = {}
-    for path in root.rglob("*"):
-        if path.is_file() and path.suffix.lower() == ".bvh":
-            candidates.setdefault(path.name.casefold(), []).append(path)
+    for path in bvh_paths_in_folder(root):
+        candidates.setdefault(path.name.casefold(), []).append(path)
     rows = entries(model)
     updates = {}
     for index in sorted(set(selected_rows)):
@@ -370,6 +378,8 @@ class MocapCollectionWidget(QtWidgets.QWidget):
             self._queue_thumbnails()
 
     def refresh(self):
+        from .archive import remove_archived_rows
+        remove_archived_rows(self.model, self.graph_scene)
         sync_output(self.model, self.graph_scene)
         rows, number = entries(self.model), output_number(self.model)
         eligible = output_rows(self.model)
@@ -427,7 +437,7 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                         cell.setFont(font)
             if number != getattr(self, "_displayed_number", number) and not rows_changed:
                 selection = self.table.selectionModel()
-                if number and selection.selectedRows(3):
+                if number:
                     selection.setCurrentIndex(self.table.model().index(number - 1, 3),
                         QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows)
                 elif not number:
@@ -554,11 +564,12 @@ class MocapCollectionWidget(QtWidgets.QWidget):
 
     def _select(self, number):
         eligible = output_rows(self.model)
-        if 1 <= number <= len(eligible) and eligible[number - 1] != output_number(self.model):
+        if 1 <= number <= len(eligible):
             self.table.selectionModel().setCurrentIndex(
                 self.table.model().index(eligible[number - 1] - 1, 3),
                 QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows)
-            self._save(entries(self.model), eligible[number - 1])
+            if eligible[number - 1] != output_number(self.model):
+                self._save(entries(self.model), eligible[number - 1])
 
     def _toggle_checked_only(self, enabled):
         number = output_number(self.model)

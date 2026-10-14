@@ -62,7 +62,7 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(self.takes[0].is_dir())
         self.assertEqual(spec.entries(self.model), before)
 
-    def test_archive_updates_shared_unselected_run_and_other_collection(self):
+    def test_archive_removes_shared_run_from_all_collections(self):
         from nodes.mocap_collection.archive import archive_rows
         sibling = self.paths[0].with_name("second.bvh")
         sibling.write_text(BVH.replace("{x}", "1"))
@@ -70,14 +70,46 @@ class ReviewTests(unittest.TestCase):
         other = GraphNode("Other", kind="mocap_collection")
         self.scene.add_node(other, QtCore.QPointF(700, 0))
         spec.add_paths(other, [self.paths[0]], self.scene)
-        archive_rows(self.model, self.scene, [0], self.root / "archives", "Test")
+        count, destination = archive_rows(self.model, self.scene, [0], self.root / "archives", "Test")
         self.assertFalse(self.paths[0].exists())
         remaining = spec.entries(self.model)
-        self.assertEqual(len(remaining), 2)
+        self.assertEqual(len(remaining), 1)
         self.assertEqual(Path(remaining[0]["path"]), self.paths[1])
-        self.assertTrue(Path(remaining[1]["path"]).is_file())
-        self.assertEqual(Path(remaining[1]["path"]).name, "second.bvh")
-        self.assertTrue(Path(spec.entries(other)[0]["path"]).is_file())
+        self.assertEqual(spec.entries(other), [])
+        self.assertEqual(spec.mocap._param_value(other, "path"), "")
+        self.assertEqual(count, 2)
+        archived = json.loads((destination / "archive.json").read_text())["entries"]
+        self.assertEqual({Path(row["path"]).name for row in archived}, {"animation.bvh", "second.bvh"})
+        self.assertTrue(all(Path(row["path"]).is_file() for row in archived))
+
+    def test_archive_metadata_excludes_scans_and_cleans_previously_saved_rows(self):
+        from nodes.mocap_collection.archive import archive_rows
+        _, destination = archive_rows(self.model, self.scene, [0], self.root / "archives", "Extras")
+        archived = json.loads((destination / "archive.json").read_text())["entries"][0]
+        path = Path(archived["path"])
+        self.assertNotIn(path, spec.bvh_paths_in_folder(self.root))
+        self.assertEqual(spec.bvh_paths_in_folder(path.parent), [])
+        with self.assertRaisesRegex(ValueError, "archived"):
+            spec.add_paths(self.model, [path], self.scene)
+        # Simulate a graph saved by the old version with archived paths still listed.
+        spec.mocap._set_param_value(self.model, "files", json.dumps([archived, {
+            "path": str(self.paths[1]), "checked": True}]))
+        spec.mocap._set_param_value(self.model, "output", "1")
+        self.widget.refresh()
+        self.assertEqual([row["path"] for row in spec.entries(self.model)], [str(self.paths[1])])
+        self.assertEqual(self.widget.table.rowCount(), 1)
+        self.assertEqual(spec.mocap._param_value(self.model, "path"), str(self.paths[1]))
+        self.assertTrue(path.is_file())
+        self.assertTrue((destination / "archive.json").is_file())
+
+    def test_folder_scan_uses_archive_marker_not_folder_name(self):
+        unmarked = self.root / "archives" / "ordinary.bvh"
+        unmarked.parent.mkdir()
+        unmarked.write_text(BVH.replace("{x}", "1"))
+        self.assertIn(unmarked, spec.bvh_paths_in_folder(self.root))
+        (unmarked.parent / "archive.json").write_text(json.dumps({"schema_version": 1, "entries": []}))
+        self.assertNotIn(unmarked, spec.bvh_paths_in_folder(self.root))
+        self.assertEqual(spec.bvh_paths_in_folder(unmarked.parent), [])
 
     def test_archive_restores_files_and_model_when_collection_update_fails(self):
         from nodes.mocap_collection.archive import archive_rows

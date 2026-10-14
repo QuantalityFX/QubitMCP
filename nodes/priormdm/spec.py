@@ -111,12 +111,13 @@ def config_for_node(node):
 
 
 def config_from_paths(values, device):
+    from echograph.motion.backends.priormdm.paths import migrate_managed_paths
     defaults = default_paths()
     paths = {key: Path(values[key].strip().strip('"') or defaults[key]).expanduser().resolve()
              for key in ("repository", "python", "dataset", "download_cache", "output_root")}
     checkpoint = values["checkpoint"].strip().strip('"')
-    return PriorMDMConfig(**paths, checkpoint=Path(checkpoint).expanduser().resolve() if checkpoint else None,
-                          device=device.strip())
+    paths["checkpoint"] = Path(checkpoint).expanduser().resolve() if checkpoint else None
+    return PriorMDMConfig(**migrate_managed_paths(paths), device=device.strip())
 
 
 def create_preview_node(node, scene, bvh: Path):

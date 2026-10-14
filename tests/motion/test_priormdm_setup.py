@@ -24,6 +24,58 @@ APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
 class SetupReportTests(unittest.TestCase):
+    def test_missing_repository_check_reports_setup_needed_without_downloading(self):
+        from echograph.motion.backends.priormdm import installer
+        with tempfile.TemporaryDirectory() as folder, patch.object(installer, "urlopen") as download:
+            root = Path(folder)
+            report_path = root / "report.json"
+            result = installer.main(["--repository", str(root / "missing"), "--check-runtime",
+                                     "--report", str(report_path)])
+            self.assertEqual(result, 1)
+            report = json.loads(report_path.read_text())
+            self.assertFalse(report["ready"])
+            self.assertFalse(report.get("failed", False))
+            self.assertTrue(any("PriorMDM source" in item for item in report["missing"]))
+            download.assert_not_called()
+            self.assertFalse((root / "missing").exists())
+
+    def test_source_setup_reuses_cache_in_existing_asset_only_folder(self):
+        import zipfile
+        from echograph.motion.backends.priormdm import installer
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            downloads = root / "downloads"
+            downloads.mkdir()
+            model = root / "model.pt"
+            model.write_bytes(b"keep this model")
+            with zipfile.ZipFile(downloads / f"priormdm-source-{installer.INSPECTED_REVISION}.zip", "w") as zipped:
+                zipped.writestr("source/utils/model_util.py", "# source")
+                zipped.writestr("source/model/mdm.py", "# model")
+            with patch.object(installer, "urlopen") as download:
+                installer.ensure_source(root)
+                installer.ensure_source(root)
+                download.assert_not_called()
+            self.assertEqual(model.read_bytes(), b"keep this model")
+            self.assertEqual((root / "utils/model_util.py").read_text(), "# source")
+            self.assertTrue((root / "model/mdm.py").is_file())
+
+    def test_source_setup_rejects_conflicts_without_overwriting_existing_files(self):
+        import zipfile
+        from echograph.motion.backends.priormdm import installer
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            downloads = root / "downloads"
+            downloads.mkdir()
+            existing = root / "LICENSE"
+            existing.write_text("custom")
+            with zipfile.ZipFile(downloads / f"priormdm-source-{installer.INSPECTED_REVISION}.zip", "w") as zipped:
+                zipped.writestr("source/utils/model_util.py", "# source")
+                zipped.writestr("source/LICENSE", "upstream")
+            with self.assertRaises(FileExistsError):
+                installer.ensure_source(root)
+            self.assertEqual(existing.read_text(), "custom")
+            self.assertFalse((root / "utils/model_util.py").exists())
+
     def test_checkpoint_discovery_prefers_base_50_steps(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

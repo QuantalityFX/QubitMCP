@@ -10,6 +10,33 @@ from PySide6 import QtWidgets
 from . import approvals, review_data as data
 
 
+def is_archived(path, base=None):
+    """Recognize named archives by their catalog, not by folder naming."""
+    path = data.resolved_path(path, base)
+    return any((folder / "archive.json").is_file() for folder in (path, *path.parents))
+
+
+def remove_archived_rows(model, scene=None):
+    """Clean up references retained by older versions or saved workflows."""
+    from . import spec
+    rows = spec.entries(model)
+    metadata = approvals.metadata_path(scene)
+    base = metadata.parent if metadata else None
+    # Many clips share a folder; inspect each folder only once per refresh.
+    archived = {}
+    kept = []
+    for i, row in enumerate(rows):
+        folder = data.resolved_path(row["path"], base).parent
+        if folder not in archived:
+            archived[folder] = is_archived(folder)
+        if not archived[folder]:
+            kept.append(i)
+    if len(kept) != len(rows):
+        active = spec.output_number(model)
+        number = sum(i < active for i in kept)
+        spec.save_state(model, [rows[i] for i in kept], max(1, number) if kept else 0, scene)
+
+
 def archive_rows(model, scene, selected, parent, name):
     from . import spec
     data.ensure_idle(scene)
@@ -57,7 +84,8 @@ def archive_rows(model, scene, selected, parent, name):
             raise ValueError("The archive must be separate from the source folders.")
     # Keep nested render folders inside their enclosing motion folder.
     sources = {p for p in sources if not any(p != other and p.is_relative_to(other) for other in sources)}
-    # Shared runs can move, provided every open collection reference follows.
+    # Every collection must drop BVHs moved into the archive, including siblings
+    # in a shared run folder. Keep their metadata in the archive catalog instead.
     models = {id(model): model}
     for item in getattr(scene, "_node_items", {}).values():
         if item.model.kind == "mocap_collection":
@@ -67,6 +95,13 @@ def archive_rows(model, scene, selected, parent, name):
     # Separate batches permit appending to existing archives without collisions.
     batch = destination / ("batch_" + uuid.uuid4().hex[:12])
     moves = [(old, batch / f"{i + 1:03d}_{old.name}") for i, old in enumerate(sorted(sources))]
+    known = {data.resolved_path(row["path"], base) for row in chosen}
+    for _, _, current_rows, _ in states:
+        for row in current_rows:
+            source = data.resolved_path(row["path"], base)
+            if source not in known and any(source.is_relative_to(old) for old, _ in moves):
+                chosen.append(copy.deepcopy(row))
+                known.add(source)
     for old, _ in moves:
         documents.update(old.rglob("take.json"))
         documents.update(old.rglob("*_manifest.json"))
@@ -108,16 +143,18 @@ def archive_rows(model, scene, selected, parent, name):
         temporary.replace(manifest)
         for current, _, current_rows, active in states:
             remaining = []
+            kept = []
             for i, row in enumerate(current_rows):
-                if current is model and i in selected:
+                source = data.resolved_path(row["path"], base)
+                if any(source.is_relative_to(old) for old, _ in moves):
                     continue
                 row["path"] = data.remap_path(row["path"], moves, base)
                 if row.get("render"):
                     row["render"] = data.rewrite_record(row["render"], moves, base)
                     row["render"]["manifests"] = [data.remap_path(p, moves, base) for p in row["render"].get("manifests", [])]
                 remaining.append(row)
-            if current is model:
-                active = sum(i < active for i in range(len(current_rows)) if i not in selected)
+                kept.append(i)
+            active = sum(i < active for i in kept)
             spec.save_state(current, remaining, max(1, active) if remaining else 0, scene)
     except Exception as exc:
         failures = []
@@ -196,7 +233,7 @@ def choose_archive(scene, parent_widget):
     browse.clicked.connect(browse_folder)
     folder.editingFinished.connect(refresh)
     refresh()
-    description = QtWidgets.QLabel("Moves the complete BVH run folders and their assigned render folders, then removes the selected paths from this collection.")
+    description = QtWidgets.QLabel("Moves the complete BVH run folders and their assigned render folders, then removes every moved BVH from open collections, including other BVHs in the same run folders.")
     description.setWordWrap(True)
     layout.addRow(description)
     buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)

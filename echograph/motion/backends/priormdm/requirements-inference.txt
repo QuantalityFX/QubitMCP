@@ -9,5 +9,6 @@ regex==2024.7.24
 blobfile==2.1.1
 chumpy==0.70
 gdown==5.2.0
-git+https://github.com/openai/CLIP.git
-git+https://github.com/GuyTevet/smplx.git
+# Source archives also work on machines without the Git command-line tools.
+https://github.com/openai/CLIP/archive/refs/heads/main.zip
+https://github.com/GuyTevet/smplx/archive/HEAD.zip

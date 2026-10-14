@@ -1788,7 +1788,53 @@ class ViewportTests(unittest.TestCase):
             self.view._mgl_update_cloth()
             self.assertTrue(Path(path).is_file())
 
-    def test_one_frame_bake_and_reset_exit_cache_playback(self):
+    def test_reset_clears_preview_history_and_keeps_loaded_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for follow_timeline in (False, True):
+                with self.subTest(follow_timeline=follow_timeline):
+                    self.config["settings"]["follow_timeline"] = follow_timeline
+                    self.view.frame = 5 if follow_timeline else 0
+                    path = str(Path(temp) / f"state_{follow_timeline}.npz")
+                    positions = self.asset.positions + [0, .3, 0]
+                    velocity = np.full_like(positions, .01)
+                    state = self.view._cloth_states["Cloth"]
+                    write_bake(path, {"signature": state.signature, "cache_type": "state",
+                                      "resume_frame": 72, "solver_time": 3},
+                               [72], [positions], [velocity])
+                    original_file = Path(path).read_bytes()
+                    self.model._cloth_commands = [{"action": "load_cache", "path": path}]
+                    self.view._mgl_update_cloth()
+                    if follow_timeline:
+                        self.finish_seek(8)
+                    else:
+                        for _ in range(3):
+                            self.model._cloth_commands = [{"action": "step"}]
+                            self.view._mgl_update_cloth()
+                    previous = self.view._cloth_states["Cloth"]
+                    self.assertGreater(len(previous.cache.frames), 1)
+                    self.assertFalse(np.allclose(previous.solver.x, positions))
+                    self.model._cloth_commands = [{"action": "reset"}]
+                    self.view._mgl_update_cloth()
+                    self.app.processEvents()
+                    state = self.view._cloth_states["Cloth"]
+                    self.assertIsNot(state, previous)
+                    self.assertEqual(self.config["cache_path"], path)
+                    self.assertEqual(self.model.params[0]["value"], path)
+                    self.assertEqual(state.cache_path, path)
+                    self.assertEqual(Path(path).read_bytes(), original_file)
+                    self.assertEqual(set(state.cache.frames), {state.frame})
+                    self.assertFalse(state.playing)
+                    self.assertIsNone(state.pending)
+                    np.testing.assert_allclose(state.solver.x, positions, atol=1e-7)
+                    np.testing.assert_allclose(state.solver.velocity, velocity, atol=1e-7)
+                    np.testing.assert_allclose(state.initial_pose[1], positions, atol=1e-7)
+                    self.assertAlmostEqual(state.solver.time, 3)
+                    # A subsequent refresh must not unload the file or revive old history.
+                    self.view._mgl_update_cloth()
+                    self.assertEqual(set(state.cache.frames), {state.frame})
+                    self.assertEqual(state.cache_path, path)
+
+    def test_one_frame_bake_and_reset_keep_saved_cache_playback(self):
         self.config["settings"]["end_frame"] = 0
         with tempfile.TemporaryDirectory() as temp:
             path = str(Path(temp) / "single.npz")
@@ -1810,8 +1856,17 @@ class ViewportTests(unittest.TestCase):
             self.model._cloth_commands = [{"action": "reset"}]
             self.view._mgl_update_cloth()
             state = self.view._cloth_states["Cloth"]
+            self.assertEqual(set(state.disk_frames), {0})
+            self.assertTrue(state.cache_playback)
+            self.assertEqual(self.model.params[0]["value"], path)
+            # Clear cache remains the explicit way to unload a saved file.
+            self.view._cloth_cache_path(self.config, "")
+            self.model._cloth_commands = [{"action": "reset"}]
+            self.view._mgl_update_cloth()
+            state = self.view._cloth_states["Cloth"]
             self.assertFalse(state.disk_frames)
-            self.assertEqual(self.model.params[0]["value"], "")
+            self.assertEqual(state.cache_path, "")
+            np.testing.assert_allclose(state.solver.x, self.asset.positions, atol=1e-7)
 
     def test_animated_collider_is_sampled_at_start_before_first_step(self):
         self.config["settings"]["follow_timeline"] = True

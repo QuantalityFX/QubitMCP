@@ -380,6 +380,8 @@ class ClothWidget(QtWidgets.QWidget):
                 button.setMinimumWidth(80)
             elif action == "step":
                 button.setToolTip("Advance one simulation step, or one animation frame when timeline simulation is enabled.")
+            elif action == "reset":
+                button.setToolTip("Clear temporary playback and timeline history. Keep the saved cache path and restore its state, or the arranged pattern if none is loaded.")
             button.clicked.connect(lambda checked=False, key=action: request_command(node_item, key))
             buttons.addWidget(button)
         pin_buttons = QtWidgets.QHBoxLayout()

@@ -15,6 +15,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from shiboken6 import isValid
 
 from echograph.motion.backends.priormdm.backend import PROJECT_ROOT, PriorMDMConfig
+from echograph.motion.backends.priormdm.paths import storage_root
 
 _INSTALLING = {}
 _SESSIONS = {}
@@ -51,7 +52,7 @@ def bootstrap_python() -> Path:
 
 
 class SetupSession(QtCore.QObject):
-    log_directory = PROJECT_ROOT / "logs/motion/priormdm/setup"
+    log_directory = storage_root() / "logs/motion/priormdm/setup"
     changed = QtCore.Signal()
     output = QtCore.Signal(str)
     finished = QtCore.Signal(object)

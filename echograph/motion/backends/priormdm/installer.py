@@ -19,8 +19,10 @@ import sys
 import tempfile
 import zipfile
 import zlib
+from urllib.request import urlopen
 
-from .backend import PROJECT_ROOT as ROOT, PriorMDMConfig, UPSTREAM_URL
+from .backend import PROJECT_ROOT as ROOT, PriorMDMConfig, INSPECTED_REVISION
+from .paths import default_repository, storage_root
 from .setup_support import find_checkpoint, inspect_setup
 from .normalization_assets import ensure_normalization
 
@@ -29,7 +31,7 @@ ASSETS = (("humanml-50steps.zip", "1RpAon66KsWRDLhoh3uREnDeycoq6JnX1", "save"),
           ("smpl.zip", "1INYlGA76ak_cKGzvpOV2Pe6RkYTlXTW2", "body_models"))
 
 
-def extract_new_files(archive: Path, destination: Path, *, resume: bool = False) -> None:
+def extract_new_files(archive: Path, destination: Path, *, resume: bool = False, strip_prefix: str = "") -> None:
     """Reject traversal and overwrites; a retry may reuse byte-identical files."""
     root = destination.resolve()
     with zipfile.ZipFile(archive) as zipped:
@@ -39,6 +41,12 @@ def extract_new_files(archive: Path, destination: Path, *, resume: bool = False)
             parts = PurePosixPath(entry.filename.replace("\\", "/"))
             if parts.is_absolute() or ".." in parts.parts or any(":" in p for p in parts.parts):
                 raise ValueError(f"Unsafe archive path: {entry.filename}")
+            if strip_prefix:
+                if not parts.parts or parts.parts[0] != strip_prefix:
+                    raise ValueError(f"Unexpected source archive root: {entry.filename}")
+                if len(parts.parts) == 1:
+                    continue
+                parts = PurePosixPath(*parts.parts[1:])
             target = (root / Path(*parts.parts)).resolve()
             if not target.is_relative_to(root) or stat.S_ISLNK(entry.external_attr >> 16):
                 raise ValueError(f"Unsafe archive entry: {entry.filename}")
@@ -82,16 +90,47 @@ def run(command: list[str], **kwargs) -> None:
     subprocess.run(command, check=True, **kwargs)
 
 
+def ensure_source(repository: Path, download_cache: Path | None = None) -> None:
+    """Install the inspected upstream source, including into asset-only folders."""
+    if (repository / "utils/model_util.py").is_file():
+        return
+    downloads = download_cache or repository / "downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    archive = downloads / f"priormdm-source-{INSPECTED_REVISION}.zip"
+    if not archive.is_file():
+        url = f"https://codeload.github.com/priorMDM/priorMDM/zip/{INSPECTED_REVISION}"
+        print(f"Downloading PriorMDM source: {url}", flush=True)
+        partial = archive.with_suffix(".partial")
+        try:
+            with urlopen(url, timeout=60) as response, partial.open("wb") as output:
+                shutil.copyfileobj(response, output)
+            with zipfile.ZipFile(partial) as zipped:
+                if zipped.testzip() is not None:
+                    raise ValueError("PriorMDM source download is corrupt; retry setup.")
+            partial.replace(archive)
+        finally:
+            partial.unlink(missing_ok=True)
+    with zipfile.ZipFile(archive) as zipped:
+        roots = {PurePosixPath(name).parts[0] for name in zipped.namelist() if name}
+        if len(roots) != 1:
+            raise ValueError("Unexpected PriorMDM source archive layout.")
+        prefix = roots.pop()
+        if f"{prefix}/utils/model_util.py" not in zipped.namelist():
+            raise ValueError("PriorMDM source archive is missing utils/model_util.py.")
+    extract_new_files(archive, repository, resume=True, strip_prefix=prefix)
+    print(f"PriorMDM source ready: {repository}", flush=True)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repository", type=Path, default=ROOT / "third_party" / "PriorMDM")
+    parser.add_argument("--repository", type=Path, default=default_repository())
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--dataset", type=Path, help="Advanced override; defaults to the shared repository/dataset/HumanML3D folder.")
     parser.add_argument("--download-cache", type=Path, help="Optional shared download cache; defaults to repository/downloads.")
     parser.add_argument("--python", dest="runtime_python", type=Path,
                         help="Interpreter to check; installation always uses the repository's isolated .venv.")
     parser.add_argument("--report", type=Path, help="Write a structured setup report for the node UI.")
-    parser.add_argument("--clone", action="store_true")
+    parser.add_argument("--clone", action="store_true", help="Download missing upstream source (Git is not required).")
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--download-assets", action="store_true")
     parser.add_argument("--probe", action="store_true")
@@ -103,7 +142,7 @@ def main(argv=None) -> int:
     repository = args.repository.resolve()
     try:
         return perform_setup(args, parser, repository)
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, zipfile.BadZipFile, subprocess.SubprocessError) as exc:
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps({"schema_version": 1, "ready": False,
@@ -114,15 +153,10 @@ def main(argv=None) -> int:
 
 def perform_setup(args, parser, repository: Path) -> int:
     dataset = (args.dataset or repository / "dataset" / "HumanML3D").resolve()
-    if args.clone and not repository.exists():
-        git = shutil.which("git")
-        if not git:
-            raise RuntimeError("Git was not found. Install Git for Windows from https://git-scm.com/download/win "
-                               "with command-line/PATH support, then restart Qubit and click Install PriorMDM again.")
-        repository.parent.mkdir(parents=True, exist_ok=True)
-        run([git, "clone", UPSTREAM_URL, str(repository)])
-    if not (repository / "utils" / "model_util.py").is_file():
-        parser.error(f"Clone {UPSTREAM_URL} into {repository} first (or pass --clone).")
+    if args.clone or args.install:
+        ensure_source(repository, args.download_cache)
+    if (args.install or args.download_assets) and not (repository / "utils/model_util.py").is_file():
+        raise ValueError("PriorMDM source is missing. Run setup with --install or --clone first.")
     environment = repository / ".venv"
     python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     if args.install:
@@ -138,7 +172,7 @@ def perform_setup(args, parser, repository: Path) -> int:
         requirements = ROOT / "echograph/motion/backends/priormdm/requirements-inference.txt"
         run(pip + ["--no-build-isolation", "-r", str(requirements)])
         freeze = subprocess.check_output([str(python), "-m", "pip", "freeze"], text=True)
-        log_dir = ROOT / "logs" / "motion" / "priormdm"
+        log_dir = storage_root() / "logs" / "motion" / "priormdm"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "environment-freeze.txt").write_text(freeze, encoding="utf-8")
     if args.download_assets:

@@ -23,6 +23,33 @@ APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
 class LocationTests(unittest.TestCase):
+    def test_program_files_defaults_and_legacy_nodes_use_user_storage(self):
+        from echograph.motion.backends.priormdm import paths
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            program_files = root / "Program Files"
+            installed = program_files / "QubitField/App"
+            local = root / "LocalAppData"
+            with patch.object(paths, "PROJECT_ROOT", installed), patch.dict(os.environ, {
+                    "ProgramFiles": str(program_files), "LOCALAPPDATA": str(local),
+                    "QUBITMCP_HOME": str(installed)}):
+                expected = local / "QubitMCP/third_party/PriorMDM"
+                self.assertEqual(PriorMDMConfig().repository, expected)
+                legacy = installed / "third_party/PriorMDM"
+                custom = root / "custom-normalization"
+                node = GraphNode(name="Old", kind="priormdm", params=[
+                    {"name": "repository", "value": str(legacy)},
+                    {"name": "python", "value": str(legacy / ".venv/Scripts/python.exe")},
+                    {"name": "download_cache", "value": str(legacy / "downloads")},
+                    {"name": "dataset", "value": str(custom)},
+                ])
+                config = config_for_node(node)
+                self.assertEqual(config.repository, expected)
+                self.assertEqual(config.python, expected / ".venv/Scripts/python.exe")
+                self.assertEqual(config.cache_directory, expected / "downloads")
+                self.assertEqual(config.dataset, custom)
+                self.assertEqual(paths.storage_root(), local / "QubitMCP")
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

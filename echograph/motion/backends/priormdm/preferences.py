@@ -7,8 +7,9 @@ from pathlib import Path
 import tempfile
 
 from .backend import PROJECT_ROOT, PriorMDMConfig
+from .paths import storage_root, migrate_managed_paths
 
-SETTINGS_PATH = PROJECT_ROOT / "echograph/data/priormdm/settings.json"
+SETTINGS_PATH = storage_root() / "echograph/data/priormdm/settings.json"
 LOCATION_KEYS = ("repository", "download_cache", "dataset")
 
 
@@ -23,6 +24,7 @@ def default_paths() -> dict[str, str]:
                               if isinstance(saved.get(key), str) and saved[key].strip()})
     except (OSError, ValueError):
         pass
+    locations = {key: str(path) for key, path in migrate_managed_paths(locations).items()}
     repository = Path(locations["repository"])
     return {**locations, "python": str(repository / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")),
             "checkpoint": "", "output_root": str(config.output_root)}

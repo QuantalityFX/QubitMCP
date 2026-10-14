@@ -81,12 +81,19 @@ class MotionUITests(unittest.TestCase):
                 build_ports(item)
             self.assertEqual(Path(value(item.model, "output_root")), expected)
 
-    def test_missing_git_has_actionable_setup_error(self):
+    def test_missing_git_does_not_block_source_setup(self):
+        import io
+        import zipfile
         from echograph.motion.backends.priormdm import installer
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("source/utils/model_util.py", "# upstream source")
+        archive.seek(0)
         with tempfile.TemporaryDirectory() as folder, patch.object(installer.shutil, "which", return_value=None), \
-                patch.object(installer, "run") as run:
-            with self.assertRaisesRegex(RuntimeError, "Git was not found.*restart Qubit"):
-                installer.perform_setup(SimpleNamespace(dataset=None, clone=True), Mock(), Path(folder) / "PriorMDM")
+                patch.object(installer, "run") as run, patch.object(installer, "urlopen", return_value=archive):
+            repository = Path(folder) / "PriorMDM"
+            installer.ensure_source(repository)
+            self.assertTrue((repository / "utils/model_util.py").is_file())
             run.assert_not_called()
 
     def test_typing_with_pauses_waits_until_the_editor_loses_focus(self):

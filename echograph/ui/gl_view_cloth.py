@@ -771,8 +771,9 @@ class ClothViewportMixin(ClothPanelsMixin):
             state.note = f"{len(pins)} pinned point(s) · Current cloth pose kept"
             return state
         if action == "reset":
-            if config.get("cache_path"):
-                self._cloth_cache_path(config, "")
+            # Replace transient simulation history and discard pending work.
+            # Keep the saved input: the normal load pass restores its pose/cache.
+            # The separate Clear cache action handles explicitly unloading it.
             return self._cloth_reset(owner, config, self._cloth_matrix(owner), timeline)
         if state.saving and action in {"toggle", "step", "bake", "save"}:
             state.note = "Finishing cache save…"

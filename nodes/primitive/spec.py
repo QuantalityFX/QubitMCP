@@ -118,8 +118,8 @@ def _cube(size: float = 1.0):
     faces = [
         [0, 3, 2, 1],  # back (-Z)
         [4, 5, 6, 7],  # front (+Z)
-        [0, 4, 5, 1],  # bottom (-Y)
-        [3, 2, 6, 7],  # top (+Y)
+        [0, 1, 5, 4],  # bottom (-Y)
+        [3, 7, 6, 2],  # top (+Y)
         [1, 2, 6, 5],  # right (+X)
         [0, 4, 7, 3],  # left (-X)
     ]
@@ -150,10 +150,10 @@ def _cone(radius: float = 0.5, height: float = 1.0, segments: int = 24):
     for i in range(segments):
         a = 1 + i
         b = 1 + ((i + 1) % segments)
-        faces.append([0, a, b])
+        faces.append([0, b, a])
 
-    # base polygon (reverse order for outward -Y normal)
-    base_face = [1 + ((segments - 1 - i) % segments) for i in range(segments)]
+    # Increasing angle in the XZ plane gives the outward -Y base normal.
+    base_face = [1 + i for i in range(segments)]
     faces.append(base_face)
     return verts, faces
 
@@ -181,9 +181,9 @@ def _tube(radius: float = 0.5, height: float = 1.0, segments: int = 24):
         d = segments + i
         faces.append([a, b, c, d])
 
-    # caps as polygons (no triangulation)
-    top_face = [i for i in range(segments)]
-    bot_face = [segments + (segments - 1 - i) for i in range(segments)]
+    # Caps wind opposite the adjoining side edges: +Y on top, -Y below.
+    top_face = list(reversed(range(segments)))
+    bot_face = [segments + i for i in range(segments)]
     faces.append(top_face)
     faces.append(bot_face)
     return verts, faces
@@ -249,7 +249,7 @@ def _torus(major: float = 0.6, minor: float = 0.25, segments: int = 24, tube: in
             b = ((i + 1) % segments) * tube + j
             c = ((i + 1) % segments) * tube + (j + 1) % tube
             d = i * tube + (j + 1) % tube
-            faces.append([a, b, c, d])
+            faces.append([a, d, c, b])
     return verts, faces
 
 

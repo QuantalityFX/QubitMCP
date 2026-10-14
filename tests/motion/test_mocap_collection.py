@@ -289,6 +289,9 @@ class CollectionTests(unittest.TestCase):
 
     def test_slider_highlight_sync_and_node_bounds(self):
         spec.add_paths(self.model, self.paths, self.scene)
+        rows = spec.entries(self.model)
+        rows[0]["approved"] = True
+        spec.save_state(self.model, rows, 3, self.scene)
         card_widget = spec.MocapCollectionWidget(self.model, self.scene)
         self.addCleanup(card_widget.deleteLater)
         spy = QtTest.QSignalSpy(self.scene.paramChanged)
@@ -296,6 +299,14 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(spy.count(), 1)
         self.assertEqual(card_widget.number.value(), 1)
         self.assertTrue(self.widget.table.item(0, 2).isSelected())
+        self.assertTrue(card_widget.table.item(0, 3).isSelected())
+        self.assertTrue(card_widget.table.item(0, 3).data(QtCore.Qt.UserRole))
+        self.assertEqual(card_widget.table.item(0, 0).background().color().name(), "#338253")
+        # Re-selecting the active output restores the same manual-click highlight.
+        self.widget.table.clearSelection()
+        self.widget._select(1)
+        self.assertTrue(self.widget.table.item(0, 3).isSelected())
+        self.assertEqual(spy.count(), 1)
         self.assertNotEqual(self.widget.table.item(2, 2).background().color(), QtGui.QColor("#554080"))
         self.item._recompute_height()
         self.item._build_widgets()
