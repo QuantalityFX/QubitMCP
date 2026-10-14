@@ -6,9 +6,16 @@ Qubit Field brings AI, knowledge, automation, media, and 3D creation into one no
 
 **QubitMCP is the source repository for the Qubit Field application.** Built for Windows with Python and PySide6, the workbench supports both local tools and connected services. Unreal Engine is one of its integrations, alongside workflows that run entirely in the desktop app.
 
-[Documentation](https://quantalityfx.com/docs/qubit-mcp/) · [Node catalog](https://quantalityfx.com/docs/qubit-mcp/nodes.html) · [Download for Windows](https://github.com/QuantalityFX/QubitMCP/raw/refs/heads/Latest/downloads/QubitFieldInstaller.exe) · [Website](https://quantality.com) · [Discord](https://discord.gg/KewkErnazm)
+[![Documentation](https://img.shields.io/badge/Documentation-2563EB?style=for-the-badge&logo=readthedocs&logoColor=white)](https://quantalityfx.com/docs/qubit-mcp/)
+[![Node catalog](https://img.shields.io/badge/Node_Catalog-475569?style=for-the-badge)](https://quantalityfx.com/docs/qubit-mcp/nodes.html)
+[![Download for Windows](https://img.shields.io/badge/Download_for_Windows-15803D?style=for-the-badge)](https://github.com/QuantalityFX/QubitMCP/raw/refs/heads/Latest/downloads/QubitFieldInstaller.exe)
 
-![Qubit Field workbench with connected AI, voice, automation, and Gantt planning workflows](Doc/UISnapshot/AiWorkflow.png)
+[![Website](https://img.shields.io/badge/Website-0F766E?style=flat-square)](https://quantality.com)
+[![Email](https://img.shields.io/badge/Email-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:quantalityfx@gmail.com)
+[![Discord](https://img.shields.io/badge/Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/KewkErnazm)
+[![YouTube](https://img.shields.io/badge/YouTube-FF0000?style=flat-square&logo=youtube&logoColor=white)](https://www.youtube.com/@vimpassion)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square)](https://www.linkedin.com/in/ernesto-marrero-7760092a/)
+[![Instagram](https://img.shields.io/badge/Instagram-E4405F?style=flat-square&logo=instagram&logoColor=white)](https://www.instagram.com/vimpassion/)
 
 ## One workbench, many workflows
 
@@ -41,17 +48,18 @@ Click a screenshot to inspect the full interface.
 
 | Pattern design | Cloth simulation |
 | --- | --- |
-| [![Full pattern editor showing shirt panels, curved outlines, dimensions, and paired sewing edges](Doc/UISnapshot/PatternDesign_FullEditor.png)](Doc/UISnapshot/PatternDesign_FullEditor.png) | [![Clothed character in the viewport beside garment, animation, and rendering nodes](Doc/UISnapshot/RealtimeClothSolver.png)](Doc/UISnapshot/RealtimeClothSolver.png) |
+| [<img src="Doc/UISnapshot/PatternDesign_FullEditor.png" width="420" alt="Full pattern editor showing shirt panels, curved outlines, dimensions, and paired sewing edges" />](Doc/UISnapshot/PatternDesign_FullEditor.png) | [<img src="Doc/UISnapshot/RealtimeClothSolver.png" width="420" alt="Clothed character in the viewport beside garment, animation, and rendering nodes" />](Doc/UISnapshot/RealtimeClothSolver.png) |
 | Draft, mirror, and sew reusable 2D panels. | Bring garments into an animated 3D scene. |
 
 | Rig constraints and motion review | Animation workflows |
 | --- | --- |
-| [![Skeleton with bend and twist guides, Preview Rig controls, and a mocap collection](Doc/UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png)](Doc/UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png) | [![Animation workflow with a 3D viewport and connected processing nodes](Doc/UISnapshot/AnimationWorkflow.png)](Doc/UISnapshot/AnimationWorkflow.png) |
+| [<img src="Doc/UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png" width="420" alt="Skeleton with bend and twist guides, Preview Rig controls, and a mocap collection" />](Doc/UISnapshot/Collision%20Aware%20Rig%20Constraints_Thumb.png) | [<img src="Doc/UISnapshot/AnimationWorkflow.png" width="420" alt="Animation workflow with a 3D viewport and connected processing nodes" />](Doc/UISnapshot/AnimationWorkflow.png) |
 | Inspect joint limits and review motion takes. | Connect motion, characters, and scene tools. |
 
-[![Animated Gaussian splat character with effects, timeline controls, and a connected node graph](Doc/UISnapshot/GaussianSplatFX.png)](Doc/UISnapshot/GaussianSplatFX.png)
-
-*Gaussian splats, motion, and effects in the same workbench.*
+| AI and automation | Gaussian splats and effects |
+| --- | --- |
+| [<img src="Doc/UISnapshot/AiWorkflow.png" width="420" alt="Connected AI, voice, automation, and Gantt planning workflows" />](Doc/UISnapshot/AiWorkflow.png) | [<img src="Doc/UISnapshot/GaussianSplatFX.png" width="420" alt="Animated Gaussian splat character with effects, timeline controls, and a connected node graph" />](Doc/UISnapshot/GaussianSplatFX.png) |
+| Connect knowledge, voice, and planning tools. | Gaussian splats, motion, and effects in the same workbench. |
 
 ## Get started
 
@@ -74,12 +82,8 @@ For launch troubleshooting and optional runtimes, see [Setup and Launch](https:/
 - [`echograph/`](echograph/) — graph editor, viewport, motion, rigging, patterns, and physics code.
 - [`Skills/`](Skills/) — templates and guides used by knowledge and agent workflows.
 - [`Unreal/Plugins/MaterialGenerator/`](Unreal/Plugins/MaterialGenerator/) — Unreal material integration.
-- [`Doc/`](Doc/) — static documentation website; open locally or export with `scripts\export_doc_childsite.bat` for the documentation host.
+- [`Doc/`](Doc/) — documentation and workflow guides; open `index.html` to browse locally.
 
-The README is the presentation shown on the GitHub repository home page. The hosted documentation is a separate static site: pushing changes updates the repository, and the `Doc/` site must also be exported and uploaded to update the documentation host.
-
-## Connect
-
-[Website](https://quantality.com) · [Email](mailto:quantalityfx@gmail.com) · [Discord](https://discord.gg/KewkErnazm) · [YouTube](https://www.youtube.com/@vimpassion) · [LinkedIn](https://www.linkedin.com/in/ernesto-marrero-7760092a/) · [Instagram](https://www.instagram.com/vimpassion/)
+## License
 
 Qubit Field is **source-available** under the [Qubit MCP Source-Available License](LICENSE). See the license for permitted uses and restrictions.
