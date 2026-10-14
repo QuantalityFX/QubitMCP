@@ -263,6 +263,12 @@ class GraphGLTimelineWidgetsMixin:
         if panel is not None and panel.isVisible():
             header = panel._header_layout
             margins = panel.layout().contentsMargins()
+            minimum_view_width = max(
+                400,
+                int(header.primary.sizeHint().width()) + margins.left() + margins.right(),
+            )
+            if int(self.minimumWidth()) != minimum_view_width:
+                self.setMinimumWidth(minimum_view_width)
             extra_h = header.reflow(view_w - margins.left() - margins.right())
             previous_extra_h = getattr(panel, "_header_extra_height", 0)
             panel._header_extra_height = extra_h
@@ -284,6 +290,8 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_sync_row_alignment()
             self._timeline_update_key_markers()
             self._timeline_update_playhead()
+        elif int(self.minimumWidth()) != 400:
+            self.setMinimumWidth(400)
 
         audio_panel = getattr(self, "_timeline_audio_panel", None)
         if audio_panel is not None and audio_panel.isVisible():
@@ -595,6 +603,10 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_speed_spin = speed_spin
             self._timeline_refresh_speed_control()
 
+            # Keep the frame/range/seed/speed inputs together; controls after
+            # Speed form one toolbar row that moves below them when narrow.
+            header = header_rows.secondary
+
             play_btn = QtWidgets.QPushButton(panel)
             play_btn.setObjectName("GLTimelinePlayButton")
             play_btn.setText("Play")
@@ -890,6 +902,74 @@ class GraphGLTimelineWidgetsMixin:
                     self._view = view
                     self._jump_drag_active = False
                     self.setMouseTracking(True)
+                    self.setFocusPolicy(QtCore.Qt.StrongFocus)
+                    self.setSingleStep(1)
+                    self._focus_icon = QtWidgets.QLabel(self)
+                    self._focus_icon.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+                    self._focus_icon.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+                    self._focus_icon.setScaledContents(True)
+                    active_path = Path(__file__).resolve().parents[2] / "icons" / "KeyframeHandle_Active_Icon.png"
+                    self._focus_icon.setPixmap(QtGui.QPixmap(str(active_path)))
+                    self._focus_icon.hide()
+                    self.valueChanged.connect(self._update_focus_icon)
+                    self.sliderMoved.connect(self._update_focus_icon)
+
+                def _update_focus_icon(self):
+                    icon = getattr(self, "_focus_icon", None)
+                    if icon is None:
+                        return
+                    try:
+                        option = QtWidgets.QStyleOptionSlider()
+                        self.initStyleOption(option)
+                        handle = self.style().subControlRect(
+                            QtWidgets.QStyle.CC_Slider,
+                            option,
+                            QtWidgets.QStyle.SC_SliderHandle,
+                            self,
+                        )
+                        previous = icon.geometry()
+                        icon.setGeometry(handle)
+                        if previous != handle:
+                            self.update(previous.united(handle))
+                        if self.hasFocus() and handle.isValid():
+                            icon.show()
+                            icon.raise_()
+                        else:
+                            icon.hide()
+                    except Exception:
+                        icon.hide()
+
+                def paintEvent(self, ev):
+                    super().paintEvent(ev)
+                    self._update_focus_icon()
+
+                def focusInEvent(self, ev):
+                    super().focusInEvent(ev)
+                    self._update_focus_icon()
+
+                def focusOutEvent(self, ev):
+                    super().focusOutEvent(ev)
+                    self._update_focus_icon()
+
+                def keyPressEvent(self, ev):
+                    if (ev.key() in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Right)
+                            and ev.modifiers() == QtCore.Qt.NoModifier):
+                        direction = -1 if ev.key() == QtCore.Qt.Key_Left else 1
+                        try:
+                            current = int(self._view._timeline_current_frame())
+                            maximum = int(self._view._timeline_max_known_frame())
+                            frame = max(0, min(maximum, current + direction))
+                            spin = getattr(self._view, "_timeline_frame_spin", None)
+                            if spin is not None:
+                                spin.setValue(frame)
+                            else:
+                                self._view._timeline_on_frame_spin_changed(frame)
+                            self._update_focus_icon()
+                        except Exception:
+                            return super().keyPressEvent(ev)
+                        ev.accept()
+                        return
+                    return super().keyPressEvent(ev)
 
                 @staticmethod
                 def _event_pos(ev) -> QtCore.QPoint:
@@ -958,6 +1038,7 @@ class GraphGLTimelineWidgetsMixin:
                 def mousePressEvent(self, ev):
                     if ev.button() != QtCore.Qt.LeftButton:
                         return super().mousePressEvent(ev)
+                    self.setFocus(QtCore.Qt.MouseFocusReason)
                     pt = self._event_pos(ev)
                     try:
                         opt = QtWidgets.QStyleOptionSlider()

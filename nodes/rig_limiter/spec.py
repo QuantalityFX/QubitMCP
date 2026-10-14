@@ -323,6 +323,7 @@ class LimiterControls(QtWidgets.QWidget):
             if label == 'Preview / Repair':
                 self.preview_button = button
                 button.setObjectName('RigLimiterPreviewRepairButton')
+                button.setMinimumHeight(max(28, button.sizeHint().height()))
                 button.setStyleSheet('QPushButton[repairPending="true"] { background-color:#9f2929; '
                                     'color:white; border:1px solid #f87171; border-radius:3px; }'
                                     'QPushButton[repairPending="true"]:hover { background-color:#b73535; }')

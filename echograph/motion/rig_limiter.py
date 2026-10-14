@@ -90,7 +90,12 @@ def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisio
                                   if 'flex' in limits[j] else np.eye(3) for j in chain}
                     count = sum(len(a) for a in joint_axes.values())
                     old = previous.get(chain,np.zeros(count))
-                    if np.max(initial,initial=0) < .0005 and np.linalg.norm(old) < .002:
+                    if np.max(initial,initial=0) < .0005:
+                        # A temporal IK offset is only useful while resolving a
+                        # contact. Avoid running least-squares on every later
+                        # frame merely to decay a correction that is no longer
+                        # needed; the bounded pose is already collision-free.
+                        previous[chain] = np.zeros(count)
                         continue
                     if progress is not None:
                         progress(frame,len(result))

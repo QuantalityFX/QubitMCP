@@ -19,8 +19,8 @@
   "ambient_light_strength": 0.1,
   "scene_skeleton_joint_names": false,
   "create_node_dialog_size": {
-    "width": 844,
-    "height": 901
+    "width": 843,
+    "height": 926
   },
   "preview_rig": {
     "version": 3,

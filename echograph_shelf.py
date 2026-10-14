@@ -2964,6 +2964,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._view_splitter.setHandleWidth(6)
         self._view_splitter.addWidget(self.gl_view)
         self._view_splitter.addWidget(self.view)
+        self._view_splitter.setCollapsible(0, False)
         self._view_splitter.setStretchFactor(0, 1)
         self._view_splitter.setStretchFactor(1, 1)
         self.gl_view.hide()
@@ -6894,6 +6895,31 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             settings.pop("active_scene_node", None)
         data["settings"] = settings
 
+    def _inject_timeline_frame_into_workflow_data(self, data: Dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            return
+        view = getattr(self, "gl_view", None)
+        getter = getattr(view, "_timeline_current_frame", None)
+        if not callable(getter):
+            return
+        try:
+            frame = max(0, int(getter()))
+        except Exception:
+            return
+        settings = data.get("settings")
+        settings = dict(settings) if isinstance(settings, dict) else {}
+        settings["timeline_frame"] = frame
+        data["settings"] = settings
+
+    def _restore_workflow_timeline_frame(self, frame: int) -> None:
+        view = getattr(self, "gl_view", None)
+        setter = getattr(view, "_timeline_on_frame_spin_changed", None)
+        if callable(setter):
+            try:
+                setter(max(0, int(frame)))
+            except Exception:
+                pass
+
     def _restore_workflow_active_scene(self, scene_name: str | None) -> bool:
         target = str(scene_name or "").strip()
         if not target:
@@ -7073,6 +7099,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         workflow_path: str | None = None,
         delay_ms: int = 260,
         max_attempts: int = 24,
+        on_restored=None,
     ) -> None:
         target = str(scene_name or "").strip()
         if not target:
@@ -7103,6 +7130,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             except Exception:
                 restored = False
             if restored:
+                if callable(on_restored):
+                    try:
+                        on_restored()
+                    except Exception:
+                        pass
                 return
             attempts["count"] = int(attempts.get("count", 0)) + 1
             if int(attempts["count"]) >= int(max(1, int(max_attempts))):
@@ -7880,6 +7912,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         settings = data.get("settings", {}) if isinstance(data, dict) else {}
         if not isinstance(settings, dict):
             settings = {}
+        try:
+            saved_timeline_frame = max(0, int(settings["timeline_frame"]))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            saved_timeline_frame = None
         workflow_panel_layout = self._workflow_panel_layout_from_settings(settings)
         workflow_view_mode = self._workflow_view_mode_from_settings(settings)
         if workflow_view_mode is None and isinstance(data, dict):
@@ -8147,6 +8183,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._timeline_controller.sync_timeline_menu_state()
         except Exception:
             pass
+        if saved_timeline_frame is not None:
+            self._restore_workflow_timeline_frame(saved_timeline_frame)
         t_frame = time.perf_counter()
         self._frame_all_nodes()
         frame_ms = (time.perf_counter() - t_frame) * 1000.0
@@ -8175,6 +8213,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     restore_name,
                     workflow_path=path,
                     delay_ms=0,
+                    on_restored=(
+                        lambda frame=saved_timeline_frame: self._restore_workflow_timeline_frame(frame)
+                    ) if saved_timeline_frame is not None else None,
                 )
         except Exception:
             pass
@@ -8193,6 +8234,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         data = self.scene.to_dict()
         self._inject_panel_layout_into_workflow_data(data)
         self._inject_scene_restore_into_workflow_data(data)
+        self._inject_timeline_frame_into_workflow_data(data)
 
         if include_preview:
             try:
