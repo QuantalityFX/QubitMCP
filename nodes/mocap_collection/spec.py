@@ -29,8 +29,30 @@ def entries(model) -> list[dict]:
             entry["approved"] = row["approved"] is True
         if isinstance(row.get("render"), dict):
             entry["render"] = dict(row["render"])
+        if isinstance(row.get("rig_limiter"), dict):
+            entry["rig_limiter"] = dict(row["rig_limiter"])
         result.append(entry)
     return result
+
+
+def refresh_repair_records(model, scene=None):
+    """Persist repair badges while discovering portable BVH sidecars on reload."""
+    from echograph.motion import rig_repair_cache
+    rows = entries(model)
+    base = mocap._workflow_dir_for_node(SimpleNamespace(scene=lambda: scene))
+    changed = False
+    for row in rows:
+        path = mocap._resolve_existing_path(row['path'], base)
+        record = rig_repair_cache.find_repair(path) if path is not None else None
+        badge = {key: record[key] for key in ('file', 'source_sha', 'options_sha', 'output_sha')} if record else None
+        if row.get('rig_limiter') != badge:
+            changed = True
+            if badge is None:
+                row.pop('rig_limiter', None)
+            else:
+                row['rig_limiter'] = badge
+    if changed:
+        save_state(model, rows, output_number(model), scene)
 
 
 def output_rows(model) -> list[int]:
@@ -128,6 +150,7 @@ def add_paths(model, paths, scene=None) -> int:
 def bvh_paths_in_folder(folder) -> list[Path]:
     """Collect BVHs recursively in a repeatable order, including uppercase extensions."""
     from .archive import is_archived
+    from echograph.motion.rig_repair_cache import generated_files
     root = Path(folder).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"Select an existing folder: {folder}")
@@ -142,8 +165,9 @@ def bvh_paths_in_folder(folder) -> list[Path]:
         if (Path(directory) / "archive.json").is_file():
             subfolders.clear()
             continue
+        derived = generated_files(directory)
         for filename in filenames:
-            if Path(filename).suffix.lower() == ".bvh":
+            if Path(filename).suffix.lower() == ".bvh" and filename.casefold() not in derived:
                 paths.append(Path(directory) / filename)
     return sorted(paths, key=lambda path: (path.relative_to(root).as_posix().casefold(), str(path)))
 
@@ -380,6 +404,7 @@ class MocapCollectionWidget(QtWidgets.QWidget):
     def refresh(self):
         from .archive import remove_archived_rows
         remove_archived_rows(self.model, self.graph_scene)
+        refresh_repair_records(self.model, self.graph_scene)
         sync_output(self.model, self.graph_scene)
         rows, number = entries(self.model), output_number(self.model)
         eligible = output_rows(self.model)
@@ -409,6 +434,8 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                     thumbnail = QtWidgets.QTableWidgetItem("▶" if row.get("render") else "")
                     thumbnail.setTextAlignment(QtCore.Qt.AlignCenter)
                     thumbnail.setToolTip("Click to review the assigned render" if row.get("render") else "No render assigned")
+                    if row.get('rig_limiter'):
+                        thumbnail.setToolTip(thumbnail.toolTip() + '\nSaved Rig Limiter repair: ' + row['rig_limiter']['file'])
                     cells = (check, QtWidgets.QTableWidgetItem(str(i + 1)), thumbnail, QtWidgets.QTableWidgetItem(row["path"]))
                     for column, cell in enumerate(cells):
                         self.table.setItem(i, column, cell)
@@ -469,9 +496,14 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         self._thumbnail_queue = []
         for index, row in enumerate(getattr(self, "_displayed_rows", [])):
             path = row.get("render", {}).get("first_frame", "")
-            key = (path, str(row.get("render", {}).get("frame_stamp", "")))
+            repaired = bool(row.get('rig_limiter'))
+            key = (path, str(row.get("render", {}).get("frame_stamp", "")), repaired)
             cell = self.table.item(index, 2)
-            if not path or cell is None:
+            if cell is None:
+                continue
+            if not path:
+                cell.setIcon(self._thumbnail_icon(QtGui.QImage(), repaired))
+                cell.setText('' if repaired else ('▶' if row.get('render') else ''))
                 continue
             if key in self._thumbnail_cache:
                 cell.setIcon(self._thumbnail_cache[key])
@@ -493,14 +525,29 @@ class MocapCollectionWidget(QtWidgets.QWidget):
             reader.setScaledSize(size.scaled(52, 32, QtCore.Qt.KeepAspectRatio))
         image = reader.read()
         cell = self.table.item(index, 2)
-        if cell is not None and not image.isNull():
-            icon = QtGui.QIcon(QtGui.QPixmap.fromImage(image))
+        if cell is not None and (not image.isNull() or key[2]):
+            icon = self._thumbnail_icon(image, key[2])
             self._thumbnail_cache[key] = icon
             with QtCore.QSignalBlocker(self.table):
                 cell.setIcon(icon)
                 cell.setText("")
         if self._thumbnail_queue:
             self._thumbnail_timer.start(0)
+
+    @staticmethod
+    def _thumbnail_icon(image, repaired):
+        if not repaired:
+            return QtGui.QIcon(QtGui.QPixmap.fromImage(image)) if not image.isNull() else QtGui.QIcon()
+        canvas = QtGui.QPixmap(52, 32)
+        canvas.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(canvas)
+        if not image.isNull():
+            painter.drawImage((52 - image.width()) // 2, (32 - image.height()) // 2, image)
+        size = 20 if not image.isNull() else 28
+        badge = QtGui.QIcon(str(Path(__file__).resolve().parents[2] / 'icons/RigLimiter_Icon.png')).pixmap(size, size)
+        painter.drawPixmap(52 - size if not image.isNull() else (52 - size) // 2, 32 - size, badge)
+        painter.end()
+        return QtGui.QIcon(canvas)
 
     def _load_renders(self):
         from .review import load_render_folder

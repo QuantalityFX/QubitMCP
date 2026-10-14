@@ -12,6 +12,7 @@ from nodes.core import Spec
 from nodes.mocap_import import spec as mocap
 from echograph.motion.conversion import JOINT_NAMES, write_bvh
 from echograph.motion.rig_limiter import limit_clip
+from echograph.motion import rig_repair_cache as repair_files
 from echograph.motion.rig_limits import preview_limit_fields, preview_limit_from_fields
 from echograph.motion.rig_preview_settings import load_preview_limits, load_preview_volumes, load_preview_hand_limits
 from echograph.motion.hand_rig import full_rig_layout, expanded_limits, hand_limits_from_fields
@@ -71,13 +72,36 @@ def repair_key(skeleton,clip,limits,volumes,collisions,hands,*,ik_repair=True):
             ik_repair)
 
 
+def restore_repair(model, context, key):
+    """Restore a saved result without ever running the repair algorithm."""
+    path = Path(context.get('path') or '')
+    source = (path if context.get('kind') in ('mocap_collection', 'mocap_import', 'bvh_import')
+              and path.is_file() and path.suffix.lower() == '.bvh' else None)
+    model._rig_limiter_disk_source = source
+    if source is None:
+        return
+    record = repair_files.find_repair(source, repair_files.options_signature(key[2:]))
+    cached = getattr(model, '_rig_limiter_cache', None)
+    if record is None or (cached is not None and cached[0] == key
+                          and getattr(model, '_rig_limiter_disk_record', None) == record):
+        return
+    from echograph.rigging.bvh_ingest import ingest_bvh_animation_data
+    loaded = ingest_bvh_animation_data(repair_files.repair_path(source, record))
+    if loaded.skeleton.joint_names != context['skeleton'].joint_names or not loaded.clips:
+        raise ValueError('Saved repair does not match the input skeleton.')
+    clip = loaded.clips[0]
+    clip.metadata['rig_limiter'] = record['report']
+    model._rig_limiter_cache = (key, (clip, record['report']), (context['skeleton'], context['clip']))
+    model._rig_limiter_disk_record = record
+
+
 class _RepairStatus(QtCore.QObject):
     changed = QtCore.Signal()
 
     def __init__(self):
         super().__init__()
         self.pending = True
-        self.summary = 'Press Preview / Repair to calculate the animation.'
+        self.summary = 'Press Repair to calculate and save the animation. Preview opens rig settings.'
 
 
 def repair_status(model):
@@ -97,9 +121,12 @@ def refresh_repair_status(model, key=None):
     cached = getattr(model, '_rig_limiter_cache', None)
     same_source = cached is not None and cached[0][:2] == key[:2]
     pending = cached is None or cached[0] != key
+    source = getattr(model, '_rig_limiter_disk_source', None)
+    if source is not None and repair_files.find_repair(source, repair_files.options_signature(key[2:])) is None:
+        pending = True
     lines = []
     if pending:
-        lines.append('Repair needed. Press Preview / Repair.')
+        lines.append('Repair needed. Press Repair.')
         lines.append('Showing previous repair.' if same_source else 'Showing input animation until repaired.')
     if same_source and not pending:
         report = cached[1][1]
@@ -199,6 +226,7 @@ def resolve_context(item, errors, warnings, *, target=False, _depth=0, _visited=
             raise ValueError('Connect an animated skeleton to Rig Limiter.')
         key = repair_key(skeleton,source,limits,volumes,collisions,hands,ik_repair=ik_repair)
         model._rig_limiter_source_key = key[:2]
+        restore_repair(model, context, key)
         cached = getattr(model,'_rig_limiter_cache',None)
         # Graph refreshes and workflow saves must never launch a repair. Keep
         # the last result for this input while settings are pending; a new
@@ -258,14 +286,25 @@ def prepare_repair(item, parent=None):
     skeleton,clip = context['skeleton'],context.get('clip')
     key = repair_key(skeleton,clip,limits,volumes,collisions,hands,ik_repair=ik_repair)
     item.model._rig_limiter_source_key = key[:2]
+    restore_repair(item.model, context, key)
     refresh_repair_status(item.model, key)
-    cached = getattr(item.model,'_rig_limiter_cache',None)
-    if cached is None or cached[0] != key:
+    if repair_status(item.model).pending:
+        source = getattr(item.model, '_rig_limiter_disk_source', None)
+        source_hash = repair_files.file_signature(source) if source is not None else None
         result = run_repair(lambda progress:limit_clip(skeleton,clip,limits,volumes,
                                                       collisions=collisions,ik_repair=ik_repair,
                                                       progress=progress,hand_limits=hands),parent)
+        if source is not None:
+            if repair_files.file_signature(source) != source_hash:
+                raise ValueError('The source BVH changed during repair. Reload it and retry.')
+            record = repair_files.save_repair(source, repair_files.options_signature(key[2:]), result[1],
+                lambda path: export_context(dict(skeleton=skeleton, clip=result[0]), path))
+            item.model._rig_limiter_disk_record = record
         item.model._rig_limiter_cache = (key,result,(skeleton,clip))
     refresh_repair_status(item.model, key)
+    if context.get('kind') == 'mocap_collection':
+        from nodes.mocap_collection.spec import refresh_repair_records
+        refresh_repair_records(context['model'], item.scene())
 
 
 def export_context(context, path):
@@ -315,14 +354,18 @@ class LimiterControls(QtWidgets.QWidget):
         self.ik_repair.setChecked(ik_repair_enabled(item.model))
         self.ik_repair.toggled.connect(self.set_ik_repair)
         layout.addWidget(self.ik_repair)
-        for label,callback in (('Preview / Repair',self.preview),('Export corrected BVH…',self.export),
+        for label,callback in (('Preview',self.preview),('Repair',self.repair),('Export corrected BVH…',self.export),
                                ('Export checked collection…',self.export_collection),('Reset limits and volumes',self.reset)):
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(callback)
             layout.addWidget(button)
-            if label == 'Preview / Repair':
+            if label == 'Preview':
                 self.preview_button = button
-                button.setObjectName('RigLimiterPreviewRepairButton')
+                button.setObjectName('RigLimiterPreviewButton')
+                button.setToolTip('Preview the animation and edit rig limits and colliders without running repair.')
+            if label == 'Repair':
+                self.repair_button = button
+                button.setObjectName('RigLimiterRepairButton')
                 button.setMinimumHeight(max(28, button.sizeHint().height()))
                 button.setStyleSheet('QPushButton[repairPending="true"] { background-color:#9f2929; '
                                     'color:white; border:1px solid #f87171; border-radius:3px; }'
@@ -336,22 +379,29 @@ class LimiterControls(QtWidgets.QWidget):
             scene.paramChanged.connect(self.refresh)
         repair_status(item.model).changed.connect(self._refresh_repair_button)
         self.refresh()
+        # Workflow loading creates node widgets before reconnecting their edges.
+        QtCore.QTimer.singleShot(0, self.refresh)
 
     def _refresh_repair_button(self):
         status = repair_status(self.item.model)
-        button = self.preview_button
+        button = self.repair_button
         if button.property('repairPending') != status.pending:
             button.setProperty('repairPending', status.pending)
             button.style().unpolish(button)
             button.style().polish(button)
             button.update()
-        button.setToolTip('Input or settings need repair. Click to apply them; saving does not run repair.'
-                          if status.pending else 'Preview the repaired animation. Current settings are applied.')
+        button.setToolTip('Create a corrected BVH beside the source using the saved rig settings.'
+                          if status.pending else 'A repair for the current source and saved settings is available.')
         self.status.setText(status.summary)
 
     def refresh(self,*args):
-        if args and args[0] != self.item.model.name:
+        if getattr(self, '_refreshing', False):
             return
+        self._refreshing = True
+        try:
+            resolve_context(self.item, [], [])
+        finally:
+            self._refreshing = False
         blocker = QtCore.QSignalBlocker(self.collisions)
         self.collisions.setChecked(settings(self.item.model)[2])
         del blocker
@@ -378,13 +428,17 @@ class LimiterControls(QtWidgets.QWidget):
     def reset(self):
         from echograph.motion.rig_preview_settings import default_preview_limits
         store_settings(self.item,dict(joint_limits=default_preview_limits(),volumes=volume_settings(),collisions=self.collisions.isChecked()))
-        self.status.setText('Defaults restored. Preview / Repair to apply.')
+        self.status.setText('Defaults restored. Press Repair to apply.')
+
+    def repair(self):
+        try:
+            prepare_repair(self.item, self.window())
+            self.changed()
+        except Exception as exc:
+            self.status.setText(str(exc))
 
     def preview(self):
         try:
-            prepare_repair(self.item,self.window())
-            # Publish the explicitly repaired result to downstream consumers.
-            self.changed()
             asset = build_scene_asset(self.item,preview=True)
             if asset is None:
                 raise ValueError(getattr(self.item.model,'_rig_limiter_error','Could not build the preview.'))
@@ -408,7 +462,7 @@ class LimiterControls(QtWidgets.QWidget):
             if context is None:
                 raise ValueError('\n'.join(errors))
             if repair_status(self.item.model).pending:
-                raise ValueError('Press Preview / Repair before exporting the changed animation.')
+                raise ValueError('Press Repair before exporting the changed animation.')
             directory = QtWidgets.QFileDialog.getExistingDirectory(self,'Save corrected BVH in folder')
             if not directory:
                 return

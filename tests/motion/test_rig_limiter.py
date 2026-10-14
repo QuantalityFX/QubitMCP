@@ -203,6 +203,146 @@ class VolumeTests(unittest.TestCase):
 
 
 class RepairTests(unittest.TestCase):
+    def test_collection_folder_rename_keeps_repair_linked_to_exact_bvh(self):
+        from nodes.mocap_collection import spec as collection, review_data
+        from echograph.motion import rig_repair_cache
+        _, _, rotations, offsets = fixture(2)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            run = root / 'original_run'
+            other_run = root / 'other_run'
+            run.mkdir()
+            other_run.mkdir()
+            paths = [run / 'motion.bvh', run / 'sibling.bvh', other_run / 'motion.bvh']
+            for path in paths:
+                write_bvh(path, np.zeros((2, 22, 3)), 20, rotations, offsets)
+            scene = Scene()
+            self.addCleanup(scene.clear)
+            source = scene.add_node(GraphNode('Input', kind='mocap_collection'), QtCore.QPointF())
+            shared = scene.add_node(GraphNode('Shared', kind='mocap_collection'), QtCore.QPointF())
+            limiter = scene.add_node(GraphNode('Limiter', kind='rig_limiter'), QtCore.QPointF())
+            collection.add_paths(source.model, paths, scene)
+            collection.add_paths(shared.model, paths[:2], scene)
+            collection.save_state(source.model, collection.entries(source.model), 1, scene)
+            scene.add_edge('Input', 'Limiter')
+            scene._edges[-1].dst_port_name = 'animation'
+            with patch.object(spec, 'run_repair', side_effect=lambda f, parent=None: f(lambda *args: None)):
+                spec.prepare_repair(limiter)
+            record = rig_repair_cache.find_repair(paths[0])
+            metadata = rig_repair_cache.metadata_path(paths[0]).read_bytes()
+            with patch.object(spec, 'run_repair', side_effect=AssertionError('Rename must reuse the repair')):
+                review_data.rename_entry(source.model, scene, 1, 'renamed walk')
+                renamed = root / 'renamed walk' / 'motion.bvh'
+                self.assertFalse(run.exists())
+                self.assertEqual(rig_repair_cache.metadata_path(renamed).read_bytes(), metadata)
+                self.assertTrue(rig_repair_cache.repair_path(renamed, record).is_file())
+                for item in (source, shared):
+                    rows = collection.entries(item.model)
+                    self.assertEqual(rows[0]['path'], str(renamed))
+                    self.assertEqual(rows[0]['rig_limiter']['file'], record['file'])
+                    self.assertNotIn('rig_limiter', rows[1])
+                # Row order and matching filenames elsewhere must not redirect the badge.
+                rows = collection.entries(source.model)
+                collection.save_state(source.model, [rows[2], rows[1], rows[0]], 1, scene)
+                for number in (1, 2):
+                    collection.save_state(source.model, collection.entries(source.model), number, scene)
+                    spec.resolve_context(limiter, [], [])
+                    self.assertTrue(spec.repair_status(limiter.model).pending)
+                collection.save_state(source.model, collection.entries(source.model), 3, scene)
+                spec.resolve_context(limiter, [], [])
+                spec.prepare_repair(limiter)
+                self.assertFalse(spec.repair_status(limiter.model).pending)
+                self.assertEqual([bool(r.get('rig_limiter')) for r in collection.entries(source.model)],
+                                 [False, False, True])
+                # Fresh model/clip objects also recover the renamed sidecar after reload.
+                restored = scene.add_node(GraphNode('Restored', kind='rig_limiter',
+                    params=json.loads(json.dumps(limiter.model.params))), QtCore.QPointF())
+                scene.add_edge('Input', 'Restored')
+                scene._edges[-1].dst_port_name = 'animation'
+                context = spec.resolve_context(restored, [], [])
+                self.assertIn('rig_limiter', context['clip'].metadata)
+                self.assertFalse(spec.repair_status(restored.model).pending)
+
+    def test_saved_repair_reloads_with_badges_and_preview_never_repairs(self):
+        from nodes.mocap_collection import spec as collection
+        from echograph.motion import rig_repair_cache
+        from echograph.persistence import _node_to_dict
+        from unittest.mock import Mock
+        _, _, rotations, offsets = fixture(2)
+        rotations[:, 13] = Rotation.from_euler('x', 60, degrees=True).as_matrix()
+        with tempfile.TemporaryDirectory() as folder:
+            source_path = Path(folder).resolve() / 'motion.bvh'
+            write_bvh(source_path, np.zeros((2, 22, 3)), 20, rotations, offsets)
+            original = source_path.read_bytes()
+            scene = Scene()
+            self.addCleanup(scene.clear)
+            source = scene.add_node(GraphNode('Input', kind='mocap_collection'), QtCore.QPointF())
+            limiter = scene.add_node(GraphNode('Limiter', kind='rig_limiter'), QtCore.QPointF())
+            collection.add_paths(source.model, [source_path], scene)
+            scene.add_edge('Input', 'Limiter')
+            scene._edges[-1].dst_port_name = 'animation'
+            controls = limiter._plugin_proxies[0].widget()
+            window = SimpleNamespace(open_scene_assets=Mock(return_value=True), gl_view=None)
+            with patch.object(scene, 'views', return_value=[SimpleNamespace(window=lambda: window)]), \
+                 patch.object(spec, 'run_repair', side_effect=AssertionError('Preview must not repair')):
+                controls.preview_button.click()
+                window.open_scene_assets.assert_called_once()
+                self.assertTrue(controls.repair_button.property('repairPending'))
+                self.assertFalse(rig_repair_cache.metadata_path(source_path).exists())
+            with patch.object(spec, 'run_repair', side_effect=lambda f, parent=None: f(lambda *args: None)):
+                controls.repair_button.click()
+            self.assertFalse(controls.repair_button.property('repairPending'), controls.status.text())
+            record = rig_repair_cache.find_repair(source_path)
+            self.assertIsNotNone(record)
+            output = rig_repair_cache.repair_path(source_path, record)
+            self.assertTrue(output.is_file())
+            self.assertEqual(output.parent, source_path.parent)
+            self.assertEqual(source_path.read_bytes(), original)
+            self.assertEqual(collection.bvh_paths_in_folder(source_path.parent), [source_path])
+            row = collection.entries(source.model)[0]
+            self.assertEqual(row['path'], str(source_path))
+            self.assertEqual(row['rig_limiter']['file'], output.name)
+            widget = source._plugin_proxies[0].widget()
+            self.assertFalse(widget.table.item(0, 2).icon().isNull())
+            self.assertIn('Saved Rig Limiter repair', widget.table.item(0, 2).toolTip())
+            thumbnail = QtGui.QImage(52, 32, QtGui.QImage.Format_ARGB32)
+            thumbnail.fill(QtGui.QColor('#102030'))
+            image = widget._thumbnail_icon(thumbnail, True).pixmap(52, 32).toImage()
+            self.assertEqual(image.pixelColor(1, 1).name(), '#102030')
+            self.assertTrue(any(image.pixelColor(x, y).name() != '#102030'
+                                for x in range(32, 52) for y in range(12, 32)))
+            first = spec.resolve_context(limiter, [], [])
+            params = _node_to_dict(limiter.model)['params']
+            restored_scene = Scene()
+            self.addCleanup(restored_scene.clear)
+            restored_source = restored_scene.add_node(GraphNode('Input', kind='mocap_collection'), QtCore.QPointF())
+            collection.add_paths(restored_source.model, [source_path], restored_scene)
+            restored = restored_scene.add_node(GraphNode('Restored', kind='rig_limiter',
+                params=json.loads(json.dumps(params))), QtCore.QPointF())
+            restored_scene.add_edge('Input', 'Restored')
+            restored_scene._edges[-1].dst_port_name = 'animation'
+            with patch.object(spec, 'run_repair', side_effect=AssertionError('Saved repair must be reused')):
+                APP.processEvents()
+                self.assertFalse(restored._plugin_proxies[0].widget().repair_button.property('repairPending'))
+                current = spec.resolve_context(restored, [], [])
+                spec.prepare_repair(restored)
+            self.assertIn('rig_limiter', current['clip'].metadata)
+            np.testing.assert_allclose(evaluate_rig_at_time(first['skeleton'], first['clip'], .05).global_matrices,
+                evaluate_rig_at_time(current['skeleton'], current['clip'], .05).global_matrices, atol=1e-6)
+            self.assertFalse(spec.repair_status(restored.model).pending)
+            guide = spec.build_scene_asset(restored, preview=True)['fbx_rig_context']['priormdm_rig_debug']
+            guide['volumes']['left_ankle'][0] += .01
+            spec.refresh_repair_status(restored.model)
+            self.assertFalse(spec.repair_status(restored.model).pending)  # Unsaved preview edit.
+            guide['save_settings'](guide)
+            self.assertTrue(spec.repair_status(restored.model).pending)
+            output.unlink()
+            widget.refresh()
+            self.assertNotIn('rig_limiter', collection.entries(source.model)[0])
+            self.assertTrue(widget.table.item(0, 2).icon().isNull())
+            spec.resolve_context(limiter, [], [])
+            self.assertTrue(spec.repair_status(limiter.model).pending)
+
     def test_collars_corrected_without_mutating_root_fingers_timing_or_source(self):
         skeleton,clip,_,offsets = fixture()
         skeleton.joints.append(Joint('left_finger',20,JointTransform(translation=(.02,0,0))))
@@ -315,19 +455,19 @@ class RepairTests(unittest.TestCase):
             with patch.object(spec,'limit_clip',side_effect=AssertionError('Graph refresh must not repair')):
                 pending = spec.resolve_context(limiter,[],[])
                 self.assertIs(pending['clip'],disabled['clip'])
-                self.assertTrue(controls.preview_button.property('repairPending'))
+                self.assertTrue(controls.repair_button.property('repairPending'))
             with patch.object(spec,'run_repair',side_effect=lambda function,parent=None:function(lambda f,n:None)):
                 spec.prepare_repair(limiter)
             enabled = spec.resolve_context(limiter,[],[])
             self.assertIsNot(enabled['clip'],disabled['clip'])
             self.assertTrue(enabled['clip'].metadata['rig_limiter']['ik_repair_enabled'])
-            self.assertFalse(controls.preview_button.property('repairPending'))
+            self.assertFalse(controls.repair_button.property('repairPending'))
             collection.save_state(source.model,collection.entries(source.model),1,scene)
             with patch.object(spec,'limit_clip',side_effect=AssertionError('Input change must not repair')):
                 changed = spec.resolve_context(limiter,[],[])
             self.assertIsNot(changed['clip'],first['clip'])
             self.assertNotIn('rig_limiter',changed['clip'].metadata)
-            self.assertTrue(controls.preview_button.property('repairPending'))
+            self.assertTrue(controls.repair_button.property('repairPending'))
             self.assertIn('animation',limiter.input_port_names())
             self.assertIn('animation',limiter.output_port_names())
             proxy = limiter._plugin_proxies[0]
@@ -407,12 +547,12 @@ class RepairTests(unittest.TestCase):
             scene._edges[-1].dst_port_name = 'animation'
             scene.add_edge('Limiter','Scene')
             controls = limiter._plugin_proxies[0].widget()
-            self.assertTrue(controls.preview_button.property('repairPending'))
+            self.assertTrue(controls.repair_button.property('repairPending'))
             with patch.object(spec,'run_repair',side_effect=lambda function,parent=None:function(lambda f,n:None)):
                 spec.prepare_repair(limiter)
             old = spec.resolve_context(limiter,[],[])
             old_pose = evaluate_rig_at_time(old['skeleton'],old['clip'],.05).global_matrices.copy()
-            self.assertFalse(controls.preview_button.property('repairPending'))
+            self.assertFalse(controls.repair_button.property('repairPending'))
 
             view = PanelViewport()
             self.addCleanup(view.deleteLater)
@@ -437,7 +577,7 @@ class RepairTests(unittest.TestCase):
                 np.testing.assert_array_equal(evaluate_rig_at_time(current['skeleton'],current['clip'],.05).global_matrices,
                                               old_pose)
                 self.assertAlmostEqual(spec.settings(limiter.model)[1]['left_ankle'][1],.085,delta=.0001)
-                self.assertTrue(controls.preview_button.property('repairPending'))
+                self.assertTrue(controls.repair_button.property('repairPending'))
                 self.assertIn('Showing previous repair',controls.status.text())
                 repair.assert_not_called()
                 # A single-take export must not silently repair pending changes.
@@ -445,26 +585,26 @@ class RepairTests(unittest.TestCase):
                     controls.export()
                     choose.assert_not_called()
                 repair.assert_not_called()
-                self.assertIn('Press Preview / Repair',controls.status.text())
+                self.assertIn('Press Repair',controls.status.text())
 
             # Failed/cancelled work retains the previous result and red indicator.
             with patch.object(spec,'run_repair',side_effect=ValueError('cancelled')):
                 with self.assertRaisesRegex(ValueError,'cancelled'):
                     spec.prepare_repair(limiter)
             self.assertIs(spec.resolve_context(limiter,[],[])['clip'],old['clip'])
-            self.assertTrue(controls.preview_button.property('repairPending'))
+            self.assertTrue(controls.repair_button.property('repairPending'))
 
             window = SimpleNamespace(open_scene_assets=Mock(return_value=True),gl_view=view)
             with patch.object(scene,'views',return_value=[SimpleNamespace(window=lambda:window)]), \
                  patch.object(spec,'run_repair',side_effect=lambda function,parent=None:function(lambda f,n:None)), \
                  patch.object(spec,'limit_clip',wraps=limit_clip) as repair:
-                controls.preview_button.click()
+                controls.repair_button.click()
                 repair.assert_called_once()
                 self.assertAlmostEqual(repair.call_args.args[3]['left_ankle'][1],.085,delta=.0001)
-                self.assertFalse(controls.preview_button.property('repairPending'),controls.status.text())
+                self.assertFalse(controls.repair_button.property('repairPending'),controls.status.text())
                 repaired = spec.resolve_context(limiter,[],[])
                 self.assertIsNot(repaired['clip'],old['clip'])
-                controls.preview_button.click()
+                controls.repair_button.click()
                 repair.assert_called_once()
             proxy = limiter._plugin_proxies[0]
             self.assertGreaterEqual(limiter.height,proxy.pos().y()+proxy.size().height()+10)
@@ -477,8 +617,8 @@ class RepairTests(unittest.TestCase):
             scene._edges[-1].dst_port_name = 'animation'
             with patch.object(spec,'limit_clip',wraps=limit_clip) as repair:
                 restored_context = spec.resolve_context(restored,[],[])
-                self.assertNotIn('rig_limiter',restored_context['clip'].metadata)
-                self.assertTrue(restored._plugin_proxies[0].widget().preview_button.property('repairPending'))
+                self.assertIn('rig_limiter',restored_context['clip'].metadata)
+                self.assertFalse(restored._plugin_proxies[0].widget().repair_button.property('repairPending'))
                 repair.assert_not_called()
 
     def test_repair_worker_completion_and_cancellation(self):

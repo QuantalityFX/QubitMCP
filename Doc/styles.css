@@ -403,10 +403,14 @@ code {
 }
 
 .grid.latest-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 16px;
-  align-items: stretch;
+  display: block;
+  column-count: 5;
+  column-gap: 16px;
+}
+
+.latest-grid > .card {
+  break-inside: avoid;
+  margin-bottom: 16px;
 }
 
 .grid.node-catalog-grid {
@@ -425,7 +429,7 @@ code {
 
 @media (max-width: 1500px) {
   .grid.latest-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    column-count: 4;
   }
 }
 
@@ -437,7 +441,7 @@ code {
 
 @media (max-width: 1220px) {
   .grid.latest-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-count: 3;
   }
 
   .grid.node-catalog-grid,
@@ -447,6 +451,10 @@ code {
 }
 
 @media (max-width: 900px) {
+  .grid.latest-grid {
+    column-count: 2;
+  }
+
   .grid.node-catalog-grid,
   .grid.pipeline-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -455,7 +463,7 @@ code {
 
 @media (max-width: 760px) {
   .grid.latest-grid {
-    grid-template-columns: 1fr;
+    column-count: 1;
   }
 
   .grid.node-catalog-grid,
@@ -725,7 +733,7 @@ button, summary { cursor: pointer; }
 .feature-card .text-link { margin-top: auto; padding-top: 10px; }
 .node-catalog-grid .text-link { display: inline-block; margin-top: 18px; }
 .card p { overflow-wrap: anywhere; }
-.screenshot-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+.screenshot-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
 .screenshot-card { margin: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .screenshot-card > a { display: block; background: #0b0e12; }
 .screenshot-card img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: contain; }
@@ -789,6 +797,7 @@ details[open] > summary { margin-bottom: 22px; }
 
 @media (max-width: 1100px) {
   .catalog-controls { grid-template-columns: 1fr; }
+  .screenshot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 960px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
