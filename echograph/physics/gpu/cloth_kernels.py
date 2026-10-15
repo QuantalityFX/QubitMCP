@@ -7,10 +7,11 @@ def integrate(x: wp.array(dtype=wp.vec3), velocity: wp.array(dtype=wp.vec3),
               old: wp.array(dtype=wp.vec3), rest: wp.array(dtype=wp.vec3),
               mass: wp.array(dtype=float), clock: wp.array(dtype=float),
               gravity: float, damping: float, seam_seconds: float,
-              progress: wp.array(dtype=float)):
+              progress: wp.array(dtype=float), recovery: wp.array(dtype=wp.vec3)):
     i = wp.tid()
     h = clock[0]
     old[i] = x[i]
+    recovery[i] = wp.vec3(0.0)
     if mass[i] == 0.0:
         x[i] = rest[i]
         velocity[i] = wp.vec3(0.0)
@@ -24,9 +25,11 @@ def integrate(x: wp.array(dtype=wp.vec3), velocity: wp.array(dtype=wp.vec3),
 @wp.kernel
 def finish_substep(x: wp.array(dtype=wp.vec3), old: wp.array(dtype=wp.vec3),
                    velocity: wp.array(dtype=wp.vec3), mass: wp.array(dtype=float),
-                   clock: wp.array(dtype=float)):
+                   clock: wp.array(dtype=float), recovery: wp.array(dtype=wp.vec3)):
     i = wp.tid()
-    velocity[i] = (x[i] - old[i]) / clock[0]
+    motion, repair = x[i] - old[i], recovery[i]
+    fraction = wp.clamp(wp.dot(motion, repair) / wp.max(wp.length_sq(repair), 1.0e-30), 0.0, 1.0)
+    velocity[i] = (motion - repair * fraction) / clock[0]
     if mass[i] == 0.0:
         velocity[i] = wp.vec3(0.0)
     if i == 0:
@@ -125,7 +128,7 @@ def closest_triangle(p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, inside_tole
 def inward_sweep(before: wp.vec3, point: wp.vec3, previous_a: wp.vec3, previous_b: wp.vec3,
                  previous_c: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3,
                  old_signed: float, signed: float, side: float):
-    result = bool(False)
+    result = float(2.0)
     if old_signed >= 0.0 and signed < 0.0:
         fraction = old_signed / wp.max(old_signed - signed, 1.0e-30)
         ab_change = b - a - (previous_b - previous_a)
@@ -144,7 +147,8 @@ def inward_sweep(before: wp.vec3, point: wp.vec3, previous_a: wp.vec3, previous_
         hit = wp.lerp(before, point, fraction)
         ha, hb, hc = wp.lerp(previous_a, a, fraction), wp.lerp(previous_b, b, fraction), wp.lerp(previous_c, c, fraction)
         nearest, normal, inside = closest_triangle(hit, ha, hb, hc, 1.0e-6)
-        result = inside
+        if inside:
+            result = fraction
     return result
 
 
@@ -164,14 +168,19 @@ def surface_motion(point: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3,
 def mesh_contact(x: wp.array(dtype=wp.vec3), old: wp.array(dtype=wp.vec3),
                  mass: wp.array(dtype=float), surface: wp.array(dtype=wp.vec3),
                  previous: wp.array(dtype=wp.vec3), faces: wp.array2d(dtype=int),
-                 bvh: wp.uint64, thickness: float, margin: float, friction: float, two_sided: int):
+                 bvh: wp.uint64, thickness: float, margin: float, friction: float, two_sided: int,
+                 recovery: wp.array(dtype=wp.vec3)):
     i = wp.tid()
     if mass[i] > 0.0:
         p, before = x[i], old[i]
         pad = wp.vec3(margin)
         query = wp.bvh_query_aabb(bvh, wp.min(p, before) - pad, wp.max(p, before) + pad)
         face = int(0)
-        deepest = float(-1.0)
+        best_time = float(2.0)
+        best_distance = float(1.0e30)
+        best_face = int(2147483647)
+        active = bool(False)
+        repairing = bool(False)
         chosen = p
         chosen_direction = wp.vec3(0.0)
         motion = wp.vec3(0.0)
@@ -185,30 +194,37 @@ def mesh_contact(x: wp.array(dtype=wp.vec3), old: wp.array(dtype=wp.vec3),
             old_normal = old_cross / wp.max(wp.length(old_cross), 1.0e-30)
             old_signed = wp.dot(before - previous[a], old_normal)
             side = float(1.0)
-            if two_sided == 1 and old_signed < 0.0:
+            if two_sided == 1 and old_signed < -1.0e-7:
                 side = -1.0
                 normal = -normal
                 old_signed = -old_signed
                 signed = -signed
-            swept = inward_sweep(before, p, previous[a], previous[b], previous[c],
-                                 surface[a], surface[b], surface[c], old_signed, signed, side)
-            penetrated = inside and signed < 0.0 and signed > -margin
-            if swept or distance < thickness or penetrated:
+            hit_time = inward_sweep(before, p, previous[a], previous[b], previous[c],
+                                    surface[a], surface[b], surface[c], old_signed, signed, side)
+            swept = hit_time <= 1.0
+            penetrated = (inside or two_sided == 0) and signed < 0.0 and distance < margin
+            nearer = distance < best_distance or (distance == best_distance and face < best_face)
+            first = hit_time < best_time or (hit_time == best_time and face < best_face)
+            if (swept and first) or (best_time > 1.0 and not swept and nearer):
+                best_time = hit_time
+                best_distance = distance
+                best_face = face
+                active = swept or distance < thickness or penetrated
+                repairing = penetrated and old_signed < 0.0 and not swept
                 direction = delta / wp.max(distance, 1.0e-12)
                 if swept or penetrated or distance < 1.0e-10:
                     direction = normal
-                candidate = nearest + direction * thickness
-                depth = wp.length_sq(candidate - p)
-                if depth > deepest:
-                    deepest = depth
-                    chosen = candidate
-                    chosen_direction = direction
-                    if friction > 0.0:
-                        motion = surface_motion(before, surface[a], surface[b], surface[c],
-                                                previous[a], previous[b], previous[c])
-        if deepest >= 0.0:
+                chosen = nearest + direction * thickness
+                chosen_direction = direction
+                if friction > 0.0:
+                    motion = surface_motion(before, surface[a], surface[b], surface[c],
+                                            previous[a], previous[b], previous[c])
+        if active:
             relative = chosen - before - motion
             depth = wp.dot(chosen - p, chosen_direction)
+            if repairing:
+                recovery[i] += chosen - p
+                depth = 0.0
             x[i] = chosen - contact_friction(relative, chosen_direction, depth, friction)
 
 

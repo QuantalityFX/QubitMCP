@@ -109,7 +109,10 @@ class SolverTests(unittest.TestCase):
                 set_elastic_edges(doc, [(piece.id, piece.segments[2].id)], True, 1000, .8)
             asset = build_cloth_asset(doc, 50)
             angles = asset.positions[:, 0] / .7 * 2 * np.pi
-            rest = np.c_[.104 * np.cos(angles), asset.positions[:, 1], .104 * np.sin(angles)]
+            # The loose cuff must clear the body along its coarse polygon edges,
+            # too. At radius .104 its vertices cleared but its chords pressed
+            # into the 3 mm margin, producing real pressure with edge contacts.
+            rest = np.c_[.108 * np.cos(angles), asset.positions[:, 1], .108 * np.sin(angles)]
             solver = ClothSolver(asset, settings(gravity_y=-9.81, bend=0, friction=1,
                                                  substeps=4, iterations=12, collision_quality=4), rest)
             for _ in range(12):

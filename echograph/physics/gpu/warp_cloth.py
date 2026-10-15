@@ -4,6 +4,7 @@ import threading
 import numpy as np
 import warp as wp
 from . import cloth_kernels as kernels
+from . import surface_kernels
 
 
 _warp_context_lock = threading.RLock()
@@ -154,6 +155,7 @@ class WarpProjector:
         self.label = "Warp CUDA (GPU solve)"
         self.x = wp.array(solver.x.astype(np.float32), dtype=wp.vec3, device=self.device)
         self.old = wp.empty_like(self.x)
+        self.recovery = wp.zeros_like(self.x)
         self.rest = wp.array(solver.pin_positions.astype(np.float32), dtype=wp.vec3, device=self.device)
         self.velocity = wp.zeros_like(self.x)
         self.mass = wp.array(solver.inverse_mass.astype(np.float32), dtype=float, device=self.device)
@@ -257,7 +259,16 @@ class WarpProjector:
             margin = max(thickness * (2 + settings.collision_quality), .02)
             self._launch(kernels.mesh_contact, len(self.x), [self.x, self.old, self.mass,
                          collider.current, collider.previous, collider.faces, collider.bvh.id,
-                         thickness, margin, friction, int(collider.two_sided)])
+                         thickness, margin, friction, int(collider.two_sided), self.recovery])
+            self.correction.zero_()
+            self.counts.zero_()
+            self._launch(surface_kernels.surface_contact, len(self.faces), [self.x, self.old,
+                         self.mass, self.faces, collider.current, collider.previous, collider.faces,
+                         collider.bvh.id, thickness, friction, int(collider.two_sided), self.correction, self.counts])
+            self._launch(kernels.apply_contacts, len(self.x), [self.x, self.correction, self.counts])
+            self._launch(kernels.mesh_contact, len(self.x), [self.x, self.old, self.mass,
+                         collider.current, collider.previous, collider.faces, collider.bvh.id,
+                         thickness, margin, 0.0, int(collider.two_sided), self.recovery])
 
     def _record_frame(self):
         settings = self.solver.settings
@@ -265,7 +276,7 @@ class WarpProjector:
         for substep in range(settings.substeps):
             self._launch(kernels.integrate, n, [self.x, self.velocity, self.old, self.rest,
                          self.mass, self.clock, settings.effective_gravity_y, settings.damping,
-                         settings.seam_seconds, self.progress])
+                         settings.seam_seconds, self.progress, self.recovery])
             for _, _, _, _, lambdas, _ in self.groups:
                 lambdas.zero_()
             if self.elastic is not None:
@@ -301,7 +312,7 @@ class WarpProjector:
                                      settings.ground_height + settings.thickness, settings.friction])
             if settings.self_collision or settings.ground:
                 self._body_contact(0.0)
-            self._launch(kernels.finish_substep, n, [self.x, self.old, self.velocity, self.mass, self.clock])
+            self._launch(kernels.finish_substep, n, [self.x, self.old, self.velocity, self.mass, self.clock, self.recovery])
 
     @_serialized_warp
     def step(self, dt, colliders=()):
@@ -351,6 +362,7 @@ class WarpProjector:
                 # not interfere with CUDA capture. Capture does not advance state.
                 wp.load_module(module=__name__, device=self.device)
                 wp.load_module(module=kernels, device=self.device)
+                wp.load_module(module=surface_kernels, device=self.device)
                 with wp.ScopedCapture(device=self.device) as capture:
                     self._record_frame()
                 self.graph = capture.graph

@@ -93,6 +93,7 @@
             </table>
           </div>
           <p>The solver is an iterative cloth model, so the result depends on mesh resolution, scale, starting placement, and motion. Review a short preview before baking a longer sequence.</p>
+          <p>Body collisions check cloth points, edges against collider edges, and collider corners against cloth face interiors on both CPU and CUDA. This helps coarse cloth catch a box edge even when no cloth vertex touches it. A coarse triangle can still only bend at its existing vertices; reduce mesh spacing for a closer drape.</p>
         </section>
 
         <section class="section" id="animation">
@@ -120,6 +121,8 @@
             <li><strong>Nothing reaches Scene:</strong> save the pattern, close unfinished outlines, and resolve validation messages. Downstream nodes do not consume unsaved editor geometry.</li>
             <li><strong>Missing collider:</strong> connect a mesh or animated mesh and verify the intended collider owner.</li>
             <li><strong>Explosive or tangled cloth:</strong> check scale, initial overlaps, seam pairing, thickness, and substeps before adding detail.</li>
+            <li><strong>Fingers catching pants:</strong> at 24 FPS, try 8&ndash;16 substeps and collision quality 4. Keep the timeline at 24 FPS; substeps add intermediate collision solves. The gap between hand and leg must also fit the cloth contact margins: with thickness 3 mm, two opposing surfaces need about 6 mm of clearance. Reduce thickness only when appropriate for the garment and scene scale.</li>
+            <li><strong>Points already trapped in a body:</strong> the solver recovers nearby penetrations toward the nearest surface and avoids adding friction or launch velocity from that repair. Contact corrections near pins are bounded to avoid turning a small overlap into a mesh spike. Deep overlaps, impossible gaps, and an already tangled cached pose may need a corrected starting pose. Clear the old cache and simulate again from before the problem after changing collision settings or updating the solver.</li>
             <li><strong>Preview is slow:</strong> start with a coarser mesh, a shorter range, and fewer collision candidates; confirm the selected backend.</li>
             <li><strong>CUDA is unavailable:</strong> choose CPU or inspect the node's backend status and runtime setup.</li>
             <li><strong>Different results after moving the project:</strong> locate the pattern, collider assets, and any cache files again.</li>

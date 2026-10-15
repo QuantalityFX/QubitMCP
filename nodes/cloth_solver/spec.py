@@ -325,7 +325,7 @@ class ClothWidget(QtWidgets.QWidget):
         ]
         hints = {
             "substeps": "More substeps reduce motion per solve step. Try 8 for dressing, or 16 for fast body motion.",
-            "collision_quality": "More contact passes improve separation around folds and tight body features. Try 4; higher values take longer.",
+            "collision_quality": "More passes resolve point, edge and face contacts around folds and tight body features. Try 4; higher values take longer.",
             "thickness": "Surface clearance in meters, also used for self collision. 0.003 m is 3 mm; try 0.003–0.005 m for body clearance.",
             "friction": "Contact friction: 0 is slippery. Resists sliding where the fabric presses against a collider.",
             "density": "Fabric mass per square meter. 0.2 kg/m² is 200 g/m²; gravity acceleration does not depend on density.",

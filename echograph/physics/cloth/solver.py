@@ -371,6 +371,18 @@ class ClothSolver:
             np.add.at(counts, index, (bary[:, corner] > 1e-12).astype(float))
         self.x += correction / np.maximum(counts[:, None], 1)
 
+    def _body_contact(self, colliders, old, recovery, friction):
+        for collider in colliders:
+            collider.project(self.x, old, self.inverse_mass, self.settings.thickness,
+                             friction, self.settings.collision_quality, recovery)
+            surface = getattr(collider, "project_surface", None)
+            if surface is not None and surface(self.x, old, self.inverse_mass, self.asset.triangles,
+                                               self.settings.thickness, friction):
+                # Distribute feature contacts after vertex loads/friction, then
+                # guard vertices that the distributed correction may move inward.
+                collider.project(self.x, old, self.inverse_mass, self.settings.thickness,
+                                 0.0, self.settings.collision_quality, recovery)
+
     def step(self, dt=None, colliders=()):
         if not self.settings.enabled:
             return self.x
@@ -395,6 +407,7 @@ class ClothSolver:
         h = dt / self.settings.substeps
         for substep in range(self.settings.substeps):
             old = self.x.copy()
+            recovery = np.zeros_like(self.x)
             self.velocity[:, 1] += self.settings.effective_gravity_y * h
             self.velocity *= np.exp(-self.settings.damping * h)
             self.x += self.velocity * h
@@ -412,9 +425,7 @@ class ClothSolver:
                           - iteration * quality // self.settings.iterations)
                 if passes:
                     for _ in range(passes):
-                        for collider in sampled:
-                            collider.project(self.x, old, self.inverse_mass, self.settings.thickness,
-                                             self.settings.friction, self.settings.collision_quality)
+                        self._body_contact(sampled, old, recovery, self.settings.friction)
                         if self.settings.self_collision:
                             self._self_contact(old)
                         if self.settings.ground:
@@ -428,10 +439,13 @@ class ClothSolver:
                 # Finish the substep with body clearance after all constraints.
                 # One guard pass avoids doubling the configured contact budget
                 # or applying friction a second time.
-                for collider in sampled:
-                    collider.project(self.x, old, self.inverse_mass, self.settings.thickness,
-                                     0.0, self.settings.collision_quality)
-            self.velocity = (self.x - old) / h
+                self._body_contact(sampled, old, recovery, 0.0)
+            motion = self.x - old
+            # Opposing contacts/constraints can undo part of a repair. Removing
+            # more than the final motion would create an inward launch instead.
+            fraction = np.clip(np.sum(motion * recovery, axis=1) /
+                               np.maximum(np.sum(recovery * recovery, axis=1), 1e-30), 0, 1)
+            self.velocity = (motion - recovery * fraction[:, None]) / h
             self.velocity[self.pins] = 0
             self.time += h
         if not np.isfinite(self.x).all():

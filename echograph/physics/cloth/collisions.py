@@ -50,6 +50,34 @@ def closest_points(points, triangles, inside_tolerance=0.0):
     return result, normal / np.sqrt(np.maximum(norm2, 1e-30))[:, None], inside
 
 
+def inward_sweeps(old, points, previous, surface, old_signed, signed, side):
+    """First bracketed inward plane crossing, verified on the moving triangle."""
+    times = np.full(len(points), np.inf)
+    crossing = np.flatnonzero((old_signed >= 0) & (signed < 0))
+    if not len(crossing):
+        return times
+    start, end = previous[crossing], surface[crossing]
+    fraction = old_signed[crossing] / np.maximum(old_signed[crossing] - signed[crossing], 1e-30)
+    edge_change = (end[:, 1:] - end[:, :1]) - (start[:, 1:] - start[:, :1])
+    deforming = np.flatnonzero(np.sum(edge_change * edge_change, axis=(1, 2)) > 1e-12)
+    if len(deforming):
+        lo, hi = np.zeros(len(deforming)), np.ones(len(deforming))
+        d = crossing[deforming]
+        for _ in range(16):
+            mid = (lo + hi) * .5
+            pose = start[deforming] * (1 - mid[:, None, None]) + end[deforming] * mid[:, None, None]
+            point = old[d] * (1 - mid[:, None]) + points[d] * mid[:, None]
+            plane = np.cross(pose[:, 1] - pose[:, 0], pose[:, 2] - pose[:, 0])
+            positive = np.sum((point - pose[:, 0]) * plane, axis=1) * side[d] > 0
+            lo, hi = np.where(positive, mid, lo), np.where(positive, hi, mid)
+        fraction[deforming] = (lo + hi) * .5
+    hit = old[crossing] * (1 - fraction[:, None]) + points[crossing] * fraction[:, None]
+    pose = start * (1 - fraction[:, None, None]) + end * fraction[:, None, None]
+    _, _, inside = closest_points(hit, pose, inside_tolerance=1e-6)
+    times[crossing[inside]] = fraction[inside]
+    return times
+
+
 class TriangleBroadphase:
     """Conservative size buckets avoid one large face widening every query."""
     def __init__(self, surface, previous_surface=None):
@@ -128,16 +156,23 @@ class MeshCollider:
         return MeshCollider(self.previous * (1 - fraction) + self.vertices * fraction, self.triangles,
                             previous, two_sided=self.two_sided, surface_thickness=self.surface_thickness)
 
-    def project(self, x, old, inverse_mass, thickness, friction, quality=2):
-        thickness += self.surface_thickness
-        if not len(self.triangles):
-            return np.zeros(len(x), dtype=bool)
+    def broadphase(self):
         if self._broadphase is None:
             previous_surface = (self.previous[self.triangles] if self.previous is not None
                                 and self.previous.shape == self.vertices.shape else None)
             self._broadphase = TriangleBroadphase(self._surface, previous_surface)
+        return self._broadphase
+
+    def project_surface(self, x, old, inverse_mass, triangles, thickness, friction=0.0):
+        from .surface_contacts import project_surface_contacts
+        return project_surface_contacts(self, x, old, inverse_mass, triangles, thickness + self.surface_thickness, friction)
+
+    def project(self, x, old, inverse_mass, thickness, friction, quality=2, recovery=None):
+        thickness += self.surface_thickness
+        if not len(self.triangles):
+            return np.zeros(len(x), dtype=bool)
         margin = max(thickness * (2 + quality), 0.02)
-        rows, faces = self._broadphase.query_pairs(x, margin, old)
+        rows, faces = self.broadphase().query_pairs(x, margin, old)
         movable = inverse_mass[rows] > 0
         rows, faces = rows[movable], faces[movable]
         contact = np.zeros(len(x), dtype=bool)
@@ -158,7 +193,9 @@ class MeshCollider:
         old_signed = np.sum((old[rows] - previous_surface[:, 0]) * old_normal, axis=1)
         # A garment is a thin surface, not a solid body. Preserve the contact's
         # previous side for crossings in either direction, regardless of winding.
-        side = np.where(old_signed < 0, -1.0, 1.0) if self.two_sided else np.ones(len(rows))
+        # Coincident garments have no reliable previous side. Use winding for
+        # this tiny tie instead of letting float32 noise swap their layer order.
+        side = np.where(old_signed < -1e-7, -1.0, 1.0) if self.two_sided else np.ones(len(rows))
         normal *= side[:, None]
         signed *= side
         old_signed *= side
@@ -166,51 +203,41 @@ class MeshCollider:
         # with outward winding also recovers cloth overtaken by a moving body.
         # Body contacts are one-sided. Re-testing an outward escape against the
         # old substep position must not pull a recovered point back into the body.
-        swept = np.zeros(len(rows), dtype=bool)
-        crossing = np.flatnonzero((old_signed >= 0) & (signed < 0))
-        if len(crossing):
-            start, end = previous_surface[crossing], surface[crossing]
-            fraction = old_signed[crossing] / np.maximum(old_signed[crossing] - signed[crossing], 1e-30)
-            edge_change = (end[:, 1:] - end[:, :1]) - (start[:, 1:] - start[:, :1])
-            deforming = np.flatnonzero(np.sum(edge_change * edge_change, axis=(1, 2)) > 1e-12)
-            if len(deforming):
-                # Rotation/deformation makes signed plane distance nonlinear.
-                # Locate the crossing using the actual interpolated triangle.
-                lo, hi = np.zeros(len(deforming)), np.ones(len(deforming))
-                d = crossing[deforming]
-                for _ in range(16):
-                    mid = (lo + hi) * .5
-                    pose = start[deforming] * (1 - mid[:, None, None]) + end[deforming] * mid[:, None, None]
-                    point = old[rows[d]] * (1 - mid[:, None]) + x[rows[d]] * mid[:, None]
-                    plane = np.cross(pose[:, 1] - pose[:, 0], pose[:, 2] - pose[:, 0])
-                    positive = np.sum((point - pose[:, 0]) * plane, axis=1) * side[d] > 0
-                    lo = np.where(positive, mid, lo)
-                    hi = np.where(positive, hi, mid)
-                fraction[deforming] = (lo + hi) * .5
-            hit = old[rows[crossing]] * (1 - fraction[:, None]) + x[rows[crossing]] * fraction[:, None]
-            pose = start * (1 - fraction[:, None, None]) + end * fraction[:, None, None]
-            _, _, swept_inside = closest_points(hit, pose, inside_tolerance=1e-6)
-            swept[crossing] = swept_inside
+        hit_time = inward_sweeps(old[rows], x[rows], previous_surface, surface, old_signed, signed, side)
+        swept = hit_time <= 1
         close = distance < thickness
-        penetrated = inside & (signed < 0) & (signed > -max(thickness * (2 + quality), 0.02))
-        active = swept | close | penetrated
+        # At a shared edge the closest triangle can have its barycentric point
+        # just outside (especially in float32). Its outward normal still defines
+        # the exit side; a radial direction here would push deeper into a solid.
+        penetrated = (inside | (not self.two_sided)) & (signed < 0) & (distance < margin)
+        # First contact wins a sweep. Otherwise use the nearest surface, even
+        # when it is inactive: a back face of a thin finger must not eject an
+        # already exterior point through the opposite side of that finger.
+        order = np.lexsort((faces, distance, rows))
+        _, first = np.unique(rows[order], return_index=True)
+        chosen = order[first]
+        swept_ids = np.flatnonzero(swept)
+        sweep_order = swept_ids[np.lexsort((faces[swept_ids], hit_time[swept_ids], rows[swept_ids]))]
+        swept_rows, first = np.unique(rows[sweep_order], return_index=True)
+        chosen[np.searchsorted(rows[chosen], swept_rows)] = sweep_order[first]
+        chosen = chosen[(swept | close | penetrated)[chosen]]
         direction = delta / np.maximum(distance[:, None], 1e-12)
         direction[swept | penetrated | (distance < 1e-10)] = normal[swept | penetrated | (distance < 1e-10)]
         target = nearest + direction * thickness
-        # Resolve the deepest contact per vertex each pass; later passes handle corners.
-        correction = np.linalg.norm(target - x[rows], axis=1)
-        order = np.argsort(correction[active])
-        selected = np.flatnonzero(active)[order]
-        _, reversed_index = np.unique(rows[selected][::-1], return_index=True)
-        chosen = selected[len(selected) - 1 - reversed_index]
         r = rows[chosen]
         n = direction[chosen]
-        normal_depth = np.sum((target[chosen] - x[r]) * n, axis=1)
+        correction = target[chosen] - x[r]
+        normal_depth = np.sum(correction * n, axis=1)
+        repairing = penetrated[chosen] & (old_signed[chosen] < 0) & ~swept[chosen]
+        if recovery is not None:
+            recovery[r[repairing]] += correction[repairing]
         x[r] = target[chosen]
         if friction > 0:
             relative = x[r] - old[r]
             if self.previous is not None and self.previous.shape == self.vertices.shape:
                 relative -= surface_motion(old[r], surface[chosen], previous_surface[chosen])
-            x[r] -= friction_correction(relative, n, normal_depth, friction)
+            # Untangling an existing overlap is not a physical contact load.
+            # Applying friction to it glues cloth to an intruding finger.
+            x[r] -= friction_correction(relative, n, np.where(repairing, 0, normal_depth), friction)
         contact[r] = True
         return contact
