@@ -7,7 +7,6 @@
   if (!ctx) return;
 
   const toggle = hero.querySelector(".hero-motion-toggle");
-  const hint = hero.querySelector(".hero-field-hint");
   const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
   const TAU = Math.PI * 2;
   const pointer = { x: 0, y: 0, active: false };
@@ -476,7 +475,6 @@
     toggle.setAttribute("aria-pressed", String(!paused));
     toggle.setAttribute("aria-label", "Animate field");
     toggle.textContent = paused ? "Enable motion" : "Pause motion";
-    hint.hidden = false;
   }
 
   function updatePointer(event) {
