@@ -130,9 +130,14 @@ def refresh_repair_status(model, key=None):
         lines.append('Showing previous repair.' if same_source else 'Showing input animation until repaired.')
     if same_source and not pending:
         report = cached[1][1]
-        lines.extend((f"{report['corrected_frames']} / {report['frame_count']} frames corrected",
+        lines.extend((f"{report['corrected_frames']} / {report['frame_count']} source frames corrected",
                       f"{report['finger_collider_count']} finger capsules; {report['arm_ik_corrected_frames']} frames adjusted by arm IK",
-                      f"{report['remaining_proxy_overlap_frames']} frames with remaining capsule overlap"))
+                      f"{report.get('output_remaining_proxy_overlap_frames',report['remaining_proxy_overlap_frames'])} output samples with remaining capsule overlap"))
+        if report.get('repair_substeps',1) > 1:
+            lines.append(f"{report['repair_substeps']} repair substeps; output baked at {report['sample_rate_hz']:g} fps")
+            lines.append(f"{report.get('interpolated_samples_repaired',0)} between-frame samples repaired")
+        if report.get('remaining_interpolated_contact_samples',0):
+            lines.append(f"{report['remaining_interpolated_contact_samples']} checks still show added between-frame overlap")
     summary = '\n'.join(lines)
     model._rig_limiter_summary = summary
     status = repair_status(model)
@@ -434,7 +439,7 @@ class LimiterControls(QtWidgets.QWidget):
                                     'QPushButton[repairPending="true"]:hover { background-color:#b73535; }')
         self.status = QtWidgets.QLabel('Connect an existing PriorMDM animation.')
         self.status.setWordWrap(True)
-        self.status.setFixedHeight(self.status.fontMetrics().lineSpacing()*6)
+        self.status.setFixedHeight(self.status.fontMetrics().lineSpacing()*10)
         layout.addWidget(self.status)
         scene = item.scene() or getattr(item.model,'_graph_scene',None)
         if scene is not None and hasattr(scene,'paramChanged'):
@@ -571,8 +576,10 @@ class LimiterControls(QtWidgets.QWidget):
             return reports
         try:
             reports = run_repair(repair,self.window())
-            remaining = sum(r['remaining_proxy_overlap_frames'] for r in reports)
-            self.status.setText(f'Saved {len(saved)} corrected BVHs. {remaining} frames retain capsule overlap.\n{directory}')
+            remaining = sum(r.get('output_remaining_proxy_overlap_frames',r['remaining_proxy_overlap_frames']) for r in reports)
+            between = sum(r.get('remaining_interpolated_contact_samples',0) for r in reports)
+            self.status.setText(f'Saved {len(saved)} corrected BVHs. {remaining} output samples retain capsule overlap; '
+                                f'{between} between-frame checks remain unresolved.\n{directory}')
         except Exception as exc:
             self.status.setText(f'{exc}\n{len(saved)} completed files saved in {directory}.')
 

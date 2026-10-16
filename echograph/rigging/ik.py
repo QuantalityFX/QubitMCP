@@ -43,7 +43,8 @@ def solve_constrained_ik(local_rotations, offsets, parents, *,
                          reference_rotations=None, previous_parameters=None,
                          pose_weight=.008, temporal_weight=.008,
                          tolerance=.0005, max_iterations=45, retry_seeds=(),
-                         check_cancel=None, prioritize_constraints=False):
+                         check_cancel=None, prioritize_constraints=False,
+                         reuse_unchanged_joints=False):
     """Solve positional targets and/or caller-supplied geometric constraints.
 
     ``joint_axes`` defines local rotation DOFs: one axis for a hinge, three for
@@ -58,6 +59,10 @@ def solve_constrained_ik(local_rotations, offsets, parents, *,
     parameters to the next frame for temporal regularization, or supply retry
     seeds to escape symmetric/centered contacts. Unreachable goals are reported
     through ``max_error`` and ``converged`` rather than relaxing joint limits.
+
+    ``reuse_unchanged_joints`` reuses exact rotation projections and unchanged
+    FK branches during numerical differentiation. Enable only when the rotation
+    projector is deterministic for the duration of this solve.
     """
     original = np.asarray(local_rotations, dtype=float)
     reference = original if reference_rotations is None else np.asarray(reference_rotations, dtype=float)
@@ -84,14 +89,53 @@ def solve_constrained_ik(local_rotations, offsets, parents, *,
     if old.shape != (count,) or not np.isfinite(old).all():
         raise ValueError('IK previous parameters do not match the rotation DOFs.')
 
+    projected = [{} for _ in blocks]
+    reference_q = [Rotation.from_matrix(reference[j]) for j,_,_ in blocks] if reuse_unchanged_joints else None
+    cached_local = cached_points = cached_world = None
+    descendants = None
+    if reuse_unchanged_joints:
+        # Validate the hierarchy through the normal FK path before indexing it.
+        cached_points,cached_world = forward_kinematics(original,offsets,parents)
+        cached_local = original.copy()
+        descendants = np.eye(len(parents),dtype=bool)
+        for child in range(len(parents)-1,-1,-1):
+            parent = parents[child]
+            if parent >= 0:
+                descendants[parent] |= descendants[child]
+
     def pose(parameters):
+        nonlocal cached_local,cached_points,cached_world
         local = original.copy()
-        for joint,axes,section in blocks:
-            q = (Rotation.from_matrix(reference[joint])*Rotation.from_rotvec(parameters[section]@axes)).as_quat()
+        for block,(joint,axes,section) in enumerate(blocks):
+            key = parameters[section].tobytes() if reuse_unchanged_joints else None
+            cache = projected[block]
+            if key is not None and key in cache:
+                local[joint] = cache[key]
+                continue
+            base = reference_q[block] if reuse_unchanged_joints else Rotation.from_matrix(reference[joint])
+            q = (base*Rotation.from_rotvec(parameters[section]@axes)).as_quat()
             if project_rotation is not None:
                 q = project_rotation(joint,q)
             local[joint] = Rotation.from_quat(q).as_matrix()
-        points, world = forward_kinematics(local,offsets,parents)
+            if key is not None:
+                if len(cache) >= 8:
+                    cache.pop(next(iter(cache)))
+                cache[key] = local[joint].copy()
+        if reuse_unchanged_joints:
+            changed = np.any(local != cached_local,axis=(1,2))
+            affected = np.any(descendants[changed],axis=0)
+            points,world = cached_points.copy(),cached_world.copy()
+            for joint in np.flatnonzero(affected):
+                parent = parents[joint]
+                if parent < 0:
+                    points[joint] = offsets[joint]
+                    world[joint] = local[joint]
+                else:
+                    points[joint] = points[parent]+world[parent]@offsets[joint]
+                    world[joint] = world[parent]@local[joint]
+            cached_local,cached_points,cached_world = local.copy(),points.copy(),world.copy()
+        else:
+            points, world = forward_kinematics(local,offsets,parents)
         return local,points,world
 
     def errors(local,points,world):

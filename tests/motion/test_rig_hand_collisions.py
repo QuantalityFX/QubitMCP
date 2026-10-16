@@ -49,6 +49,32 @@ def hand_fixture(frames=2, *, fingertip_contact=False):
 
 
 class ReusableIKTests(unittest.TestCase):
+    def test_exact_joint_reuse_preserves_ik_solution_and_cancellation(self):
+        parents = (-1,0,1,0,3)
+        offsets = np.array([[.2,.1,0],[1,0,0],[1,0,0],[0,1,0],[0,1,0]],dtype=float)
+        local = np.tile(np.eye(3),(5,1,1))
+        solutions,counts = [],[]
+        for reuse in (False,True):
+            calls = []
+            def project(j,q):
+                calls.append(j)
+                angle = Rotation.from_quat(q).as_rotvec()
+                return Rotation.from_rotvec(np.clip(angle,-1.,1.)).as_quat()
+            solved = solve_constrained_ik(local,offsets,parents,joint_axes={0:np.eye(3),1:np.eye(3),3:np.eye(3)},
+                targets={2:[1.6,1,.4],4:[-.5,1.6,-.2]},project_rotation=project,
+                reuse_unchanged_joints=reuse)
+            solutions.append(solved)
+            counts.append(len(calls))
+        for field in ('rotations','points','parameters'):
+            np.testing.assert_array_equal(getattr(solutions[0],field),getattr(solutions[1],field))
+        self.assertEqual(solutions[0].max_error,solutions[1].max_error)
+        self.assertLess(counts[1],counts[0])
+        def cancel():
+            raise ValueError('cancelled')
+        with self.assertRaisesRegex(ValueError,'cancelled'):
+            solve_constrained_ik(local,offsets,parents,joint_axes={0:np.eye(3)},targets={2:[0,0,0]},
+                reuse_unchanged_joints=True,check_cancel=cancel)
+
     def test_cancel_interrupts_an_active_solver_without_changing_input(self):
         local = np.tile(np.eye(3),(3,1,1))
         original = local.copy()
@@ -100,6 +126,61 @@ class ReusableIKTests(unittest.TestCase):
 
 
 class HandColliderTests(unittest.TestCase):
+    def test_pair_reuse_is_exact_across_pose_mask_and_clearance_changes(self):
+        _,_,_,names,parents,offsets,local = hand_fixture(fingertip_contact=True)
+        offsets = offsets/rig_scale(offsets)
+        plain = ColliderModel(names,parents,offsets)
+        cached = ColliderModel(names,parents,offsets,reuse_unchanged_pairs=True)
+        mask = plain.mask_for(['left_wrist','left_middle1','left_middle2','left_middle3'])
+        for angle in (0,15,15,0,-20):
+            local[names.index('left_middle1')] = Rotation.from_euler('z',angle,degrees=True).as_matrix()
+            points,world = forward_kinematics(local,offsets,parents)
+            for selection in (None,mask,~mask,None):
+                for clearance in (0.,.001,.01,0.):
+                    np.testing.assert_array_equal(plain.penetrations(points,world,selection,clearance=clearance),
+                        cached.penetrations(points,world,selection,clearance=clearance))
+
+    def test_between_frame_contact_is_reduced_and_preserved_by_bvh_export(self):
+        from echograph.rigging.fbx_canonical import QuatKeyframe
+        skeleton,clip,indices,names,parents,offsets,_ = hand_fixture(fingertip_contact=True)
+        track = next(t for t in clip.tracks if t.joint_name == 'left_shoulder')
+        track.rotation_keys = [QuatKeyframe(t,tuple(Rotation.from_euler('y',angle,degrees=True).as_quat()))
+                               for t,angle in ((0,-25),(.05,25))]
+        source = clip.to_dict()
+        scale = rig_scale(offsets)
+        model = ColliderModel(names,parents,offsets/scale)
+        mask = np.array([a in FINGER_NAMES and b=='left_hip' for a,b,_ in model.pairs])
+        def penetration(sk,animation,time):
+            local = evaluate_rig_at_time(sk,animation,time).local_transforms
+            mapped = full_rig_layout(sk)[0]
+            pose = Rotation.from_quat([local[i].rotation for i in mapped]).as_matrix()
+            return np.max(model.penetrations(*forward_kinematics(pose,offsets/scale,parents),mask=mask),initial=0)
+        for time in (0,.05):
+            self.assertLess(penetration(skeleton,clip,time),.00005)
+        self.assertGreater(penetration(skeleton,clip,.025),.01)
+        output,report = limit_clip(skeleton,clip,default_preview_limits(),{})
+        self.assertGreater(report['interpolated_samples_repaired'],0)
+        self.assertGreater(output.sample_rate_hz,clip.sample_rate_hz)
+        self.assertEqual(output.duration,clip.duration)
+        self.assertLess(penetration(skeleton,output,.025),.00005)
+        before = [penetration(skeleton,clip,float(t)) for t in np.linspace(0,.05,41)]
+        after = [penetration(skeleton,output,float(t)) for t in np.linspace(0,.05,41)]
+        self.assertLess(max(after),max(before)/4)
+        # Bounded IK may leave other contacts. These must be reported, rather
+        # than calling a clip collision-free based only on its source frames.
+        if max(after) > .00005:
+            self.assertGreater(report['output_remaining_proxy_overlap_frames']+
+                               report['remaining_interpolated_contact_samples'],0)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'substeps.bvh'
+            export_context(dict(skeleton=skeleton,clip=output),path)
+            restored = ingest_bvh_animation_data(path)
+            self.assertAlmostEqual(restored.clips[0].sample_rate_hz,output.sample_rate_hz)
+            for time in np.linspace(0,.05,41):
+                self.assertAlmostEqual(penetration(skeleton,output,float(time)),
+                    penetration(restored.skeleton,restored.clips[0],float(time)),delta=1e-7)
+        self.assertEqual(clip.to_dict(),source)
+
     def test_final_hand_clearance_removes_residual_thigh_contact(self):
         _,_,_,names,parents,offsets,local = hand_fixture()
         points,_ = forward_kinematics(local,offsets,parents)

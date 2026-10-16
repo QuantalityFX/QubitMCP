@@ -133,7 +133,8 @@ class ColliderModel:
     the metacarpal roots. Missing terminal tip joints use the distal phalanx's
     length; no new joints or animation tracks are added to the source rig.
     """
-    def __init__(self,names=JOINT_NAMES,parents=PARENTS,offsets=None,settings=None,*,end_sites=None):
+    def __init__(self,names=JOINT_NAMES,parents=PARENTS,offsets=None,settings=None,*,end_sites=None,
+                 reuse_unchanged_pairs=False):
         end_sites = end_site_offsets(end_sites)
         self.joint_names = tuple(names)
         self.parents = tuple(parents)
@@ -205,6 +206,11 @@ class ColliderModel:
         self.b = np.array([volume_lookup[b] for _,b,_ in pairs])
         self.trim = np.array([s for _,_,s in pairs])
         self.ra = self.radii[self.a,0]+self.trim*(self.radii[self.a,1]-self.radii[self.a,0])
+        # Solver-local cache: finite-difference IK repeatedly tests pairs whose
+        # endpoint geometry is identical. Clearance is applied after the cached
+        # signed distance, so changing a contact margin cannot reuse a stale result.
+        self._clearance_geometry = np.full((len(pairs),16),np.nan) if reuse_unchanged_pairs else None
+        self._clearance_values = np.empty(len(pairs)) if reuse_unchanged_pairs else None
 
     def endpoints(self,points,world=None):
         points = np.asarray(points)
@@ -233,8 +239,22 @@ class ColliderModel:
                       (np.minimum(starts[b],ends[b])-br <= np.maximum(start,ends[a])+ar),axis=1)
         result = np.zeros(len(a))
         if near.any():
-            result[near] = np.maximum(0.,clearance-tapered_clearances(start[near],ends[a[near]],ra[near],rb[near],
-                                      starts[b[near]],ends[b[near]],rc[near],rd[near]))
+            if self._clearance_geometry is None:
+                gaps = tapered_clearances(start[near],ends[a[near]],ra[near],rb[near],
+                                          starts[b[near]],ends[b[near]],rc[near],rd[near])
+            else:
+                pair_ids = np.arange(len(self.a))[select][near]
+                geometry = np.column_stack((start[near],ends[a[near]],starts[b[near]],ends[b[near]],
+                                            ra[near],rb[near],rc[near],rd[near]))
+                changed = np.any(geometry != self._clearance_geometry[pair_ids],axis=1)
+                if changed.any():
+                    rows = geometry[changed]
+                    self._clearance_values[pair_ids[changed]] = tapered_clearances(
+                        rows[:,:3],rows[:,3:6],rows[:,12],rows[:,13],
+                        rows[:,6:9],rows[:,9:12],rows[:,14],rows[:,15])
+                    self._clearance_geometry[pair_ids[changed]] = rows
+                gaps = self._clearance_values[pair_ids]
+            result[near] = np.maximum(0.,clearance-gaps)
         return result
 
     def mask_for(self,names):
