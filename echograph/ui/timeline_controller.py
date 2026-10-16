@@ -118,6 +118,27 @@ class TimelineController:
             pass
         return False
 
+    def _editing_owner_for_context(self, scene_name, project_path):
+        gv = self._gl_view()
+        if str(getattr(gv, '_timeline_mode', 'composition')) != 'owner_keys':
+            return ''
+        owner = str(getattr(gv, '_timeline_owner_name', '') or '').strip()
+        current_scene = str(getattr(gv, '_timeline_scene_name', '') or '').strip()
+        if not owner or not scene_name or current_scene != str(scene_name).strip():
+            return ''
+        path_fn = getattr(gv, '_timeline_anim_file_path', None)
+        current_path = getattr(gv, '_timeline_anim_path', None)
+        if callable(path_fn) and current_path is not None:
+            expected = path_fn(current_scene, project_path=project_path, owner_name=owner, create=False)
+            if str(expected) != str(current_path):
+                return ''
+        renderer = getattr(gv, '_mgl_renderer', None) or gv
+        decode = getattr(renderer, '_mgl_scene_skeleton_decode_joint_owner', None)
+        joint = decode(owner) if callable(decode) else None
+        if joint and renderer._mgl_scene_owner_fbx_rig_context(joint[0]) is None:
+            return ''
+        return owner
+
     def sync_timeline_context(self, *, apply_current_frame: bool = True, load_audio: bool = True) -> None:
         win = self._win()
         gv = self._gl_view()
@@ -195,6 +216,20 @@ class TimelineController:
                     owner_name = raw_owner
             except Exception:
                 owner_name = None
+        # A passive refresh must keep the editor the user opened. Preview
+        # contexts have no outliner owner, and a rig row names the parent asset
+        # rather than the joint whose keys are being edited.
+        editing_owner = self._editing_owner_for_context(scene_name, project_path)
+        if editing_owner:
+            if owner_name is None or preview_context is not None:
+                owner_name = editing_owner
+            else:
+                renderer = getattr(gv, '_mgl_renderer', None) or gv
+                decode = getattr(renderer, '_mgl_scene_skeleton_decode_joint_owner', None)
+                joint = decode(editing_owner) if callable(decode) else None
+                if (joint and str(owner_name).casefold() == str(joint[0]).casefold()
+                        and getattr(gv, '_xform_gizmo_owner', None) == editing_owner):
+                    owner_name = editing_owner
         try:
             if (
                 preview_context is None

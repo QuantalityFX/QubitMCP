@@ -26,6 +26,27 @@ class JointTargetTree(QtWidgets.QTreeWidget):
     def supportedDropActions(self):
         return QtCore.Qt.CopyAction
 
+    def set_skeleton(self,owner,skeleton):
+        """Populate the same joint hierarchy in dialogs and embedded cards."""
+        self.clear()
+        joints = list(getattr(skeleton,'joints',[]) or [])
+        items = [QtWidgets.QTreeWidgetItem([joint.name]) for joint in joints]
+        parents = [int(joint.parent_index) for joint in joints]
+        for index,item in enumerate(items):
+            target = joint_target_name(owner,joints[index].name)
+            item.setData(0,QtCore.Qt.UserRole,target)
+            item.setData(0,QtCore.Qt.UserRole+1,joints[index].name)
+            item.setToolTip(0,target)
+            ancestors,ancestor = {index},parents[index]
+            while 0 <= ancestor < len(items) and ancestor not in ancestors:
+                ancestors.add(ancestor)
+                ancestor = parents[ancestor]
+            if 0 <= parents[index] < len(items) and ancestor not in ancestors:
+                items[parents[index]].addChild(item)
+            else:
+                self.addTopLevelItem(item)
+        return items
+
 
 class SkeletonJointPicker(QtWidgets.QDialog):
     def __init__(self, owner: str, skeleton=None, parent=None):
@@ -61,30 +82,8 @@ class SkeletonJointPicker(QtWidgets.QDialog):
         self.set_skeleton(skeleton)
 
     def set_skeleton(self, skeleton):
-        self.tree.clear()
         joints = list(getattr(skeleton, "joints", []) or [])
-        items = []
-        parents = []
-        for joint in joints:
-            name = str(getattr(joint, "name", "") or "").strip()
-            item = QtWidgets.QTreeWidgetItem([name])
-            target = joint_target_name(self.owner, name)
-            item.setData(0, QtCore.Qt.UserRole, target)
-            item.setToolTip(0, target)
-            items.append(item)
-            parents.append(int(getattr(joint, "parent_index", -1)))
-        for index, item in enumerate(items):
-            parent = parents[index]
-            # Malformed rigs still get a usable list instead of cyclic Qt items.
-            ancestors = {index}
-            ancestor = parent
-            while 0 <= ancestor < len(items) and ancestor not in ancestors:
-                ancestors.add(ancestor)
-                ancestor = parents[ancestor]
-            if 0 <= parent < len(items) and ancestor not in ancestors:
-                items[parent].addChild(item)
-            else:
-                self.tree.addTopLevelItem(item)
+        self.tree.set_skeleton(self.owner,skeleton)
         self.tree.expandAll()
         self._filter_joints(self.search.text())
         self.status.setText(

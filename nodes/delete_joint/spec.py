@@ -338,10 +338,11 @@ class JointControls(QtWidgets.QWidget):
         layout.addWidget(button)
         self.view_button = QtWidgets.QPushButton("View")
         self.view_button.setStyleSheet(
-            "QPushButton { background-color: #2563eb; color: white; border: 1px solid #3b82f6; border-radius: 4px; padding: 6px; }"
+            "QPushButton { background-color: #2563eb; color: white; border: 1px solid #3b82f6; border-radius: 4px; padding: 2px 8px; }"
             "QPushButton:hover { background-color: #3b82f6; }"
             "QPushButton:pressed { background-color: #1d4ed8; }"
         )
+        self.view_button.setFixedHeight(button.sizeHint().height())
         self.view_button.setToolTip("Show the skeleton with deleted joints removed in the main 3D viewport.")
         self.view_button.clicked.connect(lambda: view_result(self.item))
         layout.addWidget(self.view_button)

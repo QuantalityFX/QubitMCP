@@ -867,9 +867,16 @@
             Agent workflows cover the Task, Data Nexus, Mediator, Chatbot, and HTML Preview loop used by guided AI roles.
             This section is placed with the pipeline examples because agent work is one workflow category, not the only workflow type.
           </p>
-          <div class="grid two">
+          <div class="grid agents-grid">
             <div class="card">
               <h3>Agents and Supporting Pieces</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=data-nexus#node-data-nexus" title="data_nexus" aria-label="data_nexus"><img src="../icons/DataNexus_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=skills#node-skills" title="skills" aria-label="skills"><img src="../icons/skills_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=chatbot#node-chatbot" title="chatbot" aria-label="chatbot"><img src="../icons/Chatbot_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=mediator-agent#node-mediator-agent" title="mediator_agent" aria-label="mediator_agent"><img src="../icons/Mediator_Icon_1_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=task#node-task" title="task" aria-label="task"><img src="../icons/Tasks_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ul class="bullet">
                 <li><strong>Sales Agent</strong>: the pitch-deck agent role that reviews readiness, writes or updates prep questions, resolves answered questions, and drafts slide copy from Data Nexus facts.</li>
                 <li><strong>Teacher Agent</strong>: the template-building agent role that converts human templates into structured agent templates through the Skills library workflow.</li>
@@ -880,6 +887,10 @@
             </div>
             <div class="card">
               <h3>Language and Reading Agents</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=mediator-agent#node-mediator-agent" title="mediator_agent" aria-label="mediator_agent"><img src="../icons/Mediator_Icon_1_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=voice-actor#node-voice-actor" title="voice_actor" aria-label="voice_actor"><img src="../icons/TanyaAI_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ul class="bullet">
                 <li><strong>Translator Agent</strong>: a Mediator profile that translates the latest voice-transcribed input into the downstream Voice Actor target language, or natural English when no target language is provided.</li>
                 <li><strong>Japanese Reader</strong>: converts English, Japanese, or mixed input into natural Japanese plus ASCII romaji pronunciation for someone who cannot read Japanese.</li>
@@ -888,8 +899,16 @@
                 <li><strong>Multilingual speech path</strong>: <code>voice_actor</code> handles listening and speaking; the Mediator language profile handles translation or reading output.</li>
               </ul>
             </div>
-            <div class="card">
+            <div class="card agent-preparation-card">
               <h3>Agent Task Preparation Workflow</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=skills#node-skills" title="skills" aria-label="skills"><img src="../icons/skills_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=data-nexus#node-data-nexus" title="data_nexus" aria-label="data_nexus"><img src="../icons/DataNexus_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=mediator-agent#node-mediator-agent" title="mediator_agent" aria-label="mediator_agent"><img src="../icons/Mediator_Icon_1_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=task#node-task" title="task" aria-label="task"><img src="../icons/Tasks_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=html-preview#node-html-preview" title="html_preview" aria-label="html_preview"><img src="../icons/HTML_Preview.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=chatbot#node-chatbot" title="chatbot" aria-label="chatbot"><img src="../icons/Chatbot_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Create or open a workflow with <code>skills</code>, <code>data_nexus</code>, <code>mediator_agent</code>, <code>task</code>, and optionally <code>html_preview</code>.</li>
                 <li>Connect <code>skills</code> to <code>task.skills</code>, <code>data_nexus</code> to <code>task.data_nexus</code>, and <code>mediator_agent</code> to <code>task.mediator</code>.</li>
@@ -906,6 +925,12 @@
             </div>
             <div class="card">
               <h3>Answering Prep Questions</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=chatbot#node-chatbot" title="chatbot" aria-label="chatbot"><img src="../icons/Chatbot_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=data-nexus#node-data-nexus" title="data_nexus" aria-label="data_nexus"><img src="../icons/DataNexus_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=task#node-task" title="task" aria-label="task"><img src="../icons/Tasks_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=mediator-agent#node-mediator-agent" title="mediator_agent" aria-label="mediator_agent"><img src="../icons/Mediator_Icon_1_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ul class="bullet">
                 <li>Preferred chat flow: ask Tanya <code>continue the Sales Agent for the pitch deck</code>, then answer the one question she asks.</li>
                 <li>You can still use an exact question ID when needed, for example <code>Answer prep_question slide_03_problem_prep_question: Customers lose time because review work is spread across chat, files, and engine tools.</code></li>
@@ -918,6 +943,10 @@
             </div>
             <div class="card">
               <h3>Data Nexus Review Tools</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=data-nexus#node-data-nexus" title="data_nexus" aria-label="data_nexus"><img src="../icons/DataNexus_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=task#node-task" title="task" aria-label="task"><img src="../icons/Tasks_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ul class="bullet">
                 <li>Drag the vertical dividers to resize the point list, graph canvas, and point detail columns when text needs more room.</li>
                 <li>Use <strong>Arrange</strong> for linked-point layout and <strong>Cluster</strong> to separate regular points, question points, and slide points into clearer groups.</li>
@@ -934,8 +963,16 @@
           <h2>Common Pipelines</h2>
           <div class="callout"><strong>New workflow guides:</strong> <a href="patterns-cloth.html">Pattern Design → Cloth Solver → Scene</a> and <a href="motion.html">PriorMDM / Mocap Collection → Retarget → For Each rendering</a>.</div>
           <div class="grid pipeline-grid">
-            <div class="card">
+            <div class="card card-wide">
               <h3>Skills + Data Nexus + Task Sales Deck</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=skills#node-skills" title="skills" aria-label="skills"><img src="../icons/skills_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=data-nexus#node-data-nexus" title="data_nexus" aria-label="data_nexus"><img src="../icons/DataNexus_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=task#node-task" title="task" aria-label="task"><img src="../icons/Tasks_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=mediator-agent#node-mediator-agent" title="mediator_agent" aria-label="mediator_agent"><img src="../icons/Mediator_Icon_1_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=html-preview#node-html-preview" title="html_preview" aria-label="html_preview"><img src="../icons/HTML_Preview.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=chatbot#node-chatbot" title="chatbot" aria-label="chatbot"><img src="../icons/Chatbot_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Use <code>skills</code> to confirm an approved Sales Agent <code>html_deck</code> template and an approved sales pitch deck task guide are available.</li>
                 <li>Use <code>data_nexus</code> to collect sales facts as normal answer points, such as company profile, problem, workflow outcome, traction, pricing, competition, and team context.</li>
@@ -952,6 +989,30 @@
             </div>
             <div class="card">
               <h3>Scene Assembly and Export</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=import#node-import" title="import" aria-label="import"><img src="../icons/Import_File_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=fbx-import#node-fbx-import" title="fbx_import" aria-label="fbx_import"><img src="../icons/FBX_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=primitive#node-primitive" title="primitive" aria-label="primitive"><img src="../icons/Primitive_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=curve#node-curve" title="curve" aria-label="curve"><img src="../icons/StreightCurve_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=modeler#node-modeler" title="modeler" aria-label="modeler"><img src="../icons/ObjectSelect_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=normals#node-normals" title="normals" aria-label="normals"><img src="../icons/UvUnwrapNode_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=uv-unwrap#node-uv-unwrap" title="uv_unwrap" aria-label="uv_unwrap"><img src="../icons/UvUnwrapNode_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=texture#node-texture" title="texture" aria-label="texture"><img src="../icons/TextureNode_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=texture-pro#node-texture-pro" title="texture_pro" aria-label="texture_pro"><img src="../icons/TextureNode_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=texture-layer#node-texture-layer" title="texture_layer" aria-label="texture_layer"><img src="../icons/layer_Texture_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=material#node-material" title="material" aria-label="material"><img src="../icons/MaterialGenerator_Icon_S.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=split-volume#node-split-volume" title="split_volume" aria-label="split_volume"><img src="../icons/volume_split_icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=transforms#node-transforms" title="transforms" aria-label="transforms"><img src="../icons/TranformNode_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=anim-retarget#node-anim-retarget" title="anim_retarget" aria-label="anim_retarget"><img src="../icons/anim_retarget_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=instance#node-instance" title="instance" aria-label="instance"><img src="../icons/instance_icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=copy-to-points#node-copy-to-points" title="copy_to_points" aria-label="copy_to_points"><img src="../icons/instance_icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=camera#node-camera" title="camera" aria-label="camera"><img src="../icons/Camera_icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=light#node-light" title="light" aria-label="light"><img src="../icons/LightSource_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=scene#node-scene" title="scene" aria-label="scene"><img src="../icons/Scene_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=export-fbx#node-export-fbx" title="export_fbx" aria-label="export_fbx"><img src="../icons/FBX_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=export-fbx-animation#node-export-fbx-animation" title="export_fbx_animation" aria-label="export_fbx_animation"><img src="../icons/FBX_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=export-obj#node-export-obj" title="export_obj" aria-label="export_obj"><img src="../icons/OBJ_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Create <code>import</code>, <code>fbx_import</code>, <code>primitive</code>, <code>curve</code>, or <code>modeler</code> nodes.</li>
                 <li>Optional processing: <code>normals</code>, <code>uv_unwrap</code>, <code>texture</code>/<code>texture_pro</code>/<code>texture_layer</code>, <code>material</code>, <code>split_volume</code>, <code>transforms</code>, or <code>anim_retarget</code>.</li>
@@ -963,6 +1024,14 @@
             </div>
             <div class="card">
               <h3>Librarian and LLM Workflow</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=librarian#node-librarian" title="librarian" aria-label="librarian"><img src="../icons/librarian_search_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=llm-prompt#node-llm-prompt" title="llm_prompt" aria-label="llm_prompt"><img src="../icons/LLM_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=chatbot#node-chatbot" title="chatbot" aria-label="chatbot"><img src="../icons/Chatbot_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=database#node-database" title="database" aria-label="database"><img src="../icons/Database_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=append#node-append" title="append" aria-label="append"><img src="../icons/append_icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=output#node-output" title="output" aria-label="output"><img src="../icons/Out_Node_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Create <code>librarian</code> and set docs path.</li>
                 <li>Build or load librarian index and run search or summarize.</li>
@@ -972,6 +1041,14 @@
             </div>
             <div class="card">
               <h3>Chatbot + Mediator Agent Workflow</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=llm-prompt#node-llm-prompt" title="llm_prompt" aria-label="llm_prompt"><img src="../icons/LLM_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=chatbot#node-chatbot" title="chatbot" aria-label="chatbot"><img src="../icons/Chatbot_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=database#node-database" title="database" aria-label="database"><img src="../icons/Database_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=voice-actor#node-voice-actor" title="voice_actor" aria-label="voice_actor"><img src="../icons/TanyaAI_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=mediator-agent#node-mediator-agent" title="mediator_agent" aria-label="mediator_agent"><img src="../icons/Mediator_Icon_1_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=qubit-deck-controller#node-qubit-deck-controller" title="qubit_deck_controller" aria-label="qubit_deck_controller"><img src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Configure <code>llm_prompt</code> for Ollama/DeepSeek or OpenAI, then connect it to <code>chatbot</code> <code>llm_prompt</code>.</li>
                 <li>Connect <code>database</code> to <code>chatbot</code> <code>database</code> so the Chatbot owns conversation history.</li>
@@ -983,6 +1060,11 @@
             </div>
             <div class="card">
               <h3>Task Planning Workflow (Gantt)</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=note#node-note" title="note" aria-label="note"><img src="../icons/Electric_Pen_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=append#node-append" title="append" aria-label="append"><img src="../icons/append_icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=gantt-chart#node-gantt-chart" title="gantt_chart" aria-label="gantt_chart"><img src="../icons/Calendar_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Create one or more <code>note</code> nodes with task parameters.</li>
                 <li>Optional: combine notes through <code>append</code> and use append order to control Gantt group order.</li>
@@ -993,6 +1075,12 @@
             </div>
             <div class="card">
               <h3>Voice-Controlled Qubit Deck</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=voice-actor#node-voice-actor" title="voice_actor" aria-label="voice_actor"><img src="../icons/TanyaAI_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=mediator-agent#node-mediator-agent" title="mediator_agent" aria-label="mediator_agent"><img src="../icons/Mediator_Icon_1_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=qubit-deck-controller#node-qubit-deck-controller" title="qubit_deck_controller" aria-label="qubit_deck_controller"><img src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=python#node-python" title="python" aria-label="python"><img src="../icons/Python_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Create <code>voice_actor</code>, set its response mode, and connect its output to <code>mediator_agent</code> <code>voice_input</code>.</li>
                 <li>Set Mediator prompt profile to <code>qubit_deck_controller</code>.</li>
@@ -1003,6 +1091,12 @@
             </div>
             <div class="card">
               <h3>FBX + Mocap Retargeting</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=fbx-import#node-fbx-import" title="fbx_import" aria-label="fbx_import"><img src="../icons/FBX_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=mocap-import#node-mocap-import" title="mocap_import" aria-label="mocap_import"><img src="../icons/Gen-X_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=anim-retarget#node-anim-retarget" title="anim_retarget" aria-label="anim_retarget"><img src="../icons/anim_retarget_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=export-fbx-animation#node-export-fbx-animation" title="export_fbx_animation" aria-label="export_fbx_animation"><img src="../icons/FBX_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Create <code>fbx_import</code> and assign rest geometry, capture pose, and optional animated pose FBX sources.</li>
                 <li>Create <code>mocap_import</code> and browse to a BVH file, then validate the clip.</li>
@@ -1014,6 +1108,11 @@
             </div>
             <div class="card">
               <h3>Video to Mocap</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=genx-video-mocap#node-genx-video-mocap" title="genx_video_mocap" aria-label="genx_video_mocap"><img src="../icons/Gen-X_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=mocap-import#node-mocap-import" title="mocap_import" aria-label="mocap_import"><img src="../icons/Gen-X_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=anim-retarget#node-anim-retarget" title="anim_retarget" aria-label="anim_retarget"><img src="../icons/anim_retarget_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Run <code>Mocap\setup.bat</code> once for the GEM-X/GEN-X environment.</li>
                 <li>Create <code>genx_video_mocap</code> and browse to an MP4, MOV, AVI, MKV, or WebM source.</li>
@@ -1022,8 +1121,11 @@
                 <li>Retarget that mocap through <code>anim_retarget</code> for viewport, render, or FBX animation export.</li>
               </ol>
             </div>
-            <div class="card">
+            <div class="card card-wide">
               <h3>Image to Gaussian Splat</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=scene#node-scene" title="scene" aria-label="scene"><img src="../icons/Scene_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Run <code>setup.bat</code> after installing updates, approve the setup prompt when creating <code>image_gs_splat</code>, or use <strong>Setup Image-GS</strong> in the node InfoCard so the Image-GS checkout and dependencies are ready.</li>
                 <li>Create <code>image_gs_splat</code> and enter an HTTP image URL or local image path.</li>
@@ -1034,6 +1136,18 @@
             </div>
             <div class="card">
               <h3>Render Review and Video Output</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=scene#node-scene" title="scene" aria-label="scene"><img src="../icons/Scene_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=render#node-render" title="render" aria-label="render"><img src="../icons/RenderNode_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=post-process#node-post-process" title="post_process" aria-label="post_process"><img src="../icons/FX_node_icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=video-player#node-video-player" title="video_player" aria-label="video_player"><img src="../icons/ReelVideo_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=sequence-to-mp4#node-sequence-to-mp4" title="sequence_to_mp4" aria-label="sequence_to_mp4"><img src="../icons/SequenceToVideo_Icon2_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=import#node-import" title="import" aria-label="import"><img src="../icons/Import_File_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=anim-retarget#node-anim-retarget" title="anim_retarget" aria-label="anim_retarget"><img src="../icons/anim_retarget_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=transforms#node-transforms" title="transforms" aria-label="transforms"><img src="../icons/TranformNode_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=material#node-material" title="material" aria-label="material"><img src="../icons/MaterialGenerator_Icon_S.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=texture#node-texture" title="texture" aria-label="texture"><img src="../icons/TextureNode_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Build a <code>scene</code> from import, retarget, transform, material, or texture nodes.</li>
                 <li>Use <code>render</code> to produce an image sequence.</li>
@@ -1044,6 +1158,10 @@
             </div>
             <div class="card">
               <h3>Keyboard Auto Runner</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=keyboard-sequence#node-keyboard-sequence" title="keyboard_sequence" aria-label="keyboard_sequence"><img src="../icons/KeyboardActionRunner_Icon_s.png.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=serial-com#node-serial-com" title="serial_com" aria-label="serial_com"><img src="../icons/SerialCom_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Create <code>keyboard_sequence</code> and add key/action rows.</li>
                 <li>Set lead-in delay so you have time to focus the target application.</li>
@@ -1054,6 +1172,12 @@
             </div>
             <div class="card">
               <h3>Audio and Voice Capture</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=audio-capture#node-audio-capture" title="audio_capture" aria-label="audio_capture"><img src="../icons/AudioCapture_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=voice-actor#node-voice-actor" title="voice_actor" aria-label="voice_actor"><img src="../icons/TanyaAI_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=chatbot#node-chatbot" title="chatbot" aria-label="chatbot"><img src="../icons/Chatbot_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=mediator-agent#node-mediator-agent" title="mediator_agent" aria-label="mediator_agent"><img src="../icons/Mediator_Icon_1_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Create <code>audio_capture</code> and choose output-device, input-device, or application source mode.</li>
                 <li>Select the device/backend and tune threshold, silence window, phrase duration, and sample rate.</li>
@@ -1063,6 +1187,16 @@
             </div>
             <div class="card">
               <h3>Mask to Groom Guides</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=import#node-import" title="import" aria-label="import"><img src="../icons/Import_File_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=fbx-import#node-fbx-import" title="fbx_import" aria-label="fbx_import"><img src="../icons/FBX_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=mask#node-mask" title="mask" aria-label="mask"><img src="../icons/PaintBrush_Off_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=groom-guides#node-groom-guides" title="groom_guides" aria-label="groom_guides"><img src="../icons/GroomGuides_Icon_1.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=groom-deform#node-groom-deform" title="groom_deform" aria-label="groom_deform"><img src="../icons/GroomGuides_Icon_1.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=groom-guide-pose#node-groom-guide-pose" title="groom_guide_pose" aria-label="groom_guide_pose"><img src="../icons/GroomGuides_Icon_1.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=groom-guide-sim#node-groom-guide-sim" title="groom_guide_sim" aria-label="groom_guide_sim"><img src="../icons/GroomGuides_Icon_1.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=groom-guide-tube#node-groom-guide-tube" title="groom_guide_tube" aria-label="groom_guide_tube"><img src="../icons/GroomGuides_Icon_1.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Load a mesh through <code>import</code>, <code>fbx_import</code>, or a compatible processed mesh node.</li>
                 <li>Connect into <code>mask</code> and paint the scalp or emission region.</li>
@@ -1073,6 +1207,14 @@
             </div>
             <div class="card">
               <h3>Skinned Collision and Splat Proxies</h3>
+              <div class="pipeline-node-icons" role="group" aria-label="Workflow nodes">
+                <a href="nodes.html?node=fbx-import#node-fbx-import" title="fbx_import" aria-label="fbx_import"><img src="../icons/FBX_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=anim-retarget#node-anim-retarget" title="anim_retarget" aria-label="anim_retarget"><img src="../icons/anim_retarget_Icon_s.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=skinned-volume-mesh#node-skinned-volume-mesh" title="skinned_volume_mesh" aria-label="skinned_volume_mesh"><img src="../icons/volume_split_icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=skinned-splat-proxy#node-skinned-splat-proxy" title="skinned_splat_proxy" aria-label="skinned_splat_proxy"><img src="../icons/PointID_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=groom-guide-tube#node-groom-guide-tube" title="groom_guide_tube" aria-label="groom_guide_tube"><img src="../icons/GroomGuides_Icon_1.png" alt="" width="28" height="28" loading="lazy" /></a>
+                <a href="nodes.html?node=scene#node-scene" title="scene" aria-label="scene"><img src="../icons/Scene_Icon.png" alt="" width="28" height="28" loading="lazy" /></a>
+              </div>
               <ol class="steps">
                 <li>Start from <code>fbx_import</code> or <code>anim_retarget</code> so a rig context is available.</li>
                 <li>Use <code>skinned_volume_mesh</code> to generate a voxel-derived collision mesh for guide simulation.</li>

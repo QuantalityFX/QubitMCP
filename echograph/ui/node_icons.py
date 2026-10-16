@@ -64,6 +64,7 @@ _ANIM_RETARGET_ICON = None
 _ANIMATION_BLEND_ICON = None
 _DELETE_JOINT_ICON = None
 _RIG_LIMITER_ICON = None
+_ANIMATION_CORRECTION_ICON = None
 _CLOTH_SOLVER_ICON = None
 _PRIORMDM_ICON = None
 _PIXELS_TO_SPLAT_ICON = None
@@ -195,6 +196,13 @@ def _priormdm_icon():
     if _PRIORMDM_ICON is None:
         _PRIORMDM_ICON = _load_pm("PromptToAnimation_Icon.png")
     return _PRIORMDM_ICON
+
+
+def _animation_correction_icon():
+    global _ANIMATION_CORRECTION_ICON
+    if _ANIMATION_CORRECTION_ICON is None:
+        _ANIMATION_CORRECTION_ICON = _load_pm("AnimationCorrect_Icon.png")
+    return _ANIMATION_CORRECTION_ICON
 
 
 def _rig_limiter_icon():

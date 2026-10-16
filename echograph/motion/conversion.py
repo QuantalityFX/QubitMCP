@@ -7,6 +7,7 @@ the BVH uses median bone lengths and is intended for skeleton preview/blocking.
 from __future__ import annotations
 
 import json
+from itertools import islice
 from pathlib import Path
 import warnings
 
@@ -142,6 +143,17 @@ def reconstruct_animation(positions: np.ndarray, fps: float, metadata: dict, *, 
 
 def write_bvh(path: Path, positions: np.ndarray, fps: float, local_rot: np.ndarray, offsets: np.ndarray,
               *, names=JOINT_NAMES, parents=PARENTS, end_sites=None) -> None:
+    write_bvh_frames(path,zip(positions[:,0],local_rot),len(positions),fps,offsets,
+                     names=names,parents=parents,end_sites=end_sites)
+
+
+def write_bvh_frames(path: Path, frames, count: int, fps: float, offsets: np.ndarray,
+                     *, names=JOINT_NAMES, parents=PARENTS, end_sites=None, progress=None) -> None:
+    """Write an iterator of (root channel position, local rotation matrices).
+
+    Keep only a small batch of Euler angles and text in memory. A cancelled or
+    failed export removes its own partial file and never overwrites a file.
+    """
     lines = ["HIERARCHY"]
     order = []
 
@@ -169,17 +181,35 @@ def write_bvh(path: Path, positions: np.ndarray, fps: float, local_rot: np.ndarr
         lines.append(indent + "}")
 
     visit(0, 0)
-    lines.extend(["MOTION", f"Frames: {len(positions)}", f"Frame Time: {1 / fps:.12f}"])
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)  # Euler gimbal lock preserves the same orientation.
-        angles = Rotation.from_matrix(local_rot.reshape(-1, 3, 3)).as_euler("ZXY", degrees=True).reshape(len(positions), len(names), 3)
-    for frame in range(len(positions)):
-        values = list(positions[frame, 0])
-        for joint in order:
-            values.extend(angles[frame, joint])
-        lines.append(" ".join(f"{value:.9f}" for value in values))
-    with path.open("x", encoding="utf-8") as stream:
-        stream.write("\n".join(lines) + "\n")
+    lines.extend(["MOTION", f"Frames: {count}", f"Frame Time: {1 / fps:.12f}"])
+    created = False
+    try:
+        with path.open("x", encoding="utf-8") as stream:
+            created = True
+            stream.write("\n".join(lines) + "\n")
+            iterator = iter(frames)
+            written = 0
+            while True:
+                if progress is not None:
+                    progress(written,count)
+                batch = list(islice(iterator,64))
+                if not batch:
+                    break
+                rotations = np.asarray([rotation for _,rotation in batch])
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore",UserWarning)
+                    angles = Rotation.from_matrix(rotations.reshape(-1,3,3)).as_euler(
+                        'ZXY',degrees=True).reshape(len(batch),len(names),3)
+                for frame,(root,_) in enumerate(batch):
+                    values = [*root,*angles[frame,order].ravel()]
+                    stream.write(' '.join(f'{value:.9f}' for value in values)+'\n')
+                written += len(batch)
+            if written != count:
+                raise ValueError('BVH frame count does not match its motion data.')
+    except BaseException:
+        if created:
+            path.unlink(missing_ok=True)
+        raise
 
 
 def create_tpose_bvh(source: Path) -> Path:

@@ -1004,6 +1004,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if (self.model.kind or "").strip().lower() == "rig_limiter":
             from nodes import rig_limiter as _rig_limiter
             _rig_limiter.register()
+        if (self.model.kind or "").strip().lower() == "animation_correction":
+            from nodes import animation_correction
+            animation_correction.register()
         if (self.model.kind or "").strip().lower() in ("for_each", "for_each_end"):
             from nodes import for_each as _for_each
             _for_each.register()
@@ -4339,6 +4342,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._recompute_height()
             defer_plugin = kind_lower in (
                 "rig_limiter",
+                "animation_correction",
                 "animation_blend", "animation blend", "anim_blend", "blend_animation",
                 "for_each", "for_each_end",
                 "delete_joint",
@@ -4802,7 +4806,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         or (kind == "for_each_end" and pname_key == "render")
                         or
                         (kind == "delete_joint" and pname_key == "rig")
-                        or (kind == "rig_limiter" and pname_key == "animation")
+                        or (kind in ("rig_limiter", "animation_correction") and pname_key == "animation")
                         or
                         (
                             kind in ("anim_retarget", "anim retarget", "animretarget", "retarget")
@@ -5440,6 +5444,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._import_icon_pm = self._import_icon_for_ext(ext)
 
     def _collect_scene_assets(self) -> list[dict]:
+        if (self.model.kind or "").strip().lower() == "animation_correction":
+            from nodes.animation_correction.spec import build_scene_asset
+            asset = build_scene_asset(self)
+            return [asset] if asset is not None else []
         if (self.model.kind or "").strip().lower() == "rig_limiter":
             from nodes.rig_limiter.spec import build_scene_asset
             asset = build_scene_asset(self)
@@ -9932,6 +9940,7 @@ body {
                 "delete_joint",
                 "priormdm",
                 "rig_limiter",
+                "animation_correction",
                 "skinned_splat_proxy",
                 "cloth_solver",
                 "look_at", "lookat", "look at", "transform_constraint", "transform constraint",
@@ -10354,6 +10363,8 @@ body {
                 icon_pm = node_icons._delete_joint_icon()
             elif kind_lower == "rig_limiter":
                 icon_pm = node_icons._rig_limiter_icon()
+            elif kind_lower == "animation_correction":
+                icon_pm = node_icons._animation_correction_icon()
             elif kind_lower == "cloth_solver":
                 icon_pm = node_icons._cloth_solver_icon()
             elif kind_lower == "priormdm":

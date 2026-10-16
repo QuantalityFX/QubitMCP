@@ -31,6 +31,8 @@ def entries(model) -> list[dict]:
             entry["render"] = dict(row["render"])
         if isinstance(row.get("rig_limiter"), dict):
             entry["rig_limiter"] = dict(row["rig_limiter"])
+        if isinstance(row.get("animation_correction"), dict):
+            entry["animation_correction"] = dict(row["animation_correction"])
         result.append(entry)
     return result
 
@@ -38,6 +40,7 @@ def entries(model) -> list[dict]:
 def refresh_repair_records(model, scene=None):
     """Persist repair badges while discovering portable BVH sidecars on reload."""
     from echograph.motion import rig_repair_cache
+    from echograph.motion import animation_corrections
     rows = entries(model)
     base = mocap._workflow_dir_for_node(SimpleNamespace(scene=lambda: scene))
     changed = False
@@ -51,6 +54,30 @@ def refresh_repair_records(model, scene=None):
                 row.pop('rig_limiter', None)
             else:
                 row['rig_limiter'] = badge
+        try:
+            document = animation_corrections.read_document(path) if path is not None else None
+            count = (sum(len(keys) for keys in document.get('keys',{}).values())
+                     + len(document.get('tracks',{}))) if document else 0
+            badge = dict(file=animation_corrections.sidecar_path(path).name,
+                         source_sha=document['source_sha'],keys=count) if count else None
+            approved = animation_corrections.approved_record(path,document) if path is not None else None
+            if approved is not None:
+                badge = dict(badge or {},file=animation_corrections.sidecar_path(path).name,
+                             source_sha=document['source_sha'],keys=count,approved=True,output=approved['file'])
+                if row.get('approved') is not True:
+                    row['approved'] = True
+                    changed = True
+            elif row.get('animation_correction',{}).get('approved') and row.get('approved'):
+                row['approved'] = False
+                changed = True
+        except (OSError,ValueError,TypeError,KeyError):
+            badge = None
+        if row.get('animation_correction') != badge:
+            changed = True
+            if badge is None:
+                row.pop('animation_correction',None)
+            else:
+                row['animation_correction'] = badge
     if changed:
         save_state(model, rows, output_number(model), scene)
 
@@ -165,7 +192,8 @@ def bvh_paths_in_folder(folder) -> list[Path]:
         if (Path(directory) / "archive.json").is_file():
             subfolders.clear()
             continue
-        derived = generated_files(directory)
+        from echograph.motion.animation_corrections import generated_files as correction_exports
+        derived = generated_files(directory) | correction_exports(directory)
         for filename in filenames:
             if Path(filename).suffix.lower() == ".bvh" and filename.casefold() not in derived:
                 paths.append(Path(directory) / filename)
@@ -309,6 +337,7 @@ class MocapCollectionWidget(QtWidgets.QWidget):
             button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Fixed)
             checks.addWidget(button)
         self.live_view = QtWidgets.QCheckBox("Live view")
+        self.live_view.setStyleSheet('QCheckBox{color:#ffffff;}QCheckBox:checked{color:#ef4444;}')
         self.live_view.setToolTip("Update the viewport when the active output changes. Keep the current camera while sliding.")
         checks.addWidget(self.live_view)
         checks.addStretch(1)
@@ -323,6 +352,7 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         self.slider.setTracking(False)
         self.slider.setToolTip("Select the active BVH by its path number, including unchecked files.")
         self.number = QtWidgets.QSpinBox()
+        self.number.setKeyboardTracking(False)
         output.addWidget(self.slider, 1)
         output.addWidget(self.number)
         self.checked_only = QtWidgets.QCheckBox("Checked only")
@@ -436,6 +466,10 @@ class MocapCollectionWidget(QtWidgets.QWidget):
                     thumbnail.setToolTip("Click to review the assigned render" if row.get("render") else "No render assigned")
                     if row.get('rig_limiter'):
                         thumbnail.setToolTip(thumbnail.toolTip() + '\nSaved Rig Limiter repair: ' + row['rig_limiter']['file'])
+                    if row.get('animation_correction'):
+                        thumbnail.setToolTip(thumbnail.toolTip() + '\nSaved animation corrections: ' + row['animation_correction']['file'])
+                        if row['animation_correction'].get('approved'):
+                            thumbnail.setToolTip(thumbnail.toolTip() + '\nApproved export: ' + row['animation_correction']['output'])
                     cells = (check, QtWidgets.QTableWidgetItem(str(i + 1)), thumbnail, QtWidgets.QTableWidgetItem(row["path"]))
                     for column, cell in enumerate(cells):
                         self.table.setItem(i, column, cell)
@@ -497,13 +531,14 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         for index, row in enumerate(getattr(self, "_displayed_rows", [])):
             path = row.get("render", {}).get("first_frame", "")
             repaired = bool(row.get('rig_limiter'))
-            key = (path, str(row.get("render", {}).get("frame_stamp", "")), repaired)
+            corrected = bool(row.get('animation_correction'))
+            key = (path, str(row.get("render", {}).get("frame_stamp", "")), repaired, corrected)
             cell = self.table.item(index, 2)
             if cell is None:
                 continue
             if not path:
-                cell.setIcon(self._thumbnail_icon(QtGui.QImage(), repaired))
-                cell.setText('' if repaired else ('▶' if row.get('render') else ''))
+                cell.setIcon(self._thumbnail_icon(QtGui.QImage(), repaired, corrected))
+                cell.setText('' if repaired or corrected else ('▶' if row.get('render') else ''))
                 continue
             if key in self._thumbnail_cache:
                 cell.setIcon(self._thumbnail_cache[key])
@@ -525,8 +560,8 @@ class MocapCollectionWidget(QtWidgets.QWidget):
             reader.setScaledSize(size.scaled(52, 32, QtCore.Qt.KeepAspectRatio))
         image = reader.read()
         cell = self.table.item(index, 2)
-        if cell is not None and (not image.isNull() or key[2]):
-            icon = self._thumbnail_icon(image, key[2])
+        if cell is not None and (not image.isNull() or key[2] or key[3]):
+            icon = self._thumbnail_icon(image, key[2], key[3])
             self._thumbnail_cache[key] = icon
             with QtCore.QSignalBlocker(self.table):
                 cell.setIcon(icon)
@@ -535,17 +570,22 @@ class MocapCollectionWidget(QtWidgets.QWidget):
             self._thumbnail_timer.start(0)
 
     @staticmethod
-    def _thumbnail_icon(image, repaired):
-        if not repaired:
+    def _thumbnail_icon(image, repaired, corrected=False):
+        if not repaired and not corrected:
             return QtGui.QIcon(QtGui.QPixmap.fromImage(image)) if not image.isNull() else QtGui.QIcon()
         canvas = QtGui.QPixmap(52, 32)
         canvas.fill(QtCore.Qt.transparent)
         painter = QtGui.QPainter(canvas)
         if not image.isNull():
             painter.drawImage((52 - image.width()) // 2, (32 - image.height()) // 2, image)
-        size = 20 if not image.isNull() else 28
-        badge = QtGui.QIcon(str(Path(__file__).resolve().parents[2] / 'icons/RigLimiter_Icon.png')).pixmap(size, size)
-        painter.drawPixmap(52 - size if not image.isNull() else (52 - size) // 2, 32 - size, badge)
+        if repaired:
+            size = 20 if not image.isNull() or corrected else 28
+            badge = QtGui.QIcon(str(Path(__file__).resolve().parents[2] / 'icons/RigLimiter_Icon.png')).pixmap(size, size)
+            painter.drawPixmap(52 - size if not image.isNull() or corrected else (52 - size) // 2, 32 - size, badge)
+        if corrected:
+            size = 20 if not image.isNull() or repaired else 28
+            badge = QtGui.QIcon(str(Path(__file__).resolve().parents[2] / 'icons/AnimationCorrect_Icon.png')).pixmap(size, size)
+            painter.drawPixmap(0 if not image.isNull() or repaired else (52 - size) // 2, 32 - size, badge)
         painter.end()
         return QtGui.QIcon(canvas)
 
@@ -746,6 +786,8 @@ class MocapCollectionWidget(QtWidgets.QWidget):
 
     def _view(self, *, live=False, frame=True):
         self._live_timer.stop()
+        review = getattr(self.model, '_collection_review_dialog', None)
+        review_active = review is not None and isValid(review) and review.isActiveWindow()
         item = SimpleNamespace(model=self.model, scene=lambda: self.graph_scene)
         result = mocap.resolve_mocap_import_source(item, persist=True, validate_animation=True)
         if result.status == "error":
@@ -759,6 +801,8 @@ class MocapCollectionWidget(QtWidgets.QWidget):
         window = views[0].window() if views else self.window()
         if asset and callable(getattr(window, "open_scene_assets", None)):
             window.open_scene_assets([asset], frame=frame)
+            if live and review is not None and isValid(review):
+                review.restore_after_preview(reactivate=review_active)
         elif live:
             self.status.setText("3D view is not available.")
         else:

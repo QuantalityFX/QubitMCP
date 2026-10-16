@@ -13,6 +13,22 @@ from nodes.video_player.spec import VideoPlayerWidget
 from . import review_data as data
 
 
+def _show_render_load_result(parent, text):
+    # A plain dialog keeps the summary without the native message-box sound.
+    dialog = QtWidgets.QDialog(parent)
+    dialog.setWindowTitle('Mocap render review')
+    layout = QtWidgets.QVBoxLayout(dialog)
+    message = QtWidgets.QLabel(text)
+    message.setWordWrap(True)
+    layout.addWidget(message)
+    buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+    buttons.accepted.connect(dialog.accept)
+    layout.addWidget(buttons)
+    dialog.setMinimumWidth(400)
+    dialog.exec()
+    dialog.deleteLater()
+
+
 class _ScanThread(QtCore.QThread):
     resultReady = QtCore.Signal(object)
 
@@ -69,7 +85,7 @@ class RenderScan(QtCore.QObject):
             if result.get("error"):
                 raise ValueError(result["error"])
             count = data.apply_assignments(self.model, self.scene, result)
-            QtWidgets.QMessageBox.information(parent, "Mocap render review",
+            _show_render_load_result(parent,
                 f"Matched renders to {count} BVH paths.\nSkipped {result['skipped']} unmatched, ambiguous, or incomplete takes.")
         except (OSError, ValueError) as exc:
             QtWidgets.QMessageBox.warning(parent, "Mocap render review", str(exc))
@@ -175,6 +191,7 @@ class ReviewDialog(QtWidgets.QDialog):
         parent = _review_window_owner(parent, scene)
         super().__init__(parent)
         self._window_owner = parent
+        self._restore_review_focus = False
         self._owner_rebind_timer = QtCore.QTimer(self)
         self._owner_rebind_timer.setSingleShot(True)
         self._owner_rebind_timer.timeout.connect(self._restore_window_owner)
@@ -283,6 +300,14 @@ class ReviewDialog(QtWidgets.QDialog):
                 logging.getLogger(__name__).warning("Could not restore render review window owner: %s", exc)
         if self.isVisible() and not self.isMinimized() and owner.isVisible() and not owner.isMinimized():
             self.raise_()
+            if self._restore_review_focus:
+                self.activateWindow()
+        self._restore_review_focus = False
+
+    def restore_after_preview(self, *, reactivate=False):
+        if self.isVisible() and not self.isMinimized():
+            self._restore_review_focus = self._restore_review_focus or bool(reactivate)
+            self._owner_rebind_timer.start(0)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -358,10 +383,12 @@ class ReviewDialog(QtWidgets.QDialog):
 
     def select_output(self, index):
         from . import spec
+        was_active = self.isActiveWindow()
         eligible = spec.output_rows(self.model)
         if 1 <= index <= len(eligible):
             self.row_number = eligible[index - 1]
             self.save(spec.entries(self.model), self.row_number)
+            self.restore_after_preview(reactivate=was_active)
 
     def toggle_filter(self, enabled):
         from . import spec
@@ -404,7 +431,7 @@ class ReviewDialog(QtWidgets.QDialog):
             self.showFullScreen()
 
     def eventFilter(self, watched, event):
-        if watched is self._window_owner:
+        if watched is self._window_owner or watched is self:
             if (event.type() in (QtCore.QEvent.WinIdChange, QtCore.QEvent.Show)
                     or (event.type() == QtCore.QEvent.PlatformSurface
                         and event.surfaceEventType() == QtGui.QPlatformSurfaceEvent.SurfaceCreated)):

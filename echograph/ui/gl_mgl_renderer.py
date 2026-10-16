@@ -66,7 +66,7 @@ from echograph.rigging.fbx_stage5_evaluator import (
     evaluate_rig_at_time,
     evaluation_cache_token,
 )
-from echograph.rigging.fbx_stage6_debug import evaluate_skeleton_line_points
+from echograph.rigging.fbx_stage6_debug import evaluate_skeleton_line_points, skeleton_line_points_from_evaluation
 from echograph.rigging.fbx_stage7_timeline import (
     clip_marker_frames,
     clip_sample_time_from_timeline_seconds,
@@ -2081,6 +2081,11 @@ void main() {
                 "static" if static_frame else "clip",
             )
         )
+        correction = context.get('_animation_correction_session')
+        if correction is not None:
+            frame_key = (frame_key, evaluation_cache_token(context.get('skeleton')),
+                         evaluation_cache_token(context.get('clip')),
+                         self._mgl_fbx_context_timeline_sample_seconds(context, owner_for_pose))
         scene_skeleton_overlay = bool(payload.get("scene_skeleton_overlay", False))
         if scene_skeleton_overlay:
             def _display_sig_tuple(raw, default):
@@ -2140,13 +2145,20 @@ void main() {
                 sample_time = self._mgl_fbx_context_timeline_sample_seconds(context, payload.get("owner"))
             loop = bool(context.get("loop", True))
             prefer_inverse_bind = False
-        line_points = self._mgl_fbx_joint_line_points(
-            skeleton,
-            clip,
-            sample_time,
-            loop=loop,
-            prefer_inverse_bind=bool(prefer_inverse_bind),
-        )
+        if correction is not None:
+            # Use the exact evaluation shared by points, local axes and guides.
+            evaluation = self._mgl_evaluate_rig_cached(
+                skeleton, clip, sample_time, loop=loop, include_debug_data=True)
+            line_points = np.asarray(skeleton_line_points_from_evaluation(
+                skeleton, evaluation), dtype='f4').reshape(-1, 3)
+        else:
+            line_points = self._mgl_fbx_joint_line_points(
+                skeleton,
+                clip,
+                sample_time,
+                loop=loop,
+                prefer_inverse_bind=bool(prefer_inverse_bind),
+            )
         owner = payload.get("owner")
         if scene_skeleton_overlay and np is not None:
             try:
@@ -10860,6 +10872,10 @@ void main() {
         if not decoded:
             return None
         asset_owner, joint_name = decoded
+        context = self._mgl_scene_owner_fbx_rig_context(asset_owner)
+        if (context or {}).get('_animation_correction_session') is not None:
+            # F can arrive after a scrub but before the next paintGL upload.
+            self._mgl_scene_skeleton_update_owner_handles(asset_owner, upload=False)
         asset_norm = str(asset_owner or "").strip().lower()
         joint_norm = str(joint_name or "").strip().lower()
         if not asset_norm or not joint_norm:
@@ -11374,6 +11390,8 @@ void main() {
 
     def _mgl_scene_skeleton_base_clip_for_context(self, context: dict | None):
         """Return the live non-override clip and discard a stale cached base."""
+        if isinstance(context,dict) and context.get('_animation_correction_session') is not None:
+            return context['_animation_correction_session'].draft
         if not isinstance(context, dict):
             return None
         current_clip = context.get("clip")
@@ -11406,6 +11424,9 @@ void main() {
         context = self._mgl_scene_owner_fbx_rig_context(asset_owner)
         if not isinstance(context, dict):
             return {}
+        session = context.get('_animation_correction_session')
+        if session is not None:
+            return session.keys_map(joint_name,timeline_space=timeline_space)
         clip = self._mgl_scene_skeleton_base_clip_for_context(context)
         if clip is None:
             return {}
@@ -11643,6 +11664,20 @@ void main() {
         }
         return out, info
 
+    def _mgl_scene_skeleton_correction_edit(self, owner: str, operation: str, *values) -> bool:
+        """Route take edits to the correction editor before scene authoring."""
+        decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
+        if not decoded:
+            return False
+        context = self._mgl_scene_owner_fbx_rig_context(decoded[0])
+        session = (context or {}).get('_animation_correction_session')
+        if session is None:
+            return False
+        callback = getattr(session,operation,None)
+        if callable(callback):
+            callback(decoded[1], *values)
+        return True
+
     def _mgl_scene_skeleton_apply_timeline_keys(self, owner: str, keys_map: dict | None, fps: float | None = None) -> bool:
         decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
         if not decoded:
@@ -11651,6 +11686,9 @@ void main() {
         context = self._mgl_scene_owner_fbx_rig_context(asset_owner)
         if not isinstance(context, dict):
             return False
+        session = context.get('_animation_correction_session')
+        if session is not None:
+            return session.apply_keys(joint_name,keys_map or {},float(fps or self._mgl_timeline_fps_value()))
         original_clip = self._mgl_scene_skeleton_base_clip_for_context(context)
         if original_clip is None:
             return False
@@ -11869,6 +11907,24 @@ void main() {
             return
         self._mgl_scene_skeleton_remove_handle_items(owner)
         selected = str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or "").strip()
+        context = self._mgl_scene_owner_fbx_rig_context(owner) or {}
+        session = context.get('_animation_correction_session')
+        if session is not None and session.ik_enabled:
+            from nodes.animation_correction.editor import cube_curves, ik_control_radius
+            for handle in handles:
+                if handle.get('name') not in session.endpoints:
+                    continue
+                radius = float(handle.get('control_radius',ik_control_radius(handle['radius'])))
+                item = self._mgl_add_wire_item_from_points(
+                    name=owner+' '+handle['name']+' IK cube',
+                    line_points=cube_curves(handle['position'],radius),visible=True,
+                    tag='scene-skeleton-handles',owner=owner)
+                if item is not None:
+                    item.payload.update(color=(1.,.85,.1,1.) if handle['name']==selected else (.1,.8,1.,1.),
+                        line_width=2.5,model=np.eye(4,dtype=np.float32),ignore_owner_model=True,
+                        animation_correction_control=True)
+                    item.order = 18
+                    scene.add(item)
         self._mgl_scene_skeleton_log(
             "handle_mesh_skipped_screen_circles",
             owner=str(owner or "").strip(),
@@ -11892,9 +11948,10 @@ void main() {
         clips.append(None)
         for clip in clips:
             try:
-                evaluation = evaluate_rig_at_time(
-                    skeleton=context["skeleton"], clip=clip,
-                    time_seconds=float(sample_time), loop=bool(context.get("loop", True)),
+                evaluation = self._mgl_evaluate_rig_cached(
+                    context["skeleton"], clip,
+                    float(sample_time), loop=bool(context.get("loop", True)),
+                    include_debug_data=True,
                 )
                 matrices = np.asarray(evaluation.global_matrices, dtype=np.float64).reshape(-1, 4, 4)
                 origins = matrices[:, :3, 3]
@@ -11911,7 +11968,7 @@ void main() {
                 continue
         return []
 
-    def _mgl_scene_skeleton_update_owner_handles(self, owner: str, *, force: bool = False) -> bool:
+    def _mgl_scene_skeleton_update_owner_handles(self, owner: str, *, force: bool = False, upload: bool = True) -> bool:
         owner_key = str(owner or "").strip()
         if not owner_key:
             self._mgl_scene_skeleton_log_throttled("handles_skip_empty_owner", "handles_skip", interval=1.0, reason="empty_owner")
@@ -11939,8 +11996,11 @@ void main() {
         frame_key = (
             owner_key,
             frame_index,
-            _safe_clip_signature(context.get("clip")),
+            evaluation_cache_token(context.get("skeleton")),
+            evaluation_cache_token(context.get("clip")),
+            self._mgl_fbx_context_timeline_sample_seconds(context, owner_key),
             str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or ""),
+            bool(getattr(context.get('_animation_correction_session'), 'ik_enabled', False)),
             tuple(round(float(v), 6) for v in display_scale),
             _sig_tuple((xform or {}).get("pos"), (0.0, 0.0, 0.0)),
             _sig_tuple((xform or {}).get("rot"), (0.0, 0.0, 0.0)),
@@ -12007,6 +12067,7 @@ void main() {
             min(120.0, float(extent) * 0.012 * _SCENE_SKELETON_HANDLE_RADIUS_SCALE),
         )
         handles = []
+        correction_session = context.get('_animation_correction_session')
         joint_axes = self._mgl_scene_skeleton_joint_display_axes(owner_key, context)
         for idx in range(min(len(joints), len(display_positions))):
             name = str(getattr(joints[idx], "name", "") or "").strip()
@@ -12029,6 +12090,11 @@ void main() {
                     "pick_radius": max(float(radius) * 2.5, 0.25),
                 }
             )
+            if correction_session is not None and correction_session.ik_enabled and name in correction_session.endpoints:
+                from nodes.animation_correction.editor import ik_control_radius
+                control_radius = ik_control_radius(radius)
+                handles[-1].update(ik_control=True,control_radius=control_radius,
+                                   pick_radius=control_radius*float(np.sqrt(3.)))
         if not handles:
             self._mgl_scene_skeleton_log_throttled(
                 f"handles_skip_no_handles:{owner_key.lower()}",
@@ -12057,8 +12123,23 @@ void main() {
             handles_by_owner = {}
             self._mgl_scene_skeleton_handles_by_owner = handles_by_owner
         handles_by_owner[owner_key] = handles
-        self._mgl_scene_skeleton_rebuild_handle_mesh_for_owner(owner_key, handles)
-        frame_keys[owner_key] = frame_key
+        if correction_session is not None:
+            selected_owner = self._mgl_scene_skeleton_decode_joint_owner(
+                str(getattr(self, '_xform_gizmo_owner', '') or ''))
+            if selected_owner and selected_owner[0] == owner_key:
+                selected_handle = next((handle for handle in handles
+                                        if handle['name'] == selected_owner[1]), None)
+                if selected_handle is not None:
+                    self._xform_gizmo_pos = selected_handle['position']
+                    self._xform_gizmo_pos_locked = True
+                    self._mgl_retarget_selected_joint = dict(selected_handle)
+        if upload:
+            self._mgl_scene_skeleton_rebuild_handle_mesh_for_owner(owner_key, handles)
+            frame_keys[owner_key] = frame_key
+        else:
+            # Selection and checkbox callbacks have no current GL context.
+            # Leave the upload pending for the next paintGL pass.
+            frame_keys.pop(owner_key, None)
         self._mgl_scene_skeleton_log(
             "handles_built",
             owner=owner_key,
@@ -12376,6 +12457,7 @@ void main() {
             pass
         try:
             scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip() or None
+            self._mgl_scene_skeleton_correction_edit(token, "select")
             set_ctx = getattr(self, "set_timeline_scene_context", None)
             if callable(set_ctx) and token:
                 set_ctx(scene_name=scene_name, owner_name=token, apply_current_frame=False, load_audio=False)
@@ -12838,33 +12920,6 @@ void main() {
                 "z_range": _range(zs),
             }
 
-        candidates = []
-        for candidate in (
-            _project_rows(pick_rows, view_proj, "pick_world_col"),
-            _project_rows(pick_rows, view_proj.T, "pick_world_row", row_vector=True),
-        ):
-            if isinstance(candidate, dict):
-                candidates.append(candidate)
-        if owner_model is not None:
-            for candidate in (
-                _project_rows(local_rows, view_proj @ owner_model.T, "local_owner_col_t"),
-                _project_rows(local_rows, view_proj @ owner_model, "local_owner_col"),
-                _project_rows(local_rows, owner_model @ view_proj.T, "local_owner_row", row_vector=True),
-                _project_rows(local_rows, owner_model.T @ view_proj.T, "local_owner_row_t", row_vector=True),
-            ):
-                if isinstance(candidate, dict):
-                    candidates.append(candidate)
-        fallback = _project_rows(local_rows, view_proj, "local_col")
-        if isinstance(fallback, dict):
-            candidates.append(fallback)
-        if not candidates:
-            return None
-        best = max(
-            enumerate(candidates),
-            key=lambda item: (int(item[1].get("finite_count", 0)), -int(item[0])),
-        )[1]
-        projected = list(best.get("points") or [])
-
         lines = []
         context = None
         try:
@@ -12872,6 +12927,39 @@ void main() {
             joints = list(getattr((context or {}).get("skeleton"), "joints", []) or []) if isinstance(context, dict) else []
         except Exception:
             joints = []
+        if (context or {}).get('_animation_correction_session') is not None:
+            # Handles already contain displayed world positions. Use the same
+            # projection as the shared rig guide, without another owner xform.
+            best = _project_rows(local_rows,view_proj,'correction_world')
+        else:
+            candidates = []
+            for candidate in (
+                _project_rows(pick_rows, view_proj, "pick_world_col"),
+                _project_rows(pick_rows, view_proj.T, "pick_world_row", row_vector=True),
+            ):
+                if isinstance(candidate, dict):
+                    candidates.append(candidate)
+            if owner_model is not None:
+                for candidate in (
+                    _project_rows(local_rows, view_proj @ owner_model.T, "local_owner_col_t"),
+                    _project_rows(local_rows, view_proj @ owner_model, "local_owner_col"),
+                    _project_rows(local_rows, owner_model @ view_proj.T, "local_owner_row", row_vector=True),
+                    _project_rows(local_rows, owner_model.T @ view_proj.T, "local_owner_row_t", row_vector=True),
+                ):
+                    if isinstance(candidate, dict):
+                        candidates.append(candidate)
+            fallback = _project_rows(local_rows, view_proj, "local_col")
+            if isinstance(fallback, dict):
+                candidates.append(fallback)
+            if not candidates:
+                return None
+            best = max(
+                enumerate(candidates),
+                key=lambda item: (int(item[1].get("finite_count", 0)), -int(item[0])),
+            )[1]
+        if best is None:
+            return None
+        projected = list(best.get("points") or [])
         if joints:
             for idx, joint in enumerate(joints):
                 try:
@@ -12913,10 +13001,13 @@ void main() {
         }
 
     def _draw_scene_skeleton_qt_overlay(self, painter: QtGui.QPainter) -> None:
+        correction = getattr(self,'_animation_correction_session',None)
         from .scene_rig_overlay import draw_scene_colliders
         draw_scene_colliders(self, painter)
         data = self._mgl_scene_skeleton_qt_overlay_data()
-        if not isinstance(data,dict) or not data.get("rig_guide"):
+        if correction is not None and correction.panel is not None:
+            correction.panel.setVisible(isinstance(data,dict) and data.get('owner') == correction.item.model.name)
+        if not isinstance(data,dict) or not data.get("rig_guide") or data['rig_guide'].get('read_only'):
             panel = getattr(self,"_priormdm_rig_panel",None)
             if panel is not None:
                 panel.hide()
@@ -13806,11 +13897,12 @@ void main() {
                 if (role_key == "source" or target_animated)
                 else 0.0
             )
-            evaluation = evaluate_rig_at_time(
-                skeleton=skeleton,
-                clip=clip,
-                time_seconds=float(sample_time),
+            evaluation = self._mgl_evaluate_rig_cached(
+                skeleton,
+                clip,
+                float(sample_time),
                 loop=bool(context.get("loop", True)),
+                include_debug_data=True,
             )
             rows_tcol = []
             rows_trow = []
@@ -15420,7 +15512,7 @@ void main() {
         has_scene_handles = isinstance(scene_handles_by_owner, dict) and bool(scene_handles_by_owner)
         if has_scene_handles and not retarget_preview_active:
             context = self._mgl_scene_owner_fbx_rig_context(active_scene_owner)
-            if isinstance(context, dict) and context.get("priormdm_rig_debug"):
+            if isinstance(context, dict) and (context.get("priormdm_rig_debug") or context.get('_animation_correction_session')):
                 from .priormdm_rig_overlay import pick_guide_joint
                 data = self._mgl_scene_skeleton_qt_overlay_data()
                 handles = [h for group in scene_handles_by_owner.values() for h in group]
@@ -15553,6 +15645,37 @@ void main() {
         points = np.concatenate(chunks, axis=0)
         return points.min(axis=0), points.max(axis=0)
 
+    def _mgl_scene_skeleton_world_bounds(self, owner: str | None = None):
+        """Current displayed bounds for mesh-free animation previews, without GPU work."""
+        scene = getattr(self, '_mgl_scene', None)
+        if np is None or scene is None or getattr(self, '_mgl_retarget_preview_active', False):
+            return None
+        owner_key = str(owner or '').strip().casefold()
+        contexts = {}
+        for item in scene.items():
+            payload = getattr(item, 'payload', None) or {}
+            name = str(payload.get('owner') or item.name or '').strip()
+            context = payload.get('fbx_rig_context')
+            if (not item.visible or not name or (owner_key and name.casefold() != owner_key)
+                    or not self._mgl_scene_owner_visible(name) or not isinstance(context, dict)
+                    or context.get('skeleton') is None or context.get('meshes')):
+                continue
+            contexts[name] = self._mgl_scene_owner_fbx_rig_context(name) or context
+        chunks = []
+        for name, context in contexts.items():
+            positions = self._mgl_retarget_joint_positions_for_context(context, 'source', owner=name)
+            if not positions:
+                continue
+            points, _ = self._mgl_scene_skeleton_display_positions(name, positions)
+            points = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+            points = points[np.isfinite(points).all(axis=1)]
+            if points.size:
+                chunks.append(points)
+        if not chunks:
+            return None
+        points = np.concatenate(chunks, axis=0)
+        return points.min(axis=0), points.max(axis=0)
+
     def get_scene_owner_bounds(self, owner: str):
         key = str(owner or "").strip()
         if not key:
@@ -15564,6 +15687,9 @@ void main() {
         retarget_bounds = self._mgl_retarget_world_bounds(key)
         if retarget_bounds is not None:
             return retarget_bounds
+        skeleton_bounds = self._mgl_scene_skeleton_world_bounds(key)
+        if skeleton_bounds is not None:
+            return skeleton_bounds
 
         # splat bounds (world)
         try:
@@ -18102,7 +18228,7 @@ void main() {
             active_owner = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip().lower()
             if active_owner and active_owner == owner_norm:
                 self._mgl_scene_skeleton_invalidate_owner(owner)
-                self._mgl_scene_skeleton_update_owner_handles(str(owner).strip(), force=True)
+                self._mgl_scene_skeleton_update_owner_handles(str(owner).strip(), force=True, upload=False)
         except Exception:
             pass
         if bool(apply_live_constraints):
@@ -30763,6 +30889,22 @@ void main() {
 
     def _mgl_frame_camera(self) -> None:
         bounds = self._mgl_retarget_world_bounds()
+        skeleton_preview = False
+        if bounds is None:
+            bounds = self._mgl_scene_skeleton_world_bounds()
+            if bounds is not None:
+                skeleton_preview = True
+                # Keep other visible scene geometry in the frame as well.
+                owners = set()
+                for attr in ('_mgl_scene_mesh_bounds_by_owner', '_mgl_scene_bounds_by_owner',
+                             '_mgl_scene_splat_bounds_by_owner'):
+                    owners.update((getattr(self, attr, None) or {}).keys())
+                for owner in owners:
+                    if not self._mgl_scene_owner_visible(owner):
+                        continue
+                    minimum, maximum = self.get_scene_owner_bounds(owner)
+                    if minimum is not None and maximum is not None:
+                        bounds = (np.minimum(bounds[0], minimum), np.maximum(bounds[1], maximum))
         if bounds is not None:
             mins, maxs = bounds
             self._mgl_center = ((mins + maxs) * 0.5).astype("f4")
@@ -30774,6 +30916,8 @@ void main() {
             distance = radius * view_scale / max(1.0e-6, math.tan(math.radians(self._mgl_fov * 0.5)))
             self._mgl_base_zoom = max(0.1, distance * 1.2)
             self._mgl_camera_zoom = self._mgl_base_zoom * max(0.01, self._mgl_scale_multiplier)
+            if skeleton_preview:
+                self._mgl_frame_skeleton_in_visible_viewport(mins, maxs)
             return
         if bool(getattr(self, "_mgl_render_splats", False)) and np is not None:
             cpu = getattr(self, "_mgl_splats15_cpu", None)
@@ -30804,6 +30948,42 @@ void main() {
         if base_zoom is None:
             base_zoom = self._mgl_camera_distance(self._mgl_fov)
         self._mgl_camera_zoom = float(base_zoom) * max(0.01, self._mgl_scale_multiplier)
+
+    def _mgl_frame_skeleton_in_visible_viewport(self, minimum, maximum):
+        """Fit the rig above the timeline, including the current view rotation."""
+        overlay_height = getattr(self, '_bottom_overlay_height', None)
+        if not callable(overlay_height) or not overlay_height():
+            return
+        width, height = self._mgl_render_size()
+        top = min(48., height*.1)
+        bottom = max(top+1., height-float(overlay_height()))
+        middle = 1.-(top+bottom)/height
+        half = max(.01, (bottom-top)/height*.85)
+        upper, lower = middle+half, middle-half
+        center = (np.asarray(minimum)+np.asarray(maximum))*.5
+        arc = getattr(self, '_mgl_arcball', None)
+        transform = np.asarray(getattr(arc, 'Transform', np.eye(4)), dtype=np.float32)
+        basis = transform[:3, :3].T
+        if abs(float(np.linalg.det(basis))) < 1e-12:
+            return
+        corners = np.asarray([(x, y, z) for x in (minimum[0], maximum[0])
+            for y in (minimum[1], maximum[1]) for z in (minimum[2], maximum[2])])
+        camera = (corners-center) @ basis.T
+        tangent = max(1e-6, math.tan(math.radians(self._mgl_fov*.5)))
+        aspect = max(.01, width/height)
+        if getattr(self, '_mgl_projection', 'perspective') == 'orthographic':
+            vertical = np.abs(camera[:, 1])/(tangent*half)
+            horizontal = np.abs(camera[:, 0])/(tangent*aspect*.85)
+        else:
+            vertical = np.maximum((camera[:, 1]/tangent+upper*camera[:, 2])/half,
+                                  (-camera[:, 1]/tangent-lower*camera[:, 2])/half)
+            horizontal = np.abs(camera[:, 0])/(tangent*aspect*.85)+camera[:, 2]
+        distance = max(.1, float(vertical.max()), float(horizontal.max()), float(camera[:, 2].max())+.1)
+        offset = np.linalg.solve(basis, np.array([0., middle*distance*tangent, 0.]))
+        self._mgl_center = (center-offset).astype('f4')
+        self._mgl_base_center = self._mgl_center.copy()
+        self._mgl_camera_zoom = distance
+        self._mgl_base_zoom = distance/max(.01, float(self._mgl_scale_multiplier))
 
     def _sync_mgl_gizmo(self, transform) -> None:
         # ultra-safe: do nothing unless we can read 3x3 floats safely

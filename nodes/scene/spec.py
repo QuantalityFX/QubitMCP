@@ -2294,9 +2294,12 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         asset["look_at_constraint"] = dict(look_at_constraint)
                     assets.append(asset)
             continue
-        if kind in ("animation_blend", "animation blend", "anim_blend", "blend_animation", "transforms", "rig_limiter"):
+        if kind in ("animation_blend", "animation blend", "anim_blend", "blend_animation", "transforms", "rig_limiter", "animation_correction"):
             from nodes.animation_blend.spec import build_animation_blend_scene_asset, build_transformed_blend_scene_asset
-            if kind == "rig_limiter":
+            if kind == "animation_correction":
+                from nodes.animation_correction.spec import build_scene_asset
+                asset = build_scene_asset(src_item)
+            elif kind == "rig_limiter":
                 from nodes.rig_limiter.spec import build_scene_asset
                 asset = build_scene_asset(src_item)
             else:

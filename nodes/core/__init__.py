@@ -84,6 +84,7 @@ def register_defaults() -> None:
     register("mocap_collection", stripe_color="#7c3aed")
     register("delete_joint", stripe_color="#ef6464")
     register("rig_limiter", stripe_color="#22d3ee")
+    register("animation_correction", stripe_color="#38bdf8")
     register("for_each", stripe_color="#7c3aed")
     register("for_each_end", stripe_color="#7c3aed")
     register("genx_video_mocap", stripe_color="#14b8a6")

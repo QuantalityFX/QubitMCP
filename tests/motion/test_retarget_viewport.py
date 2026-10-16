@@ -9,6 +9,9 @@ import numpy as np
 
 from echograph.ui.gl_mgl_renderer import MGLRendererMixin, moderngl
 from echograph.ui.gl_scene import MGLScene, MGLSceneItem
+from echograph.rigging.fbx_canonical import (
+    AnimationClip, Joint, JointAnimationTrack, JointTransform, SkeletonAsset, Vec3Keyframe,
+)
 
 
 class Renderer(MGLRendererMixin):
@@ -48,6 +51,30 @@ class Renderer(MGLRendererMixin):
 
 
 class RetargetViewportTests(unittest.TestCase):
+    def test_skeleton_preview_framing_uses_current_pose_without_selecting_a_joint(self):
+        view = Renderer()
+        view._mgl_retarget_preview_active = False
+        skeleton = SkeletonAsset(name='Preview', joints=[Joint('root', -1),
+            Joint('tip', 0, JointTransform(translation=(0., 2., 0.)))])
+        clip = AnimationClip(name='Walk', start_time=0., end_time=1., sample_rate_hz=30., tracks=[
+            JointAnimationTrack(joint_name='root', translation_keys=[
+                Vec3Keyframe(0., (0., 0., 0.)), Vec3Keyframe(1., (10., 0., 0.))])])
+        context = dict(skeleton=skeleton, clip=clip, loop=False, meshes=[])
+        view._mgl_scene.add(MGLSceneItem('Collection', lambda *args: None, tag='scene-wire',
+            payload=dict(owner='Collection', fbx_rig_context=context)))
+        view._mgl_set_scene_asset_xform('Collection', pos=(3., 0., 0.), scl=(2., 2., 2.))
+        view._timeline_fps = 30.
+        view._mgl_base_center = np.array([0., 100., 0.])
+        view._mgl_base_zoom = 500.
+        view._mgl_scene_skeleton_rebuild_handle_mesh_for_owner = Mock(side_effect=AssertionError('GPU upload'))
+        for frame, x in ((0, 3.), (30, 23.), (15, 13.)):
+            view._timeline_current_frame = lambda: frame
+            view._mgl_frame_camera()
+            np.testing.assert_allclose(view._mgl_center, [x, 2., 0.])
+        minimum, maximum = view.get_scene_owner_bounds('Collection')
+        np.testing.assert_allclose(minimum, [13., 0., 0.])
+        np.testing.assert_allclose(maximum, [13., 4., 0.])
+
     def test_scene_reload_owns_context_before_cleanup_and_releases_on_failure(self):
         view = Renderer()
         view._mgl_ctx = object()

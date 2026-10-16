@@ -232,6 +232,11 @@ class MotionControls(QtWidgets.QWidget):
         self.proportions.currentIndexChanged.connect(lambda: self._persist("preview_profile", self.proportions.currentData()))
         rig_row = QtWidgets.QHBoxLayout()
         self.rig_preview_button = QtWidgets.QPushButton("Preview Rig")
+        self.rig_preview_button.setStyleSheet(
+            "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+            "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+        )
         self.rig_preview_button.setAutoDefault(False)
         self.rig_preview_button.setToolTip("Open the selected proportions as a rest rig in the viewport. Select joints to inspect their limits.")
         self.rig_preview_button.clicked.connect(self._preview_rig)
@@ -673,6 +678,11 @@ def render_node_body(item, y_cursor):
     label = QtWidgets.QLabel("Text → humanoid animation")
     label.setWordWrap(True)
     button = QtWidgets.QPushButton("Open PriorMDM")
+    button.setStyleSheet(
+        "QPushButton{background:#27834a;color:#ffffff;border-radius:4px;padding:2px 8px;}"
+        "QPushButton:hover{background:#319b58;}"
+        "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+    )
     button.clicked.connect(lambda: open_controls(item))
     setup_button = QtWidgets.QPushButton("Setup PriorMDM")
     setup_button.setAutoDefault(False)
@@ -683,6 +693,11 @@ def render_node_body(item, y_cursor):
     layout.addWidget(label)
     layout.addWidget(button)
     rig_button = QtWidgets.QPushButton("Preview Rig")
+    rig_button.setStyleSheet(
+        "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+        "QPushButton:hover{background:#1d4ed8;}"
+        "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+    )
     rig_button.setAutoDefault(False)
     rig_button.setToolTip("Inspect the proportions selected in Text to Motion, collision volumes, and joint limits.")
     from .rig_preview_ui import preview_from_node

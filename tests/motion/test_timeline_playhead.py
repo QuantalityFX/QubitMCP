@@ -64,6 +64,7 @@ class TimelinePlayheadTests(unittest.TestCase):
 
     def test_arrow_steps_pan_viewport_past_visible_end(self):
         self.view._timeline_total_max = 240
+        self.view._timeline_in_frame = 0
         self.view._timeline_view_start = 0
         self.view._timeline_view_span = 120
         self.view._timeline_frame_spin.setValue(120)
@@ -87,14 +88,30 @@ class TimelinePlayheadTests(unittest.TestCase):
         header.reflow(required - 1)
         self.assertTrue(header.wrapped)
 
-    def test_visible_timeline_keeps_viewport_wide_enough_for_input_row(self):
-        self.view._timeline_panel.show()
+    def test_visible_timeline_keeps_both_toolbar_rows_from_overlapping(self):
+        panel = self.view._timeline_panel
+        panel.show()
         self.view._layout_timeline_panel()
-        margins = self.view._timeline_panel.layout().contentsMargins()
-        expected = (self.view._timeline_panel._header_layout.primary.sizeHint().width()
+        header = panel._header_layout
+        margins = panel.layout().contentsMargins()
+        expected = (max(header.primary.sizeHint().width(), header.secondary.sizeHint().width(),
+                        self.view._timeline_range_controls.minimumSizeHint().width())
                     + margins.left() + margins.right())
         self.assertGreaterEqual(self.view.minimumWidth(), expected)
-        self.view._timeline_panel.hide()
+        self.view.resize(400, 600)
+        self.view._layout_timeline_panel()
+        self.app.processEvents()
+        self.assertGreaterEqual(self.view.width(), expected)
+        self.assertEqual(panel.width(), self.view.width())
+        self.assertTrue(header.wrapped)
+        visible = [row.itemAt(i).widget() for row in (header.primary, header.secondary)
+                   for i in range(row.count())
+                   if row.itemAt(i).widget() is not None and row.itemAt(i).widget().isVisible()]
+        for i, widget in enumerate(visible):
+            self.assertTrue(panel.rect().contains(widget.geometry()))
+            for other in visible[i+1:]:
+                self.assertFalse(widget.geometry().intersects(other.geometry()))
+        panel.hide()
         self.view._layout_timeline_panel()
         self.assertEqual(self.view.minimumWidth(), 400)
 

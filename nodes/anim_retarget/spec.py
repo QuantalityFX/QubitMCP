@@ -30,6 +30,7 @@ ANIM_RETARGET_KIND_ALIASES: Tuple[str, ...] = (
 
 _GENERATED_ANIMATION_KINDS = ANIM_RETARGET_KIND_ALIASES + (
     "rig_limiter",
+    "animation_correction",
     "animation_blend", "animation blend", "anim_blend", "blend_animation",
     "fbx_animation", "fbx animation", "fbxanimation", "fbx_animation_import",
     "fbx animation import", "fbxanimationimport",
@@ -1081,6 +1082,9 @@ def _transform_context_from_item(
 
 
 def _generated_animation_context_from_item(node_item, kind, role, errors, warnings, *, _depth=0, _visited=None):
+    if kind == "animation_correction":
+        from nodes.animation_correction.spec import resolve_context
+        return resolve_context(node_item,errors,warnings,target=role == "target",_depth=_depth,_visited=_visited)
     if kind == "rig_limiter":
         from nodes.rig_limiter.spec import resolve_context
         return resolve_context(node_item,errors,warnings,target=role == "target",_depth=_depth,_visited=_visited)

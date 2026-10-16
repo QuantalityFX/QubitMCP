@@ -22,7 +22,7 @@
         <nav class="nav" id="guide-nav" aria-label="Guide sections">
           <a href="#workflow">Workflow</a><a href="#generation">Generate motion</a>
           <a href="#collections">Organize takes</a><a href="#prepare-rig">Prepare the rig</a>
-          <a href="#rig-limiter">Rig Limiter</a>
+          <a href="#rig-limiter">Rig Limiter</a><a href="#animation-correction">Animation Correction</a>
           <a href="#animation-blend">Blend into animation</a><a href="#batch-rendering">Batch rendering</a>
           <a href="#review">Review and deliver</a><a href="#troubleshooting">Common checks</a>
           <a href="patterns-cloth.html">Pattern and cloth guide &rarr;</a>
@@ -34,7 +34,7 @@
           <h1>Build a reusable motion pipeline</h1>
           <p class="lead">Bring generated motion, video mocap, or existing clips into one graph. Organize takes, prepare the character rig, and reuse the same scene for a single preview or a collection of renders.</p>
           <p class="workflow-path">PriorMDM / video mocap / BVH files → Mocap Collection<br />Collection → For Each → Anim Retarget → Scene → Render → For Each End</p>
-          <p><a href="nodes.html#3d-rigging-and-scene-processing">Motion and scene nodes</a> · Updated 14 October 2026</p>
+          <p><a href="nodes.html#3d-rigging-and-scene-processing">Motion and scene nodes</a> · Updated 16 October 2026</p>
         </header>
 
         <section class="section" id="generation">
@@ -84,19 +84,31 @@
         <section class="section" id="prepare-rig">
           <h2>3. Prepare the character and constraints</h2>
           <h3 id="rig-limiter"><img class="inline-icon" src="../icons/RigLimiter_Icon.png" alt="" /> Repair existing takes with Rig Limiter</h3>
-          <p><a href="nodes.html?node=rig-limiter">Rig Limiter</a> processes an existing animation; it does not need another motion-generation run. Connect a compatible Mocap Import or Mocap Collection to its <code>animation</code> input. Its <code>animation</code> output can feed Anim Retarget, Animation Blend, Transforms, or Scene.</p>
+          <p><a href="nodes.html?node=rig-limiter">Rig Limiter</a> processes an existing animation; it does not need another motion-generation run. Connect a compatible Mocap Import or Mocap Collection to its <code>animation</code> input. Its <code>animation</code> output can feed Animation Correction, Anim Retarget, Animation Blend, Transforms, or Scene.</p>
           <p class="workflow-path">PriorMDM/HumanML BVH → Mocap Import / Mocap Collection → Rig Limiter → Anim Retarget → Scene</p>
           <ol class="steps">
             <li>Use a PriorMDM/HumanML skeleton with its original joint hierarchy and rest axes. Apply Rig Limiter before retargeting: it requires fixed bone lengths and unscaled bone transforms. Supported hand joints are included when present.</li>
-            <li>Choose <strong>Preview / Repair</strong> to calculate and inspect a corrected clip. Select body or finger joints, adjust bend/twist or spread limits and capsule radii, and save the node's settings. Run Preview / Repair again after adjusting them.</li>
+            <li>Choose <strong>Repair</strong> to calculate a corrected clip, then <strong>Preview</strong> to inspect it. Preview opens the available animation without running a repair. Select body or finger joints, adjust bend/twist or spread limits and capsule radii, and save the node's settings. Click Repair again to apply changes.</li>
             <li>Enable <strong>Correct capsule intersections</strong> and <strong>IK repair</strong> to correct contact as well as angular limits. Repair tries finger adjustments before moving the arm. With IK repair off, only bend/twist limits are applied. Root motion, clip timing, and bone lengths are preserved.</li>
             <li>Read the summary for corrected frames, finger capsule count, frames adjusted by arm IK, and frames with remaining capsule overlap. Contact that cannot be resolved within the joint limits remains reported for review.</li>
             <li>Choose <strong>Export corrected BVH</strong> for the active take. For a batch, connect Mocap Collection directly, check the desired takes, and use <strong>Export checked collection</strong>. Both actions write uniquely named <code>_limited_</code> BVHs in the chosen folder and leave the source files and collection entries intact.</li>
           </ol>
-          <p>Saving capsule radii, limits, collision options, or the workflow does not run a repair. <strong>Preview / Repair turns red</strong> when the input or saved settings need recalculation. The last repair for the same input remains visible until you click the button; a new input or reopened workflow shows the source animation until its first repair. Successful repair clears the red indicator; cancellation keeps the last result and pending state.</p>
-          <p><strong>Export corrected BVH</strong> requires an up-to-date Preview / Repair result. <strong>Export checked collection</strong> is an explicit batch operation that repairs and writes the checked takes using the saved settings.</p>
-          <p>Export preserves the skeleton hierarchy, root motion, timing, and BVH End Sites used for fingertip segments. Repair runs with progress and cancellation controls; already completed files remain available if a collection export is interrupted. Use <strong>Reset limits and volumes</strong> to restore defaults, then preview again.</p>
+          <p>Saving capsule radii, limits, collision options, or the workflow does not run a repair. <strong>Repair turns red</strong> when the input or saved settings need recalculation. The last repair for the same input remains visible until you click the button; matching saved BVH repairs can be recovered after reopening the workflow when the source and settings still match. Otherwise the source animation is shown until repaired. Successful repair clears the red indicator; cancellation keeps the last result and pending state.</p>
+          <p><strong>Export corrected BVH</strong> requires an up-to-date Repair result. <strong>Export checked collection</strong> is an explicit batch operation that repairs and writes the checked takes using the saved settings.</p>
+          <p>Export preserves the skeleton hierarchy, root motion, timing, and BVH End Sites used for fingertip segments. Repair runs with progress and cancellation controls; already completed files remain available if a collection export is interrupted. Use <strong>Reset limits and volumes</strong> to restore defaults, then run Repair again.</p>
           <p class="callout">Capsules approximate the body and fingers. A lower overlap count is useful feedback, but inspect the character mesh after retargeting before rendering or using it as a cloth collider.</p>
+          <p>Repairs use fast mode by default. Enable <strong>Thorough repair (slower)</strong> for more work on between-frame contacts; both modes report unresolved contacts. Progress includes solving and saving the corrected BVH. Stop, Escape, or closing the progress dialog requests cancellation.</p>
+          <h3 id="animation-correction"><img class="inline-icon" src="../icons/AnimationCorrect_Icon.png" alt="" /> Edit individual takes with Animation Correction</h3>
+          <p><a href="nodes.html?node=animation-correction">Animation Correction</a> adds manual joint rotation keys and arm or leg IK ranges to an animated BVH or FBX take. Connect a source clip, Mocap Collection, or Rig Limiter to its <code>animation</code> input. Finish automatic repair before editing that result.</p>
+          <p class="workflow-path">Mocap Collection &rarr; Rig Limiter (optional) &rarr; Animation Correction &rarr; Anim Retarget &rarr; Scene</p>
+          <ol class="steps">
+            <li>Choose <strong>Preview / edit animation</strong>. Scrub the timeline and select joints in the viewport or joint hierarchy to rotate them. Use Settings &gt; Joint names to display joint labels.</li>
+            <li>Enable the arm or leg IK controls and drag wrist or ankle cubes. Dragging previews the pose without adding keys. Press <strong>Start IK</strong> or <strong>Set key</strong> at the start frame, then scrub, pose, and press <strong>End IK</strong> or <strong>Set key</strong>. Yellow bands connect paired triangle keys. Undo and redo restore edits, with each viewport drag treated as one step.</li>
+            <li>Use <strong>Show colliders</strong> to inspect supported body and hand guides. <strong>Reload selected joint</strong> restores its input keys and removes its limb's IK ranges when applicable.</li>
+            <li>Choose <strong>Save draft</strong> to save edits per source take beside the input as <code>.bvh.animation_correction.json</code> or <code>.fbx.animation_correction.json</code>. Save before switching previews or rebuilding Scene. Changing the base animation can invalidate a saved draft.</li>
+            <li>Choose <strong>Approve &amp; export BVH</strong> to save the draft and write a uniquely named <code>_corrected_</code> BVH beside the source. The original file is preserved.</li>
+          </ol>
+          <p>Connect the saved <code>animation</code> output directly to Scene to view the corrected skeleton. Scene also accepts Rig Limiter output directly. Use Anim Retarget before Scene when you need the motion applied to a character mesh.</p>
           <h3>Retarget and assemble the character</h3>
           <p>Use <a href="nodes.html?node=anim-retarget">Anim Retarget</a> to map source BVH/FBX motion to a target FBX character. Validate the imported rest geometry, capture pose, and animation roles, then inspect joint mapping, root controls, offsets, and constraint settings in the preview.</p>
           <div class="grid two">

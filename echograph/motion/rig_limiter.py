@@ -13,7 +13,7 @@ from echograph.rigging.ik import forward_kinematics, solve_constrained_ik
 from echograph.rigging.fbx_canonical import AnimationClip, JointAnimationTrack, QuatKeyframe
 from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
 
-REPAIR_VERSION = 3
+REPAIR_VERSION = 5
 
 
 def rig_layout(skeleton):
@@ -39,10 +39,7 @@ def rig_layout(skeleton):
     return indices, offsets
 
 
-def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisions=True, ik_repair=True, progress=None,
-                    names=JOINT_NAMES, parents=PARENTS,end_sites=None):
-    """Clamp joint limits, optionally using IK to clear finger and limb contacts."""
-    result = np.asarray(rotations,dtype=float).copy()
+def _repair_setup(offsets, limits, volumes, names, parents, end_sites):
     scale = rig_scale(offsets)
     offsets = np.asarray(offsets,dtype=float)/scale
     offsets = offsets.copy()
@@ -71,6 +68,16 @@ def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisio
     for side in ('left','right'):
         chain = tuple(lookup[side+'_'+part] for part in ('hip','knee','ankle'))
         groups.append(('leg',chain,colliders.mask_for(names[j] for j in chain)))
+    return scale,offsets,axes,colliders,groups,lookup
+
+
+def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisions=True, ik_repair=True, progress=None,
+                    names=JOINT_NAMES, parents=PARENTS,end_sites=None, _setup=None, temporal_weight=None):
+    """Clamp joint limits, optionally using IK to clear finger and limb contacts."""
+    result = np.asarray(rotations,dtype=float).copy()
+    scale,offsets,axes,colliders,groups,lookup = (
+        _repair_setup(offsets,limits,volumes,names,parents,end_sites) if _setup is None else _setup)
+    temporal_weight = .008*fps/20 if temporal_weight is None else temporal_weight
     previous = {}
     before,after = [],[]
     changed,finger_frames,arm_frames = 0,0,0
@@ -128,7 +135,7 @@ def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisio
                         retries = [seed]
                     solved = solve_constrained_ik(pose,offsets,parents,joint_axes=joint_axes,
                         project_rotation=project,constraint_residual=residual,reference_rotations=bounded,
-                        previous_parameters=old,temporal_weight=.008*fps/20,retry_seeds=retries,
+                        previous_parameters=old,temporal_weight=temporal_weight,retry_seeds=retries,
                         check_cancel=check_cancel,reuse_unchanged_joints=True,
                         tolerance=.0005 if kind == 'finger' else .002,max_iterations=22 if kind == 'finger' else 40)
                     final = residual(solved.points,forward_kinematics(solved.rotations,offsets,parents)[1],solved.rotations)
@@ -161,11 +168,14 @@ def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisio
                     joint_axes = {j: ([limits[j]['axis']] + ([limits[j]['spread_axis']] if 'spread_axis' in limits[j] else []))
                                   if 'flex' in limits[j] else np.eye(3) for j in chain if j in limits}
                     baseline = colliders.penetrations(points,world)
+                    other_mask = ~hand_mask
+                    other_baseline = baseline[other_mask]
                     def residual(points,world,local):
                         hands = colliders.penetrations(points,world,mask=hand_mask,clearance=.001)
                         # Do not buy hand clearance by creating another collision.
-                        other = np.maximum(0.,colliders.penetrations(points,world)[~hand_mask]-baseline[~hand_mask])
-                        return np.r_[hands,other]
+                        # Hand pairs were measured above; avoid measuring them twice.
+                        other = np.maximum(0.,colliders.penetrations(points,world,mask=other_mask)-other_baseline)
+                        return np.concatenate((hands,other))
                     count = sum(len(a) for a in joint_axes.values())
                     seeds = []
                     cursor = 0
@@ -205,78 +215,127 @@ def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisio
                        ik_repair_enabled=bool(ik_repair))
 
 
-def _refine_contacts(rotations, offsets, parents, names, limits, volumes, fps, *, end_sites=None, progress=None):
-    """Check quarter-interval poses and bake repairs for new swept contacts.
+def _refine_contacts(rotations, offsets, parents, names, limits, volumes, fps, *, end_sites=None, progress=None,
+                     max_refinements=1):
+    """Refine affected intervals, retaining sparse keys at bounded substeps.
 
-    Existing unresolved contacts are compared pair by pair with the interval
-    endpoints, so an impossible stationary overlap does not trigger endless
-    resampling. This is bounded refinement, not continuous collision detection.
+    Each leaf is checked at quarter intervals, including after a repair. Only
+    intervals with added contact are subdivided. Scratch geometry is bounded
+    by recursion depth, rather than frames multiplied by all collider pairs.
+    This remains sampled collision detection; unresolved checks are reported.
     """
-    scale = rig_scale(offsets)
-    normalized = np.asarray(offsets)/scale
-    model = ColliderModel(names,parents,normalized,volumes,end_sites=end_site_offsets(end_sites,scale),
-                          reuse_unchanged_pairs=True)
-    corrected = 0
-    maximum = 0.
-    remaining = 0
-    endpoints = None
-    for refinement in range(4):
-        def overlaps(pose):
-            return model.penetrations(*forward_kinematics(pose,normalized,parents))
-        if endpoints is None:
-            endpoints = []
-            for i,pose in enumerate(rotations):
-                if progress is not None and i % 20 == 0:
-                    progress(i,len(rotations))
-                endpoints.append(overlaps(pose))
-            endpoints = np.asarray(endpoints)
-        if len(rotations) < 2:
-            break
-        left = Rotation.from_matrix(rotations[:-1].reshape(-1,3,3))
-        right = Rotation.from_matrix(rotations[1:].reshape(-1,3,3))
-        delta = (left.inv()*right).as_rotvec()
-        dense = np.empty(((len(rotations)-1)*4+1,*rotations.shape[1:]))
-        dense[::4] = rotations
-        for step in (1,2,3):
-            dense[step::4] = (left*Rotation.from_rotvec(delta*(step/4))).as_matrix().reshape(rotations[:-1].shape)
-        # These quarter samples become the next pass's endpoints. Retain their
-        # exact measurements; only repaired poses need another evaluation.
-        dense_overlaps = np.empty((len(dense),len(model.pairs)))
-        dense_overlaps[::4] = endpoints
-        pending = []
-        maximum = 0.
-        for interval in range(len(rotations)-1):
-            if progress is not None and interval % 20 == 0:
-                progress(interval,len(rotations)-1)
-            allowance = np.maximum(endpoints[interval],endpoints[interval+1])
-            for step in (1,2,3):
-                index = interval*4+step
-                dense_overlaps[index] = overlaps(dense[index])
-                excess = float(np.max(dense_overlaps[index]-allowance,initial=0))
-                maximum = max(maximum,excess)
-                if excess > .00005:
-                    pending.append(index)
-        remaining = len(pending)
-        if not pending or refinement == 3:
-            break
-        for index in pending:
-            callback = (lambda f,n:progress(index,len(dense))) if progress is not None else None
-            repaired,_ = limit_rotations(dense[index:index+1],offsets,np.zeros((1,3)),fps*4,
-                limits,volumes,names=names,parents=parents,end_sites=end_sites,progress=callback)
-            dense[index] = repaired[0]
-            dense_overlaps[index] = overlaps(dense[index])
-        corrected += len(pending)
-        rotations = dense
-        endpoints = dense_overlaps
-        fps *= 4
-    output_overlaps = np.max(endpoints,axis=1,initial=0)
-    return rotations,fps,dict(interpolated_samples_repaired=corrected,
+    setup = _repair_setup(offsets,limits,volumes,names,parents,end_sites)
+    scale,normalized,_,model,_,_ = setup
+    corrected = attempted = remaining = max_depth = 0
+    maximum = output_max = 0.
+    output_remaining = 0
+    poses, samples = [rotations[0]], [0.]
+    total = max(1,len(rotations)-1)
+
+    def notify(sample):
+        if progress is not None:
+            progress(sample,total)
+
+    def overlaps(pose):
+        return model.penetrations(*forward_kinematics(pose,normalized,parents))
+
+    def record(values):
+        nonlocal output_remaining,output_max
+        value = float(np.max(values,initial=0))
+        output_remaining += int(value > .00005)
+        output_max = max(output_max,value)
+
+    def refine(left, right, a, b, start, span, depth):
+        nonlocal corrected,attempted,remaining,maximum,max_depth
+        notify(start)
+        if np.array_equal(left,right):
+            # Includes stationary, impossible overlaps. Interpolation is exact.
+            poses.append(right)
+            samples.append(start+span)
+            record(b)
+            return
+        rotation = Rotation.from_matrix(left)
+        delta = (rotation.inv()*Rotation.from_matrix(right)).as_rotvec()
+        dense = [left]+[(rotation*Rotation.from_rotvec(delta*(step/4))).as_matrix()
+                       for step in (1,2,3)]+[right]
+        measured = [a]+[overlaps(pose) for pose in dense[1:4]]+[b]
+        allowance = np.maximum(a,b)
+        excesses = [float(np.max(value-allowance,initial=0)) for value in measured[1:4]]
+        pending = [step for step,excess in enumerate(excesses,1) if excess > .00005]
+        if not pending or depth == max_refinements:
+            remaining += len(pending)
+            maximum = max(maximum,*excesses)
+            poses.append(right)
+            samples.append(start+span)
+            record(b)
+            return
+        moved = False
+        for step in pending:
+            sample = start+span*step/4
+            notify(sample)
+            callback = (lambda f,n:notify(sample)) if progress is not None else None
+            repaired,_ = limit_rotations(np.asarray(dense[step])[None],offsets,np.zeros((1,3)),
+                fps*4**(depth+1),limits,volumes,names=names,parents=parents,end_sites=end_sites,
+                # An isolated substep has no preceding IK parameters to smooth
+                # against. Scaling that penalty with substep FPS fights repair
+                # and repeatedly triggers the expensive combined hand fallback.
+                progress=callback,_setup=setup,temporal_weight=0.)
+            attempted += 1
+            if not np.allclose(repaired[0],dense[step],atol=1e-10,rtol=0):
+                dense[step] = repaired[0]
+                measured[step] = overlaps(dense[step])
+                corrected += 1
+                moved = True
+        if not moved:
+            # Do not expand the same curve again when IK cannot change it.
+            remaining += len(pending)
+            maximum = max(maximum,*excesses)
+            poses.append(right)
+            samples.append(start+span)
+            record(b)
+            return
+        max_depth = max(max_depth,depth+1)
+        for step in range(4):
+            refine(dense[step],dense[step+1],measured[step],measured[step+1],
+                   start+span*step/4,span/4,depth+1)
+
+    first = overlaps(rotations[0])
+    record(first)
+    for interval in range(len(rotations)-1):
+        notify(interval)
+        last = first if np.array_equal(rotations[interval],rotations[interval+1]) else overlaps(rotations[interval+1])
+        refine(rotations[interval],rotations[interval+1],first,last,float(interval),1.,0)
+        first = last
+        notify(interval+1)
+    return np.asarray(poses),np.asarray(samples),fps*4**max_depth,dict(
+        interpolated_samples_repaired=corrected,interpolated_samples_attempted=attempted,
         remaining_interpolated_contact_samples=remaining,max_interpolated_overlap_increase=maximum*scale,
-        output_remaining_proxy_overlap_frames=int(np.count_nonzero(output_overlaps > .00005)),
-        output_max_proxy_overlap=float(np.max(output_overlaps,initial=0))*scale)
+        output_remaining_proxy_overlap_frames=output_remaining,output_max_proxy_overlap=output_max*scale)
 
 
-def limit_clip(skeleton, clip, limits, volumes, *, collisions=True, ik_repair=True, progress=None, hand_limits=None):
+def _progress_phase(progress, start, end, label, *, unit='Frame'):
+    if progress is None:
+        return None
+    stage = getattr(progress,'set_stage',None)
+    if stage is not None:
+        stage(label)
+    value = start
+    last_detail = None
+    def update(frame,total):
+        nonlocal value,last_detail
+        value = max(value,min(end,start+int((end-start)*frame/max(1,total))))
+        progress(value,1000)
+        if stage is not None:
+            detail = f'{label}\n{unit} {min(int(frame)+1,max(1,int(total)))} of {max(1,int(total))}'
+            if detail != last_detail:
+                stage(detail)
+                last_detail = detail
+    progress(start,1000)
+    return update
+
+
+def limit_clip(skeleton, clip, limits, volumes, *, collisions=True, ik_repair=True, progress=None, hand_limits=None,
+               thorough_repair=False):
     rig_layout(skeleton)
     indices,names,parents,offsets = full_rig_layout(skeleton)
     limits = expanded_limits(names,limits,hand_limits)
@@ -287,9 +346,10 @@ def limit_clip(skeleton, clip, limits, volumes, *, collisions=True, ik_repair=Tr
     count = source_count
     times = np.linspace(clip.start_time, clip.end_time, count)
     rotations, roots = [], []
+    sampling = _progress_phase(progress,0,100,'Reading animation poses...')
     for frame,time in enumerate(times):
-        if progress is not None and frame % 20 == 0:
-            progress(0,len(times))
+        if sampling is not None:
+            sampling(frame,len(times))
         local = evaluate_rig_at_time(skeleton, clip, float(time)).local_transforms
         positions = np.array([local[i].translation for i in indices])
         if not np.allclose(positions[1:], offsets[1:], atol=1e-5*rig_scale(offsets), rtol=1e-5):
@@ -300,22 +360,29 @@ def limit_clip(skeleton, clip, limits, volumes, *, collisions=True, ik_repair=Tr
         roots.append(positions[0])
     corrected, report = limit_rotations(np.array(rotations), offsets, np.array(roots), fps,
                                        limits, volumes, collisions=collisions, ik_repair=ik_repair,
-                                       progress=progress, names=names, parents=parents,
+                                       progress=_progress_phase(progress,100,650,'Correcting joint limits and capsule intersections...'),
+                                       names=names, parents=parents,
                                        end_sites=skeleton.metadata.get('end_sites'))
     if collisions and ik_repair:
-        corrected,fps,interpolation_report = _refine_contacts(corrected,offsets,parents,names,limits,volumes,fps,
-            end_sites=skeleton.metadata.get('end_sites'),progress=progress)
+        corrected,samples,fps,interpolation_report = _refine_contacts(corrected,offsets,parents,names,limits,volumes,fps,
+            end_sites=skeleton.metadata.get('end_sites'),
+            progress=_progress_phase(progress,650,900,'Checking and repairing between-frame contacts...',unit='Interval'),
+            max_refinements=3 if thorough_repair else 1)
         report.update(interpolation_report)
-        times = np.linspace(clip.start_time,clip.end_time,len(corrected))
+        times = clip.start_time+samples*((clip.end_time-clip.start_time)/max(1,source_count-1))
+    baking = _progress_phase(progress,900,1000,'Building corrected animation keys...',unit='Joint')
     # Construct fresh schema objects: evaluator runtime identities must not be copied.
     result = AnimationClip.from_dict(deepcopy(clip.to_dict()))
     result.name = clip.name+'_Limited'
     result.sample_rate_hz = fps
     report.update(source_frame_count=source_count, source_sample_rate_hz=float(clip.sample_rate_hz),
                   repair_substeps=int(round(fps/clip.sample_rate_hz)), sample_rate_hz=fps,
-                  output_frame_count=len(corrected))
+                  thorough_repair=bool(thorough_repair),
+                  output_frame_count=len(corrected),baked_frame_count=(source_count-1)*int(round(fps/clip.sample_rate_hz))+1)
     tracks = {track.joint_name: track for track in result.tracks}
-    for j in limits:
+    for number,j in enumerate(limits):
+        if baking is not None:
+            baking(number,len(limits))
         name = names[j]
         if name not in tracks:
             tracks[name] = JointAnimationTrack(name)
@@ -327,4 +394,6 @@ def limit_clip(skeleton, clip, limits, volumes, *, collisions=True, ik_repair=Tr
         tracks[name].rotation_keys = [QuatKeyframe(float(t), tuple(q)) for t, q in zip(times, quats)]
     result.metadata['rig_limiter'] = report
     result.validate(skeleton)
+    if baking is not None:
+        baking(1,1)
     return result, report

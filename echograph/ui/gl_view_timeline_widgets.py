@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import List, Optional
 
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
+from echograph.ui.timeline_range_controls import (
+    TimelineRangeControls, TimelineSpeedSpinBox, timeline_spinbox_button_style,
+)
 
 try:
     from PySide6 import QtMultimedia
@@ -202,7 +205,7 @@ class _TimelineAudioWaveformWidget(QtWidgets.QWidget):
 
 
 class _TimelineHeaderLayout(QtWidgets.QGridLayout):
-    """Keep transport controls together and wrap the tools after Loop."""
+    """Keep numeric inputs together and wrap timeline tools to a second row."""
 
     def __init__(self):
         super().__init__()
@@ -263,12 +266,17 @@ class GraphGLTimelineWidgetsMixin:
         if panel is not None and panel.isVisible():
             header = panel._header_layout
             margins = panel.layout().contentsMargins()
+            row_widths = [header.primary.sizeHint().width(), header.secondary.sizeHint().width()]
+            range_controls = getattr(self, '_timeline_range_controls', None)
+            if range_controls is not None:
+                row_widths.append(range_controls.minimumSizeHint().width())
             minimum_view_width = max(
                 400,
-                int(header.primary.sizeHint().width()) + margins.left() + margins.right(),
+                int(max(row_widths)) + margins.left() + margins.right(),
             )
             if int(self.minimumWidth()) != minimum_view_width:
                 self.setMinimumWidth(minimum_view_width)
+                view_w = max(1, int(self.width()))
             extra_h = header.reflow(view_w - margins.left() - margins.right())
             previous_extra_h = getattr(panel, "_header_extra_height", 0)
             panel._header_extra_height = extra_h
@@ -467,6 +475,7 @@ class GraphGLTimelineWidgetsMixin:
                     "#GLTimelinePanel{background:rgba(15,23,42,215);border-top:1px solid #334155;}",
                     "#GLTimelinePanel QLabel{color:#e2e8f0;font-size:11px;}",
                     "#GLTimelinePanel QSpinBox,#GLTimelinePanel QDoubleSpinBox{background:#0f1216;color:#e2e8f0;border:1px solid #334155;border-radius:3px;padding:1px 4px;}",
+                    timeline_spinbox_button_style(),
                     "#GLTimelinePanel QSlider#GLTimelineFrameSlider::groove:horizontal{height:2px;background:#334155;border-radius:1px;}",
                     "#GLTimelinePanel QSlider#GLTimelineFrameSlider::sub-page:horizontal{background:#334155;border-radius:1px;}",
                     "#GLTimelinePanel QSlider#GLTimelineFrameSlider::add-page:horizontal{background:#334155;border-radius:1px;}",
@@ -547,6 +556,7 @@ class GraphGLTimelineWidgetsMixin:
 
             end_lbl = QtWidgets.QLabel("End", panel)
             header.addWidget(end_lbl, 0)
+            self._timeline_end_frame_label = end_lbl
 
             end_spin = QtWidgets.QSpinBox(panel)
             end_spin.setRange(0, 100000)
@@ -564,11 +574,11 @@ class GraphGLTimelineWidgetsMixin:
 
             fps_spin = QtWidgets.QDoubleSpinBox(panel)
             fps_spin.setRange(1.0, 240.0)
-            fps_spin.setDecimals(3)
+            fps_spin.setDecimals(1)
             fps_spin.setSingleStep(1.0)
             fps_spin.setKeyboardTracking(False)
             fps_spin.setValue(float(getattr(self, "_timeline_fps", 24.0) or 24.0))
-            fps_spin.setFixedWidth(68)
+            fps_spin.setFixedWidth(58)
             fps_spin.setToolTip("Timeline frames per second.")
             fps_spin.valueChanged.connect(self._timeline_on_fps_changed)
             header.addWidget(fps_spin, 0)
@@ -589,14 +599,14 @@ class GraphGLTimelineWidgetsMixin:
             speed_lbl = QtWidgets.QLabel("Speed", panel)
             header.addWidget(speed_lbl, 0)
 
-            speed_spin = QtWidgets.QDoubleSpinBox(panel)
+            speed_spin = TimelineSpeedSpinBox(panel)
             speed_spin.setRange(1.0, 1000.0)
             speed_spin.setDecimals(2)
             speed_spin.setSingleStep(10.0)
             speed_spin.setSuffix("%")
             speed_spin.setKeyboardTracking(False)
             speed_spin.setValue(float(getattr(self, "_timeline_owner_speed_percent", lambda *_: 100.0)()))
-            speed_spin.setFixedWidth(78)
+            speed_spin.setFixedWidth(64)
             speed_spin.setToolTip("Playback speed for the selected Scene outliner item.")
             speed_spin.valueChanged.connect(self._timeline_on_speed_changed)
             header.addWidget(speed_spin, 0)
@@ -914,9 +924,16 @@ class GraphGLTimelineWidgetsMixin:
                     self.valueChanged.connect(self._update_focus_icon)
                     self.sliderMoved.connect(self._update_focus_icon)
 
+                def _frame_is_visible(self):
+                    start = int(self._view._timeline_view_start)
+                    return start <= self._view._timeline_current_frame() <= start+self.maximum()
+
                 def _update_focus_icon(self):
                     icon = getattr(self, "_focus_icon", None)
                     if icon is None:
+                        return
+                    if not self._frame_is_visible():
+                        icon.hide()
                         return
                     try:
                         option = QtWidgets.QStyleOptionSlider()
@@ -1136,7 +1153,17 @@ class GraphGLTimelineWidgetsMixin:
                     return
 
                 def paintEvent(self, ev):
-                    super().paintEvent(ev)
+                    visible = self._frame_is_visible()
+                    if visible:
+                        super().paintEvent(ev)
+                    else:
+                        self._focus_icon.hide()
+                        painter = QtWidgets.QStylePainter(self)
+                        option = QtWidgets.QStyleOptionSlider()
+                        self.initStyleOption(option)
+                        option.subControls = QtWidgets.QStyle.SC_SliderGroove
+                        painter.drawComplexControl(QtWidgets.QStyle.CC_Slider, option)
+                        painter.end()
                     try:
                         base_opt = QtWidgets.QStyleOptionSlider()
                         self.initStyleOption(base_opt)
@@ -1247,12 +1274,13 @@ class GraphGLTimelineWidgetsMixin:
                         self.initStyleOption(handle_opt)
                         handle_opt.subControls = QtWidgets.QStyle.SC_SliderHandle
                         handle_opt.activeSubControls = QtWidgets.QStyle.SC_SliderHandle
-                        style.drawComplexControl(
-                            QtWidgets.QStyle.CC_Slider,
-                            handle_opt,
-                            p,
-                            self,
-                        )
+                        if visible:
+                            style.drawComplexControl(
+                                QtWidgets.QStyle.CC_Slider,
+                                handle_opt,
+                                p,
+                                self,
+                            )
                         p.end()
                     except Exception:
                         return
@@ -1645,6 +1673,7 @@ class GraphGLTimelineWidgetsMixin:
                         pass
                     rect = self._graph_rect()
                     p.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 0))
+                    self._view._timeline_paint_ik_ranges(p,rect)
                     p.setPen(QtGui.QPen(QtGui.QColor("#334155"), 1))
                     p.drawLine(rect.left(), rect.top(), rect.left(), rect.bottom())
                     p.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
@@ -1744,11 +1773,16 @@ class GraphGLTimelineWidgetsMixin:
                             if key in selected:
                                 p.setPen(QtGui.QPen(QtGui.QColor("#f59e0b"), 1.2))
                                 p.setBrush(QtGui.QBrush(QtGui.QColor("#fde047")))
-                                p.drawEllipse(QtCore.QPointF(float(x), float(y)), 5.0, 5.0)
                             else:
                                 p.setPen(QtGui.QPen(QtGui.QColor(15, 23, 42, 210), 1))
                                 p.setBrush(QtGui.QBrush(col))
-                                p.drawEllipse(QtCore.QPointF(float(x), float(y)), 4.0, 4.0)
+                            radius = 5.0 if key in selected else 4.0
+                            if self._view._timeline_key_is_ik(frame):
+                                p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(float(x),float(y)-radius),
+                                    QtCore.QPointF(float(x)+radius,float(y)+radius),
+                                    QtCore.QPointF(float(x)-radius,float(y)+radius)]))
+                            else:
+                                p.drawEllipse(QtCore.QPointF(float(x),float(y)),radius,radius)
                     try:
                         handle_items = self._selected_handle_points(pts_by_axis)
                     except Exception:
@@ -2733,6 +2767,9 @@ class GraphGLTimelineWidgetsMixin:
             root.addWidget(scrollbar, 0)
             self._timeline_scrollbar = scrollbar
 
+            self._timeline_range_controls = TimelineRangeControls(self, panel)
+            root.addWidget(self._timeline_range_controls, 0)
+
             self._timeline_sync_row_alignment()
             self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
             self._timeline_set_curves_mode(bool(getattr(self, "_timeline_curves_mode", False)))
@@ -2785,6 +2822,20 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_tick_labels = []
             self._timeline_target_label = None
             self._timeline_ticks_frame = None
+
+    def _timeline_sync_range_editor(self) -> None:
+        controls = getattr(self, '_timeline_range_controls', None)
+        if controls is None:
+            return
+        controls.show()
+        self._timeline_scrollbar.hide()
+        self._timeline_end_frame_spin.hide()
+        self._timeline_end_frame_label.hide()
+        minimum = int(self._timeline_in_frame or 0)
+        maximum = max(minimum, self._timeline_end_frame_value())
+        start = int(self._timeline_view_start)
+        end = start + int(self._timeline_frame_slider.maximum())
+        controls.sync(minimum, maximum, start, end)
 
     def timeline_visible(self) -> bool:
         return bool(getattr(self, "_timeline_enabled", False))

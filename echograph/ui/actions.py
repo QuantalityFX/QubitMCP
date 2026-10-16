@@ -613,6 +613,9 @@ def undo_scene_xform(win) -> bool:
         return False
     if _focus_is_text_input():
         return False
+    session = getattr(getattr(win,'gl_view',None),'_animation_correction_session',None)
+    if session is not None:
+        return session.undo()
     undo = getattr(win, "_scene_xform_undo", None)
     if not isinstance(undo, list) or not undo:
         return False
@@ -641,6 +644,9 @@ def redo_scene_xform(win) -> bool:
         return False
     if _focus_is_text_input():
         return False
+    session = getattr(getattr(win,'gl_view',None),'_animation_correction_session',None)
+    if session is not None:
+        return session.redo()
     redo = getattr(win, "_scene_xform_redo", None)
     if not isinstance(redo, list) or not redo:
         return False

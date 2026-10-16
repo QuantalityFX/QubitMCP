@@ -141,8 +141,16 @@ class HandColliderTests(unittest.TestCase):
                         cached.penetrations(points,world,selection,clearance=clearance))
 
     def test_between_frame_contact_is_reduced_and_preserved_by_bvh_export(self):
+        self._check_between_frame_repair(thorough=False)
+
+    def test_thorough_between_frame_repair_preserves_stronger_clearance(self):
+        self._check_between_frame_repair(thorough=True)
+
+    def _check_between_frame_repair(self,*,thorough):
+        from echograph.motion import rig_limiter
         from echograph.rigging.fbx_canonical import QuatKeyframe
-        skeleton,clip,indices,names,parents,offsets,_ = hand_fixture(fingertip_contact=True)
+        # A short contact followed by unchanged poses must not densify the tail.
+        skeleton,clip,indices,names,parents,offsets,_ = hand_fixture(frames=8,fingertip_contact=True)
         track = next(t for t in clip.tracks if t.joint_name == 'left_shoulder')
         track.rotation_keys = [QuatKeyframe(t,tuple(Rotation.from_euler('y',angle,degrees=True).as_quat()))
                                for t,angle in ((0,-25),(.05,25))]
@@ -158,14 +166,32 @@ class HandColliderTests(unittest.TestCase):
         for time in (0,.05):
             self.assertLess(penetration(skeleton,clip,time),.00005)
         self.assertGreater(penetration(skeleton,clip,.025),.01)
-        output,report = limit_clip(skeleton,clip,default_preview_limits(),{})
+        events,stages = [],[]
+        def progress(frame,total):
+            events.append((frame,total))
+        progress.set_stage = stages.append
+        with patch.object(rig_limiter,'_repair_setup',wraps=rig_limiter._repair_setup) as setup, \
+             patch.object(rig_limiter,'limit_rotations',wraps=rig_limiter.limit_rotations) as repair:
+            output,report = limit_clip(skeleton,clip,default_preview_limits(),{},progress=progress,thorough_repair=thorough)
+        self.assertEqual(setup.call_count,2)  # One source setup, one shared refinement setup.
+        for call in repair.call_args_list[1:]:
+            self.assertEqual(call.kwargs['temporal_weight'],0.)
+        self.assertEqual(report['thorough_repair'],thorough)
+        if not thorough:
+            self.assertLessEqual(report['repair_substeps'],4)
+            self.assertLessEqual(report['interpolated_samples_attempted'],3*(report['source_frame_count']-1))
+        self.assertLess(report['output_frame_count'],report['baked_frame_count']/2)
+        self.assertEqual(events,sorted(events))
+        self.assertEqual(events[-1],(1000,1000))
+        self.assertTrue(any('between-frame' in stage for stage in stages))
+        self.assertTrue(any('Interval 1 of 7' in stage for stage in stages))
         self.assertGreater(report['interpolated_samples_repaired'],0)
         self.assertGreater(output.sample_rate_hz,clip.sample_rate_hz)
         self.assertEqual(output.duration,clip.duration)
         self.assertLess(penetration(skeleton,output,.025),.00005)
         before = [penetration(skeleton,clip,float(t)) for t in np.linspace(0,.05,41)]
         after = [penetration(skeleton,output,float(t)) for t in np.linspace(0,.05,41)]
-        self.assertLess(max(after),max(before)/4)
+        self.assertLess(max(after),max(before)/4 if thorough else max(before)*.75)
         # Bounded IK may leave other contacts. These must be reported, rather
         # than calling a clip collision-free based only on its source frames.
         if max(after) > .00005:

@@ -20,6 +20,7 @@ def pick_guide_joint(data, handles, px, py, dpr):
         if not volumes:
             return None
         _,name = min(volumes)
+        name = guide.get('joint_aliases',{}).get(name,name)
         return next((dict(h) for h in handles if h.get('name')==name),None)
     _,point = min(candidates,key=lambda pair:(pair[0],pair[1].get('z',0)))
     return next((dict(h) for h in handles if h.get('name')==point.get('name')),None)
@@ -81,8 +82,9 @@ def rig_guide_shapes(renderer, data):
         from echograph.motion.rig_preview import build_guide
         from echograph.motion.conversion import JOINT_NAMES, PARENTS
         seconds = renderer._mgl_fbx_context_timeline_sample_seconds(context,data['owner'])
-        evaluation = evaluate_rig_at_time(context['skeleton'],context.get('clip'),float(seconds),
-                                          loop=bool(context.get('loop',False)))
+        evaluate = getattr(renderer, '_mgl_evaluate_rig_cached', evaluate_rig_at_time)
+        evaluation = evaluate(context['skeleton'],context.get('clip'),float(seconds),
+                              loop=bool(context.get('loop',False)),include_debug_data=True)
         matrices = np.asarray(evaluation.global_matrices,dtype=float).reshape(-1,4,4)
         if 'joint_indices' in guide:
             matrices = matrices[guide['joint_indices']]
@@ -100,10 +102,44 @@ def rig_guide_shapes(renderer, data):
 
 
 def draw_rig_guide(renderer, painter, data):
+    """Reuse the read-only guide layer while its pose and camera are unchanged."""
+    guide = data.get('rig_guide')
+    if not guide or not guide.get('read_only'):
+        return _draw_rig_guide(renderer, painter, data)
+    shapes, labels = rig_guide_shapes(renderer, data)
+    bounds = QtCore.QRectF(*data['rig_viewport']).intersected(
+        QtCore.QRectF(painter.window())).toAlignedRect()
+    if bounds.isEmpty():
+        return
+    basis, _ = renderer._mgl_scene_skeleton_display_positions(
+        data['owner'], np.array([[0.,0.,0.],[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]]))
+    dpr = max(1., float(painter.device().devicePixelRatioF()))
+    key = (np.asarray(basis).tobytes(), np.asarray(data['rig_projection']).tobytes(),
+           tuple(data['rig_viewport']), bounds.getRect(), dpr, data.get('selected'),
+           tuple(data.get('selected_joints') or []), guide['collisions'], guide['limits'],
+           bool(getattr(renderer, '_rig_colliders_xray', True)))
+    cached = guide.get('_raster_layer')
+    if cached is None or cached[0] is not shapes or cached[1] != key:
+        layer = QtGui.QImage(math.ceil(bounds.width()*dpr), math.ceil(bounds.height()*dpr),
+                             QtGui.QImage.Format_ARGB32_Premultiplied)
+        layer.setDevicePixelRatio(dpr)
+        layer.fill(QtCore.Qt.transparent)
+        layer_painter = QtGui.QPainter(layer)
+        try:
+            layer_painter.translate(-bounds.x(), -bounds.y())
+            _draw_rig_guide(renderer, layer_painter, data, shapes_labels=(shapes, labels))
+        finally:
+            layer_painter.end()
+        cached = (shapes, key, layer)
+        guide['_raster_layer'] = cached
+    painter.drawImage(QtCore.QPointF(bounds.topLeft()), cached[2])
+
+
+def _draw_rig_guide(renderer, painter, data, *, shapes_labels=None):
     guide = data.get('rig_guide')
     if not guide:
         return
-    shapes,labels = rig_guide_shapes(renderer,data)
+    shapes,labels = shapes_labels if shapes_labels is not None else rig_guide_shapes(renderer,data)
     xray = bool(getattr(renderer,'_rig_colliders_xray',True))
     matrix = data['rig_projection']
     x,y,w,h = data['rig_viewport']
@@ -111,6 +147,8 @@ def draw_rig_guide(renderer, painter, data):
     selected_joints = set(data.get('selected_joints') or [])
     if selected:
         selected_joints.add(selected)
+    aliases = {actual:role for role,actual in guide.get('joint_aliases',{}).items()}
+    selected_joints = {aliases.get(name,name) for name in selected_joints}
     colors = {'collision':(65,210,235), 'limit':(250,185,65), 'twist':(185,120,255),
               'pointer':(125,255,165),'limit_hit':(255,90,90)}
 
@@ -141,13 +179,25 @@ def draw_rig_guide(renderer, painter, data):
         painter.setRenderHint(QtGui.QPainter.Antialiasing,True)
         faces, wires = [], []
         guide['_pick_volumes'] = []
+        visible_shapes = []
+        sets = []
         for shape in shapes:
             kind = shape['kind']
             if kind == 'collision' and not guide['collisions']:
                 continue
             if kind != 'collision' and (not guide['limits'] or (selected_joints and shape['joint'] not in selected_joints)):
                 continue
-            projected_sets = project_sets(shape['faces']+shape['wires'])
+            visible_shapes.append(shape)
+            sets.extend(shape['faces']+shape['wires'])
+        # Transform/project all guide vertices together. Looking up the owner
+        # matrix separately for every body/finger shape dominated scrubbing.
+        all_projected = project_sets(sets)
+        cursor = 0
+        for shape in visible_shapes:
+            kind = shape['kind']
+            count = len(shape['faces'])+len(shape['wires'])
+            projected_sets = all_projected[cursor:cursor+count]
+            cursor += count
             for projected in projected_sets[:len(shape['faces'])]:
                 if projected:
                     poly, depth = projected

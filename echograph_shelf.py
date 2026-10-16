@@ -6922,7 +6922,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         setter = getattr(view, "_timeline_on_frame_spin_changed", None)
         if callable(setter):
             try:
-                setter(max(0, int(frame)))
+                frame = max(0, int(frame))
+                # The handler assumes the spin box already holds this frame.
+                # Rendering and range controls also read the spin box directly.
+                view._timeline_set_frame_widgets(frame)
+                setter(frame)
             except Exception:
                 pass
 
@@ -8387,6 +8391,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             data = self.scene.to_dict()
             self._inject_panel_layout_into_workflow_data(data)
             self._inject_scene_restore_into_workflow_data(data)
+            self._inject_timeline_frame_into_workflow_data(data)
 
             # Optional: Append-aware preview block
             try:

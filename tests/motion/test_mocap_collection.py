@@ -467,6 +467,51 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(spec.output_number(self.model), 0)
         self.assertFalse(self.widget._live_timer.isActive())
 
+    def test_live_view_number_typing_waits_for_enter_or_focus_loss(self):
+        paths = [Path(self.temp.name)/f'take_{i:03d}.bvh' for i in range(128)]
+        for path in paths:
+            path.write_text(BVH.replace('{x}', '1'), encoding='utf-8')
+        spec.add_paths(self.model, paths, self.scene)
+        self.widget.number.setValue(1)
+        with patch.object(self.widget, '_view') as preview:
+            self.widget.live_view.setChecked(True)
+            QtTest.QTest.qWait(140)
+            preview.reset_mock()
+            changes = QtTest.QSignalSpy(self.scene.paramChanged)
+            edit = self.widget.number.lineEdit()
+            edit.selectAll()
+            for digit in '128':
+                QtTest.QTest.keyClicks(edit, digit)
+                QtTest.QTest.qWait(140)
+                self.assertEqual(spec.output_number(self.model), 1)
+                self.assertEqual(changes.count(), 0)
+                preview.assert_not_called()
+            self.assertEqual(edit.text(), '128')
+            QtTest.QTest.keyClick(self.widget.number, QtCore.Qt.Key_Return)
+            QtTest.QTest.qWait(140)
+            self.assertEqual(spec.output_number(self.model), 128)
+            self.assertEqual(self.widget.slider.value(), 128)
+            self.assertEqual(changes.count(), 1)
+            preview.assert_called_once_with(live=True, frame=False)
+
+            preview.reset_mock()
+            edit.selectAll()
+            QtTest.QTest.keyClick(edit, QtCore.Qt.Key_Backspace)
+            QtTest.QTest.qWait(140)
+            self.assertEqual(spec.output_number(self.model), 128)
+            self.assertEqual(changes.count(), 1)
+            preview.assert_not_called()
+            QtTest.QTest.keyClicks(edit, '42')
+            QtTest.QTest.qWait(140)
+            self.assertEqual(spec.output_number(self.model), 128)
+            preview.assert_not_called()
+            APP.sendEvent(self.widget.number, QtGui.QFocusEvent(QtCore.QEvent.FocusOut))
+            QtTest.QTest.qWait(140)
+            self.assertEqual(spec.output_number(self.model), 42)
+            self.assertEqual(self.widget.slider.value(), 42)
+            self.assertEqual(changes.count(), 2)
+            preview.assert_called_once_with(live=True, frame=False)
+
     def test_live_view_updates_selected_clip_and_preserves_camera(self):
         window = QtWidgets.QMainWindow()
         window.setCentralWidget(QtWidgets.QGraphicsView(self.scene))

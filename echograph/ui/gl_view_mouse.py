@@ -604,6 +604,8 @@ def _handle_mouse_press_moderngl(self, e):
                 return True
         if self._handle_mouse_press_moderngl_mesh_box_select_start(e, alt_pressed):
             return True
+        if _handle_animation_correction_control_press(self,e,alt_pressed):
+            return True
         prefer_gizmo = False
         if not mesh_element_mode:
             # Shift-click must reach joints even where the active gizmo overlaps.
@@ -765,6 +767,51 @@ def _show_scene_joint_picker(self, renderer, handles, e, *, additive=False):
     menu.aboutToHide.connect(clear_menu)
     position = e.globalPosition().toPoint() if hasattr(e, "globalPosition") else e.globalPos()
     menu.popup(position + QtCore.QPoint(12, 12))
+
+
+def _handle_animation_correction_control_press(self,event,alt_pressed):
+    if alt_pressed or event.button() != QtCore.Qt.LeftButton:
+        return False
+    session = getattr(self,'_animation_correction_session',None)
+    renderer = getattr(self,'_mgl_renderer',None) or self
+    if session is None or not session.ik_enabled:
+        return False
+    if str(getattr(renderer,'_mgl_scene_skeleton_active_owner','')).lower() != session.item.model.name.lower():
+        return False
+    ray = session.ray(event)
+    if ray is None:
+        return False
+    origin,direction = (np.asarray(value,dtype=float) for value in ray)
+    handles = (getattr(renderer,'_mgl_scene_skeleton_handles_by_owner',{}) or {}).get(session.item.model.name,[])
+    nearest = None
+    for handle in handles:
+        if not handle.get('ik_control'):
+            continue
+        center = np.asarray(handle['position'],dtype=float)
+        radius = float(handle['control_radius'])
+        parallel = np.abs(direction) < 1e-10
+        if np.any(parallel & (np.abs(origin-center) > radius)):
+            continue
+        safe = np.where(parallel,1.,direction)
+        first,last = (center-radius-origin)/safe,(center+radius-origin)/safe
+        low = np.where(parallel,-np.inf,np.minimum(first,last))
+        high = np.where(parallel,np.inf,np.maximum(first,last))
+        near,far = max(0.,float(low.max())),float(high.min())
+        if near <= far and (nearest is None or near < nearest[0]):
+            nearest = (near,handle)
+    if nearest is None:
+        return False
+    handle = nearest[1]
+    token = renderer._mgl_scene_skeleton_joint_owner_token(session.item.model.name,handle['name'])
+    pick_gizmo = getattr(self,'_handle_mouse_press_moderngl_left_gizmo',None)
+    if getattr(self,'_xform_gizmo_owner',None) == token and callable(pick_gizmo) and pick_gizmo(event):
+        return True
+    renderer._mgl_scene_skeleton_handle_click(handle)
+    if not session.start_drag(handle,event):
+        return False
+    self._mgl_pick_press_pos = None
+    event.accept()
+    return True
 
 
 def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
@@ -3139,6 +3186,11 @@ def _mouse_move_event_impl(self, e):
     _graph_gl_view_super(self).mouseMoveEvent(e)
 
 def _handle_mouse_move_moderngl(self, e, _rot_dbg):
+    correction_drag = getattr(self,'_animation_correction_drag',None)
+    if correction_drag is not None:
+        correction_drag.drag_to(e)
+        e.accept()
+        return True
     if self._use_moderngl:
         if getattr(self, "_cloth_mouse_move", lambda event: False)(e):
             return True
@@ -4161,6 +4213,12 @@ def _handle_mouse_move_moderngl_xform_translate_apply_owner(self, new_pos, owner
     except Exception:
         return
 
+    correction_edit = getattr(renderer, "_mgl_scene_skeleton_correction_edit", None)
+    if callable(correction_edit) and correction_edit(owner, "move", pos_tuple):
+        decoded = renderer._mgl_scene_skeleton_decode_joint_owner(owner)
+        self._refresh_scene_skeleton_joint_gizmo_after_rotation(renderer, owner, decoded[0])
+        return
+
     try:
         is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
         apply_pose_pos = getattr(renderer, "_mgl_retarget_apply_target_pose_joint_position", None)
@@ -4437,6 +4495,11 @@ def _handle_mouse_move_moderngl_xform_scale_axis_factor(self, axis_world, g0, px
 def _handle_mouse_move_moderngl_xform_scale_apply_owner(self, e, owner, new_scl, is_splat):
     try:
         renderer = getattr(self, "_mgl_renderer", None) or self
+        correction_edit = getattr(renderer, "_mgl_scene_skeleton_correction_edit", None)
+        if callable(correction_edit) and correction_edit(owner, "scale"):
+            self.update()
+            e.accept()
+            return
         is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
         if callable(is_pose_joint) and bool(is_pose_joint(owner)):
             self.update()
@@ -5168,6 +5231,9 @@ def _handle_mouse_release_moderngl_commit_retarget_pose_if_needed(self, owner=No
         if not owner:
             owner = getattr(self, "_xform_gizmo_owner", None)
         renderer = getattr(self, "_mgl_renderer", None) or self
+        correction_edit = getattr(renderer, "_mgl_scene_skeleton_correction_edit", None)
+        if callable(correction_edit) and correction_edit(owner, "commit"):
+            return True
         is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
         commit_pose = getattr(renderer, "_mgl_retarget_commit_target_pose_edit", None)
         if callable(is_pose_joint) and callable(commit_pose) and bool(is_pose_joint(owner)):
@@ -5702,6 +5768,12 @@ def mouseReleaseEvent(self, e):
 
 
 def _mouse_release_event_impl(self, e):
+    correction_drag = getattr(self,'_animation_correction_drag',None)
+    if correction_drag is not None:
+        correction_drag.drag_to(e)
+        correction_drag.commit()
+        e.accept()
+        return
     rot_shared = getattr(self, "_rot_shared", None)
 
     mask_paint_release = getattr(self, "_handle_mask_paint_release", None)

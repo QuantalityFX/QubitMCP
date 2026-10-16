@@ -7,10 +7,11 @@ from uuid import uuid4
 import numpy as np
 from scipy.spatial.transform import Rotation
 from PySide6 import QtCore, QtWidgets
+from shiboken6 import isValid
 
 from nodes.core import Spec
 from nodes.mocap_import import spec as mocap
-from echograph.motion.conversion import JOINT_NAMES, write_bvh
+from echograph.motion.conversion import JOINT_NAMES, write_bvh_frames
 from echograph.motion.rig_limiter import limit_clip, REPAIR_VERSION
 from echograph.motion import rig_repair_cache as repair_files
 from echograph.motion.rig_limits import preview_limit_fields, preview_limit_from_fields
@@ -18,6 +19,25 @@ from echograph.motion.rig_preview_settings import load_preview_limits, load_prev
 from echograph.motion.hand_rig import full_rig_layout, expanded_limits, hand_limits_from_fields
 from echograph.motion.rig_volumes import volume_settings
 from echograph.rigging.fbx_stage5_evaluator import evaluation_cache_token, evaluate_rig_at_time
+
+_repair_active = False
+_fault_log = None
+
+
+def _enable_repair_fault_log():
+    """Retain native fault traces, which cannot be caught as Python errors."""
+    import faulthandler
+    global _fault_log
+    if not faulthandler.is_enabled():
+        try:
+            path = Path(__file__).resolve().parents[2]/'logs'/'rig_limiter_native_fault.log'
+            path.parent.mkdir(parents=True,exist_ok=True)
+            _fault_log = path.open('a',encoding='utf-8')
+            faulthandler.enable(_fault_log,all_threads=True)
+        except OSError:
+            if _fault_log is not None:
+                _fault_log.close()
+                _fault_log = None
 
 
 def settings(model):
@@ -66,10 +86,14 @@ def ik_repair_enabled(model):
     return mocap._param_value(model,'ik_repair') != '0'
 
 
-def repair_key(skeleton,clip,limits,volumes,collisions,hands,*,ik_repair=True):
+def thorough_repair_enabled(model):
+    return mocap._param_value(model,'thorough_repair') == '1'
+
+
+def repair_key(skeleton,clip,limits,volumes,collisions,hands,*,ik_repair=True,thorough_repair=False):
     return (evaluation_cache_token(skeleton),evaluation_cache_token(clip),
             json.dumps(limits,sort_keys=True),json.dumps(volumes,sort_keys=True),collisions,json.dumps(hands,sort_keys=True),
-            ik_repair,REPAIR_VERSION)
+            ik_repair,thorough_repair,REPAIR_VERSION)
 
 
 def restore_repair(model, context, key):
@@ -116,7 +140,7 @@ def refresh_repair_status(model, key=None):
     if key is None:
         limits, volumes, collisions = settings(model)
         options = repair_key(None, None, limits, volumes, collisions, hand_settings(model),
-                             ik_repair=ik_repair_enabled(model))[2:]
+                             ik_repair=ik_repair_enabled(model),thorough_repair=thorough_repair_enabled(model))[2:]
         key = getattr(model, '_rig_limiter_source_key', (None, None)) + options
     cached = getattr(model, '_rig_limiter_cache', None)
     same_source = cached is not None and cached[0][:2] == key[:2]
@@ -138,6 +162,7 @@ def refresh_repair_status(model, key=None):
             lines.append(f"{report.get('interpolated_samples_repaired',0)} between-frame samples repaired")
         if report.get('remaining_interpolated_contact_samples',0):
             lines.append(f"{report['remaining_interpolated_contact_samples']} checks still show added between-frame overlap")
+        lines.append('Thorough repair' if report.get('thorough_repair') else 'Fast repair')
     summary = '\n'.join(lines)
     model._rig_limiter_summary = summary
     status = repair_status(model)
@@ -171,6 +196,7 @@ def input_context(item, errors, warnings, *, _depth=0, _visited=None):
 
 class _RepairJob(QtCore.QThread):
     progress = QtCore.Signal(int, int)
+    stage = QtCore.Signal(str)
 
     def __init__(self, function, parent):
         super().__init__(parent)
@@ -187,6 +213,7 @@ class _RepairJob(QtCore.QThread):
             if now-last_update >= .05:
                 self.progress.emit(frame,total)
                 last_update = now
+        progress.set_stage = self.stage.emit
         try:
             self.result = self.function(progress)
             if self.isInterruptionRequested():
@@ -219,9 +246,15 @@ class _RepairProgressDialog(QtWidgets.QDialog):
         self.stop.clicked.connect(self.stop_requested)
         self.setMinimumWidth(380)
 
+    @QtCore.Slot(int,int)
     def update_progress(self,frame,total):
         self.bar.setMaximum(total)
         self.bar.setValue(frame)
+
+    @QtCore.Slot(str)
+    def update_stage(self,label):
+        if self.stop.isEnabled():
+            self.label.setText(label)
 
     def reject(self):
         # Esc and the title-bar close button request cancellation without hiding
@@ -234,6 +267,18 @@ class _RepairProgressDialog(QtWidgets.QDialog):
 
 
 def run_repair(function, parent=None):
+    global _repair_active
+    if _repair_active:
+        raise ValueError('A Rig Limiter repair is already running.')
+    _repair_active = True
+    try:
+        _enable_repair_fault_log()
+        return _run_repair_dialog(function,parent)
+    finally:
+        _repair_active = False
+
+
+def _run_repair_dialog(function,parent):
     if parent is not None and isinstance(parent,QtWidgets.QWidget):
         proxy = parent.graphicsProxyWidget()
         if proxy is not None and proxy.scene() is not None and proxy.scene().views():
@@ -247,18 +292,19 @@ def run_repair(function, parent=None):
     # placing it in Windows' global topmost band over unrelated applications.
     dialog.setWindowModality(QtCore.Qt.ApplicationModal)
     job = _RepairJob(function,dialog)
-    job.progress.connect(dialog.update_progress)
+    job.progress.connect(dialog.update_progress,QtCore.Qt.QueuedConnection)
+    job.stage.connect(dialog.update_stage,QtCore.Qt.QueuedConnection)
     def request_stop():
         job.requestInterruption()
         dialog.stop.setEnabled(False)
         dialog.stop.setText('Stopping…')
         dialog.label.setText('Stopping repair…')
     dialog.stop_requested.connect(request_stop)
-    job.finished.connect(dialog.accept)
-    job.start()
+    job.finished.connect(dialog.accept,QtCore.Qt.QueuedConnection)
     dialog.show()
     dialog.raise_()
     dialog.activateWindow()
+    job.start()
     dialog.exec()
     if job.isRunning():
         job.requestInterruption()
@@ -287,11 +333,12 @@ def resolve_context(item, errors, warnings, *, target=False, _depth=0, _visited=
             return None
         limits,volumes,collisions = settings(model)
         ik_repair = ik_repair_enabled(model)
+        thorough_repair = thorough_repair_enabled(model)
         hands = hand_settings(model)
         skeleton,source = context['skeleton'],context.get('clip')
         if source is None:
             raise ValueError('Connect an animated skeleton to Rig Limiter.')
-        key = repair_key(skeleton,source,limits,volumes,collisions,hands,ik_repair=ik_repair)
+        key = repair_key(skeleton,source,limits,volumes,collisions,hands,ik_repair=ik_repair,thorough_repair=thorough_repair)
         model._rig_limiter_source_key = key[:2]
         restore_repair(model, context, key)
         cached = getattr(model,'_rig_limiter_cache',None)
@@ -349,23 +396,33 @@ def prepare_repair(item, parent=None):
         raise ValueError('\n'.join(errors))
     limits,volumes,collisions = settings(item.model)
     ik_repair = ik_repair_enabled(item.model)
+    thorough_repair = thorough_repair_enabled(item.model)
     hands = hand_settings(item.model)
     skeleton,clip = context['skeleton'],context.get('clip')
-    key = repair_key(skeleton,clip,limits,volumes,collisions,hands,ik_repair=ik_repair)
+    key = repair_key(skeleton,clip,limits,volumes,collisions,hands,ik_repair=ik_repair,thorough_repair=thorough_repair)
     item.model._rig_limiter_source_key = key[:2]
     restore_repair(item.model, context, key)
     refresh_repair_status(item.model, key)
     if repair_status(item.model).pending:
         source = getattr(item.model, '_rig_limiter_disk_source', None)
         source_hash = repair_files.file_signature(source) if source is not None else None
-        result = run_repair(lambda progress:limit_clip(skeleton,clip,limits,volumes,
-                                                      collisions=collisions,ik_repair=ik_repair,
-                                                      progress=progress,hand_limits=hands),parent)
-        if source is not None:
-            if repair_files.file_signature(source) != source_hash:
-                raise ValueError('The source BVH changed during repair. Reload it and retry.')
-            record = repair_files.save_repair(source, repair_files.options_signature(key[2:]), result[1],
-                lambda path: export_context(dict(skeleton=skeleton, clip=result[0]), path))
+        def repair(progress):
+            def solving(f,n):
+                progress(int(850*f/max(1,n)),1000)
+            solving.set_stage = getattr(progress,'set_stage',lambda label:None)
+            result = limit_clip(skeleton,clip,limits,volumes,collisions=collisions,ik_repair=ik_repair,
+                                progress=solving,hand_limits=hands,thorough_repair=thorough_repair)
+            record = None
+            if source is not None:
+                solving.set_stage('Saving corrected BVH...')
+                if repair_files.file_signature(source) != source_hash:
+                    raise ValueError('The source BVH changed during repair. Reload it and retry.')
+                record = repair_files.save_repair(source,repair_files.options_signature(key[2:]),result[1],
+                    lambda path:export_context(dict(skeleton=skeleton,clip=result[0]),path,
+                        progress=lambda f,n:progress(850+int(150*f/max(1,n)),1000)))
+            return result,record
+        result,record = run_repair(repair,parent)
+        if record is not None:
             item.model._rig_limiter_disk_record = record
         item.model._rig_limiter_cache = (key,result,(skeleton,clip))
     refresh_repair_status(item.model, key)
@@ -374,30 +431,32 @@ def prepare_repair(item, parent=None):
         refresh_repair_records(context['model'], item.scene())
 
 
-def export_context(context, path):
+def export_context(context, path, *, progress=None):
     skeleton,clip = context['skeleton'],context['clip']
     count = max(1,int(round(clip.duration*clip.sample_rate_hz))+1)
-    local = [evaluate_rig_at_time(skeleton,clip,float(t)).local_transforms
-             for t in np.linspace(clip.start_time,clip.end_time,count)]
-    positions = np.array([[j.translation for j in pose] for pose in local])
     offsets = np.array([j.local_bind.translation for j in skeleton.joints])
-    rotations = Rotation.from_quat(np.array([[j.rotation for j in pose] for pose in local]).reshape(-1,4)).as_matrix()
-    rotations = rotations.reshape(count,len(skeleton.joints),3,3)
-    if not np.allclose(positions[:,1:],offsets[None,1:],atol=1e-6,rtol=1e-5):
-        raise ValueError('BVH export requires fixed offsets on every non-root joint.')
-    if not np.allclose([[j.scale for j in pose] for pose in local],1.,atol=1e-6):
-        raise ValueError('BVH export cannot store animated bone scale.')
-    # BVH root channels are relative to its OFFSET.
-    positions[:,0] -= offsets[0]
-    write_bvh(Path(path),positions,clip.sample_rate_hz,rotations,offsets,
-              names=skeleton.joint_names,parents=[j.parent_index for j in skeleton.joints],
-              end_sites=skeleton.metadata.get('end_sites'))
+    def frames():
+        for frame in range(count):
+            if progress is not None:
+                progress(frame,count)
+            time = clip.start_time+clip.duration*frame/max(1,count-1)
+            local = evaluate_rig_at_time(skeleton,clip,time).local_transforms
+            positions = np.array([j.translation for j in local])
+            if not np.allclose(positions[1:],offsets[1:],atol=1e-6,rtol=1e-5):
+                raise ValueError('BVH export requires fixed offsets on every non-root joint.')
+            if not np.allclose([j.scale for j in local],1.,atol=1e-6):
+                raise ValueError('BVH export cannot store animated bone scale.')
+            # BVH root channels are relative to its OFFSET.
+            yield positions[0]-offsets[0],Rotation.from_quat([j.rotation for j in local]).as_matrix()
+    write_bvh_frames(Path(path),frames(),count,clip.sample_rate_hz,offsets,
+                     names=skeleton.joint_names,parents=[j.parent_index for j in skeleton.joints],
+                     end_sites=skeleton.metadata.get('end_sites'),progress=progress)
 
 
 def build_ports(item):
-    for name,default in (('animation',''),('rig_settings','{}'),('collisions','1'),('ik_repair','1')):
+    for name,default in (('animation',''),('rig_settings','{}'),('collisions','1'),('ik_repair','1'),('thorough_repair','0')):
         mocap._ensure_param(item,name,default)
-    mocap._ensure_hidden_params(item.model,['rig_settings','collisions','ik_repair'])
+    mocap._ensure_hidden_params(item.model,['rig_settings','collisions','ik_repair','thorough_repair'])
     item.model._named_inputs = ['animation']
     item._default_named_input = 'animation'
     item._show_default_input_with_named = False
@@ -421,22 +480,37 @@ class LimiterControls(QtWidgets.QWidget):
         self.ik_repair.setChecked(ik_repair_enabled(item.model))
         self.ik_repair.toggled.connect(self.set_ik_repair)
         layout.addWidget(self.ik_repair)
+        self.thorough = QtWidgets.QCheckBox('Thorough repair (slower)')
+        self.thorough.setToolTip('Spend more time resolving between-frame contacts. '
+                                 'Leave off for fast repairs. Unresolved contacts are reported in either mode.')
+        self.thorough.setChecked(thorough_repair_enabled(item.model))
+        self.thorough.toggled.connect(self.set_thorough_repair)
+        layout.addWidget(self.thorough)
+        action_buttons = []
         for label,callback in (('Preview',self.preview),('Repair',self.repair),('Export corrected BVH…',self.export),
                                ('Export checked collection…',self.export_collection),('Reset limits and volumes',self.reset)):
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(callback)
             layout.addWidget(button)
+            action_buttons.append(button)
             if label == 'Preview':
                 self.preview_button = button
                 button.setObjectName('RigLimiterPreviewButton')
+                button.setStyleSheet(
+                    "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+                    "QPushButton:hover{background:#1d4ed8;}"
+                    "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+                )
                 button.setToolTip('Preview the animation and edit rig limits and colliders without running repair.')
             if label == 'Repair':
                 self.repair_button = button
                 button.setObjectName('RigLimiterRepairButton')
-                button.setMinimumHeight(max(28, button.sizeHint().height()))
                 button.setStyleSheet('QPushButton[repairPending="true"] { background-color:#9f2929; '
                                     'color:white; border:1px solid #f87171; border-radius:3px; }'
                                     'QPushButton[repairPending="true"]:hover { background-color:#b73535; }')
+        button_height = action_buttons[-1].sizeHint().height()
+        for button in action_buttons:
+            button.setFixedHeight(button_height)
         self.status = QtWidgets.QLabel('Connect an existing PriorMDM animation.')
         self.status.setWordWrap(True)
         self.status.setFixedHeight(self.status.fontMetrics().lineSpacing()*10)
@@ -447,9 +521,12 @@ class LimiterControls(QtWidgets.QWidget):
         repair_status(item.model).changed.connect(self._refresh_repair_button)
         self.refresh()
         # Workflow loading creates node widgets before reconnecting their edges.
-        QtCore.QTimer.singleShot(0, self.refresh)
+        QtCore.QTimer.singleShot(0,self,self.refresh)
 
+    @QtCore.Slot()
     def _refresh_repair_button(self):
+        if not isValid(self) or not isValid(self.repair_button) or not isValid(self.status):
+            return
         status = repair_status(self.item.model)
         button = self.repair_button
         if button.property('repairPending') != status.pending:
@@ -461,19 +538,25 @@ class LimiterControls(QtWidgets.QWidget):
                           if status.pending else 'A repair for the current source and saved settings is available.')
         self.status.setText(status.summary)
 
+    @QtCore.Slot()
     def refresh(self,*args):
-        if getattr(self, '_refreshing', False):
+        if not isValid(self) or getattr(self, '_refreshing', False):
             return
         self._refreshing = True
         try:
             resolve_context(self.item, [], [])
         finally:
             self._refreshing = False
+        if not isValid(self) or not isValid(self.collisions) or not isValid(self.ik_repair) or not isValid(self.thorough):
+            return
         blocker = QtCore.QSignalBlocker(self.collisions)
         self.collisions.setChecked(settings(self.item.model)[2])
         del blocker
         blocker = QtCore.QSignalBlocker(self.ik_repair)
         self.ik_repair.setChecked(ik_repair_enabled(self.item.model))
+        del blocker
+        blocker = QtCore.QSignalBlocker(self.thorough)
+        self.thorough.setChecked(thorough_repair_enabled(self.item.model))
         del blocker
         refresh_repair_status(self.item.model)
         self._refresh_repair_button()
@@ -484,6 +567,10 @@ class LimiterControls(QtWidgets.QWidget):
 
     def set_ik_repair(self,enabled):
         mocap._set_param_value(self.item.model,'ik_repair','1' if enabled else '0')
+        self.changed()
+
+    def set_thorough_repair(self,enabled):
+        mocap._set_param_value(self.item.model,'thorough_repair','1' if enabled else '0')
         self.changed()
 
     def changed(self):
@@ -556,6 +643,7 @@ class LimiterControls(QtWidgets.QWidget):
             return
         limits,volumes,collisions = settings(self.item.model)
         ik_repair = ik_repair_enabled(self.item.model)
+        thorough_repair = thorough_repair_enabled(self.item.model)
         hands = hand_settings(self.item.model)
         base = mocap._workflow_dir_for_node(upstream)
         saved = []
@@ -566,11 +654,16 @@ class LimiterControls(QtWidgets.QWidget):
                 if path is None:
                     raise ValueError('Missing animation: '+raw)
                 loaded = ingest_bvh_animation_data(path)
+                def solving(f,n):
+                    progress(number*100+int(f/max(1,n)*85),len(paths)*100)
+                solving.set_stage = getattr(progress,'set_stage',lambda label:None)
                 clip,report = limit_clip(loaded.skeleton,loaded.clips[0],limits,volumes,collisions=collisions,hand_limits=hands,
-                    ik_repair=ik_repair,
-                    progress=lambda f,n:progress(number*100+int(f/max(1,n)*100),len(paths)*100))
+                    ik_repair=ik_repair,progress=solving,thorough_repair=thorough_repair)
                 output = Path(directory)/(path.stem+'_limited_'+uuid4().hex[:8]+'.bvh')
-                export_context(dict(skeleton=loaded.skeleton,clip=clip),output)
+                stage = getattr(progress,'set_stage',lambda label:None)
+                stage('Saving corrected BVH...')
+                export_context(dict(skeleton=loaded.skeleton,clip=clip),output,
+                    progress=lambda f,n:progress(number*100+85+int(f/max(1,n)*15),len(paths)*100))
                 saved.append(output)
                 reports.append(report)
             return reports

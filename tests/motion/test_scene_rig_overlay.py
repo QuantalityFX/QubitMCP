@@ -209,3 +209,37 @@ class SceneRigOverlayTests(unittest.TestCase):
         self.assertEqual(images[0].pixelColor(25,50).alpha(),20)
         # Solid colliders belong to the lit GL pass, below every skeleton guide.
         self.assertEqual(images[2].pixelColor(25,50).alpha(),0)
+
+    def test_read_only_layer_is_cached_and_invalidated_by_pose_and_camera(self):
+        from echograph.ui.priormdm_rig_overlay import draw_rig_guide
+        context = self.context()
+        context['clip'] = AnimationClip(name='Move', start_time=0., end_time=1., sample_rate_hz=30., tracks=[
+            JointAnimationTrack(joint_name='pelvis', translation_keys=[
+                Vec3Keyframe(time=0., value=(0., 0., 0.)),
+                Vec3Keyframe(time=1., value=(.5, 0., 0.))])])
+        guide = collider_guide(context)
+        sample = [0.]
+        renderer = SimpleNamespace(
+            _mgl_fbx_context_timeline_sample_seconds=lambda *args: sample[0],
+            _mgl_scene_skeleton_display_positions=lambda owner, rows: (rows, {}))
+        data = dict(owner='Character', rig_context=context, rig_guide=guide,
+                    rig_projection=np.eye(4), rig_viewport=(0,0,200,200))
+        def draw():
+            image = QtGui.QImage(200,200,QtGui.QImage.Format_ARGB32)
+            image.fill(QtCore.Qt.transparent)
+            painter = QtGui.QPainter(image)
+            try:
+                draw_rig_guide(renderer,painter,data)
+            finally:
+                painter.end()
+            return image
+        first = draw()
+        layer = guide['_raster_layer'][2]
+        self.assertEqual(draw(),first)
+        self.assertIs(guide['_raster_layer'][2],layer)
+        sample[0] = 1.
+        moved = draw()
+        self.assertNotEqual(moved,first)
+        self.assertIsNot(guide['_raster_layer'][2],layer)
+        data['rig_projection'][0,3] = -.5
+        self.assertNotEqual(draw(),moved)

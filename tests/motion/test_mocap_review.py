@@ -460,7 +460,7 @@ class ReviewTests(unittest.TestCase):
             self.widget = self.item._plugin_proxies[0].widget()
             return str(self.root / "renders")
         with patch.object(QtWidgets.QFileDialog, "getExistingDirectory", side_effect=pick_folder), \
-             patch.object(QtWidgets.QMessageBox, "information") as message:
+             patch.object(review, "_show_render_load_result") as message:
             self.widget._load_renders()
             for _ in range(100):
                 time.sleep(0.01)  # Let the Python scan worker acquire the GIL.
@@ -487,6 +487,46 @@ class ReviewTests(unittest.TestCase):
         QtTest.QTest.qWait(130)
         window.open_scene_assets.assert_called_once()
         self.assertEqual(Path(window.open_scene_assets.call_args.args[0][0]["path"]), self.paths[1])
+
+    def test_next_live_preview_restores_review_owner_and_focus_after_refresh(self):
+        self.assign()
+        window = QtWidgets.QMainWindow()
+        window.setCentralWidget(QtWidgets.QGraphicsView(self.scene))
+        window.open_scene_assets = Mock(return_value=True)
+        self.addCleanup(window.deleteLater)
+        window.show()
+        dialog = self.dialog(1)
+        self.widget.live_view.setChecked(True)
+        QtTest.QTest.qWait(130)
+        flags = dialog.windowFlags()
+
+        def refresh_viewport(*args, **kwargs):
+            # Reproduce a viewport refresh dropping the native transient hint
+            # and bringing the app forward without a WinIdChange notification.
+            dialog.windowHandle().setTransientParent(None)
+            window.raise_()
+            window.activateWindow()
+            return True
+
+        window.open_scene_assets.reset_mock()
+        window.open_scene_assets.side_effect = refresh_viewport
+        with patch.object(dialog, 'isActiveWindow', return_value=True), \
+                patch.object(dialog, 'activateWindow') as activate:
+            dialog.next.click()
+            QtTest.QTest.qWait(150)
+            window.open_scene_assets.assert_called_once()
+            self.assertIs(dialog.windowHandle().transientParent(), window.windowHandle())
+            self.assertTrue(dialog.isVisible())
+            self.assertTrue(dialog.player._seq_timer.isActive())
+            self.assertEqual(dialog.windowFlags(), flags)
+            activate.assert_called()
+        # A deliberately minimized review must not be reopened by Live View.
+        dialog.showMinimized()
+        with patch.object(dialog, 'activateWindow') as activate:
+            self.widget._view(live=True, frame=False)
+            APP.processEvents()
+            self.assertTrue(dialog.isMinimized())
+            activate.assert_not_called()
 
     def test_review_and_rename_do_not_change_running_batch(self):
         self.assign()

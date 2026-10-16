@@ -262,8 +262,14 @@ class BlendControls(QtWidgets.QWidget):
         self.curve.currentIndexChanged.connect(lambda _: self.set_value("blend_curve", self.curve.currentData()))
         form.addRow("Blend curve", self.curve)
         button = QtWidgets.QPushButton("View")
+        button.setStyleSheet(
+            "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+            "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+        )
         button.clicked.connect(lambda: view_result(self.item))
-        layout.addWidget(button)
+        button.setFixedWidth(max(100, button.sizeHint().width()))
+        layout.addWidget(button, 0, QtCore.Qt.AlignHCenter)
         self.status = QtWidgets.QLabel("Connect a bind-pose rig and an animation.")
         self.status.setWordWrap(True)
         self.status.setFixedHeight(60)

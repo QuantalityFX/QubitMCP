@@ -462,6 +462,17 @@ class RepairTests(unittest.TestCase):
             self.assertIsNot(enabled['clip'],disabled['clip'])
             self.assertTrue(enabled['clip'].metadata['rig_limiter']['ik_repair_enabled'])
             self.assertFalse(controls.repair_button.property('repairPending'))
+            self.assertFalse(controls.thorough.isChecked())
+            fast_key = limiter.model._rig_limiter_cache[0]
+            controls.thorough.setChecked(True)
+            self.assertTrue(controls.repair_button.property('repairPending'))
+            with patch.object(spec,'run_repair',side_effect=lambda function,parent=None:function(lambda f,n:None)), \
+                 patch.object(spec,'limit_clip',wraps=limit_clip) as repair:
+                spec.prepare_repair(limiter)
+            self.assertTrue(repair.call_args.kwargs['thorough_repair'])
+            self.assertTrue(limiter.model._rig_limiter_cache[1][1]['thorough_repair'])
+            self.assertNotEqual(limiter.model._rig_limiter_cache[0],fast_key)
+            self.assertFalse(controls.repair_button.property('repairPending'))
             collection.save_state(source.model,collection.entries(source.model),1,scene)
             with patch.object(spec,'limit_clip',side_effect=AssertionError('Input change must not repair')):
                 changed = spec.resolve_context(limiter,[],[])
@@ -627,6 +638,72 @@ class RepairTests(unittest.TestCase):
             raise ValueError('cancelled')
         with self.assertRaisesRegex(ValueError,'cancelled'):
             spec.run_repair(fail)
+
+    def test_refresh_handles_controls_rebuilt_while_resolving_input(self):
+        from shiboken6 import delete, isValid
+        scene = Scene()
+        limiter = scene.add_node(GraphNode('Limiter',kind='rig_limiter'),QtCore.QPointF())
+        controls = limiter._plugin_proxies[0].widget()
+        def rebuild(*args,**kwargs):
+            delete(controls)
+        with patch.object(spec,'resolve_context',side_effect=rebuild):
+            controls.refresh()
+        self.assertFalse(isValid(controls))
+        APP.processEvents()  # The queued initial refresh must be cancelled with its widget.
+
+    def test_worker_updates_are_queued_to_the_ui_thread_and_reentry_is_rejected(self):
+        from time import sleep
+        threads,stages = [],[]
+        original = spec._RepairProgressDialog.update_progress
+        original_stage = spec._RepairProgressDialog.update_stage
+        @QtCore.Slot(int,int)
+        def update_progress(dialog,frame,total):
+            threads.append(QtCore.QThread.currentThread() == APP.thread())
+            original(dialog,frame,total)
+        @QtCore.Slot(str)
+        def update_stage(dialog,label):
+            threads.append(QtCore.QThread.currentThread() == APP.thread())
+            stages.append(label)
+            original_stage(dialog,label)
+        def work(progress):
+            with self.assertRaisesRegex(ValueError,'already running'):
+                spec.run_repair(lambda p:None)
+            progress.set_stage('Checking between-frame contacts...')
+            progress(1,2)
+            sleep(.06)
+            progress(2,2)
+            return 'done'
+        with patch.object(spec._RepairProgressDialog,'update_progress',update_progress), \
+             patch.object(spec._RepairProgressDialog,'update_stage',update_stage):
+            self.assertEqual(spec.run_repair(work),'done')
+        self.assertGreaterEqual(len(threads),3)
+        self.assertTrue(all(threads))
+        self.assertEqual(stages,['Checking between-frame contacts...'])
+
+    def test_cancellation_during_refinement_and_streaming_export_keeps_source(self):
+        skeleton,clip,_,_ = fixture(frames=8)
+        source = clip.to_dict()
+        def cancel_refinement(frame,total):
+            if frame >= 650:
+                raise ValueError('cancelled between frames')
+        with self.assertRaisesRegex(ValueError,'cancelled between frames'):
+            limit_clip(skeleton,clip,default_preview_limits(),{},progress=cancel_refinement)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'cancelled.bvh'
+            observations = []
+            def cancel_export(frame,total):
+                observations.append(path.exists())
+                if frame == 3:
+                    raise ValueError('cancelled saving')
+            with self.assertRaisesRegex(ValueError,'cancelled saving'):
+                spec.export_context(dict(skeleton=skeleton,clip=clip),path,progress=cancel_export)
+            self.assertTrue(all(observations))  # Frames are sampled while the output is streamed.
+            self.assertFalse(path.exists())
+            path.write_text('existing BVH',encoding='utf-8')
+            with self.assertRaises(FileExistsError):
+                spec.export_context(dict(skeleton=skeleton,clip=clip),path)
+            self.assertEqual(path.read_text(encoding='utf-8'),'existing BVH')
+        self.assertEqual(clip.to_dict(),source)
 
     def test_stop_button_stays_visible_until_worker_exits(self):
         from time import sleep

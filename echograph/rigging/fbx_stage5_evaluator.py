@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import count
 from typing import Dict, List, Sequence, Tuple
 import math
@@ -353,14 +353,7 @@ def _validated_joint_tracks_for_skeleton(
     return tracks_for_joints
 
 
-def evaluate_rig_at_time(
-    skeleton: SkeletonAsset,
-    clip: AnimationClip | None,
-    time_seconds: float,
-    *,
-    loop: bool = False,
-    include_debug_data: bool = True,
-) -> RigEvaluationResult:
+def _validate_rig_inputs(skeleton, clip):
     skeleton_id = evaluation_cache_token(skeleton)
     if skeleton_id not in _VALIDATED_SKELETON_IDS:
         skeleton.validate()
@@ -371,6 +364,73 @@ def evaluate_rig_at_time(
             clip.validate(skeleton=skeleton)
             _VALIDATED_CLIP_SKELETON_IDS.add(clip_key)
             _trim_runtime_caches()
+
+
+def replace_clip_tracks(skeleton, clip, overrides, *, sample_rate_hz=None):
+    """Copy a validated clip, sharing untouched channels as immutable data.
+
+    Only replacement tracks need validation. Interactive edits must not copy
+    and validate every source key on every mouse event.
+    """
+    _validate_rig_inputs(skeleton, clip)
+    names = set(skeleton.joint_names)
+    for name, track in overrides.items():
+        if name not in names or (track is not None and track.joint_name != name):
+            raise FBXEvaluatorError('Override track does not belong to the skeleton.')
+        if track is not None:
+            track.validate(clip.start_time, clip.end_time, 'Override track')
+    tracks = {track.joint_name:track for track in clip.tracks}
+    for name, track in overrides.items():
+        if track is None:
+            tracks.pop(name, None)
+        else:
+            tracks[name] = track
+    rate = float(clip.sample_rate_hz if sample_rate_hz is None else sample_rate_hz)
+    if not tracks or not math.isfinite(rate) or rate <= 0:
+        raise FBXEvaluatorError('A runtime clip needs tracks and a positive sample rate.')
+    result = replace(clip, tracks=list(tracks.values()), metadata=dict(clip.metadata), sample_rate_hz=rate)
+    _VALIDATED_CLIP_SKELETON_IDS.add((evaluation_cache_token(result), evaluation_cache_token(skeleton)))
+    _trim_runtime_caches()
+    return result
+
+
+def override_rotation_keys(skeleton, clip, keys):
+    """Insert absolute rotation keys without revalidating unchanged source keys."""
+    from .fbx_canonical import JointAnimationTrack, QuatKeyframe
+    _validate_rig_inputs(skeleton, clip)
+    tracks = {track.joint_name:track for track in clip.tracks}
+    for name, entries in keys.items():
+        if name not in skeleton.joint_names:
+            raise FBXEvaluatorError('Rotation override joint does not belong to the skeleton.')
+        if not entries:
+            continue
+        original = tracks.get(name, JointAnimationTrack(name))
+        samples = {key.time:key for key in original.rotation_keys}
+        for stamp, quaternion in entries.items():
+            key = QuatKeyframe(float(stamp), tuple(quaternion))
+            if not math.isfinite(key.time):
+                raise FBXEvaluatorError('Rotation override time must be finite.')
+            key.validate('Rotation override', clip.start_time, clip.end_time)
+            for old in list(samples):
+                if abs(old-key.time) < 1e-8:
+                    samples.pop(old)
+            samples[key.time] = key
+        tracks[name] = replace(original, rotation_keys=[samples[stamp] for stamp in sorted(samples)])
+    result = replace(clip, tracks=list(tracks.values()), metadata=dict(clip.metadata))
+    _VALIDATED_CLIP_SKELETON_IDS.add((evaluation_cache_token(result), evaluation_cache_token(skeleton)))
+    _trim_runtime_caches()
+    return result
+
+
+def evaluate_rig_at_time(
+    skeleton: SkeletonAsset,
+    clip: AnimationClip | None,
+    time_seconds: float,
+    *,
+    loop: bool = False,
+    include_debug_data: bool = True,
+) -> RigEvaluationResult:
+    _validate_rig_inputs(skeleton, clip)
     t = _resolve_sample_time(clip, float(time_seconds), loop=bool(loop))
 
     tracks_for_joints = _validated_joint_tracks_for_skeleton(skeleton, clip)
@@ -428,5 +488,7 @@ __all__ = [
     "FBXEvaluatorError",
     "RigEvaluationResult",
     "evaluation_cache_token",
+    "replace_clip_tracks",
+    "override_rotation_keys",
     "evaluate_rig_at_time",
 ]

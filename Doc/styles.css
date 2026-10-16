@@ -427,6 +427,49 @@ code {
   align-items: stretch;
 }
 
+.grid > .card-wide {
+  grid-column: span 2;
+}
+
+.grid.agents-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.agents-grid > .agent-preparation-card {
+  grid-column: 1 / -1;
+}
+
+.pipeline-node-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.pipeline-node-icons a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.pipeline-node-icons a:hover {
+  border-color: var(--accent-2);
+}
+
+.pipeline-node-icons img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
 @media (max-width: 1500px) {
   .grid.latest-grid {
     column-count: 4;
@@ -467,8 +510,13 @@ code {
   }
 
   .grid.node-catalog-grid,
-  .grid.pipeline-grid {
+  .grid.pipeline-grid,
+  .grid.agents-grid {
     grid-template-columns: 1fr;
+  }
+
+  .grid > .card-wide {
+    grid-column: auto;
   }
 }
 

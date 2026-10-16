@@ -8,6 +8,20 @@ from typing import Dict
 
 
 class GraphGLTimelineIOMixin:
+    def _timeline_correction_session(self, owner=None):
+        renderer = getattr(self,'_mgl_renderer',None) or self
+        token = str(owner or getattr(self,'_timeline_owner_name','') or '')
+        decode = getattr(renderer,'_mgl_scene_skeleton_decode_joint_owner',None)
+        decoded = decode(token) if callable(decode) else None
+        if not decoded:
+            return None
+        context = renderer._mgl_scene_owner_fbx_rig_context(decoded[0]) or {}
+        session = context.get('_animation_correction_session')
+        if session is None:
+            candidate = getattr(self,'_animation_correction_session',None)
+            session = candidate if candidate is not None and candidate.item.model.name == decoded[0] else None
+        return (session,decoded[1]) if session is not None else None
+
     @staticmethod
     def _timeline_safe_name(name: str) -> str:
         raw = str(name or "").strip()
@@ -212,6 +226,8 @@ class GraphGLTimelineIOMixin:
         return (in_frame, out_frame, loop_enabled)
 
     def _timeline_range_save_to_disk(self) -> None:
+        if self._timeline_store_correction_range():
+            return
         path = getattr(self, "_timeline_range_cfg_path", None)
         if path is None:
             return
@@ -233,6 +249,9 @@ class GraphGLTimelineIOMixin:
                 else None
             ),
             "loop_enabled": bool(getattr(self, "_timeline_loop_enabled", True)),
+            "view_start": int(getattr(self, '_timeline_view_start', 0)),
+            "view_end": int(getattr(self, '_timeline_view_start', 0)
+                            + getattr(self, '_timeline_view_span', 120)),
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,9 +332,23 @@ class GraphGLTimelineIOMixin:
                     migrated_from_legacy = True
                     break
         in_frame, out_frame, loop_enabled = self._timeline_parse_range_payload(raw or {})
+        raw = raw if isinstance(raw, dict) else {}
+        if 'in_frame' not in raw:
+            in_frame = 1
         self._timeline_in_frame = in_frame
         self._timeline_out_frame = out_frame
         self._timeline_loop_enabled = bool(loop_enabled)
+        minimum = int(in_frame or 0)
+        try:
+            self._timeline_view_start = max(minimum, int(raw.get('view_start', minimum)))
+            end = int(raw.get('view_end', self._timeline_view_start+120))
+            self._timeline_view_span = max(1, end-self._timeline_view_start)
+            self._timeline_display_range_locked = 'view_start' in raw and 'view_end' in raw
+        except (TypeError, ValueError, OverflowError):
+            self._timeline_view_start = minimum
+            self._timeline_view_span = 120
+            self._timeline_display_range_locked = False
+        self._timeline_range_correction_session = None
         if migrated_from_legacy:
             try:
                 self._timeline_range_save_to_disk()
@@ -768,6 +801,14 @@ class GraphGLTimelineIOMixin:
         return bool(self._timeline_scene_joint_virtual_keys_map(owner))
 
     def _timeline_save_to_disk(self) -> None:
+        correction = self._timeline_correction_session()
+        if correction is not None:
+            session,joint = correction
+            if not session.apply_keys(joint,getattr(self,'_timeline_keys',{}) or {},float(self._timeline_fps)):
+                return
+            session.save()
+            session.refresh_timeline()
+            return
         path = getattr(self, "_timeline_anim_path", None)
         if path is None:
             return
@@ -898,6 +939,26 @@ class GraphGLTimelineIOMixin:
             pass
 
     def _timeline_load_from_disk(self, *, apply_current_frame: bool = True) -> None:
+        correction = self._timeline_correction_session()
+        if correction is not None:
+            session,joint = correction
+            # Selecting a joint changes the displayed keys, not the clock.
+            # In particular, a Rig Limiter clip can be baked at 4x the playback
+            # rate. Loading that sample rate here jumps to an earlier pose.
+            fps = float(getattr(self,'_timeline_fps',session.fps))
+            self._timeline_keys = session.keys_map(joint,fps=fps)
+            self._timeline_curve_selected = set()
+            self._timeline_scene_skeleton_frame_space = 'timeline'
+            self._timeline_total_max = max(1,round(session.draft.duration*fps))
+            if (not getattr(session,'_timeline_range_initialized',False)
+                    or getattr(self,'_timeline_range_correction_session',None) is not session):
+                session.initialize_timeline_range(fps)
+                session._timeline_range_initialized = True
+            self._timeline_range_correction_session = session
+            self._timeline_sync_range_controls(keep_current_visible=True,refresh_key_markers=True)
+            self._timeline_update_key_count_label()
+            self._timeline_refresh_coord_labels()
+            return
         path = getattr(self, "_timeline_anim_path", None)
         load_path = path
         loaded_from_legacy = False
@@ -1215,6 +1276,9 @@ class GraphGLTimelineIOMixin:
         )
         old_path = getattr(self, "_timeline_anim_path", None)
         same = old_path is not None and str(old_path) == str(anim_path)
+        old_range_path = getattr(self, '_timeline_range_cfg_path', None)
+        same_range = old_range_path is not None and str(old_range_path) == str(range_cfg_path)
+        was_correction = getattr(self, '_timeline_range_correction_session', None) is not None
         old_mode = str(getattr(self, "_timeline_mode", "composition") or "composition").strip().lower()
         requested_mode = "owner_keys" if owner else "composition"
         if old_mode == "owner_keys" and owner:
@@ -1272,9 +1336,10 @@ class GraphGLTimelineIOMixin:
                 )
         except Exception:
             pass
-        # Range markers are scene-level settings; reload on every context switch
-        # so owner/outliner timeline changes inherit the same in/out + loop state.
-        self._timeline_range_load_from_disk()
+        # Owner changes in the same scene share the in-memory range. Reloading
+        # its sidecar during a drag discards the window being edited.
+        if self._timeline_correction_session() is None and (not same_range or was_correction):
+            self._timeline_range_load_from_disk()
         if str(getattr(self, "_timeline_mode", "") or "").strip().lower() == "composition":
             self._timeline_load_composition(apply_current_frame=bool(apply_current_frame))
         elif not same or old_mode == "composition":

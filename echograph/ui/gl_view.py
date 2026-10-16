@@ -1033,8 +1033,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_mark_in_btn = None
         self._timeline_mark_out_btn = None
         self._timeline_loop_btn = None
-        self._timeline_in_frame = None
+        self._timeline_in_frame = 1
         self._timeline_out_frame = None
+        self._timeline_display_range_locked = False
         self._timeline_loop_enabled = True
         self._timeline_ui_timer = QtCore.QTimer(self)
         self._timeline_ui_timer.setInterval(250)
@@ -2813,6 +2814,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
         decoded = decode_joint(owner) if callable(decode_joint) else None
         joint_context = renderer._mgl_scene_owner_fbx_rig_context(decoded[0]) if decoded else None
+        if isinstance(joint_context, dict) and joint_context.get('_animation_correction_session') is not None:
+            session = joint_context['_animation_correction_session']
+            session.begin_edit()
+            self._xform_hist_start = dict(entry_type='animation_correction',session=session)
+            return
         is_preview = isinstance(joint_context, dict) and bool(joint_context.get("priormdm_rig_debug"))
         if kind not in ("scene", "scene_assembly", "scene_outliner"):
             if not is_preview:
@@ -2864,6 +2870,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if not isinstance(data, dict):
             return
         self._xform_hist_start = None
+        if data.get('entry_type') == 'animation_correction':
+            data['session'].commit()
+            return
         owner = data.get("owner")
         scene_node = data.get("scene_node")
         before = data.get("before") or {}
@@ -6123,6 +6132,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
 
     def load_scene_assets(self, assets: List[Dict[str, str]], frame: bool = True) -> None:
+        correction = getattr(self, '_animation_correction_session', None)
+        if correction is not None and not any(
+            (entry.get('fbx_rig_context') or {}).get('_animation_correction_session') is correction
+            for entry in (assets or []) if isinstance(entry, dict)
+        ):
+            # End the take editor before replacing its assets. Its pinned rig
+            # and timeline hooks must not survive into another node's preview.
+            correction.finish()
         self._set_scene_look_at_constraints(assets)
         try:
             scene_tag = str(self._timeline_default_scene_name() or "").strip()
@@ -8658,7 +8675,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         try:
             refresh_handles = getattr(renderer, "_mgl_scene_skeleton_update_owner_handles", None)
             if callable(refresh_handles) and asset_owner:
-                refresh_handles(asset_owner, force=True)
+                refresh_handles(asset_owner, force=True, upload=False)
         except Exception:
             pass
         try:
@@ -8700,6 +8717,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 decoded = decode_joint(owner) if callable(decode_joint) else None
                 if decoded and callable(apply_joint_keys):
                     asset_owner = str(decoded[0] or "").strip()
+                    correction_edit = getattr(renderer, "_mgl_scene_skeleton_correction_edit", None)
+                    if callable(correction_edit) and correction_edit(owner, "rotate", rot_deg):
+                        self._refresh_scene_skeleton_joint_gizmo_after_rotation(renderer, owner, asset_owner)
+                        return
                     constrain = getattr(renderer, "_mgl_scene_skeleton_constrain_preview_rotation", None)
                     if callable(constrain):
                         rot_deg = constrain(owner, rot_deg, interactive=True)
