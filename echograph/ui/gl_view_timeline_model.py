@@ -115,17 +115,45 @@ class GraphGLTimelineModelMixin:
         try:
             if rect is not None:
                 painter.setClipRect(rect,QtCore.Qt.IntersectClip)
-            for index,(lo,hi,endpoint,axes) in enumerate(self._timeline_ik_ranges(include_axes=True)):
+            # An intermediate IK key splits the solve into adjacent segments,
+            # but the override is still one continuous band on each channel.
+            # Paint their union so shared edges and translucent fills do not
+            # look like overlapping ranges.
+            channels = {}
+            for lo,hi,_endpoint,axes in self._timeline_ik_ranges(include_axes=True):
+                for axis,keyed in enumerate(axes):
+                    if keyed and (rect is not None or self._timeline_axis_is_visible(axis)):
+                        channels.setdefault(axis,[]).append((min(lo,hi),max(lo,hi)))
+            bands = []
+            for axis,intervals in channels.items():
+                merged = []
+                for lo,hi in sorted(intervals):
+                    if merged and lo <= merged[-1][1]+1e-7:
+                        merged[-1] = (merged[-1][0],max(merged[-1][1],hi))
+                    else:
+                        merged.append((lo,hi))
+                bands.extend((lo,hi,axis) for lo,hi in merged)
+            # Curve backgrounds have one area for all visible channels.
+            if rect is not None:
+                bands = sorted(set((lo,hi,-1) for lo,hi,_axis in bands))
+                merged = []
+                for lo,hi,axis in bands:
+                    if merged and lo <= merged[-1][1]+1e-7:
+                        merged[-1] = (merged[-1][0],max(merged[-1][1],hi),axis)
+                    else:
+                        merged.append((lo,hi,axis))
+                bands = merged
+            for lo,hi,axis in bands:
                 x1 = self._timeline_local_frame_to_tracks_x_float(lo-start,clamp=False)
                 x2 = self._timeline_local_frame_to_tracks_x_float(hi-start,clamp=False)
                 if x1 is None or x2 is None:
                     continue
                 painter.setPen(QtGui.QPen(QtGui.QColor(250,204,21,180),1.))
-                painter.setBrush(QtGui.QColor(250,204,21,55 if index%2 else 85))
+                painter.setBrush(QtGui.QColor(250,204,21,85))
                 areas = [QtCore.QRectF(min(x1,x2),rect.top(),abs(x2-x1),rect.height())] if rect is not None else [
                     QtCore.QRectF(min(x1,x2),row.y()+row.height()/2.-5,abs(x2-x1),10)
-                    for axis,row in enumerate(getattr(self,'_timeline_track_rows',[]) or [])
-                    if row is not None and axes[axis] and self._timeline_axis_is_visible(axis)]
+                    for row_axis,row in enumerate(getattr(self,'_timeline_track_rows',[]) or [])
+                    if row is not None and row_axis == axis]
                 for area in areas:
                     painter.drawRect(area)
         finally:

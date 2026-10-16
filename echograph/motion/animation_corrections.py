@@ -1,5 +1,6 @@
 """Portable per-take animation edits and bounded IK overrides."""
 from copy import deepcopy
+from collections import OrderedDict
 from dataclasses import replace
 import hashlib
 import json
@@ -310,6 +311,9 @@ def ik_pole_at_time(skeleton,source,current,spans,joint,time,*,pose=None):
 
 
 def override_pose(skeleton,clip,time,rotations,translations=None):
+    sampler = getattr(clip,'_runtime_sample_clip',None)
+    if sampler is not None:
+        clip = sampler(float(time))
     result = override_rotation_keys(skeleton,clip,{name:{time:value} for name,value in rotations.items()})
     if translations:
         originals = {track.joint_name:track for track in result.tracks}
@@ -474,13 +478,44 @@ def apply_document(skeleton, clip, document,*,ik_cache=None):
     if tracks:
         result = replace_clip_tracks(skeleton,result,tracks)
         result.metadata['animation_correction'] = dict(joints=len(overrides))
-    result = apply_ik_spans(skeleton,result,document.get('ik_spans',[]),document.get('fps',clip.sample_rate_hz),cache=ik_cache)
+    result = apply_ik_spans(skeleton,result,document_ik_spans(document),document.get('fps',clip.sample_rate_hz),cache=ik_cache)
     return override_rotation_keys(skeleton,result,document['fk_keys']) if document.get('fk_keys') else result
+
+
+def document_ik_spans(document):
+    """Keep the keying clock distinct from the bake and playback rates."""
+    spans = deepcopy(document.get('ik_spans',[]))
+    rows = document.get('timeline_rows',{})
+    for span in spans:
+        span.setdefault('keyframe_fps',rows.get(span['joint'],{}).get('fps',document.get('fps',24.)))
+    return spans
+
+
+def _ik_spans_with_transitions(spans,fps):
+    """Interpolate End/Start pairs with no unkeyed editing frame between them."""
+    result = list(spans)
+    controls = {}
+    for span in spans:
+        controls.setdefault(span['joint'],[]).append(span)
+    for sections in controls.values():
+        sections = sorted(sections,key=lambda span:span['start']['time'])
+        for left,right in zip(sections,sections[1:]):
+            if 'end' not in left:
+                continue
+            gap = right['start']['time']-left['end']['time']
+            rate = min(float(left.get('keyframe_fps',fps)),float(right.get('keyframe_fps',fps)))
+            if (1e-8 < gap <= 1./rate+1e-8
+                    and left.get('position_mask') == right.get('position_mask')
+                    and left.get('lock_limbs',False) == right.get('lock_limbs',False)):
+                result.append(dict(left,start=left['end'],end=right['start']))
+    return result
 
 
 def validate_ik_spans(skeleton,clip,spans):
     occupied = {}
     for span in spans:
+        if 'keyframe_fps' in span and (not math.isfinite(float(span['keyframe_fps'])) or float(span['keyframe_fps']) <= 0):
+            raise ValueError('Invalid IK keyframe rate.')
         chain = tuple(skeleton.joints[index].name for index in ik_chain(skeleton,span['joint']))
         affected = ik_span_joints(skeleton,span)
         mask = span.get('position_mask')
@@ -530,22 +565,56 @@ def validate_ik_spans(skeleton,clip,spans):
             occupied.setdefault(name,[]).append((start['time'],end['time']))
 
 
-def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None):
+def preview_clip(skeleton,clip,spans,fps,*,fk_keys=None,cache=None):
+    """Evaluate correction ranges on demand while editing, without baking a take."""
+    if not spans:
+        return override_rotation_keys(skeleton,clip,fk_keys) if fk_keys else clip
+    validate_ik_spans(skeleton,clip,spans)
+    spans,fk_keys = deepcopy(spans),deepcopy(fk_keys or {})
+    # Capture this revision's baked prefix. Later edits must not change an
+    # older preview retained by undo/redo.
+    baked = dict(cache or {})
+    samples = OrderedDict()
+    result = override_rotation_keys(skeleton,clip,fk_keys) if fk_keys else replace_clip_tracks(skeleton,clip,{})
+    def sample(time):
+        if time in samples:
+            samples.move_to_end(time)
+            return samples[time]
+        value = apply_ik_spans(skeleton,clip,spans,fps,cache=baked,sample_time=time)
+        if fk_keys:
+            value = override_rotation_keys(skeleton,value,fk_keys)
+        samples[time] = value
+        if len(samples) > 16:
+            samples.popitem(last=False)
+        return value
+    result._runtime_sample_clip = sample
+    return result
+
+
+def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None,sample_time=None):
     """Bake bounded IK targets; preserve source channels outside each range.
 
     The document stores only control boundaries, not these generated samples.
     Interpolated boundary poses seed the bend plane, then each sample solves
     the interpolated target. Pelvis controls also key root translation; locked
     body ranges solve all four limbs against their stored world targets.
+    With sample_time, bake only the neighboring samples needed to evaluate
+    that instant, using the same interpolation and boundary guards as a full
+    bake. The full-bake cache is left unchanged.
     """
     if not spans:
-        if cache is not None:
+        if cache is not None and sample_time is None:
             cache.clear()
         return clip
     validate_ik_spans(skeleton,clip,spans)
     rate = max(float(fps),float(clip.sample_rate_hz))*2
     if not math.isfinite(rate) or not 0 < rate <= 10000:
         raise ValueError('Invalid IK sampling rate.')
+    spans = _ik_spans_with_transitions(spans,fps)
+    if sample_time is not None:
+        sample_frame = (float(sample_time)-clip.start_time)*rate
+        window_lo = clip.start_time+(math.floor(sample_frame)-1)/rate
+        window_hi = clip.start_time+(math.ceil(sample_frame)+1)/rate
     result = clip
     # Solve parents before children, then explicit limb targets. Pelvis and
     # chest ranges can coexist with independent hand/foot overrides.
@@ -556,7 +625,9 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None):
                 and cache.get('skeleton') is skeleton and cache.get('clip') is clip
                 and cache.get('rate') == rate else [])
     steps = []
+    baselines = {}
     for index,span in enumerate(sorted(spans,key=order)):
+        baseline = baselines.setdefault(span['joint'],result)
         # Neighboring ranges also control the source samples immediately
         # outside a boundary, even when that neighbor is baked later.
         signature = (span,[(other['start']['time'],other.get('end',other['start'])['time'])
@@ -568,17 +639,26 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None):
             steps.append(reusable[index])
             continue
         reusable = []
+        if sample_time is not None and (span['start']['time'] > window_hi+1e-9 or
+                                       span.get('end',span['start'])['time'] < window_lo-1e-9):
+            continue
         joint = span['joint']
         names = ik_span_joints(skeleton,span)
         originals = {track.joint_name:track for track in result.tracks}
         tracks = {}
         first,last = span['start'],span.get('end',span['start'])
         lo,hi = first['time'],last['time']
-        stamps = [lo]+[clip.start_time+frame/rate for frame in
-            range(math.ceil((lo-clip.start_time)*rate),math.floor((hi-clip.start_time)*rate)+1)
-            if lo+1e-9 < clip.start_time+frame/rate < hi-1e-9]
-        if hi-lo > 1e-9:
-            stamps.append(hi)
+        if sample_time is not None:
+            stamps = sorted({lo,hi,*[clip.start_time+frame/rate for frame in range(
+                math.ceil((max(lo,window_lo)-clip.start_time)*rate),
+                math.floor((min(hi,window_hi)-clip.start_time)*rate)+1)
+                if lo+1e-9 < clip.start_time+frame/rate < hi-1e-9]})
+        else:
+            stamps = [lo]+[clip.start_time+frame/rate for frame in
+                range(math.ceil((lo-clip.start_time)*rate),math.floor((hi-clip.start_time)*rate)+1)
+                if lo+1e-9 < clip.start_time+frame/rate < hi-1e-9]
+            if hi-lo > 1e-9:
+                stamps.append(hi)
         blends = {name:Slerp([lo,hi],Rotation.from_quat([first['rotations'][name],last['rotations'][name]]))
                   for name in names} if hi-lo > 1e-10 else {}
         lock_blends = {name:Slerp([lo,hi],Rotation.from_quat([value['rotation'],last['locks'][name]['rotation']]))
@@ -598,7 +678,7 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None):
             if 'position_mask' in span:
                 # The unkeyed target coordinates and bend seed must come from
                 # this animated sample, not from interpolated boundary poses.
-                pose = evaluate_rig_at_time(skeleton,result,time,loop=False)
+                pose = evaluate_rig_at_time(skeleton,baseline,time,loop=False)
                 endpoint = skeleton.joint_names.index(joint)
                 animated_target = np.asarray(pose.global_matrices[endpoint]).reshape(4,4)[:3,3]
                 target = np.where(span['position_mask'],target,animated_target)
@@ -626,7 +706,7 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None):
                         other is not span and other['joint'] == joint and
                         other['start']['time']-1e-8 <= stamp <= other.get('end',other['start'])['time']+1e-8
                         for other in spans):
-                    pose = evaluate_rig_at_time(skeleton,result,stamp,loop=False)
+                    pose = evaluate_rig_at_time(skeleton,baseline,stamp,loop=False)
                     kept.append(QuatKeyframe(stamp,pose.local_transforms[skeleton.joint_names.index(name)].rotation))
             samples = {key.time:key for key in kept+baked[name]}
             track.rotation_keys = [samples[stamp] for stamp in sorted(samples)]
@@ -637,14 +717,14 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None):
                             other is not span and other['joint'] == joint and
                             other['start']['time']-1e-8 <= stamp <= other.get('end',other['start'])['time']+1e-8
                             for other in spans):
-                        pose = evaluate_rig_at_time(skeleton,result,stamp,loop=False)
+                        pose = evaluate_rig_at_time(skeleton,baseline,stamp,loop=False)
                         kept.append(Vec3Keyframe(stamp,pose.local_transforms[skeleton.joint_names.index(name)].translation))
                 samples = {key.time:key for key in kept+moved[name]}
                 track.translation_keys = [samples[stamp] for stamp in sorted(samples)]
         result = replace_clip_tracks(skeleton,result,tracks,sample_rate_hz=rate)
         result.metadata['animation_correction_ik'] = dict(ranges=index+1)
         steps.append((deepcopy(signature),result))
-    if cache is not None:
+    if cache is not None and sample_time is None:
         cache.update(skeleton=skeleton,clip=clip,rate=rate,steps=steps)
     return result
 

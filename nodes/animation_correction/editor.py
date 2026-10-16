@@ -193,7 +193,7 @@ class CorrectionSession(QtCore.QObject):
             if track is not None:
                 self.tracks[joint] = track.to_dict()
         self.rows = deepcopy(document.get('timeline_rows',{}))
-        self.ik_spans = deepcopy(document.get('ik_spans',[]))
+        self.ik_spans = corrections.document_ik_spans(document)
         self.fk_keys = deepcopy(document.get('fk_keys',{}))
         self._committed_clip = self.draft
         self._preview_time = None
@@ -568,9 +568,8 @@ class CorrectionSession(QtCore.QObject):
         fk_keys = self.fk_keys if fk_keys is None else fk_keys
         manual = (self.manual if tracks == self.tracks else
                   corrections.apply_document(self.skeleton,self.base,dict(tracks=tracks)))
-        draft = corrections.apply_ik_spans(self.skeleton,manual,spans,self.fps,cache=self._ik_bake_cache)
-        if fk_keys:
-            draft = override_rotation_keys(self.skeleton,draft,fk_keys)
+        draft = corrections.preview_clip(self.skeleton,manual,spans,self.fps,
+                                         fk_keys=fk_keys,cache=self._ik_bake_cache)
         self.tracks,self.rows,self.ik_spans = tracks,rows,spans
         self.fk_keys = fk_keys
         self.manual,self.draft = manual,draft
@@ -608,7 +607,8 @@ class CorrectionSession(QtCore.QObject):
             if body != 'pelvis':
                 pole = np.asarray(pole if pole is not None else self.ik_pole(name,pose=pose),dtype=float)
             locked = bool(body and self.lock_limbs)
-            span_options = dict(joint=name,lock_limbs=locked)
+            span_options = dict(joint=name,lock_limbs=locked,
+                                keyframe_fps=float(getattr(self.viewport,'_timeline_fps',self.fps)))
             matching = [span for span in self.ik_spans if span['joint'] == name and (
                 'end' not in span or (mode is None and span['start']['time'] <= time <= span['end']['time'])
                 or any(abs(span[boundary]['time']-time)<1e-7
@@ -745,8 +745,12 @@ class CorrectionSession(QtCore.QObject):
             keys[name][format(time,'.12g')] = list(quaternion)
         # A local FK key wins at this frame, including inside a saved IK range.
         # Changing an elbow must not immediately be overwritten by the solver.
-        self.draft = override_rotation_keys(self.skeleton,self._committed_clip,
-            {name:{time:quaternion} for name,quaternion in rotations.items()})
+        if self.ik_spans:
+            self.draft = corrections.preview_clip(self.skeleton,self.manual,self.ik_spans,self.fps,
+                                                 fk_keys=keys,cache=self._ik_bake_cache)
+        else:
+            self.draft = override_rotation_keys(self.skeleton,self._committed_clip,
+                {name:{time:quaternion} for name,quaternion in rotations.items()})
         self.fk_keys = keys
         self._committed_clip = self.draft
         self._preview_time = None
@@ -1004,7 +1008,10 @@ class CorrectionSession(QtCore.QObject):
         previous = self.approved
         try:
             from nodes.rig_limiter.spec import export_context
-            export_context(corrections.bvh_export_context(self.skeleton,self._committed_clip),output)
+            clip = corrections.apply_ik_spans(self.skeleton,self.manual,self.ik_spans,self.fps,cache=self._ik_bake_cache)
+            if self.fk_keys:
+                clip = override_rotation_keys(self.skeleton,clip,self.fk_keys)
+            export_context(corrections.bvh_export_context(self.skeleton,clip),output)
             self.approved = dict(file=output.name,output_sha=file_signature(output),source_sha=self.source_sha)
             self.exports.append(dict(self.approved))
             if not self.save():

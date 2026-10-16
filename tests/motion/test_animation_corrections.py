@@ -1037,6 +1037,19 @@ class CorrectionTests(unittest.TestCase):
         self.view.frame = 2
         self.assertTrue(session.key_ik('left_wrist'))
         self.assertEqual([pair[:2] for pair in self.view._timeline_ik_ranges()],[(1.,2.),(2.,3.)])
+        split_image = QtGui.QImage(image.size(),image.format())
+        split_image.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(split_image)
+        self.view._timeline_paint_ik_ranges(painter)
+        painter.end()
+        self.assertEqual(split_image,image,'Intermediate keys changed the band shading or added an internal border')
+        curve_image = QtGui.QImage(image.size(),image.format())
+        curve_image.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(curve_image)
+        self.view._timeline_paint_ik_ranges(painter,QtCore.QRectF(0,0,250,90))
+        painter.end()
+        self.assertEqual(curve_image.pixelColor(110,48),curve_image.pixelColor(100,48))
+        self.assertEqual(curve_image.pixelColor(100,48).alpha(),85)
         self.select('spine1')
         self.assertEqual(self.view._timeline_ik_ranges(),[])
 
@@ -1092,6 +1105,67 @@ class CorrectionTests(unittest.TestCase):
                 evaluate_rig_at_time(session.skeleton,session.draft,1.,loop=False)
         session.commit()
         self.assertEqual(session.ik_spans,[])
+
+    def test_retiming_long_ik_range_only_samples_preview_and_never_updates_graph(self):
+        context = self.context()
+        source = context['clip']
+        count = 1800
+        context['clip'] = replace(source,end_time=(count-1)/20.,tracks=[
+            replace(track,rotation_keys=[QuatKeyframe(frame/20.,track.rotation_keys[0].value)
+                    for frame in range(count)]) for track in source.tracks])
+        session = CorrectionSession(self.item,context,self.view)
+        session.open(self.window)
+        self.addCleanup(session.finish)
+        self.select('left_wrist')
+        for frame,mode in ((1,'start'),(count-1,'end')):
+            self.view.frame = frame
+            self.assertTrue(session.key_ik('left_wrist',mode=mode))
+        before = session.draft
+        value = self.view._timeline_keys[count-1]['xyz'][0]
+        self.view.frame = 500
+        with patch.object(corrections,'apply_ik_spans',wraps=corrections.apply_ik_spans) as bake, \
+                patch.object(corrections,'solve_ik_pose',wraps=corrections.solve_ik_pose) as solve, \
+                patch.object(self.scene,'set_node_params') as graph, \
+                patch.object(collection,'refresh_repair_records') as records, \
+                patch.object(corrections,'save_document',wraps=corrections.save_document) as saved:
+            self.view._timeline_drag_axis_key(0,count-1,count-2,value,commit=False)
+            solve.assert_not_called()
+            saved.assert_not_called()
+            self.view._timeline_drag_axis_key(0,count-2,count-2,value,commit=True)
+            graph.assert_not_called()
+            records.assert_not_called()
+            saved.assert_called_once()
+            self.assertTrue(bake.called)
+            self.assertTrue(all(call.kwargs.get('sample_time') is not None for call in bake.call_args_list))
+            self.assertLessEqual(solve.call_count,8)
+            # Scrubbing samples a small interpolation neighborhood, not 3600.
+            solve.reset_mock()
+            points(session.skeleton,session.draft,25.)
+            self.assertLessEqual(solve.call_count,8)
+            solve.reset_mock()
+            points(session.skeleton,session.draft,25.)
+            solve.assert_not_called()
+        after = session.draft
+        self.assertTrue(session.undo())
+        self.assertIs(session.draft,before)
+        self.assertTrue(session.redo())
+        self.assertIs(session.draft,after)
+        self.assertAlmostEqual(corrections.read_document(session.path)['ik_spans'][0]['end']['time'],(count-2)/20.)
+
+    def test_on_demand_preview_matches_full_bake_and_fk_edits_preserve_ik(self):
+        session = self.session()
+        self.make_ik_range(session)
+        for time in (0.,.05,.075,.1,.125,.15,.2):
+            expected = corrections.apply_ik_spans(session.skeleton,session.manual,session.ik_spans,session.fps)
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time),
+                                       points(session.skeleton,expected,time),atol=1e-8)
+        session.set_ik(False)
+        self.view.frame = 2
+        session.key_rotations({'right_elbow':Rotation.from_euler('x',35,degrees=True).as_quat()})
+        expected = corrections.apply_document(session.skeleton,session.base,session.document())
+        for time in (.05,.1,.15):
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time),
+                                       points(session.skeleton,expected,time),atol=1e-8)
 
     def test_joint_selection_preserves_the_preview_clock_for_a_resampled_limiter_clip(self):
         context = self.context()
@@ -1291,6 +1365,8 @@ class CorrectionTests(unittest.TestCase):
         session = self.session()
         self.make_ik_range(session,'left_wrist')
         self.make_ik_range(session,'right_wrist')
+        corrections.apply_ik_spans(session.skeleton,session.manual,session.ik_spans,session.fps,
+                                  cache=session._ik_bake_cache)
         self.view._timeline_curve_selected = {(0,3)}
         with patch.object(corrections,'solve_ik_pose',wraps=corrections.solve_ik_pose) as solve:
             self.view._timeline_on_delete_key_clicked()
@@ -1322,6 +1398,7 @@ class CorrectionTests(unittest.TestCase):
         manual = session.manual
         with patch.object(corrections,'solve_ik_pose',wraps=corrections.solve_ik_pose) as solve:
             self.view._timeline_on_delete_key_clicked()
+            points(session.skeleton,session.draft,.1)
             self.assertTrue(solve.called)
         self.assertIsNot(session.manual,manual)
         expected = corrections.apply_ik_spans(session.skeleton,session.manual,session.ik_spans,session.fps)
@@ -1466,6 +1543,55 @@ class CorrectionMathTests(unittest.TestCase):
                 key['translations'] = {root_name:list(pose.local_transforms[skeleton.joint_names.index(root_name)].translation)}
             keys.append(key)
         return skeleton,clip,dict(options,start=keys[0],end=keys[1])
+
+    def test_preview_and_bake_agree_at_subframes_and_range_edges(self):
+        for joint in ('pelvis','left_wrist'):
+            with self.subTest(joint=joint):
+                skeleton,clip,span = self.axis_range(joint)
+                baked = corrections.apply_ik_spans(skeleton,clip,[span],25.)
+                preview = corrections.preview_clip(skeleton,clip,[span],25.)
+                for time in (.05-5e-8,.05,.061,.083,.097,.124,.149,.15,.15+5e-8):
+                    np.testing.assert_allclose(points(skeleton,preview,time),
+                                               points(skeleton,baked,time),atol=1e-7,
+                                               err_msg=f'{joint} preview differs at {time}')
+
+    def test_preview_and_scene_agree_for_adjacent_pelvis_ranges_with_an_internal_key(self):
+        skeleton,clip,span = self.axis_range('pelvis')
+        middle = deepcopy(span['start'])
+        middle.update(id='middle',time=.1,target=list(span['start']['target']))
+        middle['target'][1] += .08
+        spans = [dict(span,end=deepcopy(middle)),dict(span,start=deepcopy(middle))]
+        baked = corrections.apply_ik_spans(skeleton,clip,spans,25.)
+        preview = corrections.preview_clip(skeleton,clip,spans,25.)
+        for fps in (24.,25.,80.):
+            for time in np.arange(0.,.2,1/fps):
+                np.testing.assert_allclose(points(skeleton,preview,float(time)),
+                                           points(skeleton,baked,float(time)),atol=1e-7)
+        for time in (.1-1e-7,.1,.1+1e-7):
+            np.testing.assert_allclose(points(skeleton,preview,time),
+                                       points(skeleton,baked,time),atol=1e-7)
+
+    def test_next_frame_end_start_interpolate_without_source_height_pop_at_other_playback_rates(self):
+        skeleton,clip,span = self.axis_range('pelvis')
+        left,right = deepcopy(span),deepcopy(span)
+        for section,lo,hi,height in ((left,0.,.05,.65),(right,.05+1/24.,.2,.75)):
+            for boundary,time in (('start',lo),('end',hi)):
+                section[boundary].update(id=f'{height}-{boundary}',time=time)
+                section[boundary]['target'][1] = height
+        document = dict(fps=25.,ik_spans=[left,right],timeline_rows={'pelvis':dict(fps=24.,keys={})})
+        spans = corrections.document_ik_spans(document)
+        self.assertTrue(all(section['keyframe_fps']==24. for section in spans))
+        baked = corrections.apply_document(skeleton,clip,document)
+        preview = corrections.preview_clip(skeleton,clip,spans,25.)
+        for time in (.05,.06,.08,.09,right['start']['time']):
+            expected = np.interp(time,[left['end']['time'],right['start']['time']],[.65,.75])
+            for animation in (preview,baked):
+                self.assertAlmostEqual(points(skeleton,animation,time)[0,1],expected,places=7)
+        # A gap with an actual unkeyed frame must still return to source.
+        right['start']['time'] = .05+2/24.
+        document['ik_spans'] = [left,right]
+        baked = corrections.apply_document(skeleton,clip,document)
+        np.testing.assert_allclose(points(skeleton,baked,.09)[0],points(skeleton,clip,.09)[0],atol=1e-7)
 
     def test_axis_ik_keeps_other_target_coordinates_and_endpoint_rotation_animated(self):
         for joint,mask in (('left_wrist',[False,True,False]),

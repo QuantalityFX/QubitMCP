@@ -430,6 +430,12 @@ def evaluate_rig_at_time(
     loop: bool = False,
     include_debug_data: bool = True,
 ) -> RigEvaluationResult:
+    # Interactive clips can supply a sample without baking an entire take.
+    # The returned clip has ordinary immutable tracks and uses the same path
+    # as imported animation for validation, skinning and debug transforms.
+    sampler = getattr(clip, '_runtime_sample_clip', None)
+    if sampler is not None:
+        clip = sampler(_resolve_sample_time(clip, float(time_seconds), loop=bool(loop)))
     _validate_rig_inputs(skeleton, clip)
     t = _resolve_sample_time(clip, float(time_seconds), loop=bool(loop))
 
