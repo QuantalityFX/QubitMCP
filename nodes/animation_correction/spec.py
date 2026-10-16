@@ -182,6 +182,7 @@ class CorrectionHierarchy(QtWidgets.QWidget):
         self._binding = None
         self._session = None
         self._items = {}
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding,QtWidgets.QSizePolicy.Preferred)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0,0,0,0)
         layout.setAlignment(QtCore.Qt.AlignTop)
@@ -196,6 +197,10 @@ class CorrectionHierarchy(QtWidgets.QWidget):
         layout.addWidget(self.expand)
         self.tree = JointTargetTree(self)
         self.tree.setHeaderHidden(True)
+        self.tree.header().setStretchLastSection(False)
+        self.tree.header().setSectionResizeMode(0,QtWidgets.QHeaderView.ResizeToContents)
+        self.tree.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
+        self.tree.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.tree.setMinimumHeight(210)
         self.tree.setMaximumHeight(340)
         self.tree.setObjectName('AnimationCorrectionJointTree')
@@ -231,7 +236,7 @@ class CorrectionHierarchy(QtWidgets.QWidget):
             self._binding = binding
             items = self.tree.set_skeleton(self.item.model.name,context['skeleton'])
             self._items = {row.text(0):row for row in items}
-            self.tree.expandToDepth(0)
+            self.tree.expandAll()
             self.expand.setText(f'Rig hierarchy ({len(items)} joints)')
         session = getattr(self.item.model,'_animation_correction_session',None)
         if session is not self._session:
@@ -271,8 +276,11 @@ def augment_infocard_footer(card,layout):
     scene = getattr(card,'_graph_scene',None)
     item = SimpleNamespace(model=model,scene=lambda:scene)
     controls = CorrectionControls(item)
-    layout.addWidget(controls)
-    layout.addWidget(CorrectionHierarchy(item,controls))
+    column = QtWidgets.QVBoxLayout()
+    column.setContentsMargins(0,0,0,0)
+    column.addWidget(controls)
+    column.addWidget(CorrectionHierarchy(item,controls))
+    layout.addLayout(column)
     return True
 
 

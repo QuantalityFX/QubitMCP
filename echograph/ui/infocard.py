@@ -252,9 +252,10 @@ class InfoCard(QtWidgets.QFrame):
         self._param_table = self._build_param_table()
         pcol = self._build_param_controls()
 
-        # Scene footer wants full-width (outliner), so don't add the trailing stretch spacer
+        # Browsers and hierarchies use the full footer width.
         if (node.kind or "").lower() not in (
             "mocap_collection",
+            "animation_correction",
             "scene",
             "scene_assembly",
             "scene_outliner",
