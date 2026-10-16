@@ -42,7 +42,8 @@ def solve_constrained_ik(local_rotations, offsets, parents, *,
                          constraint_residual: Callable | None = None,
                          reference_rotations=None, previous_parameters=None,
                          pose_weight=.008, temporal_weight=.008,
-                         tolerance=.0005, max_iterations=45, retry_seeds=()):
+                         tolerance=.0005, max_iterations=45, retry_seeds=(),
+                         check_cancel=None, prioritize_constraints=False):
     """Solve positional targets and/or caller-supplied geometric constraints.
 
     ``joint_axes`` defines local rotation DOFs: one axis for a hinge, three for
@@ -100,6 +101,8 @@ def solve_constrained_ik(local_rotations, offsets, parents, *,
         return np.concatenate(values) if values else np.empty(0)
 
     def residual(parameters):
+        if check_cancel is not None:
+            check_cancel()
         return np.r_[errors(*pose(parameters))*16,parameters*pose_weight,
                      (parameters-old)*temporal_weight]
 
@@ -114,7 +117,15 @@ def solve_constrained_ik(local_rotations, offsets, parents, *,
                     raise ValueError('IK retry seed does not match the rotation DOFs.')
                 candidates.append(least_squares(residual,np.clip(seed,-np.pi,np.pi),
                                                 bounds=(-np.pi,np.pi),max_nfev=max_iterations).x)
-        best = min(candidates,key=lambda p:float(residual(p)@residual(p)))
+                if np.max(abs(errors(*pose(candidates[-1]))),initial=0) <= tolerance:
+                    break
+        def score(parameters):
+            values = residual(parameters)
+            if prioritize_constraints:
+                error = errors(*pose(parameters))
+                return (float(np.max(abs(error),initial=0)), float(values@values))
+            return float(values@values)
+        best = min(candidates,key=score)
     else:
         best = initial
     local,points,world = pose(best)

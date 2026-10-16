@@ -628,6 +628,34 @@ class RepairTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'cancelled'):
             spec.run_repair(fail)
 
+    def test_stop_button_stays_visible_until_worker_exits(self):
+        from time import sleep
+        observations = []
+        owner = QtWidgets.QWidget()
+        def stop():
+            dialog = next((w for w in APP.topLevelWidgets() if isinstance(w,spec._RepairProgressDialog)
+                           and w.isVisible()),None)
+            if dialog is None:
+                QtCore.QTimer.singleShot(5,stop)
+                return
+            observations.extend([dialog.parentWidget() is owner,
+                                 not bool(dialog.windowFlags() & QtCore.Qt.WindowStaysOnTopHint),
+                                 '#b91c1c' in dialog.stop.styleSheet()])
+            dialog.stop.click()
+            observations.extend([dialog.isVisible(),not dialog.stop.isEnabled()])
+        def work(progress):
+            for i in range(1000):
+                sleep(.001)
+                progress(i,1000)
+            return 'should not finish'
+        QtCore.QTimer.singleShot(0,stop)
+        try:
+            with self.assertRaisesRegex(ValueError,'cancelled'):
+                spec.run_repair(work,owner)
+            self.assertEqual(observations,[True]*5)
+        finally:
+            owner.deleteLater()
+
     def test_cancellation_and_bad_skeleton_are_reported(self):
         skeleton,clip,_,_ = fixture()
         def cancel(frame,total):

@@ -46,6 +46,7 @@ class SceneOutliner(QtWidgets.QListWidget):
 
     def __init__(self, scene_name, parent=None):
         super().__init__(parent)
+        self.setResizeMode(QtWidgets.QListView.Adjust)
         self.scene_name = scene_name
         self.rows = []
         self.order = {}
@@ -59,6 +60,12 @@ class SceneOutliner(QtWidgets.QListWidget):
         self.setAutoScroll(True)
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDrop)
         self.setDefaultDropAction(QtCore.Qt.MoveAction)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Embedded row widgets must follow splitter drags immediately, rather
+        # than retaining the geometry from the previous item layout.
+        self.doItemsLayout()
 
     def _source(self, event):
         mime = event.mimeData()

@@ -7,6 +7,10 @@ from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui
 _KEYMAP_CACHE = None
 
+CAMERA_VIEW_ACTIONS = (
+    "gl_view_perspective", "gl_view_top_bottom", "gl_view_front_back", "gl_view_left_right",
+)
+
 # Action ids -> default key sequences
 DEFAULT_KEYMAP = {
     "big_editor": "Ctrl+B",
@@ -23,6 +27,10 @@ DEFAULT_KEYMAP = {
     "view_mode_3d": "3",
     "gl_frame": "F",
     "gl_reset_view": "Shift+R",
+    "gl_view_perspective": "Space+1",
+    "gl_view_top_bottom": "Space+2",
+    "gl_view_front_back": "Space+3",
+    "gl_view_left_right": "Space+4",
     "gizmo_translate": "T",
     "gizmo_rotate": "R",
     "gizmo_scale": "E",
@@ -33,7 +41,7 @@ DEFAULT_KEYMAP = {
     "gl_mesh_select_path_loop": "Shift+A",
     "gl_mesh_deselect_path_loop": "Ctrl+A",
     "gl_grid_toggle": "G",
-    "timeline_play_toggle": "Space",
+    "timeline_play_toggle": "Space+P",
     "timeline_set_key": "K",
     "app_fullscreen": "F11",
     "wire_add_pin": "Ctrl+LeftClick",
@@ -41,12 +49,22 @@ DEFAULT_KEYMAP = {
 }
 
 ACTION_LABELS = {
+    "timeline_play_toggle": "Timeline: play / pause",
+    "gl_view_perspective": "3D: Perspective view",
+    "gl_view_top_bottom": "3D: Top / Bottom views",
+    "gl_view_front_back": "3D: Front / Back views",
+    "gl_view_left_right": "3D: Left / Right views",
     "gl_xray_toggle": "3D: toggle X-ray wireframe",
     "gl_mesh_select_path_loop": "Mesh: add path / loop (hold)",
     "gl_mesh_deselect_path_loop": "Mesh: deselect path / loop (hold)",
 }
 
 ACTION_DESCRIPTIONS = {
+    "timeline_play_toggle": "Play or pause with the pointer over the timeline panel. Default: hold Space and press P. Video review uses its own Space shortcut.",
+    "gl_view_perspective": "Restore the previous perspective camera view. Hold Space while pressing the key when Hold Space is checked.",
+    "gl_view_top_bottom": "Alternate between orthographic Top and Bottom views.",
+    "gl_view_front_back": "Alternate between orthographic Front and Back views.",
+    "gl_view_left_right": "Alternate between orthographic Left and Right views.",
     "gl_xray_toggle": "Toggle ghosted X-ray wireframe and rear-point picking in the 3D viewport.",
     "gl_mesh_select_path_loop": "Hold this shortcut: left-click adds a path; middle-click adds the full loop. Works with points, edges and polygons; previews are blue.",
     "gl_mesh_deselect_path_loop": "Hold this shortcut: left-click deselects a path; middle-click deselects the full loop. Works with points, edges and polygons; previews are red.",
@@ -58,6 +76,25 @@ _MOD_MASK = (
     | QtCore.Qt.ShiftModifier
     | QtCore.Qt.MetaModifier
 )
+
+
+def split_space_binding(spec: str) -> tuple[bool, str]:
+    """Separate our held-Space chord prefix from a Qt key combination."""
+    text = str(spec or "").strip()
+    prefix, separator, remainder = text.partition("+")
+    held = bool(separator) and prefix.strip().lower() == "space"
+    return held, remainder.strip() if held else text
+
+
+def chord_binding(action_id: str):
+    global _KEYMAP_CACHE
+    if _KEYMAP_CACHE is None:
+        _KEYMAP_CACHE = load_keymap()
+    # Unlike legacy keyseq(), an empty binding explicitly disables this action.
+    spec = _KEYMAP_CACHE.get(action_id, DEFAULT_KEYMAP[action_id])
+    held, combination = split_space_binding(spec)
+    key, mods = parse_key_binding(combination)
+    return held, key, mods
 
 
 def parse_key_binding(spec: str):
@@ -128,9 +165,12 @@ def load_keymap() -> dict:
 
     merged = dict(DEFAULT_KEYMAP)
     merged.update({k: v for k, v in data.items() if isinstance(v, str)})
+    # Migrate the previous global playback default to the panel-only chord.
+    if merged.get("timeline_play_toggle") == "Space":
+        merged["timeline_play_toggle"] = "Space+P"
 
     # write back if file missing or missing keys
-    if (not p.exists()) or (merged.keys() != data.keys()):
+    if (not p.exists()) or merged != data:
         try:
             p.write_text(json.dumps(merged, indent=2), encoding="utf-8")
             _log("WRITTEN:", str(p))

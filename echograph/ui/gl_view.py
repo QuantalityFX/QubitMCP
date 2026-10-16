@@ -197,8 +197,12 @@ class _ViewportHotkeyFilter(QtCore.QObject):
         self._view = view
 
     def eventFilter(self, obj, ev):
+        if self._view._handle_timeline_play_key(ev):
+            return True
+        if ev.type() == QtCore.QEvent.KeyRelease and ev.key() == QtCore.Qt.Key_Space:
+            return self._view._release_camera_view_space(ev)
         try:
-            if ev.type() != QtCore.QEvent.KeyPress:
+            if ev.type() not in (QtCore.QEvent.KeyPress, QtCore.QEvent.ShortcutOverride):
                 return False
         except Exception:
             return False
@@ -238,6 +242,10 @@ class _ViewportHotkeyFilter(QtCore.QObject):
         except Exception:
             pass
         try:
+            if view._handle_camera_view_key(ev):
+                return True
+            if ev.type() == QtCore.QEvent.ShortcutOverride:
+                return False
             if view._handle_viewport_hotkeys(ev, require_no_text_focus=False):
                 return True
         except Exception:
@@ -1085,6 +1093,18 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._build_grid_button()
         self._build_zoom_mode_button()
         self._build_camera_selector_dropdown()
+        self._view_select_frame = QtWidgets.QFrame(self)
+        self._view_select_frame.setObjectName("GLCamSelectFrame")
+        self._view_select_frame.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        self._view_select_frame.setStyleSheet(self._cam_select_frame.styleSheet())
+        self._view_combo = QtWidgets.QComboBox(self._view_select_frame)
+        self._view_combo.addItems(["Persp", "Top", "Bottom", "Front", "Back", "Left", "Right"])
+        self._view_combo.activated.connect(self._on_camera_view_selected)
+        self._view_combo.setToolTip(
+            "Active camera view. Configure view shortcuts in the Hotkeys editor.\n"
+            "Defaults: hold Space + 1 Perspective, 2 Top / Bottom, 3 Front / Back, 4 Left / Right."
+        )
+        self._view_select_frame.show()
         
 
 
@@ -1303,6 +1323,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             combo_x = max(self._side_btn_margin, self.width() - self._side_btn_margin - frame_w)
             combo_y = self._side_btn_margin
             cam_sel_frame.setGeometry(combo_x, combo_y, frame_w, combo_h)
+            view_frame = getattr(self, "_view_select_frame", None)
+            if view_frame is not None:
+                view_frame.setGeometry(max(0, combo_x - 100), combo_y, 96, combo_h)
+                self._view_combo.setGeometry(2, 2, 92, ctrl_h)
             cam_sel_combo.setGeometry(2, 2, combo_w, ctrl_h)
             if lock_btn is not None:
                 lock_btn.setGeometry(2 + combo_w + gap, 2, lock_w, ctrl_h)
@@ -4139,6 +4163,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._refresh_camera_selector_dropdown()
 
     def _select_scene_camera(self, owner: str) -> None:
+        self._leave_axis_view()
         owner_key = str(owner or "").strip()
         if not owner_key:
             self._select_default_camera()
@@ -4444,6 +4469,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         enabled = bool(checked)
         self._fly_mode_enabled = enabled
         if enabled:
+            self._leave_axis_view()
             self._orbit_cam_enabled = False
             self._fps_camera_active = True
             self._fps_nav_active = False
@@ -9702,7 +9728,195 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
         return True
 
+    def _handle_timeline_play_key(self, e) -> bool:
+        kind = e.type()
+        if kind == QtCore.QEvent.ApplicationDeactivate:
+            self._timeline_space_held = False
+            return False
+        if kind not in (QtCore.QEvent.KeyPress, QtCore.QEvent.KeyRelease, QtCore.QEvent.ShortcutOverride):
+            return False
+        if kind == QtCore.QEvent.KeyRelease and e.key() == QtCore.Qt.Key_Space:
+            held = getattr(self, "_timeline_space_held", False)
+            if not e.isAutoRepeat():
+                self._timeline_space_held = False
+            if held:
+                e.accept()
+            return held
+        panel = getattr(self, "_timeline_panel", None)
+        focus = QtWidgets.QApplication.focusWidget()
+        target = QtWidgets.QApplication.widgetAt(QtGui.QCursor.pos()) or focus
+        in_panel = panel is not None and panel.isVisible() and target is not None and (
+            target is panel or panel.isAncestorOf(target))
+        if not in_panel or (focus is not None and focus.window() is not self.window()):
+            self._timeline_space_held = False
+            return False
+        if isinstance(focus, (QtWidgets.QLineEdit, QtWidgets.QTextEdit,
+                              QtWidgets.QPlainTextEdit, QtWidgets.QAbstractSpinBox)):
+            self._timeline_space_held = False
+            return False
+        space, key, mods = hotkeys_config.chord_binding("timeline_play_toggle")
+        prefix = space and e.key() == QtCore.Qt.Key_Space
+        match = e.key() == key and (e.modifiers() & hotkeys_config._MOD_MASK) == mods and (
+            not space or getattr(self, "_timeline_space_held", False))
+        if not prefix and not match:
+            return False
+        if kind == QtCore.QEvent.KeyRelease:
+            return False
+        if kind == QtCore.QEvent.KeyPress and not e.isAutoRepeat():
+            if prefix:
+                self._timeline_space_held = True
+            elif match:
+                controller = getattr(self.window(), "_timeline_controller", None)
+                if controller is not None:
+                    controller.shortcut_timeline_play_toggle_action()
+                else:
+                    self.timeline_toggle_playback()
+        e.accept()
+        return True
+
+    def _handle_camera_view_key(self, e) -> bool:
+        focus = QtWidgets.QApplication.focusWidget()
+        if focus is not None and focus.window() is not self.window():
+            return False
+        if isinstance(focus, (QtWidgets.QLineEdit, QtWidgets.QTextEdit,
+                              QtWidgets.QPlainTextEdit, QtWidgets.QAbstractSpinBox)):
+            return False
+        key = e.key()
+        held = bool(getattr(self, "_view_space_held", False))
+        mods = e.modifiers() & hotkeys_config._MOD_MASK
+        bindings = [hotkeys_config.chord_binding(action)
+                    for action in hotkeys_config.CAMERA_VIEW_ACTIONS]
+        number = next((i for i, (space, bound_key, bound_mods) in enumerate(bindings, 1)
+                       if space == held and key == bound_key and mods == bound_mods), None)
+        space_prefix = key == QtCore.Qt.Key_Space and any(space for space, _, _ in bindings)
+        if number is None and not space_prefix:
+            return False
+        if e.type() == QtCore.QEvent.ShortcutOverride:
+            e.accept()
+            return True
+        if not e.isAutoRepeat():
+            if space_prefix and number is None:
+                self._view_space_held = True
+                self._view_space_used = False
+            else:
+                self._view_space_used = True
+                self._set_camera_view(number)
+        e.accept()
+        return True
+
+    def _release_camera_view_space(self, e) -> bool:
+        if not getattr(self, "_view_space_held", False):
+            return False
+        if not e.isAutoRepeat():
+            self._view_space_held = False
+        e.accept()
+        return True
+
+    def _leave_axis_view(self) -> None:
+        self._mgl_projection = "perspective"
+        self._camera_view_name = "Persp"
+        combo = getattr(self, "_view_combo", None)
+        if combo is not None:
+            combo.setCurrentText("Persp")
+
+    def _on_camera_view_selected(self, index: int) -> None:
+        name = self._view_combo.itemText(index)
+        number = {"Persp": 1, "Top": 2, "Bottom": 2, "Front": 3,
+                  "Back": 3, "Left": 4, "Right": 4}[name]
+        self._set_camera_view(number, view_name=name)
+        self._view_combo.setCurrentText(getattr(self, "_camera_view_name", "Persp"))
+
+    def _restore_perspective_view(self, state) -> None:
+        # Restore camera fields directly. The general scene snapshot loader also
+        # resets scene scale and UI controls, which a view switch must not do.
+        self._mgl_camera_zoom = state["zoom"]
+        self._mgl_fov = state["fov"]
+        self._mgl_clip_far = state["clip_far"]
+        center = state["center"]
+        self._mgl_center = None if center is None else np.array(center,dtype="f4")
+        self._mgl_arcball.Transform = np.array(state["arcball_transform"],dtype="f4")
+        self._mgl_orbit_locked = state["orbit_locked"]
+        self._fly_mode_enabled = state["fly_mode_enabled"]
+        self._orbit_cam_enabled = state["orbit_cam_enabled"]
+        self._fps_camera_active = state["fps_camera_active"]
+        fps = state.get("fps_camera")
+        if fps is not None:
+            if self._fps_camera is None:
+                self._fps_camera = FpsCamera()
+            for name in ("position", "forward", "up"):
+                setattr(self._fps_camera,name,np.array(fps[name],dtype="f4"))
+        self._fps_nav_active = False
+        self._fps_nav_keys = set()
+        self._fps_nav_look_last_pos = None
+        self._fps_nav_boost = False
+        self._mgl_orbit_dragging = False
+        self._mgl_orbit_last_pos = None
+        self._mgl_arcball_sync_after_set_transform()
+        self._sync_locked_orbit_from_arcball()
+        self._update_fly_mode_button()
+        self._update_camera_orbit_button()
+
+    def _set_camera_view(self, number: int, *, view_name: str | None = None) -> None:
+        """Snap the default camera around its pivot; preserve the prior perspective pose."""
+        if np is None or Matrix44 is None or self._mgl_arcball is None:
+            return
+        if getattr(self, "_camera_select_mode", "default") != "default":
+            self._select_default_camera()
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        saved = getattr(self, "_perspective_view_state", None)
+        if number == 1:
+            if saved is not None:
+                self._restore_perspective_view(saved)
+                self._perspective_view_state = None
+            self._leave_axis_view()
+            self.update()
+            return
+        pairs = {2: ("Top", "Bottom"), 3: ("Front", "Back"), 4: ("Left", "Right")}
+        first, second = pairs[number]
+        name = view_name or (second if getattr(self, "_camera_view_name", "Persp") == first else first)
+        if saved is None:
+            state = renderer._mgl_get_camera_state()
+            # Camera restoration must never restore scene-object transforms.
+            fields = ("zoom", "center", "arcball_transform", "fov", "projection",
+                      "clip_far", "fps_camera_active", "fps_camera")
+            self._perspective_view_state = {k: state[k] for k in fields if k in state}
+            self._perspective_view_state.update(
+                fly_mode_enabled=bool(getattr(self,"_fly_mode_enabled",False)),
+                orbit_cam_enabled=bool(getattr(self,"_orbit_cam_enabled",True)),
+                orbit_locked=bool(getattr(self,"_mgl_orbit_locked",True)),
+            )
+        if getattr(self, "_fly_mode_enabled", False):
+            self._on_fly_mode_toggled(False)
+        if getattr(self, "_fps_camera_active", False):
+            self._fps_cam_sync_orbit_from_camera()
+        self._fps_camera_active = False
+        self._fps_nav_active = False
+        self._fps_nav_keys = set()
+        self._orbit_cam_enabled = True
+        directions = {
+            "Top": ((0, 1, 0), (0, 0, -1)),
+            "Bottom": ((0, -1, 0), (0, 0, 1)),
+            "Front": ((0, 0, 1), (0, 1, 0)),
+            "Back": ((0, 0, -1), (0, 1, 0)),
+            "Left": ((-1, 0, 0), (0, 1, 0)),
+            "Right": ((1, 0, 0), (0, 1, 0)),
+        }
+        eye, up = directions[name]
+        rotation = np.asarray(Matrix44.look_at(eye, (0, 0, 0), up), dtype="f4")
+        rotation[3, :3] = 0
+        self._mgl_arcball.Transform = rotation
+        self._mgl_arcball_sync_after_set_transform()
+        self._sync_locked_orbit_from_arcball()
+        self._mgl_projection = "orthographic"
+        self._camera_view_name = name
+        self._view_combo.setCurrentText(name)
+        self.update()
+
     def keyPressEvent(self, e):
+        if self._handle_timeline_play_key(e):
+            return
+        if self._handle_camera_view_key(e):
+            return
         try:
             key = e.key()
         except Exception:
@@ -9789,6 +10003,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         super().keyPressEvent(e)
 
     def keyReleaseEvent(self, e):
+        if e.key() == QtCore.Qt.Key_Space and self._release_camera_view_space(e):
+            return
         try:
             key = e.key()
         except Exception:
@@ -9836,6 +10052,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         super().keyReleaseEvent(e)
 
     def focusOutEvent(self, e):
+        self._view_space_held = False
         self._mesh_hover_subtract = False
         self._mesh_hover_pending_event = None
         self._mesh_polygon_a_held = False

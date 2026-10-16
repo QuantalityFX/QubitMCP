@@ -8,6 +8,9 @@ from pyrr import Matrix44
 
 from echograph.ui.gl_mgl_renderer import MGLRendererMixin
 from echograph.ui.gl_shaders import SHADERS
+from echograph.ui.gl_scene import MGLScene, MGLSceneItem
+from echograph.ui.rig_collider_mesh import draw_solid_rig_colliders, TAG
+from echograph.motion.rig_preview import capsule_surfaces
 
 
 class MeshViewportShaderTests(unittest.TestCase):
@@ -82,6 +85,96 @@ class MeshViewportShaderTests(unittest.TestCase):
         self.assertTrue(np.all(samples[1]<samples[0]*.5))
         self.assertGreater(samples[1].sum(),0)
         np.testing.assert_array_equal(samples[0],samples[2])
+
+    def solid_collider_preview(self):
+        renderer=self.renderer
+        renderer._mgl_prog,_=self.mesh_program()
+        renderer._mgl_scene=MGLScene()
+        self.addCleanup(renderer._mgl_scene.clear)
+        renderer._rig_colliders_xray=False
+        renderer._mgl_texture_override=False
+        renderer._mgl_wireframe=False
+        renderer._mgl_mesh_color=(1,1,1,1)
+        faces,_=capsule_surfaces(np.array([0.,-.35,0.]),np.array([0.,.35,0.]),.3)
+        guide=dict(shapes=[dict(kind='collision',faces=faces)],labels={},collisions=True)
+        renderer._mgl_scene_skeleton_qt_overlay_data=lambda:dict(owner='Character',rig_guide=guide)
+        renderer._mgl_scene_skeleton_display_positions=lambda owner,points:(points,{})
+        return renderer
+
+    def test_solid_colliders_have_lit_curvature_and_release_on_xray(self):
+        renderer=self.solid_collider_preview()
+        mvp=Matrix44.orthogonal_projection(-1,1,-1,1,-1,1,dtype='f4')
+        self.fbo.clear(0,0,0,0,depth=1)
+        draw_solid_rig_colliders(renderer,mvp)
+        pixels=self.pixels()
+        body=pixels[:,:,2]>0
+        self.assertGreater(body.sum(),1000)
+        self.assertTrue(np.all(pixels[:,:,3][body]==255))
+        self.assertGreater(np.ptp(pixels[:,:,2][body]),40,'Curved normals must produce varying illumination')
+        self.assertTrue(np.all(pixels[:,:,2][body]>pixels[:,:,0][body]))
+        depth=np.frombuffer(self.fbo.read(attachment=-1,dtype='f4'),dtype='f4')
+        self.assertLess(depth.min(),.5,'Solid colliders must write scene depth')
+        item=next(renderer._mgl_scene.iter_by_tag(TAG))
+        np.testing.assert_allclose(np.linalg.norm(item.payload['mesh_entry']['normals'],axis=1),1,atol=1e-6)
+        self.fbo.clear(0,0,0,0,depth=1)
+        draw_solid_rig_colliders(renderer,mvp)
+        np.testing.assert_array_equal(self.pixels(),pixels)
+        self.assertIs(next(renderer._mgl_scene.iter_by_tag(TAG)),item)
+        renderer._rig_colliders_xray=True
+        self.fbo.clear(0,0,0,0,depth=1)
+        draw_solid_rig_colliders(renderer,mvp)
+        self.assertFalse(renderer._mgl_scene.has_tag(TAG))
+        self.assertEqual(self.pixels().sum(),0)
+
+    def test_solid_colliders_follow_pose_and_owner_transform_with_hidden_geometry(self):
+        renderer=self.solid_collider_preview()
+        data=renderer._mgl_scene_skeleton_qt_overlay_data()
+        # Outliner collider visibility is independent of the geometry eye.
+        renderer._mgl_scene_visibility={'Character':False}
+        skeleton=object()
+        renderer._scene_rig_collider_overlays={'Character':(skeleton,data['rig_guide'])}
+        renderer._mgl_scene_owner_fbx_rig_context=lambda owner:dict(skeleton=skeleton)
+        from unittest.mock import patch
+        mvp=Matrix44.orthogonal_projection(-1,1,-1,1,-1,1,dtype='f4')
+        with patch('echograph.ui.rig_collider_mesh.rig_guide_shapes',return_value=(data['rig_guide']['shapes'],{})):
+            self.fbo.clear(0,0,0,0,depth=1)
+            draw_solid_rig_colliders(renderer,mvp)
+            item=next(renderer._mgl_scene.iter_by_tag(TAG))
+            original=item.payload['mesh_entry']['points'].copy()
+            # An active preview and outliner listing must not duplicate capsules.
+            renderer._mgl_scene_skeleton_qt_overlay_data=lambda:None
+            renderer._mgl_scene_skeleton_display_positions=lambda owner,points:(points+[.5,0,0],{})
+            self.fbo.clear(0,0,0,0,depth=1)
+            draw_solid_rig_colliders(renderer,mvp)
+            self.assertIs(next(renderer._mgl_scene.iter_by_tag(TAG)),item)
+            np.testing.assert_allclose(item.payload['mesh_entry']['points'],original+[.5,0,0],atol=1e-6)
+            self.assertGreater(self.pixels()[64,96,2],0)
+            self.assertEqual(self.pixels()[64,64,2],0)
+            for face in data['rig_guide']['shapes'][0]['faces']:
+                face[:,1]+=.2
+            draw_solid_rig_colliders(renderer,mvp)
+            np.testing.assert_allclose(item.payload['mesh_entry']['points'],original+[.5,.2,0],atol=1e-6)
+
+    def test_skeleton_lines_remain_visible_over_solid_colliders(self):
+        renderer=self.solid_collider_preview()
+        renderer._mgl_scene_skeleton_active_owner='Character'
+        renderer._mgl_wire_prog=self.resource(self.ctx.program(vertex_shader=SHADERS['wire_vertex'],fragment_shader=SHADERS['wire_fragment']))
+        renderer._mgl_wire_color=(1,0,0,1)
+        renderer._mgl_wire_edge_width=2
+        renderer._mgl_wire_viewport_size=lambda:(128,128)
+        renderer._mgl_should_hide_scene_camera_proxy=lambda *args:False
+        lines=renderer._mgl_wide_line_vertices([[0,-.5,-.5],[0,.5,-.5]])
+        vao=self.resource(self.ctx.vertex_array(renderer._mgl_wire_prog,[(self.resource(self.ctx.buffer(lines.tobytes())),'3f 3f 3f 1f','in_pos','in_start','in_end','in_side')]))
+        renderer._mgl_scene.add(MGLSceneItem('joints',MGLRendererMixin._mgl_draw_scene_wire,
+            payload=dict(vao=vao,owner='Character',scene_skeleton_overlay=True,mode=moderngl.TRIANGLES,color=(1,0,0,1)),tag='scene-rig-joints'))
+        mvp=Matrix44.orthogonal_projection(-1,1,-1,1,-1,1,dtype='f4')
+        self.fbo.clear(0,0,0,0,depth=1)
+        draw_solid_rig_colliders(renderer,mvp)
+        self.assertLess(self.pixels()[64,64,0],self.pixels()[64,64,2])
+        renderer._paint_mgl_draw_scene_skeleton_overlay_pass(mvp=mvp)
+        pixel=self.pixels()[64,64]
+        self.assertGreater(pixel[0],200,'Skeleton lines must show over the solid collider like Qt joint points and axes')
+        self.assertLess(pixel[2],20)
 
     def test_back_points_are_depth_hidden_in_solid_and_visible_in_xray(self):
         mesh,vao=self.mesh_program()

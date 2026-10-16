@@ -3,6 +3,34 @@ from __future__ import annotations
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
 from echograph.ui import hotkeys_config
 
+
+class CameraViewHotkeyEditor(QtWidgets.QWidget):
+    """Edit held-Space chords without treating Space as a Qt modifier."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.hold_space = QtWidgets.QCheckBox("Hold Space", self)
+        self.key_edit = QtWidgets.QKeySequenceEdit(self)
+        if hasattr(self.key_edit, "setMaximumSequenceLength"):
+            self.key_edit.setMaximumSequenceLength(1)
+        self.hold_space.setToolTip("Hold Space while pressing the shortcut key.")
+        layout.addWidget(self.hold_space)
+        layout.addWidget(self.key_edit, 1)
+
+    def set_value(self, spec: str) -> None:
+        held, combination = hotkeys_config.split_space_binding(spec)
+        self.hold_space.setChecked(held)
+        self.key_edit.setKeySequence(QtGui.QKeySequence(combination))
+
+    def value(self) -> str:
+        combination = self.key_edit.keySequence().toString()
+        if not combination:
+            return ""
+        return ("Space+" if self.hold_space.isChecked() else "") + combination
+
+
 def add_shortcut(widget, action_id: str, fallback_seq: str, callback, *, context=None):
     """
     Bind an action id to a shortcut using hotkeys.json.

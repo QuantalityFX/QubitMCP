@@ -367,6 +367,7 @@ def _load_app_settings() -> Dict[str, Any]:
         "two_sided_shadows": bool(two_sided_shadows),
         "ambient_light": bool(ambient_light),
         "unlit_view": bool(unlit_view),
+        "rig_colliders_xray": _coerce_bool(raw.get("rig_colliders_xray"), True),
         "work_light_view": bool(work_light_view),
         "ambient_light_strength": float(ambient_light_strength),
         "scene_skeleton_joint_names": bool(scene_skeleton_joint_names),
@@ -423,6 +424,7 @@ def _save_app_settings(settings: Dict[str, Any]) -> None:
         "two_sided_shadows": _coerce_bool((settings or {}).get("two_sided_shadows"), True),
         "ambient_light": _coerce_bool((settings or {}).get("ambient_light"), True),
         "unlit_view": _coerce_bool((settings or {}).get("unlit_view"), _UNLIT_VIEW_DEFAULT),
+        "rig_colliders_xray": _coerce_bool((settings or {}).get("rig_colliders_xray"), True),
         "work_light_view": _coerce_bool((settings or {}).get("work_light_view"), _WORK_LIGHT_VIEW_DEFAULT),
         "ambient_light_strength": _normalize_ambient_light_strength(
             (settings or {}).get("ambient_light_strength"),
@@ -2898,6 +2900,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._two_sided_shadows_enabled = _coerce_bool(app_settings.get("two_sided_shadows"), True)
         self._ambient_light_enabled = _coerce_bool(app_settings.get("ambient_light"), True)
         self._unlit_view_enabled = _coerce_bool(app_settings.get("unlit_view"), _UNLIT_VIEW_DEFAULT)
+        self._rig_colliders_xray = _coerce_bool(app_settings.get("rig_colliders_xray"), True)
         self._work_light_enabled = _coerce_bool(app_settings.get("work_light_view"), _WORK_LIGHT_VIEW_DEFAULT)
         self._ambient_light_strength = _normalize_ambient_light_strength(
             app_settings.get("ambient_light_strength"),
@@ -3187,21 +3190,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             self._shortcut_gl_grid = None
 
-        try:
-            self._shortcut_timeline_play_toggle = hotkeys.add_shortcut(
-                self,
-                "timeline_play_toggle",
-                "Space",
-                self._timeline_controller.shortcut_timeline_play_toggle_action,
-                context=QtCore.Qt.ApplicationShortcut,
-            )
-            try:
-                self._shortcut_timeline_play_toggle.setAutoRepeat(False)
-            except Exception:
-                pass
-            self._register_shortcut("timeline_play_toggle", self._shortcut_timeline_play_toggle)
-        except Exception:
-            self._shortcut_timeline_play_toggle = None
+        # Playback chords are handled by the viewport's timeline-panel event filter.
+        self._shortcut_timeline_play_toggle = None
 
         try:
             self._shortcut_timeline_set_key = hotkeys.add_shortcut(
@@ -3810,7 +3800,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             item.setToolTip(description or action_id)
             table.setItem(row, 0, item)
             seq = mapping.get(action_id, hotkeys_config.DEFAULT_KEYMAP.get(action_id, ""))
-            if action_id in wire_actions:
+            if action_id in hotkeys_config.CAMERA_VIEW_ACTIONS or action_id == "timeline_play_toggle":
+                editor = hotkeys.CameraViewHotkeyEditor(table)
+                editor.set_value(str(seq or ""))
+                table.setCellWidget(row, 1, editor)
+                editors[action_id] = ("camera", editor)
+            elif action_id in wire_actions:
                 editor = _MouseHotkeyEditor(table)
                 editor.set_value(str(seq or ""))
                 table.setCellWidget(row, 1, editor)
@@ -3843,7 +3838,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             new_map = {}
             for action_id, data in editors.items():
                 kind, editor = data
-                if kind == "mouse":
+                if kind in ("mouse", "camera"):
                     try:
                         seq = editor.value()
                     except Exception:
@@ -5817,6 +5812,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._refresh_voice_microphone_options()
 
         panel_action = QtWidgets.QWidgetAction(settings_menu)
+        collider_label = QtWidgets.QLabel("X-ray Colliders")
+        self._rig_colliders_xray_toggle = QtWidgets.QCheckBox()
+        self._rig_colliders_xray_toggle.setChecked(bool(getattr(self,"_rig_colliders_xray",True)))
+        self._rig_colliders_xray_toggle.setToolTip(
+            "On: transparent rig colliders. Off: solid rig colliders. Applies to scene outliner, Rig Limiter and PriorMDM previews."
+        )
+        self._rig_colliders_xray_toggle.toggled.connect(self._on_rig_colliders_xray_toggled)
+        grid.addWidget(collider_label,19,0,1,1,QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._rig_colliders_xray_toggle,19,1,1,1,QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         panel_action.setDefaultWidget(panel)
         settings_menu.addAction(panel_action)
 
@@ -6536,6 +6540,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "two_sided_shadows": bool(getattr(self, "_two_sided_shadows_enabled", True)),
             "ambient_light": bool(getattr(self, "_ambient_light_enabled", True)),
             "unlit_view": bool(getattr(self, "_unlit_view_enabled", _UNLIT_VIEW_DEFAULT)),
+            "rig_colliders_xray": bool(getattr(self,"_rig_colliders_xray",True)),
             "work_light_view": bool(getattr(self, "_work_light_enabled", _WORK_LIGHT_VIEW_DEFAULT)),
             "ambient_light_strength": _normalize_ambient_light_strength(
                 getattr(self, "_ambient_light_strength", _AMBIENT_LIGHT_STRENGTH_DEFAULT),
@@ -6851,6 +6856,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         settings["two_sided_shadows"] = bool(getattr(self, "_two_sided_shadows_enabled", True))
         settings["ambient_light"] = bool(getattr(self, "_ambient_light_enabled", True))
         settings["unlit_view"] = bool(getattr(self, "_unlit_view_enabled", _UNLIT_VIEW_DEFAULT))
+        settings["rig_colliders_xray"] = bool(getattr(self,"_rig_colliders_xray",True))
         settings["work_light_view"] = bool(getattr(self, "_work_light_enabled", _WORK_LIGHT_VIEW_DEFAULT))
         settings["ambient_light_strength"] = _normalize_ambient_light_strength(
             getattr(self, "_ambient_light_strength", _AMBIENT_LIGHT_STRENGTH_DEFAULT),
@@ -7182,6 +7188,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._two_sided_shadows_enabled = True
         self._ambient_light_enabled = True
         self._unlit_view_enabled = _UNLIT_VIEW_DEFAULT
+        self._rig_colliders_xray = True
+        if hasattr(self,"_rig_colliders_xray_toggle"):
+            blocker = QtCore.QSignalBlocker(self._rig_colliders_xray_toggle)
+            self._rig_colliders_xray_toggle.setChecked(True)
+            del blocker
         self._work_light_enabled = _WORK_LIGHT_VIEW_DEFAULT
         self._ambient_light_strength = _AMBIENT_LIGHT_STRENGTH_DEFAULT
         self._splat_log_enabled = False
@@ -7353,6 +7364,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             gv._mgl_zoom_pan_scale = float(getattr(self, "_gizmo_zoom_scale", 0.02))
             gv._mgl_pan_ref_zoom = None
             gv._mgl_splat_log = bool(getattr(self, "_splat_log_enabled", False))
+            gv._rig_colliders_xray = bool(getattr(self,"_rig_colliders_xray",True))
             gv._viewport_render_debug_enabled = bool(runtime_logging.viewport_render_debug_enabled())
             gv._mgl_scene_skeleton_show_joint_names = bool(
                 getattr(self, "_scene_skeleton_joint_names_enabled", _SCENE_SKELETON_JOINT_NAMES_DEFAULT)
@@ -7443,6 +7455,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 settings["two_sided_shadows"] = bool(getattr(self, "_two_sided_shadows_enabled", True))
                 settings["ambient_light"] = bool(getattr(self, "_ambient_light_enabled", True))
                 settings["unlit_view"] = bool(getattr(self, "_unlit_view_enabled", _UNLIT_VIEW_DEFAULT))
+                settings["rig_colliders_xray"] = bool(getattr(self,"_rig_colliders_xray",True))
                 settings["work_light_view"] = bool(getattr(self, "_work_light_enabled", _WORK_LIGHT_VIEW_DEFAULT))
                 settings["ambient_light_strength"] = _normalize_ambient_light_strength(
                     getattr(self, "_ambient_light_strength", _AMBIENT_LIGHT_STRENGTH_DEFAULT),
@@ -7658,6 +7671,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _on_unlit_view_toggled(self, checked: bool) -> None:
         self._unlit_view_enabled = bool(checked)
+        self._apply_pan_settings_to_gl_view()
+        self._persist_app_layout_settings()
+
+    def _on_rig_colliders_xray_toggled(self, checked: bool) -> None:
+        self._rig_colliders_xray = bool(checked)
         self._apply_pan_settings_to_gl_view()
         self._persist_app_layout_settings()
 
@@ -8040,6 +8058,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._two_sided_shadows_enabled = bool(two_sided_shadows)
         self._ambient_light_enabled = bool(ambient_light)
         self._unlit_view_enabled = bool(unlit_view)
+        self._rig_colliders_xray = _coerce_bool(
+            settings.get("rig_colliders_xray",getattr(self,"_rig_colliders_xray",True)),True)
+        if hasattr(self,"_rig_colliders_xray_toggle"):
+            blocker = QtCore.QSignalBlocker(self._rig_colliders_xray_toggle)
+            self._rig_colliders_xray_toggle.setChecked(self._rig_colliders_xray)
+            del blocker
         self._work_light_enabled = bool(work_light)
         self._ambient_light_strength = float(ambient_light_strength)
         self._voice_audio_mode = voice_audio_mode

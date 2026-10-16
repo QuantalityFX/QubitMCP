@@ -12913,6 +12913,8 @@ void main() {
         }
 
     def _draw_scene_skeleton_qt_overlay(self, painter: QtGui.QPainter) -> None:
+        from .scene_rig_overlay import draw_scene_colliders
+        draw_scene_colliders(self, painter)
         data = self._mgl_scene_skeleton_qt_overlay_data()
         if not isinstance(data,dict) or not data.get("rig_guide"):
             panel = getattr(self,"_priormdm_rig_panel",None)
@@ -18759,6 +18761,8 @@ void main() {
             except Exception:
                 proc_state = None
         textures_enabled = bool(getattr(self, "_mgl_textures_enabled", True))
+        if tag == "scene-rig-collider-solid":
+            textures_enabled = False
         if not textures_enabled:
             proc_state = None
         self._mgl_apply_procedural_uniforms(proc_state)
@@ -18766,6 +18770,8 @@ void main() {
         weight_debug = bool(payload.get("_fbx_skin_weight_debug", False))
         use_vertex_color = bool(weight_debug or payload.get("use_vertex_color", False))
         lighting_enabled = 0 if bool(getattr(self, "_mgl_unlit_view_enabled", False)) else 1
+        if tag == "scene-rig-collider-solid":
+            lighting_enabled = 1
         force_opaque_mesh = bool(payload.get("force_opaque_mesh", False)) or tag == "scene-groom-guide-tube"
         material = None if force_opaque_mesh else self._mgl_normalize_material(payload.get("material"))
         is_transparent_material = (not force_opaque_mesh) and (not weight_debug) and self._mgl_material_is_transparent(material)
@@ -19100,6 +19106,7 @@ void main() {
         # FBX uses explicit file-edge line items; GPU polygon wireframe exposes triangulation diagonals.
         wire_overlay = bool(
             self._mgl_wireframe
+            and tag != "scene-rig-collider-solid"
             and not edge_wire
             and (not is_fbx_payload)
             and (submeshes or vao is not None)
@@ -26026,7 +26033,13 @@ void main() {
                 pass
         if far <= near:
             far = near + 1.0
-        proj = Matrix44.perspective_projection(self._mgl_fov, aspect, near, far)
+        if getattr(self, "_mgl_projection", "perspective") == "orthographic":
+            half_h = max(0.001, abs(zoom) * math.tan(math.radians(self._mgl_fov) * 0.5))
+            proj = Matrix44.orthogonal_projection(
+                -half_h * aspect, half_h * aspect, -half_h, half_h, near, far
+            )
+        else:
+            proj = Matrix44.perspective_projection(self._mgl_fov, aspect, near, far)
         self._dbgprint(dbg, "[MGL] proj ok", flush=True)
 
         self._dbgprint(dbg, "[MGL] before lookat", flush=True)
@@ -28593,6 +28606,11 @@ void main() {
                 proj, lookat, transform, mvp = self._paint_mgl_build_matrices(dbg=dbg)
             with profile_scope("render.3d.mgl.scene_visibility_upload"):
                 self._paint_mgl_apply_scene_visibility_and_upload(mvp=mvp)
+            from .rig_collider_mesh import draw_solid_rig_colliders
+            # Solid surfaces precede the skeleton overlay so joint lines,
+            # Qt points and axes all remain visible as editing guides.
+            with profile_scope("render.3d.mgl.solid_rig_colliders"):
+                draw_solid_rig_colliders(self, mvp)
 
             with profile_scope("render.3d.mgl.draw_splats"):
                 self._paint_mgl_draw_splats_pass(

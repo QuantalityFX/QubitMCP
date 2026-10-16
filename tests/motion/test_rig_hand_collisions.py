@@ -49,6 +49,20 @@ def hand_fixture(frames=2, *, fingertip_contact=False):
 
 
 class ReusableIKTests(unittest.TestCase):
+    def test_cancel_interrupts_an_active_solver_without_changing_input(self):
+        local = np.tile(np.eye(3),(3,1,1))
+        original = local.copy()
+        calls = []
+        def cancel():
+            calls.append(True)
+            if len(calls) == 4:
+                raise ValueError('cancelled')
+        with self.assertRaisesRegex(ValueError,'cancelled'):
+            solve_constrained_ik(local,np.array([[0.,0,0],[1.,0,0],[1.,0,0]]),(-1,0,1),
+                joint_axes={0:np.eye(3),1:np.eye(3)},targets={2:[1,1,0]},check_cancel=cancel)
+        np.testing.assert_array_equal(local,original)
+        self.assertEqual(len(calls),4)
+
     def test_targets_and_limits_work_without_motion_nodes_or_named_humanoid_joints(self):
         offsets = np.array([[.25,.1,0],[1.,0,0],[1.,0,0]])
         parents = (-1,0,1)
@@ -86,6 +100,31 @@ class ReusableIKTests(unittest.TestCase):
 
 
 class HandColliderTests(unittest.TestCase):
+    def test_final_hand_clearance_removes_residual_thigh_contact(self):
+        _,_,_,names,parents,offsets,local = hand_fixture()
+        points,_ = forward_kinematics(local,offsets,parents)
+        # A stationary thigh near the fingers, with restricted finger bending.
+        # The separate arm/finger passes used to leave .00113 reference units
+        # of penetration in this pose, below their old reporting threshold.
+        offsets[1] = points[names.index('left_middle_tip')]+np.array(
+            [-.02029398462569318,.06925030812037111,-.06034094692751686])*rig_scale(offsets)
+        limits = expanded_limits(names,default_preview_limits())
+        for j in (1,2,4,5,7,8):
+            limits[j].update(swing=0.,flex=0.,axis=(1,0,0),twist=0.)
+        for j in limits:
+            if names[j] in FINGER_NAMES:
+                limits[j].update(flex=15.,flex_min=0.)
+        volumes = {'left_hip':[.15,.15]}
+        output,report = limit_rotations(local[None],offsets,np.zeros((1,3)),120,limits,volumes,
+                                       names=names,parents=parents)
+        model = ColliderModel(names,parents,offsets/rig_scale(offsets),volumes)
+        hand_mask = model.mask_for(['left_wrist',*FINGER_NAMES])
+        contacts = model.penetrations(*forward_kinematics(output[0],offsets/rig_scale(offsets),parents),mask=hand_mask)
+        self.assertLess(np.max(contacts,initial=0),.00005)
+        self.assertEqual(report['remaining_proxy_overlap_frames'],0)
+        np.testing.assert_array_equal(output[0,0],local[0])
+        self.assertGreater(report['max_proxy_overlap_before'],report['max_proxy_overlap_after'])
+
     def test_all_phalanges_and_palms_follow_actual_posed_endpoints(self):
         _,_,_,names,parents,offsets,local = hand_fixture()
         for j,name in enumerate(names):

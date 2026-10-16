@@ -216,6 +216,23 @@ class NodeTests(unittest.TestCase):
                 card.resize(750, 1000)
                 card.show()
                 self.app.processEvents()
+                # Rows created in a wide card must shrink with its viewport,
+                # reserving space for the remove button at every tested width.
+                for width in (640,240,200,400):
+                    outliner.setFixedWidth(width)
+                    self.app.processEvents()
+                    for edit in outliner.findChildren(ColliderOwnerEdit):
+                        row = edit.parentWidget()
+                        remove = row.findChild(QtWidgets.QToolButton, "SceneRemoveClothColliderButton")
+                        self.assertIsNotNone(remove)
+                        self.assertLessEqual(row.width(),outliner.viewport().width())
+                        right = remove.mapTo(outliner.viewport(),QtCore.QPoint(remove.width(),0)).x()
+                        self.assertLessEqual(right,outliner.viewport().width())
+                        self.assertLessEqual(edit.geometry().right(),remove.geometry().left())
+                        self.assertGreater(edit.width(),0,f"Collider field collapsed at outliner width {width}")
+                outliner.setMinimumWidth(0)
+                outliner.setMaximumWidth(16777215)
+                self.app.processEvents()
                 mime.setData(ROW_MIME, json.dumps({"scene": "Scene", "name": "Body", "kind": "mesh", "parent": ""}).encode())
                 point = outliner.visualItemRect(outliner.item(0)).topLeft() + QtCore.QPoint(4, 1)
                 event = QtGui.QDropEvent(QtCore.QPointF(point), QtCore.Qt.MoveAction, mime,

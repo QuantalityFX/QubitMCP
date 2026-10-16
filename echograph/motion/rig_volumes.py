@@ -221,19 +221,19 @@ class ColliderModel:
                 ends[row] += direction/max(np.linalg.norm(direction),1e-8)*np.linalg.norm(self.local_ends[row])
         return starts,ends
 
-    def penetrations(self,points,world=None,mask=None):
+    def penetrations(self,points,world=None,mask=None,*,clearance=0.):
         starts,ends = self.endpoints(points,world)
         select = slice(None) if mask is None else mask
         a,b,trim = self.a[select],self.b[select],self.trim[select]
         start = starts[a]+trim[:,None]*(ends[a]-starts[a])
         ra,rb,rc,rd = self.ra[select],self.radii[a,1],self.radii[b,0],self.radii[b,1]
         # Exact distance is only needed where capsule bounding boxes overlap.
-        ar,br = np.maximum(ra,rb)[:,None],np.maximum(rc,rd)[:,None]
+        ar,br = np.maximum(ra,rb)[:,None]+clearance,np.maximum(rc,rd)[:,None]
         near = np.all((np.minimum(start,ends[a])-ar <= np.maximum(starts[b],ends[b])+br) &
                       (np.minimum(starts[b],ends[b])-br <= np.maximum(start,ends[a])+ar),axis=1)
         result = np.zeros(len(a))
         if near.any():
-            result[near] = np.maximum(0.,-tapered_clearances(start[near],ends[a[near]],ra[near],rb[near],
+            result[near] = np.maximum(0.,clearance-tapered_clearances(start[near],ends[a[near]],ra[near],rb[near],
                                       starts[b[near]],ends[b[near]],rc[near],rd[near]))
         return result
 

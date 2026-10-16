@@ -11,7 +11,7 @@ from PySide6 import QtCore, QtWidgets
 from nodes.core import Spec
 from nodes.mocap_import import spec as mocap
 from echograph.motion.conversion import JOINT_NAMES, write_bvh
-from echograph.motion.rig_limiter import limit_clip
+from echograph.motion.rig_limiter import limit_clip, REPAIR_VERSION
 from echograph.motion import rig_repair_cache as repair_files
 from echograph.motion.rig_limits import preview_limit_fields, preview_limit_from_fields
 from echograph.motion.rig_preview_settings import load_preview_limits, load_preview_volumes, load_preview_hand_limits
@@ -69,7 +69,7 @@ def ik_repair_enabled(model):
 def repair_key(skeleton,clip,limits,volumes,collisions,hands,*,ik_repair=True):
     return (evaluation_cache_token(skeleton),evaluation_cache_token(clip),
             json.dumps(limits,sort_keys=True),json.dumps(volumes,sort_keys=True),collisions,json.dumps(hands,sort_keys=True),
-            ik_repair)
+            ik_repair,REPAIR_VERSION)
 
 
 def restore_repair(model, context, key):
@@ -172,26 +172,88 @@ class _RepairJob(QtCore.QThread):
         self.function, self.result, self.error = function, None, None
 
     def run(self):
+        from time import monotonic
+        last_update = 0.
         def progress(frame, total):
+            nonlocal last_update
             if self.isInterruptionRequested():
                 raise ValueError('Rig Limiter cancelled.')
-            self.progress.emit(frame,total)
+            now = monotonic()
+            if now-last_update >= .05:
+                self.progress.emit(frame,total)
+                last_update = now
         try:
             self.result = self.function(progress)
+            if self.isInterruptionRequested():
+                self.result = None
+                raise ValueError('Rig Limiter cancelled.')
         except Exception as exc:
             self.error = exc
 
 
+class _RepairProgressDialog(QtWidgets.QDialog):
+    stop_requested = QtCore.Signal()
+
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self.label = QtWidgets.QLabel('Correcting joint limits and capsule intersections…',self)
+        self.label.setWordWrap(True)
+        self.bar = QtWidgets.QProgressBar(self)
+        self.stop = QtWidgets.QPushButton('Stop',self)
+        self.stop.setObjectName('RigLimiterStopButton')
+        self.stop.setStyleSheet('QPushButton { background:#b91c1c; color:white; border:1px solid #ef4444;'
+                               ' border-radius:4px; padding:6px 18px; }'
+                               'QPushButton:hover { background:#dc2626; }'
+                               'QPushButton:disabled { background:#7f1d1d; color:#fecaca; }')
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(16,16,16,16)
+        layout.setSpacing(12)
+        layout.addWidget(self.label)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.stop,0,QtCore.Qt.AlignRight)
+        self.stop.clicked.connect(self.stop_requested)
+        self.setMinimumWidth(380)
+
+    def update_progress(self,frame,total):
+        self.bar.setMaximum(total)
+        self.bar.setValue(frame)
+
+    def reject(self):
+        # Esc and the title-bar close button request cancellation without hiding
+        # the dialog while its worker is still unwinding.
+        self.stop_requested.emit()
+
+    def closeEvent(self, event):
+        self.stop_requested.emit()
+        event.ignore()
+
+
 def run_repair(function, parent=None):
-    dialog = QtWidgets.QProgressDialog('Correcting joint limits and capsule intersections…','Cancel',0,100,parent)
+    if parent is not None and isinstance(parent,QtWidgets.QWidget):
+        proxy = parent.graphicsProxyWidget()
+        if proxy is not None and proxy.scene() is not None and proxy.scene().views():
+            parent = proxy.scene().views()[0].window()
+        else:
+            parent = parent.window()
+    parent = parent or QtWidgets.QApplication.activeWindow()
+    dialog = _RepairProgressDialog(parent)
     dialog.setWindowTitle('Rig Limiter')
+    # Native window ownership keeps the modal dialog above this app without
+    # placing it in Windows' global topmost band over unrelated applications.
     dialog.setWindowModality(QtCore.Qt.ApplicationModal)
-    dialog.setAutoClose(False)
     job = _RepairJob(function,dialog)
-    job.progress.connect(lambda frame,total: (dialog.setMaximum(total),dialog.setValue(frame)))
-    dialog.canceled.connect(job.requestInterruption)
+    job.progress.connect(dialog.update_progress)
+    def request_stop():
+        job.requestInterruption()
+        dialog.stop.setEnabled(False)
+        dialog.stop.setText('Stopping…')
+        dialog.label.setText('Stopping repair…')
+    dialog.stop_requested.connect(request_stop)
     job.finished.connect(dialog.accept)
     job.start()
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
     dialog.exec()
     if job.isRunning():
         job.requestInterruption()

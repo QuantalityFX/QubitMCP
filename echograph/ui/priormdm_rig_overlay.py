@@ -1,4 +1,4 @@
-"""Translucent, camera-projected rig guides, drawn behind joint pick handles."""
+"""Camera-projected rig guides, drawn behind joint pick handles."""
 import math
 import numpy as np
 from PySide6 import QtCore, QtGui
@@ -69,7 +69,7 @@ def _draw_guide_panel(renderer, painter, viewport, lines):
     painter.drawImage(QtCore.QPointF(x+w-panel_width-margin,max(y+margin,bottom-panel_height-margin)),cached[1])
 
 
-def draw_rig_guide(renderer, painter, data):
+def rig_guide_shapes(renderer, data):
     guide = data.get('rig_guide')
     if not guide:
         return
@@ -96,6 +96,15 @@ def draw_rig_guide(renderer, painter, data):
             guide['_posed_shapes'] = cached
         shapes = cached[1]['shapes']
         labels = cached[1]['labels']
+    return shapes,labels
+
+
+def draw_rig_guide(renderer, painter, data):
+    guide = data.get('rig_guide')
+    if not guide:
+        return
+    shapes,labels = rig_guide_shapes(renderer,data)
+    xray = bool(getattr(renderer,'_rig_colliders_xray',True))
     matrix = data['rig_projection']
     x,y,w,h = data['rig_viewport']
     selected = data.get('selected','')
@@ -142,11 +151,12 @@ def draw_rig_guide(renderer, painter, data):
             for projected in projected_sets[:len(shape['faces'])]:
                 if projected:
                     poly, depth = projected
-                    faces.append((depth,poly,kind))
+                    if kind != 'collision' or xray:
+                        faces.append((depth,poly,kind))
                     if kind == 'collision':
                         guide['_pick_volumes'].append((poly,depth,shape['joint']))
             for projected in projected_sets[len(shape['faces']):]:
-                if projected:
+                if projected and (kind != 'collision' or xray):
                     wires.append((projected[0],kind))
         painter.setPen(QtCore.Qt.NoPen)
         for _,poly,kind in sorted(faces,key=lambda f:f[0],reverse=True):
@@ -162,6 +172,8 @@ def draw_rig_guide(renderer, painter, data):
                 painter.setBrush(color)
                 painter.drawEllipse(poly[-1],3.5,3.5)
                 painter.setBrush(QtCore.Qt.NoBrush)
+        if guide.get('read_only'):
+            return
         title = f"PriorMDM rig · {guide['profile']} · pose inspection"
         detail = labels.get(selected,'Select a joint to isolate its limits and read the values.')
         lines = [title,'Cyan: volumes   Gold: bend   Purple: twist   Pointer: green / red at limit',*detail.splitlines(),

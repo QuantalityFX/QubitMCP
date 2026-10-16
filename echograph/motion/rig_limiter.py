@@ -13,6 +13,8 @@ from echograph.rigging.ik import forward_kinematics, solve_constrained_ik
 from echograph.rigging.fbx_canonical import AnimationClip, JointAnimationTrack, QuatKeyframe
 from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
 
+REPAIR_VERSION = 2
+
 
 def rig_layout(skeleton):
     """Map BVH depth-first ordering (and optional finger joints) by name."""
@@ -82,6 +84,9 @@ def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisio
             pose[j] = Rotation.from_quat(project(j,Rotation.from_matrix(pose[j]).as_quat())).as_matrix()
         bounded = pose.copy()
         frame_fingers,frame_arms = False,False
+        def check_cancel():
+            if progress is not None:
+                progress(frame,len(result))
         if collisions and ik_repair:
             for _pass in range(2):
                 for kind,chain,mask in groups:
@@ -123,6 +128,7 @@ def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisio
                     solved = solve_constrained_ik(pose,offsets,parents,joint_axes=joint_axes,
                         project_rotation=project,constraint_residual=residual,reference_rotations=bounded,
                         previous_parameters=old,temporal_weight=.008*fps/20,retry_seeds=retries,
+                        check_cancel=check_cancel,
                         tolerance=.0005 if kind == 'finger' else .002,max_iterations=22 if kind == 'finger' else 40)
                     final = residual(solved.points,forward_kinematics(solved.rotations,offsets,parents)[1],solved.rotations)
                     if np.sum(final**2) <= np.sum(initial**2)+1e-10:
@@ -135,6 +141,56 @@ def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisio
                         previous[chain] = np.zeros(count)
                 if np.max(colliders.penetrations(*forward_kinematics(pose,offsets,parents)),initial=0) < .0005:
                     break
+            # Recheck hands after the legs and opposite arm have moved. Solve
+            # the arm and fingers together when separate passes left contact.
+            # A small clearance keeps the result outside the capsule surface.
+            for _pass in range(3):
+                moved_hand = False
+                for side in ('left','right'):
+                    hand = [lookup[side+'_wrist'], *colliders.hand_joints[side]]
+                    hand_mask = colliders.mask_for(names[j] for j in hand)
+                    points,world = forward_kinematics(pose,offsets,parents)
+                    if np.max(colliders.penetrations(points,world,mask=hand_mask),initial=0) <= .00005:
+                        continue
+                    initial = colliders.penetrations(points,world,mask=hand_mask,clearance=.001)
+                    if np.max(initial,initial=0) <= .00005:
+                        continue
+                    chain = [lookup[side+'_'+part] for part in ('collar','shoulder','elbow')]
+                    chain += hand
+                    joint_axes = {j: ([limits[j]['axis']] + ([limits[j]['spread_axis']] if 'spread_axis' in limits[j] else []))
+                                  if 'flex' in limits[j] else np.eye(3) for j in chain if j in limits}
+                    baseline = colliders.penetrations(points,world)
+                    def residual(points,world,local):
+                        hands = colliders.penetrations(points,world,mask=hand_mask,clearance=.001)
+                        # Do not buy hand clearance by creating another collision.
+                        other = np.maximum(0.,colliders.penetrations(points,world)[~hand_mask]-baseline[~hand_mask])
+                        return np.r_[hands,other]
+                    count = sum(len(a) for a in joint_axes.values())
+                    seeds = []
+                    cursor = 0
+                    for j,a in joint_axes.items():
+                        if names[j].endswith('shoulder'):
+                            for axis in range(len(a)):
+                                for sign in (-1,1):
+                                    seed = np.zeros(count)
+                                    seed[cursor+axis] = sign*.8
+                                    seeds.append(seed)
+                        cursor += len(a)
+                    solved = solve_constrained_ik(pose,offsets,parents,joint_axes=joint_axes,
+                        project_rotation=project,constraint_residual=residual,
+                        pose_weight=.001,temporal_weight=0.,tolerance=.00005,max_iterations=65,
+                        retry_seeds=seeds,check_cancel=check_cancel,prioritize_constraints=True)
+                    final = colliders.penetrations(*forward_kinematics(solved.rotations,offsets,parents))
+                    hand_final = colliders.penetrations(*forward_kinematics(solved.rotations,offsets,parents),
+                                                      mask=hand_mask,clearance=.001)
+                    if (np.max(hand_final,initial=0) < np.max(initial,initial=0)-1e-8
+                            and np.all(final[~hand_mask] <= baseline[~hand_mask]+.00005)):
+                        frame_fingers |= not np.allclose(pose[hand[1:]],solved.rotations[hand[1:]],atol=1e-7,rtol=0)
+                        frame_arms |= not np.allclose(pose[chain[:3]+hand[:1]],solved.rotations[chain[:3]+hand[:1]],atol=1e-7,rtol=0)
+                        pose[:] = solved.rotations
+                        moved_hand = True
+                if not moved_hand:
+                    break
         after.append(float(np.max(colliders.penetrations(*forward_kinematics(pose,offsets,parents)),initial=0)))
         changed += int(not np.allclose(pose,original,atol=1e-7,rtol=0))
         finger_frames += int(frame_fingers)
@@ -142,7 +198,7 @@ def limit_rotations(rotations, offsets, roots, fps, limits, volumes, *, collisio
     return result,dict(corrected_frames=changed,frame_count=len(result),
                        finger_collision_corrected_frames=finger_frames,arm_ik_corrected_frames=arm_frames,
                        finger_collider_count=sum(name in FINGER_NAMES for name in colliders.names),
-                       remaining_proxy_overlap_frames=int(np.count_nonzero(np.asarray(after) > .003)),
+                       remaining_proxy_overlap_frames=int(np.count_nonzero(np.asarray(after) > .00005)),
                        max_proxy_overlap_before=max(before,default=0)*scale,
                        max_proxy_overlap_after=max(after,default=0)*scale,collisions_enabled=bool(collisions),
                        ik_repair_enabled=bool(ik_repair))

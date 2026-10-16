@@ -5420,6 +5420,30 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 handler(old_name, new_name)
             return True
 
+        def _toggle_skeleton_colliders(owner_name, checked, button):
+            glv = _get_glv()
+            renderer = getattr(glv, "_mgl_renderer", None) or glv
+            try:
+                if renderer is None:
+                    raise ValueError("No scene viewport is available for the rig collider preview.")
+                overlays = getattr(renderer, "_scene_rig_collider_overlays", None)
+                if overlays is None:
+                    overlays = renderer._scene_rig_collider_overlays = {}
+                if checked:
+                    from echograph.ui.scene_rig_overlay import collider_guide
+                    context = renderer._mgl_scene_owner_fbx_rig_context(owner_name)
+                    if not context or context.get("skeleton") is None:
+                        raise ValueError("No loaded skeleton is available for this character.")
+                    overlays[owner_name] = (context["skeleton"], collider_guide(context))
+                else:
+                    overlays.pop(owner_name, None)
+                glv.update()
+            except (ValueError, KeyError) as exc:
+                button.blockSignals(True)
+                button.setChecked(False)
+                button.blockSignals(False)
+                QtWidgets.QMessageBox.information(card, "Rig collider preview", str(exc))
+
         def _show_skeleton_joint_picker(owner_name: str, asset: dict):
             from echograph.ui.skeleton_joint_picker import SkeletonJointPicker
 
@@ -6009,7 +6033,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     from nodes.cloth_solver.spec import ColliderOwnerEdit
                     cfg = entry["asset"]["cloth"]
                     solver_item = getattr(scene, "_node_items", {}).get(cfg["solver_node"])
-                    row_layout.addWidget(QtWidgets.QLabel("Collider"), 0)
+                    row_layout.setSpacing(4)
+                    idx_label.hide()
+                    collider_label = QtWidgets.QLabel("Collider")
+                    collider_label.setMinimumWidth(1)
+                    row_layout.addWidget(collider_label, 0)
                     name_edit = (ColliderOwnerEdit(solver_item, slot_index=entry["collider_index"],
                                                   colliders=cfg.get("colliders", [])) if solver_item is not None
                                  else QtWidgets.QLineEdit("Collider unavailable"))
@@ -6020,6 +6048,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 name_edit.setFrame(False)
                 name_edit.setMinimumWidth(0)
                 name_edit.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+                if is_cloth_row:
+                    # Give the edit all spare space, but let it shrink below its
+                    # text size hint so the trailing remove button stays visible.
+                    name_edit.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
+                    name_edit.setMinimumWidth(32)
                 name_edit.setStyleSheet(
                     "QLineEdit{background:rgba(15,23,42,0.55);color:#cbd5e1;border:1px solid #334155;border-radius:4px;padding:1px 6px;}" if is_input_row
                     else "QLineEdit{background:transparent;color:#94a3b8;}" if is_child
@@ -6127,7 +6160,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     add_collider.setFixedSize(16, 16)
                     add_collider.setStyleSheet(
                         "QToolButton#SceneAddClothColliderButton{background:#20242b;color:#cbd5e1;"
-                        "border:1px solid #353c46;border-radius:8px;padding:0;font-size:12px;}"
+                        "border:1px solid #353c46;border-radius:8px;padding:0 0 2px 0;font-size:12px;}"
                         "QToolButton#SceneAddClothColliderButton:hover{background:#292e36;}"
                         "QToolButton#SceneAddClothColliderButton:pressed{background:#171b21;}"
                     )
@@ -6156,6 +6189,32 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         lambda _checked=False, n=owner_name, a=entry.get("asset", {}): _show_skeleton_joint_picker(n, a)
                     )
                     row_layout.addWidget(joint_button, 0)
+                    collider_button = QtWidgets.QToolButton()
+                    collider_button.setObjectName("SceneRigColliderPreviewButton")
+                    collider_button.setAccessibleName(f"Show rig collider volumes for {owner_name}")
+                    collider_button.setToolTip("Toggle Rig Limiter collider volumes in the scene")
+                    collider_button.setCheckable(True)
+                    collider_button.setAutoRaise(True)
+                    collider_button.setFixedSize(18, 18)
+                    collider_button.setIcon(QtGui.QIcon(str(Path(__file__).resolve().parents[2] / "icons/RigLimiter_Icon.png")))
+                    collider_button.setIconSize(QtCore.QSize(14, 14))
+                    collider_button.setStyleSheet(
+                        "QToolButton#SceneRigColliderPreviewButton{"
+                        "background:#20242b;border:1px solid #46505e;border-radius:3px;padding:0;}"
+                        "QToolButton#SceneRigColliderPreviewButton:hover{"
+                        "background:#303b47;border-color:#8295a8;}"
+                        "QToolButton#SceneRigColliderPreviewButton:checked{"
+                        "background:#246573;border:2px solid #67e8f9;}"
+                        "QToolButton#SceneRigColliderPreviewButton:checked:hover{"
+                        "background:#307f8e;border:2px solid #a5f3fc;}"
+                    )
+                    glv = _get_glv()
+                    renderer = getattr(glv, "_mgl_renderer", None) or glv
+                    collider_button.setChecked(owner_name in getattr(renderer, "_scene_rig_collider_overlays", {}))
+                    collider_button.toggled.connect(
+                        lambda checked, n=owner_name, b=collider_button: _toggle_skeleton_colliders(n, checked, b)
+                    )
+                    row_layout.addWidget(collider_button, 0)
                     row_layout.addStretch(1)
 
                 row_item = QtWidgets.QListWidgetItem()
@@ -6174,22 +6233,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     row_item.setToolTip(f"Arrange {display_name} with Move, Rotate, or Scale. Placement is saved in the workflow; changing it resets the cloth.")
                 elif is_child:
                     row_item.setToolTip(f"Show skeleton for {owner_name}")
-                try:
-                    vw = int(outliner.viewport().width())
-                except Exception:
-                    vw = 0
-                if vw > 0:
-                    try:
-                        row_widget.setMinimumWidth(vw)
-                    except Exception:
-                        pass
-                try:
-                    hint = row_widget.sizeHint()
-                    if vw > 0:
-                        hint.setWidth(max(vw, hint.width()))
-                    row_item.setSizeHint(hint)
-                except Exception:
-                    row_item.setSizeHint(row_widget.sizeHint())
+                # QListWidget owns the row width. Pinning its minimum to the
+                # viewport width at creation prevents later info-card resizing.
+                row_widget.setMinimumWidth(0)
+                hint = row_widget.sizeHint()
+                hint.setWidth(0)
+                row_item.setSizeHint(hint)
                 outliner.addItem(row_item)
                 outliner.setItemWidget(row_item, row_widget)
                 row_widgets.append((row_item, row_widget))

@@ -2855,6 +2855,7 @@ def _handle_mouse_press_moderngl_right_start_fly_anchor_from_event(self, e):
         return QtGui.QCursor.pos()
 
 def _handle_mouse_press_moderngl_right_start_fly_camera_state(self):
+    self._leave_axis_view()
     try:
         released_camera = False
         release = getattr(self, "_camera_selector_release_unlocked_selection_on_navigation", None)
@@ -4480,6 +4481,7 @@ def _handle_mouse_move_moderngl_arcball_drag(self, e):
                 return True
         except Exception:
             pass
+        self._leave_axis_view()
         if bool(getattr(self, "_mgl_orbit_locked", True)):
             if not self._mgl_orbit_dragging:
                 self._sync_locked_orbit_from_arcball()
