@@ -77,7 +77,7 @@ class TimelineCorrectionKeys(QtWidgets.QWidget):
             color = '#fde047' if chosen else ('#ef4444','#22c55e','#3b82f6')[axis%3]
             painter.setPen(QtGui.QPen(QtGui.QColor('#f59e0b' if chosen else '#0f172a'),1.))
             painter.setBrush(QtGui.QColor(color))
-            if self.view._timeline_key_is_ik(frame):
+            if self.view._timeline_key_is_ik(frame,axis):
                 painter.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(x,y-4),
                     QtCore.QPointF(x+4,y+4),QtCore.QPointF(x-4,y+4)]))
             else:
@@ -85,24 +85,28 @@ class TimelineCorrectionKeys(QtWidgets.QWidget):
 
 
 class GraphGLTimelineModelMixin:
-    def _timeline_ik_ranges(self):
+    def _timeline_ik_ranges(self,*,include_axes=False):
         correction = self._timeline_correction_session()
         if correction is None:
             return []
         session,joint = correction
-        from echograph.motion.animation_corrections import limb_chain
+        from echograph.motion.animation_corrections import ik_span_joints
+        preview = {row['ik_key']:frame for frame,row in (getattr(self,'_timeline_keys',{}) or {}).items()
+                   if row.get('ik_key')}
         result = []
         for span in session.ik_spans:
-            if 'end' not in span or joint not in [session.skeleton.joints[i].name
-                                                 for i in limb_chain(session.skeleton,span['joint'])]:
+            if 'end' not in span or joint not in ik_span_joints(session.skeleton,span):
                 continue
             frames = []
             for key in (span['start'],span['end']):
                 frame = (key['time']-session.base.start_time)*self._timeline_fps
                 mapped = self._timeline_owner_timeline_frame_from_source_frame(
                     session.item.model.name,frame,allow_owner_key_mode=True)
-                frames.append(float(mapped if mapped is not None else frame))
-            result.append((frames[0],frames[1],joint == span['joint']))
+                frames.append(float(preview.get(key['id'],mapped if mapped is not None else frame)))
+            endpoint = joint == span['joint']
+            axes = ([bool(value) and endpoint for value in span['position_mask']]+[not endpoint]*3
+                    if 'position_mask' in span else [endpoint]*3+[True]*3)
+            result.append((frames[0],frames[1],endpoint,axes) if include_axes else (frames[0],frames[1],endpoint))
         return result
 
     def _timeline_paint_ik_ranges(self,painter,rect=None):
@@ -111,7 +115,7 @@ class GraphGLTimelineModelMixin:
         try:
             if rect is not None:
                 painter.setClipRect(rect,QtCore.Qt.IntersectClip)
-            for index,(lo,hi,endpoint) in enumerate(self._timeline_ik_ranges()):
+            for index,(lo,hi,endpoint,axes) in enumerate(self._timeline_ik_ranges(include_axes=True)):
                 x1 = self._timeline_local_frame_to_tracks_x_float(lo-start,clamp=False)
                 x2 = self._timeline_local_frame_to_tracks_x_float(hi-start,clamp=False)
                 if x1 is None or x2 is None:
@@ -121,25 +125,31 @@ class GraphGLTimelineModelMixin:
                 areas = [QtCore.QRectF(min(x1,x2),rect.top(),abs(x2-x1),rect.height())] if rect is not None else [
                     QtCore.QRectF(min(x1,x2),row.y()+row.height()/2.-5,abs(x2-x1),10)
                     for axis,row in enumerate(getattr(self,'_timeline_track_rows',[]) or [])
-                    if row is not None and (endpoint or axis>=3) and self._timeline_axis_is_visible(axis)]
+                    if row is not None and axes[axis] and self._timeline_axis_is_visible(axis)]
                 for area in areas:
                     painter.drawRect(area)
         finally:
             painter.restore()
 
-    def _timeline_key_is_ik(self,frame):
-        return bool((getattr(self,'_timeline_keys',{}) or {}).get(int(frame),{}).get('ik_key'))
+    def _timeline_key_is_ik(self,frame,axis=None):
+        row = (getattr(self,'_timeline_keys',{}) or {}).get(int(frame),{})
+        return bool(row.get('ik_key')) and (axis is None or row.get('ik_axis_mask',[True]*6)[int(axis)])
 
     def _timeline_ik_drag_selection(self,selected):
         metadata = {}
         expanded = set(selected)
-        for _axis,frame in selected:
+        for axis,frame in selected:
             row = (getattr(self,'_timeline_keys',{}) or {}).get(frame,{})
-            if row.get('ik_key'):
+            if self._timeline_key_is_ik(frame,axis):
                 metadata[frame] = deepcopy(row)
-                expanded.update((axis,frame) for axis in self._timeline_axes_for_entry(row))
+                mask = row.get('ik_axis_mask',row.get('axis_mask',[True]*6))
+                if not any(mask[3:6]):
+                    metadata[frame].pop('fk_key',None)
+                expanded.update((index,frame) for index,keyed in enumerate(mask) if keyed)
             elif row.get('fk_key'):
                 metadata[frame] = deepcopy(row)
+                for field in ('ik_key','ik_control','ik_axis_mask'):
+                    metadata[frame].pop(field,None)
         return expanded,metadata
 
     def _timeline_clamp_ik_drag(self,delta,metadata):
@@ -149,16 +159,45 @@ class GraphGLTimelineModelMixin:
         session,_joint = correction
         end = session.base.duration*float(self._timeline_fps)
         mapped = self._timeline_owner_timeline_frame_from_source_frame(session.item.model.name,end,allow_owner_key_mode=True)
-        end = round(mapped if mapped is not None else end)
-        return max(-min(metadata),min(delta,end-max(metadata)))
+        end = math.floor((mapped if mapped is not None else end)+1e-8)
+        lower,upper = -min(metadata),max(0,end-max(metadata))
+        moving = {row['ik_key'] for row in metadata.values() if row.get('ik_key')}
+        stationary = [frame for frame,row in (getattr(self,'_timeline_keys',{}) or {}).items()
+                      if row.get('ik_key') and row['ik_key'] not in moving]
+        for source,row in metadata.items():
+            if not row.get('ik_key'):
+                continue
+            for frame in stationary:
+                if frame < source:
+                    lower = max(lower,frame+1-source)
+                elif frame > source:
+                    upper = min(upper,frame-1-source)
+        return max(lower,min(delta,upper)) if lower <= upper else 0
 
     @staticmethod
     def _timeline_move_ik_metadata(destination,original):
         if original is not None and original.get('fk_key'):
             destination['fk_key'] = True
         if original is not None and original.get('ik_key') and destination.get('ik_key') != original['ik_key']:
+            mask = list(original.get('ik_axis_mask',original.get('axis_mask',[True]*6)))
+            for field,offset in (('xyz',0),('rxyz',3)):
+                values = destination.get(field,original[field])
+                destination[field] = [original[field][axis] if mask[offset+axis] else values[axis]
+                                      for axis in range(3)]
             destination.update(ik_key=original['ik_key'],ik_control=original['ik_control'],
-                xyz=list(original['xyz']),rxyz=list(original['rxyz']),axis_mask=[False]*6)
+                               ik_axis_mask=mask,axis_mask=list(destination.get('axis_mask',[False]*6)))
+            # Source-key initialization must not reset the IK axes as each
+            # component is restored onto an existing source frame.
+            destination.pop('fbx_clip_key',None)
+            destination.pop('joint_key',None)
+
+    @staticmethod
+    def _timeline_clear_moved_ik_metadata(keys,metadata):
+        for frame,original in metadata.items():
+            row = keys.get(frame)
+            if isinstance(row,dict) and original.get('ik_key') and row.get('ik_key') == original['ik_key']:
+                for field in ('ik_key','ik_control','ik_axis_mask'):
+                    row.pop(field,None)
 
     def _timeline_current_frame(self) -> int:
         spin = getattr(self, "_timeline_frame_spin", None)
@@ -2399,7 +2438,7 @@ class GraphGLTimelineModelMixin:
             if not session.apply_keys(joint,keys_map,fps):
                 return False
             session.refresh_timeline()
-            return bool(session.save())
+            return bool(session.save(notify=False))
         renderer = getattr(self, "_mgl_renderer", None) or self
         decode = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
         apply = getattr(renderer, "_mgl_scene_skeleton_apply_timeline_keys", None)
@@ -3466,9 +3505,8 @@ class GraphGLTimelineModelMixin:
             end=self._timeline_end_frame_value(),
             view_start=int(self._timeline_view_start),
             view_end=int(self._timeline_view_start+self._timeline_view_span))
-        session.dirty = True
         if save:
-            session.save()
+            session.save_timeline_range()
         return True
 
     def _timeline_sync_range_controls(
@@ -6377,6 +6415,15 @@ class GraphGLTimelineModelMixin:
             return src
         if not self._timeline_axis_is_keyed(src_entry, idx):
             return src
+        if self._timeline_key_is_ik(src,idx):
+            self._timeline_curve_selected = {(idx,src)}
+            current_value = self._timeline_axis_value_for_entry(src_entry,idx)
+            moved,changed = self._timeline_drag_selected_curve_keys(dst-src,val-float(current_value),commit=commit)
+            # Release commonly repeats the last preview position. The group
+            # mover returns early for a zero delta, but that preview still needs saving.
+            if commit and moved == 0 and abs(changed) < 1e-9:
+                self._timeline_save_to_disk()
+            return src+int(moved)
         handle_copy = self._timeline_copy_entry_axis_handles(src_entry, idx)
         if dst != src:
             self._timeline_set_axis_keyed(src_entry, idx, False)
@@ -6535,6 +6582,7 @@ class GraphGLTimelineModelMixin:
                 except Exception:
                     pass
 
+        self._timeline_clear_moved_ik_metadata(keys,ik_metadata)
         new_selected = set()
         max_frame = 0
         for axis, src, val, hcopy in moves:
@@ -6656,10 +6704,11 @@ class GraphGLTimelineModelMixin:
             moves.append((int(axis), int(src), v, hcopy if isinstance(hcopy, dict) else None))
             if min_src is None or int(src) < int(min_src):
                 min_src = int(src)
-            if min_val is None or v < float(min_val):
-                min_val = v
-            if max_val is None or v > float(max_val):
-                max_val = v
+            if (axis,src) in original_selection:
+                if min_val is None or v < float(min_val):
+                    min_val = v
+                if max_val is None or v > float(max_val):
+                    max_val = v
         if not moves:
             return (0, 0.0)
 
@@ -6673,7 +6722,7 @@ class GraphGLTimelineModelMixin:
             vmax = float(getattr(self, "_timeline_curve_max", 5.0))
             if vmax < vmin:
                 vmin, vmax = vmax, vmin
-            if min_val is not None and max_val is not None:
+            if abs(delta_v) >= 1e-9 and min_val is not None and max_val is not None:
                 low = float(vmin) - float(min_val)
                 high = float(vmax) - float(max_val)
                 if low > high:
@@ -6702,6 +6751,7 @@ class GraphGLTimelineModelMixin:
                 except Exception:
                     pass
 
+        self._timeline_clear_moved_ik_metadata(keys,ik_metadata)
         new_selected = set()
         max_frame = 0
         for axis, src, val, hcopy in moves:
@@ -6948,7 +6998,7 @@ class GraphGLTimelineModelMixin:
         for axis, frame, x, y, _val in self._timeline_visible_row_key_points():
             if axis < 0 or axis >= len(row_frames):
                 continue
-            dot = TimelineKeyMarker(tracks,ik=self._timeline_key_is_ik(frame),
+            dot = TimelineKeyMarker(tracks,ik=self._timeline_key_is_ik(frame,axis),
                 selected=(int(axis),int(frame)) in selected,fill=axis_fill[axis],border=axis_border[axis])
             dot.setGeometry(int(x - half), int(y - half), dot_size, dot_size)
             dot.show()

@@ -7,6 +7,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from echograph.ui.gl_arcball import _ArcBallUtil
 from echograph.ui.gl_view import GraphGLView
+from echograph.ui.gl_view_math import gizmo_screen_scale, project_local
 from echograph.ui import hotkeys_config
 from echograph.ui.hotkeys import CameraViewHotkeyEditor
 
@@ -205,6 +206,61 @@ class CameraViewHotkeyTests(unittest.TestCase):
             self.assertFalse(send(QtCore.Qt.Key_Space))
             self.assertFalse(send(QtCore.Qt.Key_P))
             self.view.timeline_toggle_playback.assert_called_once()
+
+
+def _gizmo_matrix(value):
+    return np.asarray(value.data(),dtype=np.float32).reshape(4,4).T
+
+
+class GizmoScreenScaleTests(unittest.TestCase):
+    def radius(self,projection,view,*,scene_scale=1.,multiplier=1.,height=800):
+        model = np.diag([scene_scale,scene_scale,scene_scale,1.]).astype(np.float32)
+        identity = np.eye(4,dtype=np.float32)
+        scale = gizmo_screen_scale(projection,view,model,identity,identity,height,multiplier,143.,.9)
+        scaled = np.diag([scale,scale,scale,1.]).astype(np.float32)
+        mvp = projection@view@model@scaled
+        center = np.asarray(project_local((0,0,0),mvp,height*1.5,height))
+        return max(np.linalg.norm(np.asarray(project_local(axis*.9,mvp,height*1.5,height))-center)
+                   for axis in np.eye(3))
+
+    def test_all_six_orthographic_views_keep_pixel_size_during_zoom_and_depth_changes(self):
+        directions = {
+            'Front':((0,0,1),(0,1,0)), 'Back':((0,0,-1),(0,1,0)),
+            'Left':((-1,0,0),(0,1,0)), 'Right':((1,0,0),(0,1,0)),
+            'Top':((0,1,0),(0,0,-1)), 'Bottom':((0,-1,0),(0,0,1)),
+        }
+        for name,(direction,up) in directions.items():
+            for half_height in (.5,2.,25.):
+                projection = QtGui.QMatrix4x4()
+                projection.ortho(-half_height*1.5,half_height*1.5,-half_height,half_height,.001,10000.)
+                for distance in (1.,20.,2000.):
+                    view = QtGui.QMatrix4x4()
+                    view.lookAt(QtGui.QVector3D(*(np.asarray(direction)*distance)),QtGui.QVector3D(),QtGui.QVector3D(*up))
+                    with self.subTest(view=name,zoom=half_height,distance=distance):
+                        self.assertAlmostEqual(self.radius(_gizmo_matrix(projection),_gizmo_matrix(view)),143.,places=3)
+
+    def test_orthographic_size_compensates_for_scene_units_and_viewport_height(self):
+        projection = QtGui.QMatrix4x4()
+        projection.ortho(-6.,6.,-4.,4.,.001,1000.)
+        view = QtGui.QMatrix4x4()
+        view.lookAt(QtGui.QVector3D(0,0,30),QtGui.QVector3D(),QtGui.QVector3D(0,1,0))
+        for scene_scale in (.1,1.,100.):
+            for multiplier in (.25,1.,8.):
+                for height in (400,800,1600):
+                    with self.subTest(scene_scale=scene_scale,multiplier=multiplier,height=height):
+                        radius = self.radius(_gizmo_matrix(projection),_gizmo_matrix(view),scene_scale=scene_scale,
+                                             multiplier=multiplier,height=height)
+                        self.assertAlmostEqual(radius,143.,places=3)
+
+    def test_perspective_size_matches_orthographic_and_stays_stable_with_distance(self):
+        projection = QtGui.QMatrix4x4()
+        projection.perspective(60.,1.5,.001,10000.)
+        for distance in (1.,10.,100.):
+            view = QtGui.QMatrix4x4()
+            view.lookAt(QtGui.QVector3D(0,0,distance),QtGui.QVector3D(),QtGui.QVector3D(0,1,0))
+            for scene_scale in (.1,1.,10.):
+                with self.subTest(distance=distance,scene_scale=scene_scale):
+                    self.assertAlmostEqual(self.radius(_gizmo_matrix(projection),_gizmo_matrix(view),scene_scale=scene_scale),143.,places=3)
 
 
 if __name__ == "__main__":

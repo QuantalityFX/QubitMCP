@@ -116,6 +116,10 @@ class CorrectionControls(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setAlignment(QtCore.Qt.AlignTop)
         button = QtWidgets.QPushButton('Preview / edit animation')
+        self.preview_button = button
+        button.setObjectName('AnimationCorrectionPreviewButton')
+        # Rig Limiter fixes its action buttons to an ordinary button's height.
+        button.setFixedHeight(button.sizeHint().height())
         button.setStyleSheet(
             "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
             "QPushButton:hover{background:#1d4ed8;}"
@@ -123,7 +127,7 @@ class CorrectionControls(QtWidgets.QWidget):
         )
         button.clicked.connect(self.edit)
         layout.addWidget(button)
-        self.status = QtWidgets.QLabel('Scrub the timeline. Click joints to rotate.\nDrag wrist / ankle cubes for IK. Edits save per source take.')
+        self.status = QtWidgets.QLabel('Scrub the timeline. Click joints to rotate.\nDrag pelvis, chest, wrist / ankle cubes for IK. Edits save per source take.')
         self.status.setWordWrap(True)
         self.status.setFixedHeight(self.status.fontMetrics().lineSpacing()*4)
         layout.addWidget(self.status)

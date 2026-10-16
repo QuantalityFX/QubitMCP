@@ -178,6 +178,260 @@ class AnimationCorrectionViewportTests(unittest.TestCase):
         self.assertEqual(len(layers),1)
         self.assertFalse([marker for marker in self.view.findChildren(TimelineKeyMarker) if marker.isVisible()])
 
+    def test_pelvis_and_chest_handles_select_and_follow_the_current_pose(self):
+        for frame in (1,3):
+            self.paint_frame(frame)
+            for name in ('pelvis','spine3'):
+                handles = self.view._mgl_scene_skeleton_handles_by_owner['Correction']
+                handle = next(row for row in handles if row['name'] == name)
+                self.assertTrue(handle.get('ik_control'))
+                self.view._mgl_scene_skeleton_handle_click(handle)
+                self.assertEqual(self.session.selected,name)
+                self.assertEqual(self.view._xform_gizmo_mode,'translate')
+                self.view.repaint()
+                self.app.processEvents()
+                np.testing.assert_allclose(self.view._xform_gizmo_pos,handle['position'],atol=1e-6)
+        self.session.panel.ik.setChecked(False)
+        self.view.repaint()
+        self.app.processEvents()
+        self.assertFalse(any(row.get('ik_control') for row in self.view._mgl_scene_skeleton_handles_by_owner['Correction']))
+        self.assertEqual(self.session.pole_handles,[])
+
+    def test_ik_boxes_follow_animated_joint_axes_and_pole_gizmo_edits_the_bend(self):
+        renderer = self.session.renderer
+        for frame in (0,3,1):
+            renderer._mgl_scene_skeleton_invalidate_owner('Correction')
+            with patch.object(renderer,'_mgl_add_wire_item_from_points',wraps=renderer._mgl_add_wire_item_from_points) as wire:
+                self.paint_frame(frame)
+            pose = evaluate_rig_at_time(self.session.skeleton,self.session.draft,self.session.time(),loop=False)
+            matrices = np.asarray(pose.global_matrices).reshape(-1,4,4)
+            controls = [handle for handle in renderer._mgl_scene_skeleton_handles_by_owner['Correction'] if handle.get('ik_control')]
+            for handle in controls:
+                expected = matrices[handle['index'],:3,:3].T
+                expected /= np.linalg.norm(expected,axis=1,keepdims=True)
+                np.testing.assert_allclose(handle['axes'],expected,atol=2e-6)
+                curves = next(call.kwargs['line_points'] for call in wire.call_args_list
+                              if call.kwargs['name'] == 'Correction '+handle['name']+' IK cube')
+                local = (curves-handle['position'])@np.linalg.inv(expected)
+                np.testing.assert_allclose(np.abs(local),handle['control_radius'],atol=2e-6)
+            self.assertEqual(len(self.session.pole_handles),5)
+        from echograph.motion.animation_corrections import limb_chain
+        from echograph.ui.gl_view_mouse import _handle_mouse_move_moderngl_xform_translate_apply_owner
+        start,_,end = limb_chain(self.session.skeleton,'left_wrist')
+        positions = matrices[:,:3,3]
+        target = positions[start]+.8*(positions[end]-positions[start])
+        self.session.move('left_wrist',target)
+        self.session.commit()
+        self.view.repaint()
+        self.app.processEvents()
+        pole = next(handle for handle in self.session.pole_handles if handle['name'] == 'left_wrist')
+        renderer._mgl_scene_skeleton_handle_click(pole)
+        self.session.select_pole(pole)
+        self.view.repaint()
+        self.app.processEvents()
+        np.testing.assert_allclose(self.view._xform_gizmo_pos,pole['position'],atol=1e-6)
+        moved = np.asarray(pole['position'])+[0,0,.15]
+        token = renderer._mgl_scene_skeleton_joint_owner_token('Correction','left_wrist')
+        _handle_mouse_move_moderngl_xform_translate_apply_owner(self.view,moved,token,renderer)
+        self.session.commit()
+        pose = evaluate_rig_at_time(self.session.skeleton,self.session.draft,self.session.time(),loop=False)
+        np.testing.assert_allclose(np.asarray(pose.global_matrices).reshape(-1,4,4)[end,:3,3],target,atol=1e-6)
+        np.testing.assert_allclose(renderer._mgl_scene_skeleton_joint_world_position(token),moved,atol=1e-6)
+        self.view._timeline_on_set_key_clicked()
+        np.testing.assert_allclose(self.session.ik_spans[0]['start']['pole'],moved,atol=1e-6)
+
+    def test_range_bar_pan_and_handles_release_without_saving_or_reloading_motion(self):
+        view = self.view
+        self.assertTrue(self.session.save())
+        view._timeline_in_frame = 0
+        view._timeline_out_frame = 240
+        view._timeline_on_display_range_changed(24,96)
+        bar = view._timeline_range_controls.bar
+        draft = self.session.draft
+        frame = view._timeline_current_frame()
+        with patch.object(self.session,'save',wraps=self.session.save) as full_save, \
+                patch.object(self.session,'document',wraps=self.session.document) as serialize:
+            for part in ('pan','start','end'):
+                with self.subTest(part=part):
+                    left,right = bar.handle_positions()
+                    x = (left+right)/2 if part == 'pan' else (left if part == 'start' else right)
+                    point = QtCore.QPoint(round(x),bar.height()//2)
+                    moved = point+QtCore.QPoint(20,0)
+                    QtTest.QTest.mousePress(bar,QtCore.Qt.LeftButton,pos=point)
+                    QtTest.QTest.mouseMove(bar,moved)
+                    QtTest.QTest.mouseRelease(bar,QtCore.Qt.LeftButton,pos=moved)
+                    self.assertEqual(self.session.timeline_range,self.session._saved_timeline_range)
+                    self.assertEqual(self.session.timeline_range['view_start'],view._timeline_view_start)
+                    self.assertEqual(self.session.timeline_range['view_end'],view._timeline_view_start+view._timeline_view_span)
+            full_save.assert_not_called()
+            serialize.assert_not_called()
+        self.assertIs(self.session.draft,draft)
+        self.assertEqual(view._timeline_current_frame(),frame)
+
+    def test_dragging_a_single_end_triangle_in_timeline_rows_keeps_its_ik_range(self):
+        view = self.view
+        self.session.select_joint('left_wrist')
+        view._timeline_curve_axes_filter = {1}
+        for frame,mode in ((1,'start'),(3,'end')):
+            self.paint_frame(frame)
+            self.assertTrue(self.session.key_ik('left_wrist',mode=mode))
+        end = dict(self.session.ik_spans[0]['end'])
+        view._timeline_curves_mode = False
+        view._timeline_view_start = 0
+        view._timeline_slider_to_tracks_x = lambda local:40+50*local
+        view._timeline_local_frame_to_tracks_x_float = lambda frame,clamp=False:40+50*frame
+        view._timeline_tracks_x_to_slider_value = lambda x:round((x-40)/50)
+        host = view._timeline_rows_host
+        view._timeline_tracks_stack.setCurrentWidget(host)
+        view._timeline_update_key_markers()
+        _,_,x,y,_ = next(point for point in view._timeline_visible_row_key_points()
+                         if point[0] == 1 and point[1] == 3)
+        start = QtCore.QPointF(x,y)
+        destination = QtCore.QPointF(240,y)
+        host.mousePressEvent(QtGui.QMouseEvent(QtCore.QEvent.MouseButtonPress,start,start,
+            QtCore.Qt.LeftButton,QtCore.Qt.LeftButton,QtCore.Qt.NoModifier))
+        self.assertFalse(host._drag['multi'])
+        host.mouseMoveEvent(QtGui.QMouseEvent(QtCore.QEvent.MouseMove,destination,destination,
+            QtCore.Qt.NoButton,QtCore.Qt.LeftButton,QtCore.Qt.NoModifier))
+        self.assertEqual(view._timeline_keys[4]['ik_key'],end['id'])
+        self.assertAlmostEqual(view._timeline_keys[4]['source_frame'],4.,msg=repr(view._timeline_owner_name))
+        self.assertEqual([row[:2] for row in view._timeline_ik_ranges()],[(1.,4.)])
+        host.mouseReleaseEvent(QtGui.QMouseEvent(QtCore.QEvent.MouseButtonRelease,destination,destination,
+            QtCore.Qt.LeftButton,QtCore.Qt.NoButton,QtCore.Qt.NoModifier))
+        self.assertEqual(self.session.ik_spans[0]['end']['id'],end['id'])
+        self.assertEqual(self.session.ik_spans[0]['end']['target'],end['target'])
+        self.assertEqual(self.session.ik_spans[0]['position_mask'],[False,True,False])
+        self.assertTrue(view._timeline_key_is_ik(4,1),self.session.panel.status.text())
+        self.assertEqual([row[:2] for row in view._timeline_ik_ranges()],[(1.,4.)])
+
+    def test_drawn_y_arm_keeps_the_ik_control_when_a_neighbor_overlaps_and_hover_is_cleared(self):
+        from echograph.ui import gl_view_mouse
+        renderer = self.session.renderer
+        self.paint_frame(1)
+        handles = renderer._mgl_scene_skeleton_handles_by_owner['Correction']
+        wrist = next(handle for handle in handles if handle['name'] == 'left_wrist')
+        renderer._mgl_scene_skeleton_handle_click(wrist)
+        self.view.repaint()
+        self.app.processEvents()
+        center = self.view._xform_overlay_center_px
+        tip = self.view._xform_overlay_axis_proj['y']
+        cursor = center+(tip-center)*.5
+        self.view._xform_mouse_px = cursor
+        self.view.repaint()
+        self.app.processEvents()
+        self.assertEqual(self.view._xform_hover_axis,'y')
+        owner = self.view._xform_gizmo_owner
+        press = QtGui.QMouseEvent(QtCore.QEvent.MouseButtonPress,cursor,cursor,
+            QtCore.Qt.LeftButton,QtCore.Qt.LeftButton,QtCore.Qt.NoModifier)
+        origin,direction = self.session.ray(press)
+        distance = np.dot(np.asarray(wrist['position'])-origin,direction)
+        neighbor = dict(next(handle for handle in handles if handle['name'] == 'right_wrist'),
+                        position=tuple(origin+direction*distance),control_radius=.04,axes=np.eye(3))
+        renderer._mgl_scene_skeleton_handles_by_owner['Correction'] = [
+            neighbor if handle['name'] == 'right_wrist' else handle for handle in handles]
+        with patch.object(renderer,'_mgl_scene_skeleton_handle_click',return_value=True) as picked, \
+                patch.object(self.session,'start_drag',return_value=True):
+            self.assertTrue(gl_view_mouse._handle_animation_correction_control_press(self.view,press,False))
+        self.assertEqual(picked.call_args.args[0]['name'],'right_wrist')
+        # A press-time repaint can clear hover even though this is the arm the
+        # user just saw highlighted. Its painted geometry must remain pickable.
+        self.view._xform_hover_axis = None
+        self.view._xform_hover_center = False
+        with patch.object(gl_view_mouse,'_handle_animation_correction_control_press',
+                          wraps=gl_view_mouse._handle_animation_correction_control_press) as controls:
+            self.view.mousePressEvent(press)
+        controls.assert_not_called()
+        self.assertTrue(self.view._xform_dragging)
+        self.assertEqual(self.view._xform_drag_axis,'y')
+        self.assertEqual(self.view._xform_gizmo_owner,owner)
+        self.assertEqual(self.view._xform_gizmo_mode,'translate')
+        moved = cursor+QtCore.QPointF(0,-18)
+        self.view.mouseMoveEvent(QtGui.QMouseEvent(QtCore.QEvent.MouseMove,moved,moved,
+            QtCore.Qt.NoButton,QtCore.Qt.LeftButton,QtCore.Qt.NoModifier))
+        self.view.mouseReleaseEvent(QtGui.QMouseEvent(QtCore.QEvent.MouseButtonRelease,moved,moved,
+            QtCore.Qt.LeftButton,QtCore.Qt.NoButton,QtCore.Qt.NoModifier))
+        self.assertEqual(self.view._xform_gizmo_owner,owner)
+        self.assertEqual(self.view._xform_gizmo_mode,'translate')
+        pose = evaluate_rig_at_time(self.session.skeleton,self.session.draft,self.session.time(),loop=False)
+        actual = np.asarray(pose.global_matrices[wrist['index']]).reshape(4,4)[:3,3]
+        self.assertGreater(np.linalg.norm(actual-np.asarray(wrist['position'])),1e-4)
+
+    def test_start_end_buttons_use_the_highlighted_timeline_position_channel(self):
+        renderer = self.session.renderer
+        self.paint_frame(1)
+        handle = next(handle for handle in renderer._mgl_scene_skeleton_handles_by_owner['Correction']
+                      if handle['name'] == 'left_wrist')
+        renderer._mgl_scene_skeleton_handle_click(handle)
+        self.view._timeline_on_axis_label_clicked(1)
+        chain = self.session.skeleton.joint_names.index('left_wrist')
+        for frame,button in ((1,0),(3,1)):
+            self.paint_frame(frame)
+            pose = evaluate_rig_at_time(self.session.skeleton,self.session.manual,self.session.time(),loop=False)
+            positions = np.asarray(pose.global_matrices).reshape(-1,4,4)[:,:3,3]
+            target = positions[chain].copy()
+            target[1] -= .04
+            self.session.move('left_wrist',target)
+            self.session.commit()
+            self.session.panel.ik_buttons[button].click()
+        self.assertEqual(self.session.ik_spans[0]['position_mask'],[False,True,False])
+        self.assertIn('end',self.session.ik_spans[0])
+        span = self.session.ik_spans[0]
+        rate = max(self.session.fps,self.session.manual.sample_rate_hz)*2
+        times = np.arange(span['start']['time'],span['end']['time']+1e-8,1./rate)
+        for time in times:
+            original = evaluate_rig_at_time(self.session.skeleton,self.session.manual,time,loop=False)
+            corrected = evaluate_rig_at_time(self.session.skeleton,self.session.draft,time,loop=False)
+            expected = np.asarray(original.global_matrices[chain]).reshape(4,4)[:3,3]
+            actual = np.asarray(corrected.global_matrices[chain]).reshape(4,4)[:3,3]
+            np.testing.assert_allclose(actual[[0,2]],expected[[0,2]],atol=1e-6)
+
+    def test_all_axis_views_keep_drawn_and_pickable_gizmos_at_constant_size_during_zoom(self):
+        self.session.select_joint('left_wrist')
+        self.assertTrue(self.view._frame_selected_retarget_joint())
+        self.view._xform_use_local = False
+        self.view._mgl_gizmo_tips_test_enabled = True
+        renderer = self.session.renderer
+        expected = self.view._rot_shared.xyz_ring_radius_px()/self.view.devicePixelRatioF()
+        for name,number in (('Front',3),('Back',3),('Left',4),('Right',4),('Top',2),('Bottom',2)):
+            self.view._set_camera_view(number,view_name=name)
+            for zoom in (.6,3.,12.):
+                renderer._mgl_camera_zoom = zoom
+                for mode in ('translate','scale','rotate'):
+                    with self.subTest(view=name,zoom=zoom,mode=mode):
+                        self.view._set_xform_gizmo_mode(mode)
+                        self.view.repaint()
+                        self.app.processEvents()
+                        if mode == 'rotate':
+                            shared = self.view._rot_shared
+                            rect = self.view._rot_shared_viewport_rect
+                            center = self.view._rot_shared_center_px
+                            radii = []
+                            for axes in ((0,1),(0,2),(1,2)):
+                                for angle in np.linspace(0,2*np.pi,72,endpoint=False):
+                                    point = np.zeros(3)
+                                    point[list(axes)] = shared.gizmo_radius*np.array([np.cos(angle),np.sin(angle)])
+                                    screen = shared.project_to_screen(int(rect.width()),int(rect.height()),
+                                        self.view._rot_shared_mvp,QtGui.QVector3D(*point),rect.topLeft())
+                                    radii.append(np.hypot(screen.x()-center.x(),screen.y()-center.y()))
+                            self.assertAlmostEqual(max(radii),expected,delta=.5)
+                        else:
+                            center = self.view._xform_overlay_center_px
+                            points = self.view._xform_overlay_axis_proj
+                            size = max(np.hypot(point.x()-center.x(),point.y()-center.y())
+                                       for point in points.values() if point is not None)
+                            axis_end = .87 if mode == 'scale' else 1.
+                            self.assertAlmostEqual(size,expected*axis_end/self.view._rot_shared.gizmo_radius,delta=.5)
+                            mvp = self.view._handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scaled_pvtrs(
+                                g=self.view._xform_gizmo_pos,dpr=self.view.devicePixelRatioF(),
+                                P=renderer._mgl_pick_proj,V=renderer._mgl_pick_view,M=renderer._mgl_pick_model,
+                                R=np.eye(4,dtype=np.float32),renderer=renderer)
+                            rect = self.view._mgl_active_viewport_qrectf()
+                            from echograph.ui.gl_view_math import project_local
+                            origin = np.asarray(project_local((0,0,0),mvp,rect.width(),rect.height()))
+                            pick_size = max(np.linalg.norm(np.asarray(project_local(axis*axis_end,mvp,
+                                rect.width(),rect.height()))-origin) for axis in np.eye(3))
+                            self.assertAlmostEqual(pick_size,size,delta=.5)
+
     def test_viewport_hover_and_deferred_refresh_keep_the_joint_key_editor(self):
         view = self.view
         view.gl_view = view

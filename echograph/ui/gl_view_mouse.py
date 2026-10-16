@@ -588,6 +588,13 @@ def _handle_mouse_press_moderngl(self, e):
         mask_paint_press = getattr(self, "_handle_mask_paint_press", None)
         if callable(mask_paint_press) and mask_paint_press(e):
             return True
+        # Hit the drawn gizmo before IK boxes and joint selection. Hover state
+        # can be cleared by a repaint as the mouse button goes down.
+        if (not alt_pressed and e.button() == QtCore.Qt.LeftButton
+                and not (e.modifiers() & QtCore.Qt.ShiftModifier)
+                and getattr(self, "_xform_gizmo_mode", "translate") in ("translate", "scale")):
+            if self._handle_mouse_press_moderngl_left_gizmo(e):
+                return True
         # Object selections include individual pattern panels. Their handles
         # must be picked before ordinary selection or interactive cloth grabs.
         if mesh_object_mode and not alt_pressed and e.button() == QtCore.Qt.LeftButton:
@@ -783,30 +790,51 @@ def _handle_animation_correction_control_press(self,event,alt_pressed):
         return False
     origin,direction = (np.asarray(value,dtype=float) for value in ray)
     handles = (getattr(renderer,'_mgl_scene_skeleton_handles_by_owner',{}) or {}).get(session.item.model.name,[])
+    from nodes.animation_correction.editor import ik_control_basis
     nearest = None
     for handle in handles:
         if not handle.get('ik_control'):
             continue
         center = np.asarray(handle['position'],dtype=float)
         radius = float(handle['control_radius'])
-        parallel = np.abs(direction) < 1e-10
-        if np.any(parallel & (np.abs(origin-center) > radius)):
+        inverse_basis = np.linalg.inv(ik_control_basis(handle.get('axes')))
+        local_origin = (origin-center)@inverse_basis
+        local_direction = direction@inverse_basis
+        parallel = np.abs(local_direction) < 1e-10
+        if np.any(parallel & (np.abs(local_origin) > radius)):
             continue
-        safe = np.where(parallel,1.,direction)
-        first,last = (center-radius-origin)/safe,(center+radius-origin)/safe
+        safe = np.where(parallel,1.,local_direction)
+        first,last = (-radius-local_origin)/safe,(radius-local_origin)/safe
         low = np.where(parallel,-np.inf,np.minimum(first,last))
         high = np.where(parallel,np.inf,np.maximum(first,last))
         near,far = max(0.,float(low.max())),float(high.min())
         if near <= far and (nearest is None or near < nearest[0]):
             nearest = (near,handle)
+    overlay = renderer._mgl_scene_skeleton_qt_overlay_data()
+    if isinstance(overlay,dict) and overlay.get('owner') == session.item.model.name:
+        cursor = event.position()
+        radius = float(overlay['pole_radius'])
+        poles = {handle['name']:handle for handle in session.pole_handles}
+        for point in overlay.get('pole_points') or []:
+            if not isinstance(point,dict) or point['name'] not in poles or not -1 <= point['z'] <= 1:
+                continue
+            if (cursor.x()-point['x'])**2+(cursor.y()-point['y'])**2 > radius*radius:
+                continue
+            handle = poles[point['name']]
+            distance = float(np.dot(np.asarray(handle['position'])-origin,direction)/np.dot(direction,direction))
+            if distance >= 0 and (nearest is None or distance < nearest[0]):
+                nearest = (distance,handle)
     if nearest is None:
         return False
     handle = nearest[1]
     token = renderer._mgl_scene_skeleton_joint_owner_token(session.item.model.name,handle['name'])
     pick_gizmo = getattr(self,'_handle_mouse_press_moderngl_left_gizmo',None)
-    if getattr(self,'_xform_gizmo_owner',None) == token and callable(pick_gizmo) and pick_gizmo(event):
+    if (getattr(self,'_xform_gizmo_owner',None) == token and bool(handle.get('ik_pole')) == bool(session.selected_pole)
+            and callable(pick_gizmo) and pick_gizmo(event)):
         return True
     renderer._mgl_scene_skeleton_handle_click(handle)
+    if handle.get('ik_pole'):
+        session.select_pole(handle)
     if not session.start_drag(handle,event):
         return False
     self._mgl_pick_press_pos = None
@@ -887,10 +915,69 @@ def _handle_mouse_press_moderngl_left_gizmo(self, e):
         ctx = self._handle_mouse_press_moderngl_left_gizmo_build_context(e)
         if ctx is None:
             return False
+        drawn_hit = _try_drawn_xform_gizmo_press(self, e, ctx)
+        if drawn_hit is not None:
+            return drawn_hit
         return self._handle_mouse_press_moderngl_left_gizmo_dispatch(e=e, ctx=ctx)
     except Exception as exc:
         print("[GIZMO_PICK] failed:", exc, flush=True)
     return False
+
+def _try_drawn_xform_gizmo_press(self, event, ctx):
+    """Pick the last painted geometry, sharing the hover distances and axis order."""
+    mode = ctx['mode']
+    center = getattr(self, '_xform_overlay_center_px', None)
+    points = getattr(self, '_xform_overlay_axis_proj', None)
+    if (mode not in ('translate', 'scale') or getattr(self, '_xform_overlay_mode', None) != mode
+            or getattr(self, '_xform_overlay_owner', None) != ctx['owner']
+            or not isinstance(center, QtCore.QPointF) or not isinstance(points, dict)):
+        return None
+    cursor = event.position() if hasattr(event, 'position') else QtCore.QPointF(event.pos())
+    dx, dy = cursor.x()-center.x(), cursor.y()-center.y()
+    center_radius = 14.0 if mode == 'translate' else 12.0
+    axis = 'view' if mode == 'translate' else 'u'
+    distance = 0.0
+    if dx*dx+dy*dy > center_radius*center_radius:
+        hits = [(self._handle_mouse_press_moderngl_left_gizmo_dist_pt_seg(
+                    cursor.x(), cursor.y(), center.x(), center.y(), point.x(), point.y()), name)
+                for name,point in points.items() if isinstance(point, QtCore.QPointF)]
+        if not hits:
+            return False
+        distance, axis = min(hits, key=lambda hit:hit[0])
+        tip_scale = max(1.0, min(2.0, float(getattr(self, '_mgl_gizmo_tips_size_scale', 1.0))))
+        if distance > (20.0 if mode == 'translate' else 16.0)*tip_scale:
+            return False
+    else:
+        _remember_scene_joint_overlap_press(self, event, False)
+    # The rendered points are widget pixels; drag initialization uses device
+    # pixels relative to the active viewport, including split views.
+    rect_fn = getattr(self, '_mgl_active_viewport_qrectf', None)
+    rect = rect_fn() if callable(rect_fn) else None
+    left = float(rect.left()) if isinstance(rect, QtCore.QRectF) else 0.0
+    top = float(rect.top()) if isinstance(rect, QtCore.QRectF) else 0.0
+    dpr = ctx['dpr']
+    ctx = dict(ctx, p0=((center.x()-left)*dpr, (center.y()-top)*dpr))
+    if mode == 'scale':
+        local, rotation = self._handle_mouse_press_moderngl_left_gizmo_scale_basis(owner=ctx['owner'])
+        return self._handle_mouse_press_moderngl_left_gizmo_scale_start(
+            e=event, ctx=ctx, pick_axis=axis, dx0=dx*dpr, dy0=dy*dpr, use_local=local, R=rotation)
+    if axis == 'view':
+        return self._handle_mouse_press_moderngl_left_gizmo_translate_start_view_drag(
+            e=event, ctx=ctx, dx0=dx*dpr, dy0=dy*dpr)
+    directions,_ = self._handle_mouse_press_moderngl_left_gizmo_translate_axis_dirs(
+        owner=ctx['owner'], axes=ctx['axes'])
+    self._handle_mouse_press_moderngl_left_gizmo_translate_start_axis_begin(
+        owner=ctx['owner'], g=ctx['g'], renderer=ctx['renderer'], best_axis=axis, axis_dirs=directions)
+    ray = self._handle_mouse_press_moderngl_left_gizmo_translate_start_view_ray(
+        px_dev=ctx['px_dev'], py_dev=ctx['py_dev'], vw=ctx['vw'], vh=ctx['vh'],
+        P=ctx['P'], V=ctx['V'], M=ctx['M'])
+    if ray is not None:
+        self._xform_drag_s0 = _gv_axis_line_ray_param(
+            axis_world=directions[axis], g0=ctx['g'], ray_o=ray[0], ray_d=ray[1])
+    self._handle_mouse_press_moderngl_left_gizmo_translate_start_axis_finalize(
+        e=event, best_axis=axis, best_d=distance*dpr, owner=ctx['owner'])
+    return True
+
 
 def _handle_mouse_press_moderngl_left_gizmo_build_context(self, e):
     from .gizmo_visibility import sync_gizmo_visibility
@@ -2016,6 +2103,12 @@ def _handle_mouse_press_moderngl_left_gizmo_scale_axis_proj_map(self, *, cube_ax
     }
 
 def _handle_mouse_press_moderngl_left_gizmo_scale_pick_axis(self, *, p0, axis_proj, px_dev, py_dev):
+    dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
+    renderer = getattr(self, "_mgl_renderer", None) or self
+    tip_scale = max(1.0, min(2.0, float(getattr(renderer, "_mgl_gizmo_tips_size_scale", 1.0))))
+    tip_radius = 16.0 * dpr * tip_scale
+    # Match the scale axis hover halo so a highlighted shaft always grabs.
+    line_radius = tip_radius
     # Avoid stealing orbit clicks far from the gizmo center.
     max_axis_len = 0.0
     for p1 in axis_proj.values():
@@ -2029,12 +2122,12 @@ def _handle_mouse_press_moderngl_left_gizmo_scale_pick_axis(self, *, p0, axis_pr
 
     dx0 = float(px_dev) - float(p0[0])
     dy0 = float(py_dev) - float(p0[1])
-    max_center = max(24.0, max_axis_len + 12.0)
+    max_center = max(24.0, max_axis_len + tip_radius)
     if (dx0 * dx0 + dy0 * dy0) > (max_center * max_center):
         axis_proj = {}
 
     pick_axis = None
-    center_r = 16.0
+    center_r = 16.0 * dpr
     if (dx0 * dx0 + dy0 * dy0) <= (center_r * center_r):
         pick_axis = "u"
     else:
@@ -2062,9 +2155,9 @@ def _handle_mouse_press_moderngl_left_gizmo_scale_pick_axis(self, *, p0, axis_pr
             if line_d < best_line_d:
                 best_line_d = line_d
                 best_line_axis = name
-        if best_tip_axis is not None and best_tip_d <= 16.0:
+        if best_tip_axis is not None and best_tip_d <= tip_radius:
             pick_axis = best_tip_axis
-        elif best_line_axis is not None and best_line_d <= 12.0:
+        elif best_line_axis is not None and best_line_d <= line_radius:
             pick_axis = best_line_axis
     return pick_axis, dx0, dy0
 
@@ -2432,7 +2525,8 @@ def _handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scaled_pvtrs(
     return (P @ V @ M @ TRS).astype(np.float32)
 
 def _handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scaled_map(self, *, axis_len, PVTRS, vw, vh):
-    line_end = float(axis_len) - 0.18
+    # Include the entire arrowhead, not just the shaft below its base.
+    line_end = float(axis_len)
     return {
         "x": self._handle_mouse_press_moderngl_left_gizmo_translate_project_local(
             local_xyz=(line_end, 0.0, 0.0),
@@ -2519,7 +2613,10 @@ def _handle_mouse_press_moderngl_left_gizmo_translate_is_far_from_center(self, *
     # Avoid stealing orbit clicks far from the gizmo center
     dx0 = float(px_dev) - float(p0[0])
     dy0 = float(py_dev) - float(p0[1])
-    max_center = max(24.0, max_axis_len + 12.0)
+    dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
+    renderer = getattr(self, "_mgl_renderer", None) or self
+    tip_scale = max(1.0, min(2.0, float(getattr(renderer, "_mgl_gizmo_tips_size_scale", 1.0))))
+    max_center = max(24.0 * dpr, max_axis_len + 20.0 * dpr * tip_scale)
     return (dx0 * dx0 + dy0 * dy0) > (max_center * max_center)
 
 def _handle_mouse_press_moderngl_left_gizmo_translate_start(
@@ -2716,7 +2813,10 @@ def _handle_mouse_press_moderngl_left_gizmo_translate_start_axis_drag(
         py_dev=py_dev,
         dist_pt_seg=dist_pt_seg,
     )
-    if best_axis is None or best_d > 20.0:
+    dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
+    renderer_for_tips = getattr(self, "_mgl_renderer", None) or renderer
+    tip_scale = max(1.0, min(2.0, float(getattr(renderer_for_tips, "_mgl_gizmo_tips_size_scale", 1.0))))
+    if best_axis is None or best_d > 20.0 * dpr * tip_scale:
         return False
 
     self._handle_mouse_press_moderngl_left_gizmo_translate_start_axis_begin(

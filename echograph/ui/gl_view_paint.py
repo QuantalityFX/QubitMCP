@@ -5,6 +5,7 @@ import math
 from typing import Any, Optional
 from echograph.services.profiler import profile_scope
 from .gizmo_visibility import sync_gizmo_visibility
+from .gl_view_math import gizmo_screen_scale
 
 try:
     import numpy as np
@@ -168,54 +169,20 @@ def paint_gl(view: Any) -> None:
                                 dpr = 1.0
 
                             vh = float(max(1.0, active_rect.height())) * dpr
-                            Pn = np.asarray(P, dtype=np.float32)
-                            Vn = np.asarray(V, dtype=np.float32)
-                            Mn = np.asarray(M, dtype=np.float32)
-
-                            proj_y = abs(float(Pn[1, 1]))
-                            if proj_y > 1e-6:
-                                vm = (Vn @ Mn @ TR).astype(np.float32)
-                                cp = vm @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-                                w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
-                                dist_raw = abs(float(cp[2]) / w)
-                                dist_raw = max(dist_raw, 1e-6)
-
-                                try:
-                                    sm = float(getattr(renderer, "_mgl_scale_multiplier", 1.0))
-                                except Exception:
-                                    sm = 1.0
-                                dist = dist_raw * sm
-
-                                # Match rotate gizmo's target size (XYZ ring radius).
-                                rot_shared = getattr(view, "_rot_shared", None)
-                                if rot_shared is not None:
-                                    target_ring_px = float(rot_shared.xyz_ring_radius_px())
-                                    ring_r = float(getattr(rot_shared, "gizmo_radius", 0.9))
-                                else:
-                                    target_ring_px = 110.0 * 1.3
-                                    ring_r = 0.9
-
-                                if ring_r > 1e-6:
-                                    # Compensate for scene normalization scale baked into Mn.
-                                    scene_scale = 1.0
-                                    try:
-                                        sx = float(np.linalg.norm(Mn[:3, 0]))
-                                        sy = float(np.linalg.norm(Mn[:3, 1]))
-                                        sz = float(np.linalg.norm(Mn[:3, 2]))
-                                        scene_scale = (sx + sy + sz) / 3.0
-                                        if scene_scale <= 1e-6:
-                                            scene_scale = 1.0
-                                    except Exception:
-                                        scene_scale = 1.0
-
-                                    s = (target_ring_px * 2.0 * dist) / (vh * proj_y * ring_r * scene_scale)
-                                    s = max(1e-6, min(1000.0, float(s)))
-
-                                    S = np.eye(4, dtype=np.float32)
-                                    S[0, 0] = s
-                                    S[1, 1] = s
-                                    S[2, 2] = s
-                                    TRS = (TR @ S).astype(np.float32)
+                            try:
+                                sm = float(getattr(renderer, "_mgl_scale_multiplier", 1.0))
+                            except Exception:
+                                sm = 1.0
+                            rot_shared = getattr(view, "_rot_shared", None)
+                            target_ring_px = float(rot_shared.xyz_ring_radius_px()) if rot_shared is not None else 110.0 * 1.3
+                            ring_r = float(getattr(rot_shared, "gizmo_radius", 0.9))
+                            s = gizmo_screen_scale(P, V, M, T, R if R is not None else np.eye(4),
+                                                   vh, sm, target_ring_px, ring_r)
+                            S = np.eye(4, dtype=np.float32)
+                            S[0, 0] = s
+                            S[1, 1] = s
+                            S[2, 2] = s
+                            TRS = (TR @ S).astype(np.float32)
                     except Exception:
                         TRS = None
 
@@ -378,6 +345,7 @@ def paint_gl(view: Any) -> None:
 
                             try:
                                 setattr(view, "_xform_overlay_mode", mode)
+                                setattr(view, "_xform_overlay_owner", getattr(view, "_xform_gizmo_owner", None))
                                 setattr(view, "_xform_overlay_center_px", center)
                                 setattr(view, "_xform_overlay_axis_proj", dict(axis_proj) if axis_proj else None)
                             except Exception:
@@ -411,7 +379,7 @@ def paint_gl(view: Any) -> None:
                                                 best_d = d
                                                 best_axis = name
                                                 best_p1 = p1
-                                        hit_thresh = 14.0 if mode == "translate" else 10.0
+                                        hit_thresh = (20.0 if mode == "translate" else 16.0) * max(1.0, tips_size_scale)
                                         if best_axis is not None and best_d <= hit_thresh:
                                             hover_axis = best_axis
                                             hover_p1 = best_p1

@@ -170,6 +170,7 @@ def closest_unwrapped_euler(candidates, current_xyz):
 
 
 def gizmo_screen_scale(P, V, M, T, R, viewport_height_px, scale_multiplier, target_ring_px, ring_radius):
+    """Keep a constant pixel radius for perspective and orthographic projections."""
     try:
         vh_s = float(max(1.0, viewport_height_px))
         Pn = np.asarray(P, dtype=np.float32)
@@ -182,9 +183,12 @@ def gizmo_screen_scale(P, V, M, T, R, viewport_height_px, scale_multiplier, targ
         vm = (Vn @ Mn @ (T @ R)).astype(np.float32)
         cp = vm @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
         w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
-        dist_raw = abs(float(cp[2]) / w)
-        dist_raw = max(dist_raw, 1e-6)
-        dist = dist_raw * float(scale_multiplier)
+        # Perspective projection divides by camera depth; orthographic
+        # projection has a constant clip W, independent of distance/zoom.
+        clip_w = abs(float((Pn @ cp)[3]) / w)
+        dist = max(clip_w, 1e-6)
+        if not np.allclose(Pn[3, :3], 0.0, atol=1e-8):
+            dist *= float(scale_multiplier)
 
         ring_r = float(ring_radius)
         if ring_r <= 1e-6:

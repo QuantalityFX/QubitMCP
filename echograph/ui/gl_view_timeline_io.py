@@ -806,7 +806,7 @@ class GraphGLTimelineIOMixin:
             session,joint = correction
             if not session.apply_keys(joint,getattr(self,'_timeline_keys',{}) or {},float(self._timeline_fps)):
                 return
-            session.save()
+            session.save(notify=False)
             session.refresh_timeline()
             return
         path = getattr(self, "_timeline_anim_path", None)

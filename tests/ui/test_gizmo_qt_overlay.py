@@ -21,6 +21,7 @@ class _GizmoViewport(GraphGLView):
         self._gl.glClear(0x4000 | 0x0100)
         self.draw_succeeded = self._mgl_draw_gizmo_tips_test_overlay(
             self.test_mvp, mode=self.test_mode,
+            hover_axis=getattr(self, 'test_hover_axis', None),
         )
 
 
@@ -79,6 +80,32 @@ class GizmoQtOverlayTests(unittest.TestCase):
 
     def test_scale_cubes_survive_zoom_and_qt_overlays(self):
         self.check_tips_after_qt_paint("scale")
+
+    def test_hover_glow_extends_beyond_cone_and_cube_silhouettes(self):
+        from echograph.ui.gl_view_math import project_local
+
+        for mode in ('translate', 'scale'):
+            self.view.test_mode = mode
+            self.view.test_hover_axis = None
+            idle = self.pixels().reshape(512, 512, 4)
+            center = np.asarray(project_local((0, 0, 0), self.normal_mvp, 512, 512))
+            for index, axis in enumerate(('x', 'y', 'z')):
+                with self.subTest(mode=mode, axis=axis):
+                    end = np.eye(3)[index] * (.87 if mode == 'scale' else 1.)
+                    tip = np.asarray(project_local(end, self.normal_mvp, 512, 512))
+                    direction = tip - center
+                    direction /= np.linalg.norm(direction)
+                    yy, xx = np.mgrid[:512, :512]
+                    outward = (xx-tip[0])*direction[0] + (yy-tip[1])*direction[1]
+                    region = (xx-tip[0])**2 + (yy-tip[1])**2 < 22**2
+                    idle_ink = idle[:, :, :3].max(axis=2) > 10
+                    silhouette_end = outward[region & idle_ink].max()
+                    self.view.test_hover_axis = axis
+                    hovered = self.pixels().reshape(512, 512, 4)
+                    halo = region & (outward > silhouette_end + 1.)
+                    self.assertGreater(np.count_nonzero(hovered[:, :, :3].max(axis=2)[halo] > 10), 0)
+            self.view.test_hover_axis = None
+            np.testing.assert_array_equal(self.pixels().reshape(512, 512, 4), idle)
 
 
 if __name__ == "__main__":

@@ -428,6 +428,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._xform_hover_center_px = None
         self._xform_hover_axis_proj = None
         self._xform_overlay_mode = None
+        self._xform_overlay_owner = None
         self._xform_overlay_center_px = None
         self._xform_overlay_axis_proj = None
         self._xform_drag_plane_normal = None
@@ -7964,6 +7965,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
     def _clear_xform_overlay_state(self) -> None:
         self._xform_overlay_mode = None
+        self._xform_overlay_owner = None
         self._xform_overlay_center_px = None
         self._xform_overlay_axis_proj = None
         self._xform_hover_axis = None
@@ -8161,7 +8163,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
         # scale the local gizmo so the projected XYZ ring radius matches a constant pixel radius
         try:
-            # Match gizmo_viewport_smoketest.py: use projection focal length + camera-space depth.
             try:
                 dpr = float(self.devicePixelRatioF())
             except Exception:
@@ -8174,73 +8175,26 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             Vn = np.asarray(V, dtype=np.float32)
             Mn = np.asarray(M, dtype=np.float32)
 
-            proj_y = abs(float(Pn[1, 1]))  # cot(fovy/2)
-            if proj_y > 1e-6 and float(rot_shared.gizmo_radius) > 1e-6:
-                # camera-space position of gizmo origin
-                vm = (Vn @ Mn @ (T @ R)).astype(np.float32)
-                cp = vm @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-                w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
+            try:
+                sm = float(getattr(renderer, "_mgl_scale_multiplier", 1.0))
+            except Exception:
+                sm = 1.0
+            target_ring_px = float(rot_shared.xyz_ring_radius_px())
+            s = _gv_gizmo_screen_scale(Pn, Vn, Mn, T, R, vh, sm, target_ring_px, float(rot_shared.gizmo_radius))
+            S = np.eye(4, dtype=np.float32)
+            S[0, 0] = s
+            S[1, 1] = s
+            S[2, 2] = s
 
-                dist_raw = abs(float(cp[2]) / w)
-                dist_raw = max(dist_raw, 1e-6)
+            TRS = (T @ R @ S).astype(np.float32)
+            mvp_np = (Pn @ Vn @ Mn @ TRS).astype(np.float32)
 
-                try:
-                    sm = float(getattr(renderer, "_mgl_scale_multiplier", 1.0))
-                except Exception:
-                    sm = 1.0
-
-                # Keep gizmo size consistent across scene scale changes.
-                dist = dist_raw * sm
-
-                # Match smoketest derivation for stable pixel size.
-                ring_r = float(rot_shared.gizmo_radius)
-                target_ring_px = float(rot_shared.xyz_ring_radius_px())
-                if ring_r <= 1e-6:
-                    return
-
-                # Compensate for scene normalization scale baked into Mn.
-                scene_scale = 1.0
-                try:
-                    sx = float(np.linalg.norm(Mn[:3, 0]))
-                    sy = float(np.linalg.norm(Mn[:3, 1]))
-                    sz = float(np.linalg.norm(Mn[:3, 2]))
-                    scene_scale = (sx + sy + sz) / 3.0
-                    if scene_scale <= 1e-6:
-                        scene_scale = 1.0
-                except Exception:
-                    scene_scale = 1.0
-
-                s = (target_ring_px * 2.0 * dist) / (vh * proj_y * ring_r * scene_scale)
-                s = max(1e-6, min(1000.0, float(s)))
-
-                # (if you have clamps, keep them here, then print after clamps)
-                # s = max(0.01, min(1000.0, float(s)))
-
-                if not getattr(self, "_dbg_rot_shared_scale_once", False):
-                    self._dbg_rot_shared_scale_once = True
-                    print(
-                        "[ROT_SHARED_SCALE]"
-                        f" target_px={target_ring_px}"
-                        f" dist={dist}"
-                        f" proj_y={proj_y}"
-                        f" vh={vh}"
-                        f" s={s}"
-                    )
-
-                S = np.eye(4, dtype=np.float32)
-                S[0, 0] = s
-                S[1, 1] = s
-                S[2, 2] = s
-
-                TRS = (T @ R @ S).astype(np.float32)
-                mvp_np = (Pn @ Vn @ Mn @ TRS).astype(np.float32)
-
-                mvp = QtGui.QMatrix4x4(
-                    float(mvp_np[0, 0]), float(mvp_np[0, 1]), float(mvp_np[0, 2]), float(mvp_np[0, 3]),
-                    float(mvp_np[1, 0]), float(mvp_np[1, 1]), float(mvp_np[1, 2]), float(mvp_np[1, 3]),
-                    float(mvp_np[2, 0]), float(mvp_np[2, 1]), float(mvp_np[2, 2]), float(mvp_np[2, 3]),
-                    float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
-                )
+            mvp = QtGui.QMatrix4x4(
+                float(mvp_np[0, 0]), float(mvp_np[0, 1]), float(mvp_np[0, 2]), float(mvp_np[0, 3]),
+                float(mvp_np[1, 0]), float(mvp_np[1, 1]), float(mvp_np[1, 2]), float(mvp_np[1, 3]),
+                float(mvp_np[2, 0]), float(mvp_np[2, 1]), float(mvp_np[2, 2]), float(mvp_np[2, 3]),
+                float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
+            )
         except Exception:
             pass
 

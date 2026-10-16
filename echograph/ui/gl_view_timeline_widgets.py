@@ -1777,7 +1777,7 @@ class GraphGLTimelineWidgetsMixin:
                                 p.setPen(QtGui.QPen(QtGui.QColor(15, 23, 42, 210), 1))
                                 p.setBrush(QtGui.QBrush(col))
                             radius = 5.0 if key in selected else 4.0
-                            if self._view._timeline_key_is_ik(frame):
+                            if self._view._timeline_key_is_ik(frame,axis):
                                 p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(float(x),float(y)-radius),
                                     QtCore.QPointF(float(x)+radius,float(y)+radius),
                                     QtCore.QPointF(float(x)-radius,float(y)+radius)]))

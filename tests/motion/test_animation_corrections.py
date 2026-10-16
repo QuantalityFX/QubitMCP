@@ -18,7 +18,7 @@ from echograph.motion import animation_corrections as corrections
 from echograph.motion.conversion import reconstruct_animation
 from echograph.motion.rig_preview import build_guide, preview_offsets
 from echograph.rigging.bvh_ingest import ingest_bvh_animation_data
-from echograph.rigging.fbx_canonical import AnimationClip, JointAnimationTrack, QuatKeyframe
+from echograph.rigging.fbx_canonical import AnimationClip, Joint, JointTransform, JointAnimationTrack, QuatKeyframe
 from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
 from echograph.ui import gl_view_mouse
 from echograph.ui.gl_mgl_renderer import MGLRendererMixin
@@ -51,6 +51,7 @@ class Viewport(QtWidgets.QWidget,MGLRendererMixin,GraphGLTimelineIOMixin,GraphGL
     def __init__(self):
         super().__init__()
         self.resize(1000,800)
+        self._mgl_ctx = None
         self.contexts = {}
         self.frame = 0
         self._timeline_fps = 20.
@@ -137,6 +138,134 @@ class CorrectionTests(unittest.TestCase):
 
     def select(self,name):
         self.view.set_timeline_scene_context(owner_name=self.view._mgl_scene_skeleton_joint_owner_token('Correction',name))
+
+    def test_keyframe_and_ik_buttons_autosave_without_refreshing_the_graph(self):
+        session = self.session()
+        self.select('left_wrist')
+        session.select('left_wrist')
+        with patch.object(self.scene,'set_node_params',wraps=self.scene.set_node_params) as graph, \
+                patch.object(collection,'refresh_repair_records',wraps=collection.refresh_repair_records) as records, \
+                patch.object(corrections,'save_document',wraps=corrections.save_document) as saved:
+            self.view.frame = 1
+            self.view._timeline_on_set_key_clicked()
+            self.view.frame = 3
+            self.view._timeline_on_set_key_clicked()
+            session.panel.ik_buttons[1].click()
+            self.assertEqual(saved.call_count,3)
+            graph.assert_not_called()
+            records.assert_not_called()
+            self.assertTrue(session._graph_update_pending)
+            self.assertFalse(session.dirty)
+            document = corrections.read_document(session.path)
+            self.assertEqual(document['ik_spans'],session.ik_spans)
+            self.assertIn('end',document['ik_spans'][0])
+            # The existing explicit Save Draft action still publishes changes.
+            next(button for button in session.panel.findChildren(QtWidgets.QPushButton)
+                 if button.text() == 'Save draft').click()
+            self.assertTrue(graph.called)
+            records.assert_called_once()
+            self.assertFalse(session._graph_update_pending)
+
+    def test_approval_publishes_once_after_the_completed_export_is_saved(self):
+        session = self.session()
+        self.make_ik_range(session)
+        with patch.object(session,'_notify_saved_changes',wraps=session._notify_saved_changes) as publish:
+            output = session.approve()
+            self.assertTrue(output)
+            publish.assert_called_once()
+        self.assertTrue(output.is_file())
+        self.assertFalse(session._graph_update_pending)
+        self.assertEqual(corrections.read_document(session.path)['approved']['file'],output.name)
+        self.assertTrue(collection.entries(self.source.model)[0]['approved'])
+
+    def test_fk_keyframe_and_timeline_boundary_edits_also_save_without_graph_updates(self):
+        session = self.session()
+        session.set_ik(False)
+        self.select('left_elbow')
+        self.view.frame = 2
+        with patch.object(self.scene,'set_node_params',wraps=self.scene.set_node_params) as graph, \
+                patch.object(collection,'refresh_repair_records',wraps=collection.refresh_repair_records) as records:
+            self.view._timeline_on_set_key_clicked()
+            graph.assert_not_called()
+            records.assert_not_called()
+        self.assertTrue(corrections.read_document(session.path)['fk_keys'])
+        session.set_ik(True)
+        self.make_ik_range(session)
+        self.select('left_wrist')
+        with patch.object(self.scene,'set_node_params',wraps=self.scene.set_node_params) as graph, \
+                patch.object(collection,'refresh_repair_records',wraps=collection.refresh_repair_records) as records:
+            value = self.view._timeline_keys[3]['xyz'][0]
+            self.view._timeline_drag_axis_key(0,3,4,value,commit=True)
+            graph.assert_not_called()
+            records.assert_not_called()
+        self.assertAlmostEqual(corrections.read_document(session.path)['ik_spans'][0]['end']['time'],.2)
+
+    def test_closing_preview_publishes_autosaved_changes_once_without_resaving_motion(self):
+        session = self.session()
+        self.select('left_wrist')
+        self.view.frame = 1
+        self.view._timeline_on_set_key_clicked()
+        self.assertTrue(session._graph_update_pending)
+        with patch.object(session,'_notify_saved_changes',wraps=session._notify_saved_changes) as publish, \
+                patch.object(corrections,'save_document',side_effect=AssertionError('Closing rewrote a saved draft')):
+            session.finish()
+            session.finish()
+            publish.assert_called_once()
+        self.assertFalse(session._graph_update_pending)
+        self.assertTrue(corrections.read_document(session.path)['ik_spans'])
+
+    def test_range_navigation_saves_only_small_preferences_and_never_notifies_motion_changes(self):
+        session = self.session()
+        self.assertTrue(session.save())
+        draft = session.draft
+        document_path = corrections.sidecar_path(session.path)
+        before = document_path.read_bytes()
+        with patch.object(session,'save',side_effect=AssertionError('Navigation saved the whole draft')), \
+                patch.object(session,'document',side_effect=AssertionError('Navigation serialized motion')), \
+                patch.object(self.scene,'set_node_params',side_effect=AssertionError('Navigation emitted a graph edit')), \
+                patch.object(collection,'refresh_repair_records',side_effect=AssertionError('Navigation reloaded the collection')), \
+                patch.object(corrections,'save_timeline_range',wraps=corrections.save_timeline_range) as saved:
+            self.view._timeline_on_display_range_changed(1,3)
+            self.view._timeline_range_save_to_disk()
+            self.view._timeline_range_save_to_disk()  # No-op release should not rewrite preferences.
+            self.assertEqual(saved.call_count,1)
+        self.assertIs(session.draft,draft)
+        self.assertFalse(session.dirty)
+        self.assertEqual(document_path.read_bytes(),before)
+        preferences = corrections.timeline_range_path(session.path)
+        self.assertLess(preferences.stat().st_size,2048)
+        self.assertEqual(corrections.read_timeline_range(session.path,session.source_sha),session.timeline_range)
+        restored = self.session()
+        self.assertEqual(restored.timeline_range,session.timeline_range)
+        self.assertEqual(self.view._timeline_view_start,1)
+        self.assertEqual(self.view._timeline_view_span,2)
+
+    def test_range_preferences_reject_stale_or_broken_files_and_leave_draft_loading_intact(self):
+        session = self.session()
+        session.timeline_range = dict(fps=20.,start=1,end=4,view_start=1,view_end=3)
+        self.assertTrue(session.save_timeline_range())
+        self.assertIsNone(corrections.read_timeline_range(session.path,'a different animation'))
+        self.assertTrue(session.save())
+        corrections.timeline_range_path(session.path).write_text('{bad json',encoding='utf-8')
+        restored = self.session()
+        self.assertEqual(restored.timeline_range,session.timeline_range)
+
+    def test_range_preference_save_does_not_commit_an_unkeyed_ik_preview(self):
+        session = self.session()
+        self.select('left_wrist')
+        self.view.frame = 1
+        self.assertTrue(session.save())
+        positions = points(session.skeleton,session.draft,session.time())
+        start,_,end = corrections.limb_chain(session.skeleton,'left_wrist')
+        session.move('left_wrist',positions[start]+.8*(positions[end]-positions[start]))
+        draft = session.draft
+        preview_time = session._preview_time
+        with patch.object(session,'save',side_effect=AssertionError('Range change committed a pose')):
+            self.view._timeline_on_display_range_changed(1,3)
+            self.view._timeline_range_save_to_disk()
+        self.assertIs(session.draft,draft)
+        self.assertEqual(session._preview_time,preview_time)
+        self.assertEqual(session.ik_spans,[])
 
     def test_preview_has_only_small_panel_and_source_keys_in_native_timeline(self):
         with patch.object(self.scene,'views',return_value=[SimpleNamespace(window=lambda:self.window)]):
@@ -265,6 +394,108 @@ class CorrectionTests(unittest.TestCase):
         self.assertAlmostEqual(current,old_radius/3.)
         np.testing.assert_allclose(np.ptp(cube_curves((0,0,0),current),axis=0),np.full(3,2*old_radius/3.))
 
+    def test_ik_cubes_follow_joint_axes_and_rotated_picking_matches_the_visible_box(self):
+        axes = Rotation.from_euler('z',45,degrees=True).as_matrix().T
+        center = np.array([1.,2.,3.])
+        curves = cube_curves(center,.2,axes)
+        np.testing.assert_allclose(np.abs((curves-center)@axes.T),.2,atol=2e-7)
+        session = self.session()
+        handle = dict(name='left_wrist',position=(0.,0.,0.),axes=axes,control_radius=1.,ik_control=True)
+        self.view._mgl_scene_skeleton_handles_by_owner = {'Correction':[handle]}
+        self.view._mgl_scene_skeleton_handle_click = Mock()
+        event = SimpleNamespace(button=lambda:QtCore.Qt.LeftButton,accept=Mock(),position=lambda:QtCore.QPointF(100,100))
+        for origin,hit in (([1.2,0,3],True),([.9,.9,3],False)):
+            with self.subTest(origin=origin),patch.object(session,'ray',return_value=(np.array(origin),np.array([0.,0.,-1.]))),patch.object(session,'start_drag',return_value=True) as drag:
+                self.assertEqual(gl_view_mouse._handle_animation_correction_control_press(self.view,event,False),hit)
+                self.assertEqual(drag.called,hit)
+
+    def test_pole_picker_selects_its_gizmo_and_direct_drag_routes_to_the_pole(self):
+        session = self.session()
+        handle = dict(name='left_wrist',owner='Correction',position=(0.,0.,0.),control_radius=.2,
+                      ik_control=True,ik_pole=True)
+        session.pole_handles = [handle]
+        self.view._mgl_scene_skeleton_handles_by_owner = {'Correction':[]}
+        event = SimpleNamespace(button=lambda:QtCore.Qt.LeftButton,accept=Mock(),position=lambda:QtCore.QPointF(100,100))
+        overlay = dict(owner='Correction',pole_radius=9.,pole_points=[dict(name='left_wrist',x=100.,y=100.,z=0.)])
+        with patch.object(session,'ray',return_value=(np.array([0.,0.,3.]),np.array([0.,0.,-1.]))),patch.object(self.view,'_mgl_scene_skeleton_qt_overlay_data',return_value=overlay):
+            self.assertTrue(gl_view_mouse._handle_animation_correction_control_press(self.view,event,False))
+        self.assertEqual(session.selected_pole,'left_wrist')
+        np.testing.assert_allclose(self.view._xform_gizmo_pos,handle['position'])
+        with patch.object(session,'ray',return_value=(np.array([.1,0.,3.]),np.array([0.,0.,-1.]))),patch.object(session,'move_pole') as move:
+            event.position = lambda:QtCore.QPointF(110,100)
+            session.drag_to(event)
+            np.testing.assert_allclose(move.call_args.args[1],[.1,0,0])
+            session.move('left_wrist',[.2,0,0])
+            np.testing.assert_allclose(move.call_args.args[1],[.2,0,0])
+        session.commit()
+        session.select('left_wrist')
+        self.assertIsNone(session.selected_pole)
+
+    def test_pole_keys_interpolate_reopen_and_export_without_moving_the_hand_target(self):
+        session = self.bent_session()
+        joint = 'left_wrist'
+        start,middle,end = corrections.ik_chain(session.skeleton,joint)
+        initial = points(session.skeleton,session.base,0.)
+        target = initial[start]+.8*(initial[end]-initial[start])
+        axis = target-initial[start]
+        axis /= np.linalg.norm(axis)
+        pose = evaluate_rig_at_time(session.skeleton,session.base,0.,loop=False)
+        reference = corrections.default_ik_pole(session.skeleton,pose,joint)-initial[start]
+        reference -= axis*np.dot(reference,axis)
+        reference /= np.linalg.norm(reference)
+        across = np.cross(axis,reference)
+        poles = [initial[start]+reference+across,initial[start]-reference+across]
+        for frame,pole in zip((1,3),poles):
+            self.view.frame = frame
+            session.move(joint,target)
+            session.commit()
+            before = points(session.skeleton,session.draft,session.time())
+            session.move_pole(joint,pole)
+            session.commit()
+            after = points(session.skeleton,session.draft,session.time())
+            np.testing.assert_allclose(after[end],before[end],atol=1e-7)
+            np.testing.assert_allclose(after[end],target,atol=1e-7)
+            self.assertGreater(np.linalg.norm(after[middle]-before[middle]),.01)
+            self.assertTrue(session.key_ik(joint,mode='start' if frame==1 else 'end'))
+        self.assertTrue(session.save())
+        document = corrections.read_document(session.path)
+        np.testing.assert_allclose(document['ik_spans'][0]['start']['pole'],poles[0])
+        np.testing.assert_allclose(document['ik_spans'][0]['end']['pole'],poles[1])
+        restored = corrections.apply_document(session.skeleton,session.base,document)
+        for stamp,alpha in ((.05,0),(.075,.25),(.1,.5),(.125,.75),(.15,1)):
+            actual = points(session.skeleton,restored,stamp)
+            np.testing.assert_allclose(actual[end],target,atol=1e-6)
+            bend = actual[middle]-actual[start]
+            bend -= axis*np.dot(bend,axis)
+            wanted = (1-alpha)*poles[0]+alpha*poles[1]-actual[start]
+            wanted -= axis*np.dot(wanted,axis)
+            self.assertGreater(np.dot(bend,wanted)/(np.linalg.norm(bend)*np.linalg.norm(wanted)),.99999)
+        output = session.approve()
+        self.assertTrue(output)
+        loaded = ingest_bvh_animation_data(output)
+        for stamp in (.05,.1,.15):
+            np.testing.assert_allclose(points(loaded.skeleton,loaded.clips[0],stamp),points(session.skeleton,restored,stamp),atol=2e-5)
+
+    def test_pole_preview_undo_redo_preserves_the_pole_without_keying_it(self):
+        session = self.bent_session()
+        self.view.frame = 2
+        start,_,end = corrections.ik_chain(session.skeleton,'left_wrist')
+        initial = points(session.skeleton,session.base,.1)
+        target = initial[start]+.8*(initial[end]-initial[start])
+        session.move('left_wrist',target)
+        session.commit()
+        before = points(session.skeleton,session.draft,.1)
+        pole = initial[start]+[0,0,1.]
+        session.move_pole('left_wrist',pole)
+        session.commit()
+        after = points(session.skeleton,session.draft,.1)
+        self.assertTrue(session.undo())
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.1),before,atol=1e-7)
+        self.assertTrue(session.redo())
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.1),after,atol=1e-7)
+        np.testing.assert_allclose(session.ik_pole('left_wrist'),pole,atol=1e-7)
+        self.assertEqual(corrections.read_document(session.path)['ik_spans'],[])
+
     def test_native_delete_set_key_and_reload_do_not_reinsert_deleted_source_keys(self):
         session = self.session()
         session.set_ik(False)
@@ -301,10 +532,10 @@ class CorrectionTests(unittest.TestCase):
 
     def test_ik_for_both_arms_and_legs_preserves_lengths_and_keys_timeline_frame(self):
         session = self.session()
-        self.assertEqual(session.endpoints,{'left_wrist','right_wrist','left_ankle','right_ankle'})
+        self.assertEqual(session.endpoints,{'pelvis','spine3','left_wrist','right_wrist','left_ankle','right_ankle'})
         self.view.frame = 2
         initial = points(session.skeleton,session.draft,.1)
-        for joint in sorted(session.endpoints):
+        for joint in corrections.limb_endpoints(session.skeleton):
             start,_,end = corrections.limb_chain(session.skeleton,joint)
             target = initial[start]+.8*(initial[end]-initial[start])
             target[2] += .04
@@ -320,6 +551,227 @@ class CorrectionTests(unittest.TestCase):
             solve.assert_not_called()
         session.select('left_wrist')
         self.assertEqual(self.view._xform_gizmo_mode,'rotate')
+
+    def bent_session(self):
+        context = self.context()
+        bent = {'left_elbow','right_elbow','left_knee','right_knee'}
+        context['clip'] = replace(context['clip'],tracks=[replace(track,rotation_keys=[
+            replace(key,value=tuple(Rotation.from_euler('z' if 'elbow' in track.joint_name else 'x',
+                35,degrees=True).as_quat())) for key in track.rotation_keys]) if track.joint_name in bent else track
+            for track in context['clip'].tracks])
+        session = CorrectionSession(self.item,context,self.view)
+        session.open(self.window)
+        self.addCleanup(session.finish)
+        return session
+
+    def test_body_ik_controls_and_lock_checkbox_share_the_existing_preview(self):
+        session = self.session()
+        panel = session.panel
+        self.assertEqual(panel.ik.text(),'IK Controls')
+        self.assertEqual(panel.lock_limbs.text(),'Lock arm/leg IK')
+        self.assertGreater(panel.lock_limbs.pos().x(),panel.ik.pos().x())
+        self.assertEqual(panel.lock_limbs.pos().y(),panel.ik.pos().y())
+        for name in ('pelvis','spine3'):
+            session.select(name)
+            self.assertEqual(self.view._xform_gizmo_mode,'translate')
+            self.assertTrue(all(button.isEnabled() for button in panel.ik_buttons))
+        panel.lock_limbs.setChecked(True)
+        self.assertTrue(corrections.read_document(session.path)['lock_limbs'])
+        panel.ik.setChecked(False)
+        self.assertFalse(panel.lock_limbs.isEnabled())
+        panel.ik.setChecked(True)
+        self.assertTrue(panel.lock_limbs.isEnabled())
+
+    def test_correction_preview_button_matches_limiter_height_and_fits_node_border(self):
+        limiter = self.scene.add_node(GraphNode('Limiter',kind='rig_limiter'),QtCore.QPointF())
+        correction = self.item._plugin_proxies[0].widget()
+        controls = limiter._plugin_proxies[0].widget()
+        self.assertEqual(correction.preview_button.height(),controls.preview_button.height())
+        for proxy in self.item._plugin_proxies:
+            self.assertGreaterEqual(self.item.height,proxy.pos().y()+proxy.size().height()+8)
+
+    def test_unlocked_pelvis_moves_the_chest_hands_and_feet_and_can_be_keyed(self):
+        session = self.session()
+        self.view.frame = 2
+        initial = points(session.skeleton,session.draft,.1)
+        pelvis = session.skeleton.joint_names.index('pelvis')
+        delta = np.array([.04,-.03,.02])
+        session.move('pelvis',initial[pelvis]+delta)
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.1),initial+delta,atol=1e-7)
+        session.commit()
+        self.assertTrue(session.key_ik('pelvis'))
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.1),initial+delta,atol=1e-7)
+        self.assertTrue(session.save())
+        restored = corrections.apply_document(session.skeleton,session.base,corrections.read_document(session.path))
+        np.testing.assert_allclose(points(session.skeleton,restored,.1),initial+delta,atol=1e-7)
+        for stamp in (0.,.2):
+            np.testing.assert_allclose(points(session.skeleton,restored,stamp),points(session.skeleton,session.base,stamp),atol=1e-7)
+
+    def test_locked_pelvis_translation_and_rotation_preserve_world_limb_targets(self):
+        session = self.bent_session()
+        session.set_lock_limbs(True)
+        self.view.frame = 2
+        initial = points(session.skeleton,session.draft,.1)
+        ends = [session.skeleton.joint_names.index(name) for name in corrections.limb_endpoints(session.skeleton)]
+        pelvis = session.skeleton.joint_names.index('pelvis')
+        for step in (1,2,3):
+            session.move('pelvis',initial[pelvis]+[0,-.005*step,.002*step])
+        session.rotate('pelvis',(0,3,0))
+        actual = points(session.skeleton,session.draft,.1)
+        np.testing.assert_allclose(actual[ends],initial[ends],atol=1e-6)
+        pose = evaluate_rig_at_time(session.skeleton,session.draft,.1,loop=False)
+        locks = corrections.limb_world_targets(session.skeleton,pose)
+        for name,original in session._preview_locks.items():
+            self.assertLess((Rotation.from_quat(original['rotation']).inv()*Rotation.from_quat(locks[name]['rotation'])).magnitude(),1e-7)
+        session.commit()
+        self.assertTrue(session.key_ik('pelvis'))
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.1)[ends],initial[ends],atol=1e-6)
+
+    def test_chest_ik_preserves_spine_lengths_and_moves_or_locks_hands(self):
+        for locked in (False,True):
+            with self.subTest(locked=locked):
+                session = self.bent_session()
+                session.set_lock_limbs(locked)
+                self.view.frame = 2
+                initial = points(session.skeleton,session.draft,.1)
+                start,middle,chest = corrections.ik_chain(session.skeleton,'spine3')
+                target = initial[start]+.96*(initial[chest]-initial[start])+[0,0,.012]
+                session.move('spine3',target)
+                actual = points(session.skeleton,session.draft,.1)
+                np.testing.assert_allclose(actual[chest],target,atol=1e-6)
+                for a,b in ((start,middle),(middle,chest)):
+                    self.assertAlmostEqual(np.linalg.norm(actual[b]-actual[a]),np.linalg.norm(initial[b]-initial[a]),places=7)
+                ends = [session.skeleton.joint_names.index(name) for name in corrections.limb_endpoints(session.skeleton)]
+                if locked:
+                    np.testing.assert_allclose(actual[ends],initial[ends],atol=1e-6)
+                else:
+                    wrists = [session.skeleton.joint_names.index(name) for name in ('left_wrist','right_wrist')]
+                    self.assertGreater(np.linalg.norm(actual[wrists]-initial[wrists]),.001)
+                session.commit()
+                self.assertTrue(session.key_ik('spine3'))
+                np.testing.assert_allclose(points(session.skeleton,session.draft,.1)[chest],target,atol=1e-6)
+                session.finish()
+
+    def test_paired_pelvis_and_chest_ranges_pin_limbs_reopen_and_export(self):
+        session = self.bent_session()
+        session.set_lock_limbs(True)
+        names = session.skeleton.joint_names
+        pelvis = names.index('pelvis')
+        chest = names.index('spine3')
+        ends = [names.index(name) for name in corrections.limb_endpoints(session.skeleton)]
+        source = points(session.skeleton,session.base,0.)
+        pelvis_targets,chest_targets = [],[]
+        for frame,depth in ((1,.01),(3,.02)):
+            self.view.frame = frame
+            session.clear_preview()
+            pelvis_target = source[pelvis]+[0,-depth,.004]
+            session.move('pelvis',pelvis_target)
+            session.commit()
+            self.assertTrue(session.key_ik('pelvis',mode='start' if frame == 1 else 'end'))
+            posed = points(session.skeleton,session.draft,session.time())
+            start,_,_ = corrections.ik_chain(session.skeleton,'spine3')
+            chest_target = posed[start]+.97*(posed[chest]-posed[start])+[0,0,.01]
+            session.move('spine3',chest_target)
+            session.commit()
+            self.assertTrue(session.key_ik('spine3',mode='start' if frame == 1 else 'end'))
+            pelvis_targets.append(pelvis_target)
+            chest_targets.append(chest_target)
+        expected = {}
+        for stamp in (0.,.05,.075,.1,.125,.15,.2):
+            actual = points(session.skeleton,session.draft,stamp)
+            expected[stamp] = actual
+            if .05 <= stamp <= .15:
+                alpha = (stamp-.05)/.1
+                np.testing.assert_allclose(actual[pelvis],(1-alpha)*pelvis_targets[0]+alpha*pelvis_targets[1],atol=1e-6)
+                np.testing.assert_allclose(actual[chest],(1-alpha)*chest_targets[0]+alpha*chest_targets[1],atol=1e-6)
+                np.testing.assert_allclose(actual[ends],source[ends],atol=1e-6)
+            else:
+                np.testing.assert_allclose(actual,source,atol=1e-7)
+        self.assertTrue(session.save())
+        restored = corrections.apply_document(session.skeleton,session.base,corrections.read_document(session.path))
+        for stamp,actual in expected.items():
+            np.testing.assert_allclose(points(session.skeleton,restored,stamp),actual,atol=1e-7)
+        self.assertTrue(session.approve())
+        record = corrections.read_document(session.path)['approved']
+        output = ingest_bvh_animation_data(session.path.parent/record['file'])
+        for stamp in (.05,.1,.15):
+            np.testing.assert_allclose(points(output.skeleton,output.clips[0],stamp),expected[stamp],atol=2e-5)
+
+    def test_lock_mode_can_change_while_completing_a_pelvis_range(self):
+        session = self.bent_session()
+        self.view.frame = 1
+        pelvis = session.skeleton.joint_names.index('pelvis')
+        source = points(session.skeleton,session.base,.05)
+        session.move('pelvis',source[pelvis]+[0,-.01,0])
+        session.commit()
+        self.assertTrue(session.key_ik('pelvis',mode='start'))
+        session.set_lock_limbs(True)
+        self.view.frame = 3
+        session.move('pelvis',source[pelvis]+[0,-.02,0])
+        session.commit()
+        self.assertTrue(session.key_ik('pelvis',mode='end'))
+        self.assertTrue(session.ik_spans[0]['lock_limbs'])
+        self.assertIn('end',session.ik_spans[0])
+        corrections.validate_ik_spans(session.skeleton,session.base,session.ik_spans)
+        session.set_lock_limbs(False)
+        session.move('pelvis',source[pelvis]+[0,-.025,0])
+        session.commit()
+        self.assertTrue(session.key_ik('pelvis'))
+        self.assertFalse(session.ik_spans[0]['lock_limbs'])
+        self.assertEqual(session.ik_spans[0]['start']['locks'],{})
+        self.assertEqual(set(session.ik_spans[0]['end']['rotations']),{'pelvis'})
+
+    def test_existing_limb_keys_follow_unlocked_pelvis_and_stay_world_locked_when_checked(self):
+        for locked in (False,True):
+            with self.subTest(locked=locked):
+                session = self.bent_session()
+                self.view.frame = 2
+                initial = points(session.skeleton,session.draft,.1)
+                start,_,wrist = corrections.limb_chain(session.skeleton,'left_wrist')
+                target = initial[start]+.9*(initial[wrist]-initial[start])
+                session.move('left_wrist',target)
+                session.commit()
+                self.assertTrue(session.key_ik('left_wrist'))
+                session.set_lock_limbs(locked)
+                pelvis = session.skeleton.joint_names.index('pelvis')
+                delta = np.array([0,-.015,.003])
+                session.move('pelvis',initial[pelvis]+delta)
+                session.commit()
+                self.assertTrue(session.key_ik('pelvis'))
+                expected = target if locked else target+delta
+                np.testing.assert_allclose(points(session.skeleton,session.draft,.1)[wrist],expected,atol=1e-6)
+                # Keying the child after the parent must not apply the parent's
+                # movement twice; editing the parent later carries it once.
+                if not locked:
+                    session.move('left_wrist',expected+[0,.003,0])
+                    session.commit()
+                    self.assertTrue(session.key_ik('left_wrist'))
+                    np.testing.assert_allclose(points(session.skeleton,session.draft,.1)[wrist],expected+[0,.003,0],atol=1e-6)
+                    session.move('pelvis',initial[pelvis]+2*delta)
+                    session.commit()
+                    self.assertTrue(session.key_ik('pelvis'))
+                    np.testing.assert_allclose(points(session.skeleton,session.draft,.1)[wrist],expected+delta+[0,.003,0],atol=1e-6)
+                session.finish()
+
+    def test_existing_chest_key_follows_pelvis_while_limbs_stay_locked(self):
+        session = self.bent_session()
+        session.set_lock_limbs(True)
+        self.view.frame = 2
+        initial = points(session.skeleton,session.draft,.1)
+        names = session.skeleton.joint_names
+        start,_,chest = corrections.ik_chain(session.skeleton,'spine3')
+        chest_target = initial[start]+.97*(initial[chest]-initial[start])+[0,0,.01]
+        session.move('spine3',chest_target)
+        session.commit()
+        self.assertTrue(session.key_ik('spine3'))
+        delta = np.array([0,-.01,.002])
+        session.move('pelvis',initial[names.index('pelvis')]+delta)
+        session.commit()
+        expected = points(session.skeleton,session.draft,.1)
+        self.assertTrue(session.key_ik('pelvis'))
+        actual = points(session.skeleton,session.draft,.1)
+        np.testing.assert_allclose(actual[chest],chest_target+delta,atol=1e-6)
+        np.testing.assert_allclose(actual,expected,atol=1e-6)
 
     def test_cubes_are_twelve_curves_and_direct_drag_changes_ik_target(self):
         curves = cube_curves((1,2,3),.2)
@@ -383,13 +835,24 @@ class CorrectionTests(unittest.TestCase):
         def wire(**kwargs):
             return SimpleNamespace(tag=kwargs['tag'],payload={'owner':kwargs['owner']},release=Mock())
         self.view._mgl_add_wire_item_from_points = Mock(side_effect=wire)
-        handles = [dict(name=name,position=(index,0,0),radius=.1,control_radius=.25)
-                   for index,name in enumerate(sorted(session.endpoints))]
+        axes = Rotation.from_euler('xyz',[17,33,41],degrees=True).as_matrix().T
+        handles = [dict(name=name,position=position,radius=.1,control_radius=.25,axes=axes)
+                   for name,position in zip(session.skeleton.joint_names,points(session.skeleton,session.draft,0.))]
+        session.update_pole_handles(handles)
+        self.assertEqual({pole['name'] for pole in session.pole_handles},session.endpoints-{'pelvis'})
         MGLRendererMixin._mgl_scene_skeleton_rebuild_handle_mesh_for_owner(self.view,'Correction',handles)
-        self.assertEqual(len(scene._items),4)
+        self.assertEqual(len(scene._items),11)
+        by_name = {('Correction '+handle['name']+(' IK pole' if handle.get('ik_pole') else ' IK cube')):handle
+                   for handle in handles+session.pole_handles}
         for call in self.view._mgl_add_wire_item_from_points.call_args_list:
             self.assertEqual(call.kwargs['tag'],'scene-skeleton-handles')
-            self.assertEqual(call.kwargs['line_points'].shape,(24,3))
+            handle = by_name[call.kwargs['name']]
+            curves = call.kwargs['line_points']
+            self.assertEqual(curves.shape,(2 if handle.get('ik_pole') else 24,3))
+            if handle.get('ik_pole'):
+                np.testing.assert_allclose(curves,[handle['bend_position'],handle['position']],atol=2e-7)
+            else:
+                np.testing.assert_allclose(np.abs((curves-handle['position'])@axes.T),handle['control_radius'],atol=2e-7)
         session.ik_enabled = False
         MGLRendererMixin._mgl_scene_skeleton_rebuild_handle_mesh_for_owner(self.view,'Correction',handles)
         self.assertEqual(scene._items,[])
@@ -671,6 +1134,60 @@ class CorrectionTests(unittest.TestCase):
             with self.assertRaises((ValueError,FBXEvaluatorError)):
                 override_rotation_keys(skeleton,clip,entries)
 
+    def test_start_end_ik_remember_the_highlighted_position_axis_and_keep_source_keys(self):
+        session = self.session()
+        self.select('left_wrist')
+        source = session.keys_map('left_wrist',include_ik=False)
+        self.view._timeline_curve_axes_filter = {1}  # Py
+        self.view.frame = 1
+        self.assertTrue(session.key_ik('left_wrist',mode='start'))
+        self.assertEqual(session.ik_spans[0]['position_mask'],[False,True,False])
+        # Completing a range cannot accidentally switch its channel.
+        self.view._timeline_curve_axes_filter = {0}
+        self.view.frame = 3
+        self.assertTrue(session.key_ik('left_wrist',mode='end'))
+        self.assertEqual(session.ik_spans[0]['position_mask'],[False,True,False])
+        rows = session.keys_map('left_wrist')
+        self.assertEqual(rows[2],source[2])
+        self.assertEqual(rows[1]['ik_axis_mask'],[False,True,False,False,False,False])
+        self.assertTrue(self.view._timeline_key_is_ik(1,1))
+        self.assertFalse(self.view._timeline_key_is_ik(1,3))
+        self.assertEqual(self.view._timeline_ik_ranges(include_axes=True)[0][3],
+                         [False,True,False,False,False,False])
+        session.save()
+        restored = self.session()
+        self.assertEqual(restored.ik_spans,session.ik_spans)
+        self.assertEqual(restored.keys_map('left_wrist'),rows)
+
+    def test_axis_ik_keeps_source_channel_edits_at_a_shared_boundary_frame(self):
+        session = self.session()
+        self.select('left_wrist')
+        self.view._timeline_curve_axes_filter = {1}
+        self.make_ik_range(session)
+        rows = session.keys_map('left_wrist')
+        rows[1]['rxyz'][0] = 25.
+        self.assertTrue(session.apply_keys('left_wrist',rows,20.))
+        self.assertEqual(len(session.ik_spans),1)
+        self.assertEqual(session.ik_spans[0]['position_mask'],[False,True,False])
+        self.assertAlmostEqual(session.keys_map('left_wrist',include_ik=False)[1]['rxyz'][0],25.)
+        self.assertAlmostEqual(session.keys_map('left_wrist')[1]['rxyz'][0],25.)
+        # Refining the range with another key retains its saved axis mask.
+        self.view._timeline_curve_axes_filter = set()
+        self.view.frame = 2
+        self.assertTrue(session.key_ik('left_wrist'))
+        self.assertEqual([span['position_mask'] for span in session.ik_spans],[[False,True,False]]*2)
+
+    def test_start_ik_supports_multiple_position_channels_and_rejects_rotation_only_selection(self):
+        session = self.session()
+        self.select('left_wrist')
+        self.view._timeline_curve_axes_filter = {3}
+        self.assertFalse(session.key_ik('left_wrist',mode='start'))
+        self.assertEqual(session.ik_spans,[])
+        self.assertIn('Px, Py or Pz',session.panel.status.text())
+        self.view._timeline_curve_axes_filter = {0,2}
+        self.assertTrue(session.key_ik('left_wrist',mode='start'))
+        self.assertEqual(session.ik_spans[0]['position_mask'],[True,False,True])
+
     def test_ik_boundaries_key_full_chain_and_hide_source_keys_only_inside_range(self):
         session = self.session()
         self.make_ik_range(session)
@@ -741,6 +1258,117 @@ class CorrectionTests(unittest.TestCase):
             self.assertIn(2,rows)
         np.testing.assert_allclose(points(session.skeleton,session.draft,.1),points(session.skeleton,session.base,.1),atol=1e-8)
 
+    def test_deleting_ik_control_reuses_remaining_bake_and_autosaves_without_graph_updates(self):
+        session = self.session()
+        self.make_ik_range(session,'left_wrist')
+        self.make_ik_range(session,'right_wrist')
+        before = session.draft
+        manual = session.manual
+        self.view._timeline_curve_selected = {(0,1),(0,3)}
+        with patch.object(corrections,'solve_ik_pose',side_effect=AssertionError('Rebaked unchanged IK')), \
+                patch.object(corrections,'track_from_timeline_keys',side_effect=AssertionError('Rebuilt untouched source keys')), \
+                patch.object(self.scene,'set_node_params') as graph, \
+                patch.object(collection,'refresh_repair_records') as records, \
+                patch.object(corrections,'save_document',wraps=corrections.save_document) as saved:
+            self.assertTrue(self.view.timeline_delete_selected_keys())
+            saved.assert_called_once()
+            graph.assert_not_called()
+            records.assert_not_called()
+        self.assertIs(session.manual,manual)
+        self.assertEqual([span['joint'] for span in session.ik_spans],['left_wrist'])
+        self.assertEqual(corrections.read_document(session.path)['ik_spans'],session.ik_spans)
+        expected = corrections.apply_ik_spans(session.skeleton,manual,session.ik_spans,session.fps)
+        for time in (0.,.05,.1,.15,.2):
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time),
+                                       points(session.skeleton,expected,time),atol=1e-8)
+        after = session.draft
+        self.assertTrue(session.undo())
+        self.assertIs(session.draft,before)
+        self.assertTrue(session.redo())
+        self.assertIs(session.draft,after)
+
+    def test_deleting_end_ik_only_solves_the_remaining_pending_boundary(self):
+        session = self.session()
+        self.make_ik_range(session,'left_wrist')
+        self.make_ik_range(session,'right_wrist')
+        self.view._timeline_curve_selected = {(0,3)}
+        with patch.object(corrections,'solve_ik_pose',wraps=corrections.solve_ik_pose) as solve:
+            self.view._timeline_on_delete_key_clicked()
+            self.assertEqual(solve.call_count,1)
+            self.assertEqual(solve.call_args.args[2],'right_wrist')
+        expected = corrections.apply_ik_spans(session.skeleton,session.manual,session.ik_spans,session.fps)
+        for time in (.05,.1,.15):
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time),
+                                       points(session.skeleton,expected,time),atol=1e-8)
+
+    def test_reopened_preview_reuses_existing_ik_bakes_when_deleting_keys(self):
+        session = self.session()
+        self.make_ik_range(session,'left_wrist')
+        self.make_ik_range(session,'right_wrist')
+        self.assertTrue(session.save(notify=False))
+        session.finish()
+        session = self.session()
+        self.select('right_wrist')
+        self.view._timeline_curve_selected = {(0,1),(0,3)}
+        with patch.object(corrections,'solve_ik_pose',side_effect=AssertionError('Rebaked reopened preview')):
+            self.assertTrue(self.view.timeline_delete_selected_keys())
+        self.assertEqual([span['joint'] for span in session.ik_spans],['left_wrist'])
+
+    def test_deleting_source_keys_invalidates_ik_bake_cache(self):
+        session = self.session()
+        self.make_ik_range(session)
+        self.select('pelvis')
+        self.view._timeline_curve_selected = {(axis,2) for axis in range(6)}
+        manual = session.manual
+        with patch.object(corrections,'solve_ik_pose',wraps=corrections.solve_ik_pose) as solve:
+            self.view._timeline_on_delete_key_clicked()
+            self.assertTrue(solve.called)
+        self.assertIsNot(session.manual,manual)
+        expected = corrections.apply_ik_spans(session.skeleton,session.manual,session.ik_spans,session.fps)
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.1),
+                                   points(session.skeleton,expected,.1),atol=1e-8)
+
+    def test_single_axis_end_ik_drag_keeps_its_pair_through_preview_and_release(self):
+        session = self.session()
+        self.make_ik_range(session)
+        self.select('left_wrist')
+        boundary = deepcopy(session.ik_spans[0]['end'])
+        value = self.view._timeline_keys[3]['xyz'][0]
+        self.assertEqual(self.view._timeline_drag_axis_key(0,3,4,value,commit=False),4)
+        self.assertEqual(self.view._timeline_keys[4]['ik_key'],boundary['id'])
+        self.assertEqual([row[:2] for row in self.view._timeline_ik_ranges()],[(1.,4.)])
+        # Release at the same frame as the last mouse move must still commit.
+        self.assertEqual(self.view._timeline_drag_axis_key(0,4,4,value,commit=True),4)
+        self.assertEqual(session.ik_spans[0]['end']['id'],boundary['id'])
+        self.assertAlmostEqual(session.ik_spans[0]['end']['time'],.2)
+        self.assertEqual([row[:2] for row in self.view._timeline_ik_ranges()],[(1.,4.)])
+        for name in ('left_shoulder','left_elbow','left_wrist'):
+            self.assertEqual({frame for frame,row in session.keys_map(name).items() if row.get('ik_key')},{1,4})
+        # Dragging past the start clamps to the next frame instead of collapsing the pair.
+        self.assertEqual(self.view._timeline_drag_axis_key(0,4,0,value,commit=True),2)
+        self.assertEqual([row[:2] for row in self.view._timeline_ik_ranges()],[(1.,2.)])
+
+    def test_single_axis_ik_drag_preserves_axis_mask_and_source_keys_at_both_frames(self):
+        session = self.session()
+        self.select('left_wrist')
+        self.view._timeline_curve_axes_filter = {1}
+        source = session.keys_map('left_wrist',include_ik=False)
+        self.make_ik_range(session)
+        boundary = deepcopy(session.ik_spans[0]['end'])
+        value = self.view._timeline_keys[3]['xyz'][1]
+        self.assertEqual(self.view._timeline_drag_axis_key(1,3,4,value,commit=False),4)
+        self.assertFalse(self.view._timeline_keys[3].get('ik_key'))
+        self.assertEqual(self.view._timeline_keys[4]['ik_axis_mask'],[False,True,False,False,False,False])
+        self.view._timeline_drag_axis_key(1,4,4,value,commit=True)
+        self.assertEqual(session.ik_spans[0]['position_mask'],[False,True,False])
+        self.assertEqual(session.ik_spans[0]['end']['id'],boundary['id'])
+        self.assertEqual(session.ik_spans[0]['end']['target'],boundary['target'])
+        for frame in (3,4):
+            self.assertEqual(session.keys_map('left_wrist',include_ik=False)[frame]['rxyz'],source[frame]['rxyz'])
+        self.assertFalse(self.view._timeline_key_is_ik(4,3))
+        restored = self.session()
+        self.assertEqual(restored.ik_spans,session.ik_spans)
+
     def test_ik_boundary_drag_keeps_triangle_and_moves_full_chain_atomically(self):
         session = self.session()
         self.make_ik_range(session)
@@ -807,6 +1435,121 @@ class CorrectionTests(unittest.TestCase):
 
 
 class CorrectionMathTests(unittest.TestCase):
+    def axis_range(self, joint='left_wrist', mask=None):
+        from echograph.rigging.fbx_canonical import Vec3Keyframe
+        skeleton,clip = fixture()
+        clip = corrections.override_rotation_keys(skeleton,clip,{
+            'left_elbow':{time:Rotation.from_euler('z',angle,degrees=True).as_quat()
+                          for time,angle in ((0.,60),(.2,95))},
+            'left_shoulder':{time:Rotation.from_euler('y',angle,degrees=True).as_quat()
+                             for time,angle in ((0.,-10),(.2,15))},
+            'left_wrist':{time:Rotation.from_euler('x',angle,degrees=True).as_quat()
+                          for time,angle in ((0.,10),(.2,40))}})
+        clip = replace(clip,tracks=[replace(track,rotation_keys=[key for key in track.rotation_keys
+            if key.time in (0.,.2)]) if track.joint_name in {'left_elbow','left_shoulder','left_wrist'}
+            else track for track in clip.tracks])
+        root = next(track for track in clip.tracks if track.joint_name == skeleton.joints[0].name)
+        origin = np.asarray(root.translation_keys[0].value)
+        clip = replace(clip,tracks=[replace(track,translation_keys=[
+            Vec3Keyframe(time,tuple(origin+np.array((.3,-.1,.2))*time)) for time in (0.,.1,.2)])
+            if track is root else track for track in clip.tracks])
+        options = dict(joint=joint, position_mask=mask or [False,True,False])
+        names = corrections.ik_span_joints(skeleton,options)
+        keys = []
+        for time in (.05,.15):
+            pose = evaluate_rig_at_time(skeleton,clip,time,loop=False)
+            target = points(skeleton,clip,time)[skeleton.joint_names.index(joint)]+[.015,.02,.01]
+            key = dict(id=str(time),time=time,target=target.tolist(),rotations={
+                name:list(pose.local_transforms[skeleton.joint_names.index(name)].rotation) for name in names})
+            if corrections.body_control(skeleton,joint) == 'pelvis':
+                root_name = skeleton.joints[corrections.ik_chain(skeleton,joint)[0]].name
+                key['translations'] = {root_name:list(pose.local_transforms[skeleton.joint_names.index(root_name)].translation)}
+            keys.append(key)
+        return skeleton,clip,dict(options,start=keys[0],end=keys[1])
+
+    def test_axis_ik_keeps_other_target_coordinates_and_endpoint_rotation_animated(self):
+        for joint,mask in (('left_wrist',[False,True,False]),
+                           ('left_wrist',[True,True,False]),('pelvis',[False,True,False])):
+            with self.subTest(joint=joint,mask=mask):
+                skeleton,clip,span = self.axis_range(joint,mask)
+                corrected = corrections.apply_ik_spans(skeleton,clip,[span],20.)
+                end = skeleton.joint_names.index(joint)
+                for time in (.05,.075,.1,.125,.15):
+                    source = points(skeleton,clip,time)[end]
+                    alpha = (time-.05)/.1
+                    target = (1-alpha)*np.array(span['start']['target'])+alpha*np.array(span['end']['target'])
+                    expected = np.where(mask,target,source)
+                    np.testing.assert_allclose(points(skeleton,corrected,time)[end],expected,atol=1e-7)
+                    before = evaluate_rig_at_time(skeleton,clip,time,loop=False).local_transforms[end].rotation
+                    after = evaluate_rig_at_time(skeleton,corrected,time,loop=False).local_transforms[end].rotation
+                    self.assertLess((Rotation.from_quat(before).inv()*Rotation.from_quat(after)).magnitude(),1e-7)
+                for time in (0.,.2):
+                    np.testing.assert_allclose(points(skeleton,corrected,time),points(skeleton,clip,time),atol=1e-8)
+                self.assertGreater(np.ptp([points(skeleton,corrected,t)[end,2] for t in (.05,.1,.15)]),.001)
+
+    def test_ik_rejects_invalid_axis_masks(self):
+        skeleton,clip,span = self.axis_range()
+        for mask in ([],[False]*3,[True],[True,False,False,False],[1,0,0],'Py'):
+            with self.subTest(mask=mask):
+                invalid = dict(span,position_mask=mask)
+                with self.assertRaisesRegex(ValueError,'position mask'):
+                    corrections.validate_ik_spans(skeleton,clip,[invalid])
+
+    def test_arm_leg_and_chest_poles_steer_bends_while_preserving_targets_and_lengths(self):
+        skeleton,clip = fixture()
+        initial = points(skeleton,clip,.1)
+        for joint in corrections.limb_endpoints(skeleton)+['spine3']:
+            start,middle,end = corrections.ik_chain(skeleton,joint)
+            target = initial[start]+.8*(initial[end]-initial[start])
+            axis = target-initial[start]
+            axis /= np.linalg.norm(axis)
+            reference = np.eye(3)[np.argmin(np.abs(axis))]
+            normal = np.cross(axis,reference)
+            normal /= np.linalg.norm(normal)
+            for bend_direction in (normal,np.cross(axis,normal),-normal):
+                with self.subTest(joint=joint,pole=bend_direction):
+                    pole = initial[start]+bend_direction
+                    rotations,translations,error = corrections.solve_ik_pose(skeleton,clip,joint,.1,target,pole=pole)
+                    result = corrections.override_pose(skeleton,clip,.1,rotations,translations)
+                    actual = points(skeleton,result,.1)
+                    self.assertLess(error,1e-7)
+                    np.testing.assert_allclose(actual[end],target,atol=1e-7)
+                    bend = actual[middle]-actual[start]
+                    bend -= axis*np.dot(bend,axis)
+                    np.testing.assert_allclose(bend/np.linalg.norm(bend),bend_direction,atol=1e-7)
+                    for a,b in ((start,middle),(middle,end)):
+                        self.assertAlmostEqual(np.linalg.norm(actual[b]-actual[a]),np.linalg.norm(initial[b]-initial[a]),places=7)
+        with self.assertRaisesRegex(ValueError,'pole'):
+            corrections.solve_limb_pose(skeleton,clip,'left_wrist',.1,initial[20],pole=[float('nan'),0,0])
+
+    def test_body_ik_supports_namespaced_fbx_pelvis_below_a_scaled_root(self):
+        skeleton,clip = fixture()
+        aliases = {'pelvis':'Hips','spine1':'Spine','spine2':'Spine1','spine3':'Spine2'}
+        renamed = {name:'rig|mixamorig:'+aliases.get(name,name) for name in skeleton.joint_names}
+        skeleton = replace(skeleton,joints=[Joint('Root',-1,JointTransform(scale=(100.,100.,100.)))]+[
+            replace(joint,name=renamed[joint.name],parent_index=joint.parent_index+1) for joint in skeleton.joints])
+        clip = replace(clip,tracks=[replace(track,joint_name=renamed[track.joint_name]) for track in clip.tracks])
+        pelvis,chest = renamed['pelvis'],renamed['spine3']
+        self.assertEqual(corrections.body_control(skeleton,pelvis),'pelvis')
+        self.assertEqual(corrections.body_control(skeleton,chest),'chest')
+        self.assertIsNone(corrections.body_control(skeleton,renamed['spine2']))
+        initial = points(skeleton,clip,.1)
+        delta = np.array([1.,-2.,.5])
+        rotations,translations,error = corrections.solve_ik_pose(skeleton,clip,pelvis,.1,initial[1]+delta)
+        self.assertAlmostEqual(error,0.)
+        self.assertEqual(set(translations),{'Root'})
+        corrected = corrections.override_pose(skeleton,clip,.1,rotations,translations)
+        np.testing.assert_allclose(points(skeleton,corrected,.1)[1:],initial[1:]+delta,atol=1e-7)
+        pose = evaluate_rig_at_time(skeleton,corrected,.1,loop=False)
+        source = evaluate_rig_at_time(skeleton,clip,.1,loop=False)
+        self.assertEqual(pose.local_transforms[1].translation,source.local_transforms[1].translation)
+        start,_,end = corrections.ik_chain(skeleton,chest)
+        current = points(skeleton,corrected,.1)
+        target = current[start]+.95*(current[end]-current[start])+[0,0,.5]
+        rotations,translations,error = corrections.solve_ik_pose(skeleton,corrected,chest,.1,target)
+        corrected = corrections.override_pose(skeleton,corrected,.1,rotations,translations)
+        np.testing.assert_allclose(points(skeleton,corrected,.1)[end],target,atol=1e-6)
+
     def test_ik_interval_ignores_interior_source_rotations_preserves_source_outside(self):
         skeleton,clip = fixture()
         shoulder = next(track for track in clip.tracks if track.joint_name=='left_shoulder')

@@ -268,7 +268,7 @@ class BlendControls(QtWidgets.QWidget):
             "QPushButton:disabled{background:#334155;color:#94a3b8;}"
         )
         button.clicked.connect(lambda: view_result(self.item))
-        button.setFixedWidth(max(100, button.sizeHint().width()))
+        button.setFixedWidth(max(130, button.sizeHint().width()))
         layout.addWidget(button, 0, QtCore.Qt.AlignHCenter)
         self.status = QtWidgets.QLabel("Connect a bind-pose rig and an animation.")
         self.status.setWordWrap(True)

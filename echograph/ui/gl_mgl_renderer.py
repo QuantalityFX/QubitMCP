@@ -466,7 +466,7 @@ class MGLRendererMixin(ClothViewportMixin, SceneLightingMixin):
             cached_size_scale = tips_size_scale
         if abs(float(cached_size_scale) - float(tips_size_scale)) > 0.0001:
             version = 0
-        if version != 12:
+        if version != 13:
             for res in (
                 vao,
                 vbo,
@@ -497,6 +497,7 @@ uniform vec4 u_mvp_row3;
 uniform vec3 u_color;
 uniform float u_alpha;
 uniform int u_use_uniform_color;
+uniform vec2 u_screen_offset;
 out vec4 v_color;
 void main() {
     vec4 p = vec4(in_pos, 1.0);
@@ -506,6 +507,7 @@ void main() {
         dot(u_mvp_row2, p),
         dot(u_mvp_row3, p)
     );
+    gl_Position.xy += u_screen_offset * gl_Position.w;
     vec3 col = (u_use_uniform_color != 0) ? u_color : in_col;
     v_color = vec4(col, u_alpha);
 }
@@ -692,7 +694,7 @@ void main() {
                     "line_scale_center": scale_line_ranges,
                 }
                 self._mgl_gizmo_tips_test_size_scale = float(tips_size_scale)
-                self._mgl_gizmo_tips_test_version = 12
+                self._mgl_gizmo_tips_test_version = 13
                 count = int(verts.shape[0])
             except Exception as exc:
                 self._mgl_error = f"ModernGL tips test overlay failed: {exc}"
@@ -748,6 +750,7 @@ void main() {
                 prog["u_mvp_row1"].value = tuple(float(v) for v in mvp_np[1])
                 prog["u_mvp_row2"].value = tuple(float(v) for v in mvp_np[2])
                 prog["u_mvp_row3"].value = tuple(float(v) for v in mvp_np[3])
+                prog["u_screen_offset"].value = (0.0, 0.0)
                 prog["u_use_uniform_color"].value = 1
                 prog["u_discard_backfaces"].value = 0
                 prog["u_alpha"].value = base_alpha
@@ -1049,6 +1052,20 @@ void main() {
                     first, vert_count = (ranges.get("scale_cube") or {}).get(axis, (0, 0))
                 else:
                     first, vert_count = (ranges.get("cone") or {}).get(axis, (0, 0))
+                # Offset the actual tip silhouette in screen space so the halo
+                # has the same pixel width as the highlighted shaft at any zoom.
+                try:
+                    for radius, opacity in ((3.5, 0.08), (1.6, 0.14)):
+                        for step in range(8):
+                            angle = step * math.pi / 4.0
+                            prog["u_screen_offset"].value = (
+                                2.0 * radius * math.cos(angle) / float(active_vp[2]),
+                                2.0 * radius * math.sin(angle) / float(active_vp[3]),
+                            )
+                            draw_range(moderngl.TRIANGLES, first, vert_count, color,
+                                       alpha_value=base_alpha * opacity, discard_backfaces=True)
+                finally:
+                    prog["u_screen_offset"].value = (0.0, 0.0)
                 draw_range(moderngl.TRIANGLES, first, vert_count, color)
 
             def draw_line_segment(line_map, axis, color, alpha_value=None) -> None:
@@ -10876,6 +10893,11 @@ void main() {
         if (context or {}).get('_animation_correction_session') is not None:
             # F can arrive after a scrub but before the next paintGL upload.
             self._mgl_scene_skeleton_update_owner_handles(asset_owner, upload=False)
+            session = context['_animation_correction_session']
+            if session.selected_pole == joint_name:
+                pole = next((handle for handle in session.pole_handles if handle['name'] == joint_name),None)
+                if pole is not None:
+                    return tuple(pole['position'])
         asset_norm = str(asset_owner or "").strip().lower()
         joint_norm = str(joint_name or "").strip().lower()
         if not asset_norm or not joint_norm:
@@ -11911,20 +11933,47 @@ void main() {
         session = context.get('_animation_correction_session')
         if session is not None and session.ik_enabled:
             from nodes.animation_correction.editor import cube_curves, ik_control_radius
-            for handle in handles:
+            for handle in list(handles)+session.pole_handles:
                 if handle.get('name') not in session.endpoints:
                     continue
                 radius = float(handle.get('control_radius',ik_control_radius(handle['radius'])))
+                pole = bool(handle.get('ik_pole'))
+                if pole:
+                    curves = np.asarray([handle['bend_position'],handle['position']],dtype=np.float32)
+                else:
+                    curves = cube_curves(handle['position'],radius,handle.get('axes'))
                 item = self._mgl_add_wire_item_from_points(
-                    name=owner+' '+handle['name']+' IK cube',
-                    line_points=cube_curves(handle['position'],radius),visible=True,
+                    name=owner+' '+handle['name']+(' IK pole' if pole else ' IK cube'),
+                    line_points=curves,visible=True,
                     tag='scene-skeleton-handles',owner=owner)
                 if item is not None:
-                    item.payload.update(color=(1.,.85,.1,1.) if handle['name']==selected else (.1,.8,1.,1.),
+                    chosen = handle['name']==selected and pole == bool(session.selected_pole)
+                    item.payload.update(color=(16/255.,42/255.,107/255.,1.) if pole else ((1.,.85,.1,1.) if chosen else (.1,.8,1.,1.)),
                         line_width=2.5,model=np.eye(4,dtype=np.float32),ignore_owner_model=True,
-                        animation_correction_control=True)
+                        animation_correction_control=True,animation_correction_pole=pole,
+                        overlay=True,depth_test=True,depth_write=not pole)
                     item.order = 18
                     scene.add(item)
+                if pole:
+                    # QPainter circles cannot be occluded by scene geometry.
+                    # Draw the handle and its selection outline in the depth buffer.
+                    dpr = float(getattr(self, 'devicePixelRatioF', lambda: 1.0)())
+                    diameter = 2.0 * 2.45 * _SCENE_SKELETON_SCREEN_HANDLE_RADIUS_SCALE * 1.25 * dpr
+                    selected_pole = handle['name'] == session.selected_pole
+                    layers = [('handle', (32/255.,96/255.,1.,1.), diameter)]
+                    if selected_pole:
+                        layers.insert(0, ('selection', (1.,220/255.,0.,1.), diameter + 4.0*dpr))
+                    for layer, color, size in layers:
+                        marker = self._mgl_add_overlay_point_item_from_points(
+                            name=owner+' '+handle['name']+' IK pole '+layer,
+                            points=np.asarray([handle['position']],dtype=np.float32),
+                            visible=True,tag='scene-skeleton-handles',owner=owner,
+                            color=color,point_size=size)
+                        if marker is not None:
+                            marker.payload.update(model=np.eye(4,dtype=np.float32),ignore_owner_model=True,
+                                depth_test=True,animation_correction_control=True,animation_correction_pole=True)
+                            marker.order = 19
+                            scene.add(marker)
         self._mgl_scene_skeleton_log(
             "handle_mesh_skipped_screen_circles",
             owner=str(owner or "").strip(),
@@ -12124,10 +12173,12 @@ void main() {
             self._mgl_scene_skeleton_handles_by_owner = handles_by_owner
         handles_by_owner[owner_key] = handles
         if correction_session is not None:
+            correction_session.update_pole_handles(handles)
             selected_owner = self._mgl_scene_skeleton_decode_joint_owner(
                 str(getattr(self, '_xform_gizmo_owner', '') or ''))
             if selected_owner and selected_owner[0] == owner_key:
-                selected_handle = next((handle for handle in handles
+                selectable = correction_session.pole_handles if correction_session.selected_pole == selected_owner[1] else handles
+                selected_handle = next((handle for handle in selectable
                                         if handle['name'] == selected_owner[1]), None)
                 if selected_handle is not None:
                     self._xform_gizmo_pos = selected_handle['position']
@@ -12852,7 +12903,8 @@ void main() {
             except Exception:
                 return []
 
-        def _project_rows(rows, matrix, label: str, *, row_vector: bool = False):
+        def _project_rows(rows, matrix, label: str, *, row_vector: bool = False, point_handles=None):
+            row_handles = handles if point_handles is None else point_handles
             try:
                 rows_np = np.asarray(rows, dtype=np.float32).reshape(-1, 3)
                 mat_np = np.asarray(matrix, dtype=np.float32).reshape(4, 4)
@@ -12890,7 +12942,7 @@ void main() {
                     if x < -padding or x > widget_w + padding or y < -padding or y > widget_h + padding:
                         projected_rows.append(None)
                         continue
-                    handle = handles[idx] if idx < len(handles) and isinstance(handles[idx], dict) else {}
+                    handle = row_handles[idx] if idx < len(row_handles) and isinstance(row_handles[idx], dict) else {}
                     axes = []
                     if getattr(self, "_mgl_scene_skeleton_selected_joint", ""):
                         axes = self._mgl_scene_skeleton_project_joint_axes(
@@ -12960,6 +13012,12 @@ void main() {
         if best is None:
             return None
         projected = list(best.get("points") or [])
+        correction = (context or {}).get('_animation_correction_session')
+        pole_points = []
+        if correction is not None and correction.ik_enabled and correction.pole_handles:
+            pole_data = _project_rows([handle['position'] for handle in correction.pole_handles],view_proj,
+                                     'correction_poles',point_handles=correction.pole_handles)
+            pole_points = list(pole_data.get('points') or [])
         if joints:
             for idx, joint in enumerate(joints):
                 try:
@@ -12990,6 +13048,9 @@ void main() {
         return {
             "owner": owner,
             "points": projected,
+            "pole_points": pole_points,
+            "pole_radius": 2.45 * _SCENE_SKELETON_SCREEN_HANDLE_RADIUS_SCALE * 1.25,
+            "selected_pole": correction.selected_pole if correction is not None else None,
             "lines": lines,
             "selected": str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or "").strip(),
             "selected_joints": list(getattr(self, "_mgl_scene_skeleton_selected_joints", []) or []),
@@ -19950,7 +20011,7 @@ void main() {
         except Exception:
             prev_depth_test = True
         try:
-            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_mask = self._mgl_mesh_overlay_depth_mask()
         except Exception:
             prev_depth_mask = None
         try:
@@ -19977,7 +20038,7 @@ void main() {
             except Exception:
                 pass
             try:
-                self._mgl_ctx.depth_mask = False
+                self._mgl_mesh_overlay_depth_mask(False)
                 self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
             except Exception:
                 pass
@@ -19994,7 +20055,7 @@ void main() {
         finally:
             if prev_depth_mask is not None:
                 try:
-                    self._mgl_ctx.depth_mask = prev_depth_mask
+                    self._mgl_mesh_overlay_depth_mask(prev_depth_mask)
                 except Exception:
                     pass
             if prev_depth_func is not None:
@@ -20204,6 +20265,17 @@ void main() {
             _apply_uniforms(color)
             try:
                 _render()
+                owner_context = self._mgl_scene_owner_fbx_rig_context(str(payload.get("owner") or "")) or {}
+                if owner_context.get('_animation_correction_session') is not None:
+                    # Preserve the bone overlay appearance while supplying depth for poles.
+                    try:
+                        self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                        self._mgl_ctx.depth_func = "<="
+                        self._mgl_mesh_overlay_depth_mask(True)
+                        self._gl.glColorMask(False, False, False, False)
+                        _render()
+                    finally:
+                        self._gl.glColorMask(True, True, True, True)
                 self._mgl_scene_skeleton_log_throttled(
                     f"draw_wire_done:{getattr(item, 'item_id', 0)}",
                     "draw_wire_done",
@@ -20262,7 +20334,7 @@ void main() {
             except Exception:
                 pass
             try:
-                self._mgl_mesh_overlay_depth_mask(False)
+                self._mgl_mesh_overlay_depth_mask(bool(payload.get("depth_write", False)))
             except Exception:
                 pass
             color = _as_rgba(payload.get("color") or self._mgl_wire_color)

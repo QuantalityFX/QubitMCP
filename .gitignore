@@ -84,6 +84,8 @@ AGENTS.md
 /tests/ui/*
 !/tests/ui/test_gizmo_qt_overlay.py
 !/tests/ui/test_gizmo_visibility.py
+!/tests/ui/test_gizmo_tip_picking.py
+!/tests/ui/test_pole_depth.py
 !/tests/ui/test_mesh_viewport_modes.py
 !/tests/ui/test_mesh_viewport_shaders.py
 !/tests/ui/test_mesh_viewport_overlay.py
