@@ -15,6 +15,19 @@
   // Hardware hints only choose the initial budget. Measured paint time can lower it.
   const modestDevice = (navigator.hardwareConcurrency || 8) <= 4 ||
     (navigator.deviceMemory || 8) <= 4;
+  const trailSteps = modestDevice ? 6 : 10;
+  // Cache the fade colors. Highlights follow the orbit curves without blur filters.
+  const trailColors = [
+    { halo: "83, 241, 179", line: "185, 255, 225" },
+    { halo: "86, 195, 255", line: "195, 241, 255" },
+    { halo: "243, 127, 91", line: "255, 197, 163" },
+  ].map(({ halo, line }) => Array.from({ length: trailSteps }, (_, index) => {
+    const strength = ((index + 1) / trailSteps) ** 1.5;
+    return {
+      halo: `rgba(${halo}, ${strength * 0.18})`,
+      line: `rgba(${line}, ${strength * 0.94})`,
+    };
+  }));
   const glow = document.createElement("canvas");
   glow.width = glow.height = 96;
   const glowCtx = glow.getContext("2d");
@@ -26,6 +39,18 @@
     gradient.addColorStop(1, "rgba(40, 192, 167, 0)");
     glowCtx.fillStyle = gradient;
     glowCtx.fillRect(0, 0, 96, 96);
+  }
+  const warmGlow = document.createElement("canvas");
+  warmGlow.width = warmGlow.height = 96;
+  const warmGlowCtx = warmGlow.getContext("2d");
+  if (warmGlowCtx) {
+    const gradient = warmGlowCtx.createRadialGradient(48, 48, 0, 48, 48, 48);
+    gradient.addColorStop(0, "rgba(255, 211, 181, 0.85)");
+    gradient.addColorStop(0.12, "rgba(244, 136, 91, 0.45)");
+    gradient.addColorStop(0.4, "rgba(204, 79, 62, 0.1)");
+    gradient.addColorStop(1, "rgba(204, 79, 62, 0)");
+    warmGlowCtx.fillStyle = gradient;
+    warmGlowCtx.fillRect(0, 0, 96, 96);
   }
 
   let width = 0;
@@ -284,6 +309,38 @@
     ctx.fill();
   }
 
+  function drawOrbitHighlight(orbit, angle, phase) {
+    const colors = trailColors[orbit];
+    const length = 1.05 + coreEnergy * 0.3;
+    const cosAngle = Math.cos(angle);
+    const sinAngle = Math.sin(angle);
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.lineCap = "round";
+    // The same ellipse and phase as the point keep light attached to the line.
+    // Mirror the fade ahead of and behind the point, brightest at its center.
+    for (let step = 0; step < trailSteps; step += 1) {
+      const start = phase - length + length * step / trailSteps;
+      const end = phase - length + length * (step + 1) / trailSteps;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, radius, radius * 0.32, angle, start, end);
+      const frontStart = 2 * phase - end;
+      const frontEnd = 2 * phase - start;
+      const x = Math.cos(frontStart) * radius;
+      const y = Math.sin(frontStart) * radius * 0.32;
+      // Start a separate subpath so the highlights never form a chord across the orbit.
+      ctx.moveTo(x * cosAngle - y * sinAngle, x * sinAngle + y * cosAngle);
+      ctx.ellipse(0, 0, radius, radius * 0.32, angle, frontStart, frontEnd);
+      ctx.strokeStyle = colors[step].halo;
+      ctx.lineWidth = 6 + coreEnergy * 3;
+      ctx.stroke();
+      ctx.strokeStyle = colors[step].line;
+      ctx.lineWidth = 1.8 + coreEnergy * 0.7;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   function drawCore() {
     const aimX = pointer.active ? (pointer.x / width - 0.5) * 2 : 0;
     const aimY = pointer.active ? (pointer.y / height - 0.5) * 2 : 0;
@@ -313,19 +370,23 @@
       const angle = tilt + orbit * Math.PI / 3;
       ctx.strokeStyle = orbit === 1
         ? `rgba(98, 204, 245, ${0.6 + coreEnergy * 0.35})`
-        : `rgba(88, 235, 179, ${0.4 + coreEnergy * 0.5})`;
+        : orbit === 2
+          ? `rgba(238, 157, 119, ${0.4 + coreEnergy * 0.5})`
+          : `rgba(88, 235, 179, ${0.4 + coreEnergy * 0.5})`;
       ctx.beginPath();
       ctx.ellipse(0, 0, radius, radius * 0.32, angle, 0, TAU);
       ctx.stroke();
       const phase = fieldTime * (0.36 + orbit * 0.08) + orbit * TAU / 3 + aimX * 0.8 + atom.spin;
+      drawOrbitHighlight(orbit, angle, phase);
       const x = Math.cos(phase) * radius;
       const y = Math.sin(phase) * radius * 0.32;
       const px = x * Math.cos(angle) - y * Math.sin(angle);
       const py = x * Math.sin(angle) + y * Math.cos(angle);
-      if (glowCtx) ctx.drawImage(glow, px - 14, py - 14, 28, 28);
-      ctx.fillStyle = orbit === 1 ? "#a1e7ff" : "#b5ffe0";
+      const pointGlow = orbit === 2 && warmGlowCtx ? warmGlow : glow;
+      if (glowCtx) ctx.drawImage(pointGlow, px - 14, py - 14, 28, 28);
+      ctx.fillStyle = orbit === 1 ? "#a1e7ff" : orbit === 2 ? "#ffb18d" : "#b5ffe0";
       ctx.beginPath();
-      ctx.arc(px, py, 2.4, 0, TAU);
+      ctx.arc(px, py, 3.4, 0, TAU);
       ctx.fill();
     }
     ctx.fillStyle = "#c4ffe4";
@@ -420,7 +481,7 @@
 
   function updatePointer(event) {
     if (!canInteract() || (event.pointerType === "touch" && event.type === "pointermove")) return;
-    if (event.target.closest("a, button")) {
+    if (event.target.closest("a, button, .hero-display-controls")) {
       clearPointer();
       return;
     }
@@ -440,7 +501,7 @@
   hero.addEventListener("pointerleave", clearPointer, { passive: true });
   hero.addEventListener("pointercancel", clearPointer, { passive: true });
   hero.addEventListener("pointerup", (event) => {
-    if (!canInteract() || event.target.closest("a, button") || event.button !== 0) return;
+    if (!canInteract() || event.target.closest("a, button, .hero-display-controls") || event.button !== 0) return;
     updatePointer(event);
     const onAtom = Math.hypot(pointer.x - coreX, pointer.y - coreY) <= radius * coreScale && coreAlpha > 0.25;
     if (onAtom) {

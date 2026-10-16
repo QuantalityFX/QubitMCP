@@ -66,7 +66,16 @@
           </div>
           <div class="hero-field-controls">
             <span class="hero-field-hint" hidden>Click field to teleport &middot; Click atom to energize</span>
-            <button class="hero-motion-toggle" type="button" aria-label="Animate field" aria-pressed="true" hidden>Pause motion</button>
+            <div class="hero-display-controls">
+              <div class="hero-brightness-control" hidden>
+                <div class="hero-brightness-caption">
+                  <label for="card-header-brightness">Block brightness</label>
+                  <output id="card-header-brightness-value" for="card-header-brightness" aria-hidden="true">50%</output>
+                </div>
+                <input id="card-header-brightness" type="range" min="0" max="100" step="1" value="50" aria-valuetext="50%" />
+              </div>
+              <button class="hero-motion-toggle" type="button" aria-label="Animate field" aria-pressed="true" hidden>Pause motion</button>
+            </div>
           </div>
         </header>
 
@@ -1282,6 +1291,7 @@
     </div>
 
     <script src="app.js"></script>
+    <script src="card-waves.js"></script>
     <script src="hero-field.js"></script>
   </body>
 </html>
