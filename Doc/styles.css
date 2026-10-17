@@ -501,6 +501,43 @@ code {
   align-items: stretch;
 }
 
+.viewer-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  margin: 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: transparent;
+  font-size: 0;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.viewer-control::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 12px;
+  background: #b0b8c4;
+  clip-path: polygon(100% 0, 0 50%, 100% 100%);
+  transform: translate(-50%, -50%);
+}
+
+.viewer-control[aria-label="Next image"]::before {
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+
+.grid.workflow-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .grid.pipeline-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

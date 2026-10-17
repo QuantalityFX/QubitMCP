@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Generate and edit images with Qwen Image 2.1, configure local backends, and review results with Image Collection, slideshows, and pinned-reference comparisons in Qubit Field." />
+    <title>Image Generation and Review | Qubit Field Workbench</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to guide</a>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <img class="brand-logo" src="../icons/QubitField_Icon.png" alt="" />
+          <div class="brand-title">Qubit Field</div>
+          <div class="brand-sub">Image generation and review</div>
+          <a class="back-link" href="index.html">&larr; Workbench overview</a>
+          <a class="back-link" href="nodes.html">Search all nodes</a>
+        </div>
+        <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="guide-nav" hidden>Browse this guide</button>
+        <nav class="nav" id="guide-nav" aria-label="Guide sections">
+          <a href="#workflow">Workflow</a>
+          <a href="#setup">Set up Qwen Image</a>
+          <a href="#generate">Generate images</a>
+          <a href="#edit">Edit with references</a>
+          <a href="#collection">Arrange an image collection</a>
+          <a href="#viewer">Viewer and navigation</a>
+          <a href="#compare">Pin a comparison reference</a>
+          <a href="#troubleshooting">Troubleshooting</a>
+        </nav>
+      </aside>
+      <main class="content guide-content" id="main-content" tabindex="-1">
+        <header class="guide-header" id="workflow">
+          <p class="eyebrow">Generate &middot; Edit &middot; Compare</p>
+          <h1>From a prompt to an image comparison</h1>
+          <p class="lead">Use Qwen Image 2.1 to generate or edit local images. Review the saved PNGs in Image Collection, open the originals in a large viewer, and pin a reference to compare variations without losing your place.</p>
+          <p class="workflow-path">Prompt or Note &rarr; Qwen Image &rarr; saved PNGs<br />Load or drag the PNG files into Image Collection &rarr; viewer &rarr; pinned comparison</p>
+          <p><a href="nodes.html?node=qwen-image">Qwen Image reference</a> &middot; <a href="nodes.html?node=image-collection">Image Collection reference</a> &middot; Updated 17 October 2026</p>
+        </header>
+
+        <section class="section" id="setup">
+          <h2>1. Set up Qwen Image</h2>
+          <ol class="steps">
+            <li>Press <strong>Tab</strong> and add <strong>Qwen Image</strong> (<code>qwen_image</code>). Choose the backend before opening <strong>Setup</strong>.</li>
+            <li>Select the model variant and runtime location. For native generation, you can choose a separate parent folder for model storage; Setup creates <code>Qwen-Image-2.1</code> there and reuses compatible existing checkpoints. Set an output folder if you want a custom save destination.</li>
+            <li>Read the linked model license, choose your permitted model use, and acknowledge it. Choose <strong>Install / Verify Selected Model</strong> to prepare and verify the selected runtime and weights.</li>
+            <li>Use <strong>Start Local Backend</strong>, then <strong>Check Backend</strong>. Generate once the node reports that the selected model is ready.</li>
+          </ol>
+          <div class="table-wrap">
+            <table aria-label="Qwen Image backend choices">
+              <thead><tr><th scope="col">Backend</th><th scope="col">Available models and setup</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">ComfyUI</th><td>The existing local backend, with INT8 and GGUF Q4_K_M options. Setup requires Python 3.12, Git, an NVIDIA GPU with a current driver, and at least 45 GB of free disk space. It runs as an external local service.</td></tr>
+                <tr><th scope="row">Native Diffusers &mdash; official BF16</th><td>A separate native runtime using the official Qwen checkpoint. Setup targets an NVIDIA GPU with BF16 support, including the RTX 3090; 64 GB of system RAM is recommended. Allow approximately 18 GB for the runtime and 38 GB for model storage. Native INT8/GGUF inference is not yet validated, and GPU output-quality validation remains in progress.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>The native installation runs independently of ComfyUI and does not silently switch to it. Select and set up each backend separately. Download sizes and memory use depend on the selected model, resolution, and memory options.</p>
+          <p class="callout">Qwen Image 2.1 uses the <a href="https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE">Qwen Research License</a>. The setup acknowledgement does not grant commercial rights; commercial model use requires a separate Qwen license. Model terms are separate from the application and framework licenses.</p>
+        </section>
+
+        <section class="section" id="generate">
+          <h2>2. Generate an image</h2>
+          <ol class="steps">
+            <li>Select <strong>Text to Image</strong>. Enter a description, or connect text to the <code>prompt</code> input. A connected prompt overrides the local field. A single-field Note supplies its value; for a multi-field Note, check the values you want to include.</li>
+            <li>Choose a preset, or set <strong>Width</strong>, <strong>Height</strong>, <strong>Steps</strong>, and <strong>CFG</strong>. Dimensions use a 32-pixel grid within the supported 64&ndash;4096 range.</li>
+            <li>Leave <strong>Random seed</strong> enabled for variations. Disable it and enter a seed when you want to reuse the same generation settings.</li>
+            <li>Choose <strong>Generate</strong>. Inspect the preview and status, then use <strong>Open PNG</strong> or double-click the Qwen preview to open the saved image in your system image viewer. <strong>Output Folder</strong> opens the save location.</li>
+          </ol>
+          <div class="table-wrap">
+            <table aria-label="Qwen generation controls">
+              <thead><tr><th scope="col">Control</th><th scope="col">Use</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">Presets</th><td>Fast preview, Standard, Quality 2048, Quality 16:9, Quality portrait, Low memory 512, and Widescreen offer starting points. Larger images and more steps require more time and memory.</td></tr>
+                <tr><th scope="row">Negative prompt and CFG</th><td>Negative prompts are native-only. Use CFG 1 for native generation without negative guidance; CFG above 1 requires a negative prompt. Connect <code>negative_prompt</code> to supply it from another node.</td></tr>
+                <tr><th scope="row">Transparent PNG</th><td>Requests an image with transparency. Inspect the resulting alpha: the model can return opaque or fully transparent pixels, and the status reports relevant warnings.</td></tr>
+                <tr><th scope="row">Low memory</th><td>Trades speed for memory. Native uses sequential CPU offloading while retaining the requested size and steps. Restart the ComfyUI backend after changing its launch memory profile.</td></tr>
+                <tr><th scope="row">Outputs</th><td><code>image</code>, <code>image_path</code>, <code>seed_used</code>, <code>status</code>, <code>job_id</code>, and <code>metadata</code> expose the result and generation details to downstream nodes.</td></tr>
+                <tr><th scope="row">Recover Job</th><td>Retrieves the saved job's result after a timeout, restart, or detach without submitting another generation. Check the existing job before clicking Generate again.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section" id="edit">
+          <h2>3. Edit with input and reference images</h2>
+          <ol class="steps">
+            <li>Select <strong>Image Edit</strong>. Browse an <strong>Input image</strong> or connect an image to <code>image</code>. Describe the requested change in the prompt.</li>
+            <li>Optionally supply image 2 through <strong>Reference</strong> or <code>reference_image</code>. Native generation also accepts additional reference paths, one per line, up to ten images total including the input.</li>
+            <li>For native edits, choose <strong>Guidance</strong>: Flexible follows the prompt; Edit input favors the original composition; Use input as a pose/layout guide asks Qwen to reuse its composition. These are instruction presets, so exact pose, camera, or clothing preservation is not guaranteed.</li>
+            <li>Choose native <strong>Framing</strong> independently of Guidance: Automatic uses the last supplied image, Match Input follows image 1, Match first Reference follows image 2, and Custom uses Width and Height. <strong>Edit size</strong> controls conditioning size and the automatic or matched output pixel budget.</li>
+            <li>Generate and review the saved PNG. Load the reference and generated variants into Image Collection to compare them.</li>
+          </ol>
+          <p class="callout">A Qwen <code>image</code> or <code>reference_image</code> connection from Image Collection uses that collection's <strong>first path</strong>. It does not send the entire collection as multiple native references. Use the reference controls to supply the remaining images.</p>
+        </section>
+
+        <section class="section" id="collection">
+          <h2>4. Arrange an image collection</h2>
+          <p>Add <strong>Image Collection</strong> (<code>image_collection</code>) and choose <strong>Load</strong> to append images. You can also drag local image files from Explorer into the 2D graph to create a collection. Duplicate paths are removed while preserving image order.</p>
+          <ul class="bullet">
+            <li><strong>Preview:</strong> single-image sizing follows the source aspect ratio, and multiple images use tightly packed rows. A thin gray outline identifies the image under the cursor.</li>
+            <li><strong>Move:</strong> click and drag an image to move the collection when Edit is off.</li>
+            <li><strong>Resize:</strong> drag the node's borders or corners. Images reflow and load sharper previews as the available space grows. The chosen node dimensions are saved with the graph; source files are not resized.</li>
+            <li><strong>Edit:</strong> enable Edit, select a thumbnail, copy its path or open its folder, and use Remove to take it out of the collection. Removing an entry does not delete the source file. Turn Edit off before opening the viewer or dragging the collection by its images.</li>
+          </ul>
+          <p>The picker offers PNG, JPG/JPEG, BMP, and TIF/TIFF. Graphs store image paths, so keep the referenced files available when moving a project. Compatible consumers include MiniMax H3's multi-image input; Qwen's image inputs use the first collection path as described above.</p>
+        </section>
+
+        <section class="section" id="viewer">
+          <h2>5. Browse originals in the viewer</h2>
+          <p>With <strong>Edit off</strong>, double-click a thumbnail to open that image in a large, resizable viewer. It loads the original pixels and initially fits them to the window. The caption shows collection position, filename, and dimensions.</p>
+          <div class="table-wrap">
+            <table aria-label="Image Collection viewer controls">
+              <thead><tr><th scope="col">Control</th><th scope="col">Action</th></tr></thead>
+              <tbody>
+                <tr><th scope="row"><span class="viewer-control" role="img" aria-label="Previous image">&#9664;</span> <span class="viewer-control" role="img" aria-label="Next image">&#9654;</span> Triangle buttons</th><td>The left triangle goes Previous; the right triangle goes Next. Navigation wraps at the ends of the collection.</td></tr>
+                <tr><th scope="row">Left / Right arrow keys</th><td>Previous / Next, including when a viewer button has focus.</td></tr>
+                <tr><th scope="row">Click in Fit mode</th><td>Next. The cursor remains the standard arrow.</td></tr>
+                <tr><th scope="row">Drag in Fit mode</th><td>Drag left for Next or right for Previous. A drag is distinct from a click.</td></tr>
+                <tr><th scope="row">Mouse wheel</th><td>Scroll up for Next or down for Previous, including at 100%.</td></tr>
+                <tr><th scope="row">Mouse side buttons</th><td>The browser Back button goes Previous; Forward goes Next.</td></tr>
+                <tr><th scope="row">100%</th><td>Enable actual-pixel viewing. Clicking no longer advances; drag with the grab-hand cursor to pan. Turn 100% off to return to Fit mode.</td></tr>
+                <tr><th scope="row">Slideshow / Pause or Space</th><td>Start or pause automatic forward navigation every three seconds. Closing the viewer stops playback.</td></tr>
+                <tr><th scope="row">Escape</th><td>Close the viewer. Navigation arrows and slideshow are disabled for a single-image collection.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>When an image is pinned, every Previous/Next action follows the comparison rules below, including the wheel, side buttons, clicks, swipes, and slideshow.</p>
+        </section>
+
+        <section class="section" id="compare">
+          <h2>6. Pin a reference for back-and-forth comparison</h2>
+          <p>The pin button sits immediately left of the navigation triangles. It is gray on an unpinned image and blue when the displayed image is the pinned reference.</p>
+          <ol class="steps">
+            <li>Open reference <strong>A</strong> and click the <img class="inline-icon" src="../icons/Pin_b_Icon.png" alt="pin" /> button to pin it.</li>
+            <li>Go Next to comparison image <strong>B</strong>.</li>
+            <li>Go Previous to see <strong>A</strong>. Repeated Previous actions stay on A and do not step backward through the collection.</li>
+            <li>Go Next once to return to <strong>B</strong>. You can repeat Previous/Next to compare A and B as often as needed.</li>
+            <li>From B, go Next again to advance to <strong>C</strong>. Previous now shows A, and Next returns to C. Forward browsing continues to wrap through the collection.</li>
+          </ol>
+          <p class="workflow-path">Pin A &rarr; Next: B &rarr; Previous: A &rarr; Next: B &rarr; Next again: C<br />Previous: A &rarr; Next: C</p>
+          <p>Click the blue pin while viewing A to <strong>unpin</strong> and restore ordinary backward navigation. Click a gray pin while viewing another image to replace the reference. The pin belongs to the current viewer session.</p>
+        </section>
+
+        <section class="section" id="troubleshooting">
+          <h2>Troubleshooting</h2>
+          <ul class="bullet">
+            <li><strong>The backend is not ready:</strong> select the intended backend and variant, open Setup, verify the installation and license acknowledgement, then Start and Check Backend.</li>
+            <li><strong>Native INT8 or GGUF is unavailable:</strong> native currently supports official BF16. INT8 and GGUF Q4_K_M belong to the optional ComfyUI backend.</li>
+            <li><strong>Generation runs out of memory:</strong> try a smaller preset or Low memory. Native CPU offloading can be much slower; restart ComfyUI after changing its launch profile.</li>
+            <li><strong>An edit changes composition or framing:</strong> describe each image's role, review Guidance, and choose Framing explicitly. Guidance is not a guarantee of preservation.</li>
+            <li><strong>Double-click does not open the collection viewer:</strong> turn Edit off. The Qwen node's own preview opens the saved PNG in the system viewer instead.</li>
+            <li><strong>Dragging moves the wrong thing:</strong> in the graph, dragging an image moves the collection with Edit off. In the viewer, dragging navigates in Fit mode and pans at 100%.</li>
+            <li><strong>Previous keeps showing the same image:</strong> a comparison pin is active. Return to the pinned image and click its blue pin to restore ordinary Previous navigation.</li>
+            <li><strong>A file is missing:</strong> locate the original image. The viewer reports the error and lets you navigate to another entry.</li>
+          </ul>
+        </section>
+        <footer class="site-footer"><a href="index.html">Workbench manual</a> &middot; <a href="nodes.html">Node catalog</a> &middot; <a href="motion.html">Motion and batch rendering</a></footer>
+      </main>
+    </div>
+    <script src="app.js"></script>
+    <script src="card-waves.js"></script>
+  </body>
+</html>

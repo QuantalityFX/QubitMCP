@@ -19,7 +19,7 @@ class SetupDialog(QtWidgets.QDialog):
         self.native = value(item.model, "backend") == "native_diffusers"
         self.manager = manager_for(item.model)
         self.setWindowTitle("Qwen Image 2.1 - Local setup")
-        self.resize(880, 920)
+        self.resize(880, 960)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)

@@ -103,6 +103,7 @@
           <a href="nodes.html?node=wire#node-wire" data-node="wire"><img src="../icons/StreightArrow_Icon.png" alt="" /> wire</a>
           <span class="node-nav-heading">Media and Review</span>
           <a href="nodes.html?node=html-preview#node-html-preview" data-node="html-preview"><img src="../icons/HTML_Preview.png" alt="" /> html_preview</a>
+          <a href="nodes.html?node=qwen-image#node-qwen-image" data-node="qwen-image"><img src="../icons/ImageGen_Icon.png" alt="" /> qwen_image</a>
           <a href="nodes.html?node=image-collection#node-image-collection" data-node="image-collection"><img src="../icons/PhotoCollection.png" alt="" /> image_collection</a>
           <a href="nodes.html?node=minimax-h3-api-video#node-minimax-h3-api-video" data-node="minimax-h3-api-video"><img src="../icons/SequenceToVideo_Icon2_s.png" alt="" /> minimax_h3_api_video</a>
           <a href="nodes.html?node=minimax-h3-video#node-minimax-h3-video" data-node="minimax-h3-video"><img src="../icons/SequenceToVideo_Icon2_s.png" alt="" /> minimax_h3_video</a>
@@ -129,7 +130,7 @@
           <p class="callout" data-no-results hidden>No matching nodes. Try another term or clear the filters.</p>
           <noscript><p>Use your browser's Find command to search this catalog. Every node remains available below.</p></noscript>
           <div class="callout">
-            <strong>Workflow guides:</strong> <a href="patterns-cloth.html">Patterns and cloth</a> &middot; <a href="motion.html">Motion and batch rendering</a> &middot; <a href="image_gs_splat.html">Image-GS Splat</a>.
+            <strong>Workflow guides:</strong> <a href="image-generation.html">Image generation and review</a> &middot; <a href="patterns-cloth.html">Patterns and cloth</a> &middot; <a href="motion.html">Motion and batch rendering</a> &middot; <a href="image_gs_splat.html">Image-GS Splat</a>.
           </div>
         </section>
 
@@ -2791,33 +2792,99 @@
               </details>
               <!-- node-reference:end -->
             </div>
-            <div class="card" id="node-image-collection"><h3><img class="inline-icon" src="../icons/PhotoCollection.png" alt="" /> image_collection</h3><p>Assemble and preview image sets.</p>
+            <div class="card" id="node-qwen-image"><h3><img class="inline-icon" src="../icons/ImageGen_Icon.png" alt="" /> qwen_image</h3><p>Local Qwen Image 2.1 text-to-image generation and image editing with reference images, presets, seeds, and saved PNG results.</p>
+              <a class="text-link" href="image-generation.html#setup">Generation and editing guide &rarr;</a>
               <!-- node-reference:start -->
               <details class="node-reference">
               <summary>Inputs, parameters, buttons, and usage</summary>
               <h4>Connections and result</h4>
-              <p>Stores an ordered collection of image paths for visual review and compatible multi-image inputs, such as MiniMax H3 reference_images.</p>
+              <p>Inputs are <code>prompt</code>, <code>negative_prompt</code>, <code>image</code>, and <code>reference_image</code>. Connected text or images override the corresponding local fields. A single-field Note supplies its value; a multi-field Note supplies checked values. An Image Collection connection supplies its first image path to the selected image input.</p>
+              <p>Outputs are <code>image</code>, <code>image_path</code>, <code>seed_used</code>, <code>status</code>, <code>job_id</code>, and <code>metadata</code>.</p>
+              <h4>Parameters and options</h4>
+              <table aria-label="qwen_image parameters and options">
+              <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
+              <tbody>
+              <tr><th scope="row">Backend and model</th><td>ComfyUI offers INT8 and GGUF Q4_K_M. Native Diffusers uses a separate runtime and official BF16 weights; native INT8/GGUF inference is not validated and GPU output-quality validation remains in progress. Each backend requires its own setup.</td></tr>
+              <tr><th scope="row">Mode and prompt</th><td>Choose Text to Image or Image Edit. Enter the desired image or an editing instruction; Image Edit requires an input image.</td></tr>
+              <tr><th scope="row">References</th><td>Image Edit accepts an optional second reference. Native also accepts additional reference paths, up to ten images total including the input.</td></tr>
+              <tr><th scope="row">Native Guidance and Framing</th><td>Guidance can follow the prompt, favor the input composition, or use its pose/layout. Framing can use the last supplied image, match the input or first reference, or use custom dimensions. Guidance does not guarantee exact preservation.</td></tr>
+              <tr><th scope="row">Dimensions and presets</th><td>Width/Height use a 32-pixel grid from 64 to 4096. Edit size controls edit conditioning and native automatic/matched pixel budget. Preview, quality, portrait, widescreen, and low-memory presets provide starting settings.</td></tr>
+              <tr><th scope="row">Steps, CFG, and negative prompt</th><td>Adjust inference settings. Negative prompts are native-only; native CFG 1 works without negative guidance, while CFG above 1 requires a negative prompt.</td></tr>
+              <tr><th scope="row">Seed and Random seed</th><td>Generate variations or reuse a fixed seed. The actual seed is available through seed_used.</td></tr>
+              <tr><th scope="row">Transparent PNG and Low memory</th><td>Request transparency and choose a lower-memory execution profile. Inspect alpha warnings in the result. Native CPU offloading can be slower; restart ComfyUI when changing its launch memory profile.</td></tr>
+              </tbody></table>
+              <h4>Buttons and editing actions</h4>
+              <table aria-label="qwen_image buttons and actions">
+              <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
+              <tbody>
+              <tr><th scope="row">Setup</th><td>Choose runtime, model storage where available, output folder, and permitted model use; read the license and install/verify the selected model.</td></tr>
+              <tr><th scope="row">Start Local Backend / Stop Local Backend</th><td>Start the selected local runtime or stop this app's backend after active jobs finish or are canceled.</td></tr>
+              <tr><th scope="row">Check Backend</th><td>Check readiness for the selected runtime and model.</td></tr>
+              <tr><th scope="row">Generate / Cancel</th><td>Generate the image or request cancellation of the active generation.</td></tr>
+              <tr><th scope="row">Open PNG / preview double-click</th><td>Open the generated PNG in the system image viewer.</td></tr>
+              <tr><th scope="row">Output Folder</th><td>Open the save location. Change it in Setup.</td></tr>
+              <tr><th scope="row">Recover Job</th><td>Retrieve the saved job's result after a timeout, restart, or detach without queuing a new generation.</td></tr>
+              </tbody></table>
+              <h4>Using this node</h4>
+              <ol class="steps">
+              <li>Choose a backend, open Setup, review the model license and hardware/storage requirements, and install or verify the selected model.</li>
+              <li>Start and check the backend, choose Text to Image or Image Edit, and enter a prompt and any required images.</li>
+              <li>Choose a preset or inference settings and Generate. Inspect the preview, seed, status, and output PNG.</li>
+              <li>Load saved variations into Image Collection for full-resolution review and pinned comparison.</li>
+              </ol>
+              <p class="callout">Qwen's model-use acknowledgement does not grant commercial rights. Research/evaluation and separately licensed commercial use have distinct terms; read the linked Qwen Research License in Setup. Native generation does not silently fall back to ComfyUI.</p>
+              </details>
+              <!-- node-reference:end -->
+            </div>
+            <div class="card" id="node-image-collection"><h3><img class="inline-icon" src="../icons/PhotoCollection.png" alt="" /> image_collection</h3><p>Arrange image sets, resize packed previews, and review original-resolution images with slideshow and pinned comparison controls.</p>
+              <a class="text-link" href="image-generation.html#collection">Image collection and comparison guide &rarr;</a>
+              <!-- node-reference:start -->
+              <details class="node-reference">
+              <summary>Inputs, parameters, buttons, and usage</summary>
+              <h4>Connections and result</h4>
+              <p>Stores ordered image paths for review and compatible consumers, such as MiniMax H3 <code>reference_images</code>. A Qwen <code>image</code> or <code>reference_image</code> connection uses the first collection path.</p>
               <h4>Parameters and options</h4>
               <table aria-label="image_collection parameters and options">
               <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
               <tbody>
               <tr><th scope="row">Image paths</th><td>Load adds the chosen files to the existing collection and removes duplicate path entries while retaining order.</td></tr>
-              <tr><th scope="row">Canvas preview</th><td>Fits the loaded images into thumbnail rows. Resizing changes their display, not the source images.</td></tr>
+              <tr><th scope="row">Canvas preview</th><td>Single-image sizing follows the source aspect ratio. Multiple images use tightly packed rows, and a thin gray outline identifies the hovered image.</td></tr>
+              <tr><th scope="row">Move and resize</th><td>With Edit off, drag an image to move the collection. Drag borders/corners to resize it; images reflow and load sharper previews as space grows. Node dimensions save with the graph. Source images are unchanged.</td></tr>
               <tr><th scope="row">Supported file picker formats</th><td>PNG, JPG/JPEG, BMP, and TIF/TIFF are offered by the picker.</td></tr>
               </tbody></table>
               <h4>Buttons and editing actions</h4>
               <table aria-label="image_collection buttons and editing actions">
               <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
               <tbody>
-              <tr><th scope="row">Load</th><td>Selects one or more files to append to the collection.</td></tr>
-              <tr><th scope="row">Edit</th><td>The current node shows this button, but its implementation does not connect an editing action yet. It is not an image editor.</td></tr>
+              <tr><th scope="row">Load / Explorer drop</th><td>Load appends files to the collection. Dropping local images into the 2D graph creates a new collection.</td></tr>
+              <tr><th scope="row">Edit / Remove / Path</th><td>Enable Edit to select an image, copy its path, open its folder, or remove its entry. Removal does not delete the file. Turn Edit off to open the viewer or move the collection by dragging an image.</td></tr>
+              <tr><th scope="row">Double-click with Edit off</th><td>Open the clicked original in a large, resizable viewer with position, filename, and dimensions.</td></tr>
+              <tr><th scope="row"><span class="viewer-control" role="img" aria-label="Previous image">&#9664;</span> <span class="viewer-control" role="img" aria-label="Next image">&#9654;</span> / Left and Right keys</th><td>Left triangle or Left key: Previous. Right triangle or Right key: Next. Navigation wraps around. A pin changes navigation to the comparison sequence below.</td></tr>
+              <tr><th scope="row">Click / swipe in Fit mode</th><td>Click for Next; drag left for Next or right for Previous. Fit mode uses the standard arrow cursor.</td></tr>
+              <tr><th scope="row">Wheel / mouse side buttons</th><td>Wheel up goes Next; down goes Previous. Browser Back/Forward buttons go Previous/Next. These also work at 100% and follow pin behavior.</td></tr>
+              <tr><th scope="row">100%</th><td>Show actual pixels. Clicking does not advance, and dragging uses the grab hand to pan. Turn it off to fit the image again.</td></tr>
+              <tr><th scope="row">Slideshow / Pause / Space</th><td>Toggle automatic Next every three seconds. Closing the viewer stops playback; Escape closes it. Navigation arrows and slideshow are disabled for a single image.</td></tr>
+              <tr><th scope="row"><img class="inline-icon" src="../icons/Pin_b_Icon.png" alt="" /> Pin</th><td>The pin sits left of the navigation buttons: gray for an unpinned image, blue on the pinned reference. Previous shows the reference without stepping backward; Next restores the comparison, and a second Next advances. Click the blue pin to unpin or a gray pin on another image to replace it.</td></tr>
               </tbody></table>
               <h4>Using this node</h4>
               <ol class="steps">
-              <li>Load the reference images you need.</li>
-              <li>Check the thumbnails and file availability.</li>
-              <li>Connect the collection to a compatible multi-image input.</li>
+              <li>Load images or drop them into the 2D graph. Move or resize the collection; use Edit for path and removal controls.</li>
+              <li>Turn Edit off and double-click an image. Browse, inspect at 100%, or play a slideshow.</li>
+              <li>For comparison, pin A and go Next to B. Previous shows A; Next returns to B. Next again advances to C. Unpin to restore ordinary backward navigation.</li>
+              <li>Connect the collection to a compatible image input as needed. Keep the referenced source files available.</li>
               </ol>
+              <h4 id="image-collection-comparison"><img class="inline-icon" src="../icons/Pin_b_Icon.png" alt="" /> Pin a reference for back-and-forth comparison</h4>
+              <p>The pin button sits immediately left of the navigation triangles. It is gray on an unpinned image and blue when the displayed image is the pinned reference. Pin one reference to compare it against the other images without losing your place.</p>
+              <ol class="steps">
+              <li>Turn Edit off, double-click reference image <strong>A</strong>, and click its pin button. The pin turns blue.</li>
+              <li>Go <strong>Next</strong> to comparison image <strong>B</strong>.</li>
+              <li>Go <strong>Previous</strong> to show <strong>A</strong>. Repeated Previous actions stay on A; they do not step backward through the collection.</li>
+              <li>Go <strong>Next once</strong> to return to <strong>B</strong>. Repeat Previous/Next to compare A and B as often as needed.</li>
+              <li>From B, go <strong>Next again</strong> to advance to <strong>C</strong>. Previous now shows A, and Next returns to C. Forward browsing continues to wrap through the collection.</li>
+              </ol>
+              <p class="workflow-path">Pin A &rarr; Next: B &rarr; Previous: A &rarr; Next: B &rarr; Next again: C<br />Previous: A &rarr; Next: C</p>
+              <p>Click the <strong>blue pin on A to unpin</strong> and restore ordinary backward navigation. Click a gray pin on another image to replace the reference. The pin applies to the current viewer session.</p>
+              <p>The triangle buttons, Left/Right keys, mouse wheel, browser Back/Forward side buttons, Fit-mode clicks and swipes, and slideshow all use these same Previous/Next comparison rules. At 100%, clicking does not advance and dragging pans the image.</p>
               <p class="callout">The workflow stores image paths, so keep the referenced files available when moving it.</p>
               </details>
               <!-- node-reference:end -->
