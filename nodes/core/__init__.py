@@ -134,6 +134,14 @@ def register_defaults() -> None:
     register("minimax_h3_api_video", stripe_color="#06b6d4")
     register("minimax_tts_api", stripe_color="#14b8a6")
     register("wan22_video", stripe_color="#0f766e")
+    register("qwen_image", stripe_color="#d28ff7")
+    # Register the local Qwen UI without importing GPU libraries.
+    try:
+        from nodes import qwen_image
+        qwen_image.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:
+        print("[EchoGraph] Qwen Image auto-register failed:", exc)
+
     # librarian plugins can override this later
     register("librarian", stripe_color="#74d603")
     register("qubit_deck_controller", stripe_color="#0f766e")

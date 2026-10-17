@@ -1,0 +1,13 @@
+{
+  "comfy_repository": "https://github.com/Comfy-Org/ComfyUI.git",
+  "comfy_commit": "0f74f7fb9f83a78bf46188fd4fd53e6bc44c1ae8",
+  "torch": "2.11.0",
+  "torchvision": "0.26.0",
+  "torch_index": "https://download.pytorch.org/whl/cu130",
+  "transformers": "5.17.0",
+  "validated_date": "2026-09-21",
+  "torchaudio": "2.11.0",
+  "gguf_repository": "https://github.com/leejet/ComfyUI-GGUF.git",
+  "gguf_commit": "f912d5e5c25921e41eae2c0131eeb4d350e7c165",
+  "gguf_python": "0.18.0"
+}

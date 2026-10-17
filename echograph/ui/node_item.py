@@ -1013,6 +1013,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if (self.model.kind or "").strip().lower() == "priormdm":
             from nodes import priormdm as _priormdm
             _priormdm.register()
+        if (self.model.kind or "").strip().lower() == "qwen_image":
+            from nodes import qwen_image
+            qwen_image.register()
         # Ensure GEN-X Video Mocap spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in (
             "gen-x-videomocap",
@@ -3391,6 +3394,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             qdeck_thumb = (self._param_value("__qdeck_last_thumbnail_source") or "").strip()
             body_h = 92 if qdeck_thumb else 44
             node_w = max(self._BASE_W, 260)
+        elif kind == "qwen_image":
+            node_w = max(self._BASE_W, 480)
+            body_h = max(800, int(getattr(self, "_qwen_body_height", 800)))
         elif kind in ("image_collection", "imagecollection"):
             try:
                 canvas_h = int(getattr(self.model, "_image_collection_canvas_h", self._IMG_CANVAS_H))
@@ -4341,6 +4347,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._sync_light_param_visibility()
                 self._recompute_height()
             defer_plugin = kind_lower in (
+                "qwen_image",
                 "rig_limiter",
                 "animation_correction",
                 "animation_blend", "animation blend", "anim_blend", "blend_animation",
@@ -9874,6 +9881,8 @@ body {
                 # Include it in the item bounds so zoomed repaint/cache clips
                 # don't cut off the portion above the node body.
                 extra_top = 80.0
+            elif kind_lower == "qwen_image":
+                extra_top = 80.0
             elif kind_lower in ("video_player", "video player", "videoplayer"):
                 # Video icon is intentionally oversized and floats above the node.
                 extra_top = 220.0
@@ -10369,6 +10378,8 @@ body {
                 icon_pm = node_icons._cloth_solver_icon()
             elif kind_lower == "priormdm":
                 icon_pm = node_icons._priormdm_icon()
+            elif kind_lower == "qwen_image":
+                icon_pm = node_icons._qwen_image_icon()
             elif kind_lower in ("image_gs_splat", "image gs splat", "imagegssplat", "image_to_splat", "image to splat", "image_splat"):
                 icon_pm = node_icons._pixels_to_splat_icon() or node_icons._ply_icon() or node_icons._import_icon()
             elif kind_lower in ("skinned_splat_proxy", "skinned splat proxy", "skinnedsplatproxy", "fbx_to_skinned_splat_proxy", "fbx skinned splat proxy"):

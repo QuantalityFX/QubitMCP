@@ -800,6 +800,13 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Wan2.2 Video plugin import failed:", e)
 
+    # Local Qwen Image (isolated ComfyUI runtime)
+    try:
+        from nodes import qwen_image
+        qwen_image.register()
+    except Exception as e:
+        print("[EchoGraph] Qwen Image plugin import failed:", e)
+
     # 16.5) Qubit Deck Controller
     try:
         from nodes import qubit_deck_controller

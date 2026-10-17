@@ -1,0 +1,28 @@
+{
+  "model_id": "Qwen/Qwen-Image-2.1",
+  "model_revision": "d26bb61231c349cf6b7896fa83353113880e1ba3",
+  "reviewed_date": "2026-10-17",
+  "torch_index": "https://download.pytorch.org/whl/cu130",
+  "packages": {
+    "torch": "2.11.0",
+    "torchvision": "0.26.0",
+    "diffusers": "0.41.0",
+    "transformers": "5.17.0",
+    "accelerate": "1.12.0",
+    "Pillow": "12.1.1",
+    "huggingface-hub": "1.32.0",
+    "safetensors": "0.8.0"
+  },
+  "sources": {
+    "pipeline_api": "https://huggingface.co/docs/diffusers/v0.41.0/en/api/pipelines/qwenimage21",
+    "model": "https://huggingface.co/Qwen/Qwen-Image-2.1/tree/d26bb61231c349cf6b7896fa83353113880e1ba3",
+    "diffusers_license": "https://github.com/huggingface/diffusers/blob/v0.41.0/LICENSE",
+    "transformers_license": "https://github.com/huggingface/transformers/blob/v5.17.0/LICENSE",
+    "torch_license": "https://github.com/pytorch/pytorch/blob/v2.11.0/LICENSE",
+    "diffusers_dependencies": "https://pypi.org/pypi/diffusers/0.41.0/json",
+    "transformers_dependencies": "https://pypi.org/pypi/transformers/5.17.0/json",
+    "hub_release": "https://pypi.org/project/huggingface-hub/1.32.0/",
+    "safetensors_release": "https://pypi.org/project/safetensors/0.8.0/"
+  },
+  "status": "Pinned candidate environment; installation preflight and GPU quality validation are required. Native INT8 and GGUF are not enabled."
+}

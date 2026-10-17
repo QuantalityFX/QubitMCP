@@ -243,6 +243,8 @@ def _kind_label(kind: str) -> str:
         return "GEN-X Video Mocap"
     if key == "priormdm":
         return "PriorMDM Text to Motion"
+    if key == "qwen_image":
+        return "Qwen Image 2.1"
     if key in ("look_at", "lookat", "transform_constraint"):
         return "Look At"
     if key in ("youtube_downloader", "youtube downloader", "youtube", "yt_downloader", "yt downloader", "youtube_to_mp4", "youtube to mp4"):
@@ -295,6 +297,7 @@ _NODE_KIND_SEARCH_HINTS = {
     "for_each": "for each foreach start loop batch takes wrapper iteration",
     "for_each_end": "for each foreach end loop batch takes wrapper render completion",
     "priormdm": "priormdm mdm text prompt motion generation humanoid animation",
+    "qwen_image": "qwen image 2.1 local text to image image edit img2img int8 gguf q4 rtx 3090 transparent png setup",
     "gen_x_videomocap": "video mocap gen-x motion capture animation",
     "anim_retarget": "animation retarget rig skeleton",
     "animation_blend": "animation blend transition bind pose t pose skeleton cloth preroll",
@@ -574,6 +577,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._cloth_solver_icon()
     elif key == "priormdm":
         icon_pm = node_icons._priormdm_icon()
+    elif key == "qwen_image":
+        icon_pm = node_icons._qwen_image_icon()
     elif key in ("image_gs_splat", "image gs splat", "imagegssplat", "image_to_splat", "image to splat", "image_splat"):
         icon_pm = node_icons._pixels_to_splat_icon() or node_icons._ply_icon() or node_icons._import_icon()
     elif key in ("skinned_splat_proxy", "skinned splat proxy", "skinnedsplatproxy", "fbx_to_skinned_splat_proxy", "fbx skinned splat proxy"):
@@ -804,7 +809,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit.setView(kind_popup_view)
         self._kinds = [
             "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","fbx_animation","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","image_gs_splat","skinned_volume_mesh","instance","copy_to_points","look_at","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","youtube_downloader","minimax_h3_video","minimax_h3_api_video","minimax_tts_api","wan22_video","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
-            "pattern_design", "cloth_solver", "animation_blend", "priormdm", "mocap_collection", "delete_joint", "rig_limiter", "animation_correction", "for_each", "for_each_end",
+            "qwen_image", "pattern_design", "cloth_solver", "animation_blend", "priormdm", "mocap_collection", "delete_joint", "rig_limiter", "animation_correction", "for_each", "for_each_end",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "audio_capture",

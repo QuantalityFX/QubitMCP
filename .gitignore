@@ -48,6 +48,9 @@ AGENTS.md
 /third_party/Wan2.2/
 /third_party/PriorMDM/
 /third_party/HandMDM/
+/third_party/Qwen-image/
+/third_party/ComfyUI-Qwen21/
+/third_party/Qwen-Native/
 /third_party/motion_research/
 /vcpkg/
 /Unreal/UnrealEnviroment/
@@ -78,6 +81,7 @@ AGENTS.md
 !/tests/
 /tests/*
 !/tests/motion/
+!/tests/image_generation/
 !/tests/patterns/
 !/tests/physics/
 !/tests/ui/

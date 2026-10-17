@@ -1345,6 +1345,11 @@ class GraphScene(QtWidgets.QGraphicsScene):
             return []
         model = item.model
         kind = (model.kind or "").strip().lower()
+        if kind == "qwen_image":
+            # Disk-backed images follow the same text/path convention as Import.
+            from nodes.qwen_image.controller import value
+            path = value(model, "image_path")
+            return [{"node": model.name, "param": "image_path", "text": path}] if path else []
         if kind in (
             "python",
             "mediator_agent",

@@ -67,6 +67,7 @@ _RIG_LIMITER_ICON = None
 _ANIMATION_CORRECTION_ICON = None
 _CLOTH_SOLVER_ICON = None
 _PRIORMDM_ICON = None
+_QWEN_IMAGE_ICON = None
 _PIXELS_TO_SPLAT_ICON = None
 
 
@@ -196,6 +197,13 @@ def _priormdm_icon():
     if _PRIORMDM_ICON is None:
         _PRIORMDM_ICON = _load_pm("PromptToAnimation_Icon.png")
     return _PRIORMDM_ICON
+
+
+def _qwen_image_icon():
+    global _QWEN_IMAGE_ICON
+    if _QWEN_IMAGE_ICON is None:
+        _QWEN_IMAGE_ICON = _load_pm("ImageGen_Icon.png")
+    return _QWEN_IMAGE_ICON
 
 
 def _animation_correction_icon():

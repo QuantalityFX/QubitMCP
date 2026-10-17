@@ -1,0 +1,2 @@
+# Pinned workflow hashes must survive Windows and Unix checkouts unchanged.
+echograph/image_generation/resources/** text eol=lf
