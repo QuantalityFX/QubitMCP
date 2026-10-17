@@ -3635,7 +3635,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             extra_pad = max(self._PADDING, 10.0)
         new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + extra_pad)
 
-        if kind == "note":
+        if kind in ("image_collection", "imagecollection"):
+            self._image_collection_min_w = max(360.0, self._header_badge_width() + 20.0)
+            self._image_collection_min_h = float(header_h + self._IMG_CTRL_H + 120 + extra_pad)
+            custom_size = getattr(self.model, "_image_collection_size", None)
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    new_w = max(self._image_collection_min_w, int(custom_size[0]))
+                    new_h = max(self._image_collection_min_h, int(custom_size[1]))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        elif kind == "note":
             custom_size = getattr(self.model, "_note_size", None)
             if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
                 try:
@@ -3908,11 +3918,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._apply_canvas_size()
                 self.pixmaps = []
                 self.offsets = []
+                self._image_sizes = []
+                self._thumbnail_cache = {}
                 self.paths: list[str] = []
                 self.rects: list[_QtCore.QRect] = []
                 self.selected_index = -1
+                self.hovered_index = -1
                 self._edit_mode = False
                 self._path_field = None
+                self._viewer = None
+                self.setMouseTracking(True)
+                self.setToolTip("Double-click an image to open the full-resolution viewer")
 
             def _canvas_height(self):
                 try:
@@ -3922,7 +3938,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return max(int(node_item._IMG_CANVAS_H), h)
 
             def _apply_canvas_size(self):
-                w = max(120, int(node_item.width) - 12)
+                w = max(120, int(node_item.width) - 2 * node_item._PADDING - 12)
                 h = self._canvas_height()
                 self.setFixedSize(w, h)
 
@@ -3932,7 +3948,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     setattr(node_item.model, "_image_collection_canvas_h", h)
                 except Exception:
                     pass
-                w = max(120, int(node_item.width) - 12)
+                w = max(120, int(node_item.width) - 2 * node_item._PADDING - 12)
                 self.setFixedSize(w, h)
                 self.updateGeometry()
 
@@ -3957,97 +3973,119 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                 loaded = []
                 for p in dedup:
-                    pm = _QtGui.QPixmap(p)
-                    if not pm.isNull():
-                        loaded.append((p, pm))
-                if not loaded:
+                    reader = _QtGui.QImageReader(p)
+                    size = reader.size()
+                    if size.isValid() and reader.canRead():
+                        loaded.append((p, size))
+                self.paths = [p for p, _ in loaded]
+                self._image_sizes = [size for _, size in loaded]
+                self._thumbnail_cache = {}
+                self._layout_images()
+                self._notify_outer_size_changed()
+
+            def _layout_images(self):
+                self.pixmaps = []
+                self.offsets = []
+                self.rects = []
+                self.hovered_index = -1
+                count = len(self.paths)
+                if not count:
+                    self.update()
                     return
-                self._apply_canvas_size()
+                pad, gap = 4, 4
+                avail_w = max(1, self.width() - 2 * pad)
+                avail_h = max(1, self.height() - 2 * pad)
+                ratios = [size.width() / size.height() for size in self._image_sizes]
 
-                edge_pad = 4
-                gap = 4
-                avail_w = max(1, self.width() - 2 * edge_pad)
-                avail_h = max(1, self.height() - 2 * edge_pad)
-
-                # Choose an initial row height based on how many rows we expect.
-                cols_hint = 3
-                rows_est = max(1, (len(loaded) + cols_hint - 1) // cols_hint)
-                target_row_h = max(60, min(220, int(avail_h / rows_est)))
-
-                def _build_layout(target_h: int):
-                    # Provisional widths at target_h
-                    items = []
-                    for pth, pm in loaded:
-                        w, h = pm.width(), pm.height()
-                        if w <= 0 or h <= 0:
-                            continue
-                        scaled_w = int(w * (target_h / float(h)))
-                        items.append((pth, pm, scaled_w, target_h))
-
+                def packed_rows(target_h):
                     rows = []
                     row = []
                     row_w = 0
-                    for pth, pm, sw, th in items:
-                        est = row_w + sw if not row else row_w + gap + sw
-                        if row and est > avail_w:
+                    for index, ratio in enumerate(ratios):
+                        width = max(1, int(ratio * target_h))
+                        if row and row_w + gap + width > avail_w:
                             rows.append((row, row_w))
-                            row = []
-                            row_w = 0
-                        row.append((pth, pm, sw, th))
-                        row_w += sw if not row[:-1] else sw
+                            row, row_w = [], 0
+                        row.append((index, width))
+                        row_w += width
                     if row:
                         rows.append((row, row_w))
+                    result = []
+                    for row, row_w in rows:
+                        scale = max(1, avail_w - gap * (len(row) - 1)) / float(row_w)
+                        result.append((row, scale, max(1, int(target_h * scale))))
+                    total_h = sum(height for _, _, height in result) + gap * (len(result) - 1)
+                    return result, total_h
 
-                    row_heights = []
-                    row_scales = []
-                    for row, rw in rows:
-                        n = len(row)
-                        available_w = max(1, avail_w - gap * max(0, n - 1))
-                        scale = available_w / float(rw) if rw > 0 else 1.0
-                        row_scales.append(scale)
-                        row_heights.append(int(target_h * scale))
-
-                    total_h = sum(row_heights) + gap * max(0, len(row_heights) - 1)
-                    return rows, row_scales, row_heights, total_h
-
-                rows, row_scales, row_heights, total_h = _build_layout(target_row_h)
-                # If too tall, reduce target_row_h proportionally and rebuild once.
-                if total_h > avail_h:
-                    shrink = float(avail_h) / float(total_h)
-                    new_h = max(40, int(target_row_h * shrink))
-                    rows, row_scales, row_heights, total_h = _build_layout(new_h)
-
-                required_canvas_h = edge_pad + int(total_h) + edge_pad
-                self._set_canvas_height(required_canvas_h)
-
-                pixmaps_out = []
-                offsets_out = []
-                y = edge_pad
-                for (row, _rw), rscale, rheight in zip(rows, row_scales, row_heights):
-                    x = edge_pad
-                    for pth, pm, sw, th in row:
-                        final_w = max(1, int(sw * rscale))
-                        final_h = max(1, int(th * rscale))
-                        pixmaps_out.append(pm.scaled(final_w, final_h, _QtCore.Qt.KeepAspectRatio, _QtCore.Qt.SmoothTransformation))
-                        offsets_out.append(_QtCore.QPoint(x, y))
-                        x += final_w + gap
-                    y += int(rheight) + gap
-
-                self.pixmaps = pixmaps_out
-                self.paths = [p for p, _ in loaded]
-                self.offsets = offsets_out
-                self.rects = []
-                for pm, off in zip(self.pixmaps, self.offsets):
-                    self.rects.append(_QtCore.QRect(int(off.x()), int(off.y()), pm.width(), pm.height()))
+                # Preserve the original justified rows and automatic image-aspect sizing.
+                target_h = max(60, min(220, int(avail_h / max(1, (count + 2) // 3))))
+                rows, total_h = packed_rows(target_h)
+                if getattr(node_item.model, "_image_collection_size", None) is None:
+                    if total_h > avail_h:
+                        target_h = max(40, int(target_h * avail_h / float(total_h)))
+                        rows, total_h = packed_rows(target_h)
+                    self._set_canvas_height(pad + total_h + pad)
+                    fit = 1.0
+                else:
+                    # Manual resizing reflows the same packed rows within the chosen bounds.
+                    candidates = [packed_rows(height) for height in
+                                  sorted({1, target_h} | {max(1, int(avail_h * step / 48)) for step in range(1, 49)})]
+                    fitting = [layout for layout in candidates if layout[1] <= avail_h]
+                    rows, total_h = max(fitting, key=lambda layout: layout[1]) if fitting else min(candidates, key=lambda layout: layout[1])
+                    content_h = sum(height for _, _, height in rows)
+                    fit = min(1.0, max(1, avail_h - gap * (len(rows) - 1)) / float(content_h))
+                placements = []
+                y = pad
+                for row, scale, row_h in rows:
+                    x = pad
+                    for index, width in row:
+                        target = _QtCore.QSize(max(1, int(width * scale * fit)),
+                                              max(1, int(row_h * fit)))
+                        placements.append((index, target, _QtCore.QPoint(x, y)))
+                        x += target.width() + gap
+                    y += max(1, int(row_h * fit)) + gap
+                placements.sort(key=lambda placement: placement[0])
+                invalid_paths = set()
+                for index, target, offset in placements:
+                    path, source_size = self.paths[index], self._image_sizes[index]
+                    pm = self._thumbnail_cache.get(path)
+                    needed = source_size.boundedTo(target)
+                    if pm is None or pm.width() < needed.width() or pm.height() < needed.height():
+                        # Decode from the file when growing, with a little headroom for dragging.
+                        decode_size = source_size.scaled(int(target.width() * 1.25), int(target.height() * 1.25),
+                                                         _QtCore.Qt.KeepAspectRatio).boundedTo(source_size)
+                        decode_size = decode_size.expandedTo(_QtCore.QSize(1, 1))
+                        reader = _QtGui.QImageReader(path)
+                        reader.setScaledSize(decode_size)
+                        pm = _QtGui.QPixmap.fromImage(reader.read())
+                        if pm.isNull():
+                            invalid_paths.add(path)
+                            continue
+                        self._thumbnail_cache[path] = pm
+                    thumbnail = pm.scaled(target, _QtCore.Qt.KeepAspectRatio, _QtCore.Qt.SmoothTransformation)
+                    self.pixmaps.append(thumbnail)
+                    self.offsets.append(offset)
+                    self.rects.append(_QtCore.QRect(offset, thumbnail.size()))
+                if invalid_paths:
+                    valid = [(p, size) for p, size in zip(self.paths, self._image_sizes) if p not in invalid_paths]
+                    self.paths = [p for p, _ in valid]
+                    self._image_sizes = [size for _, size in valid]
+                    self._layout_images()
+                    return
                 if self.selected_index >= len(self.pixmaps):
                     self.selected_index = -1
-                self._notify_outer_size_changed()
                 self.update()
 
             def paintEvent(self, _ev):
                 painter = _QtGui.QPainter(self)
                 for pm, off in zip(self.pixmaps, self.offsets):
                     painter.drawPixmap(off, pm)
+                if 0 <= self.hovered_index < len(self.rects):
+                    pen = _QtGui.QPen(_QtGui.QColor("#9ca3af"), 1)
+                    pen.setCosmetic(True)
+                    painter.setPen(pen)
+                    painter.setBrush(_QtCore.Qt.NoBrush)
+                    painter.drawRect(self.rects[self.hovered_index].adjusted(0, 0, -1, -1))
                 if self.selected_index >= 0 and self.selected_index < len(self.rects):
                     pen = _QtGui.QPen(_QtGui.QColor("#60a5fa"), 2)
                     pen.setCosmetic(True)
@@ -4056,8 +4094,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     painter.drawRect(self.rects[self.selected_index].adjusted(-2, -2, 2, 2))
                 painter.end()
 
+            def mouseMoveEvent(self, ev):
+                pos = ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
+                hit = next((idx for idx, rect in enumerate(self.rects) if rect.contains(pos)), -1)
+                if hit != self.hovered_index:
+                    self.hovered_index = hit
+                    self.update()
+                super().mouseMoveEvent(ev)
+
+            def leaveEvent(self, ev):
+                if self.hovered_index != -1:
+                    self.hovered_index = -1
+                    self.update()
+                super().leaveEvent(ev)
+
             def sizeHint(self):
-                return _QtCore.QSize(int(node_item._IMG_CANVAS_W), self._canvas_height())
+                return self.size()
 
             def set_edit_mode(self, enabled: bool):
                 self._edit_mode = bool(enabled)
@@ -4066,9 +4118,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self.update()
 
             def mousePressEvent(self, ev):
+                pos = ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
                 if not self._edit_mode:
                     return super().mousePressEvent(ev)
-                pos = ev.pos()
                 hit = -1
                 for idx, rect in enumerate(self.rects):
                     if rect.contains(pos):
@@ -4084,6 +4136,36 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         pass
                 else:
                     super().mousePressEvent(ev)
+
+            def mouseDoubleClickEvent(self, ev):
+                if not self._edit_mode and ev.button() == _QtCore.Qt.LeftButton:
+                    pos = ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
+                    for index, rect in enumerate(self.rects):
+                        if rect.contains(pos):
+                            self._open_viewer(index)
+                            ev.accept()
+                            return
+                super().mouseDoubleClickEvent(ev)
+
+            def _open_viewer(self, index):
+                from nodes.image_collection.viewer import ImageCollectionViewer
+
+                if self._viewer is None:
+                    scene = node_item.scene()
+                    views = scene.views() if scene is not None else []
+                    parent = views[0].window() if views else _top_level_parent_for_dialog()
+                    self._viewer = ImageCollectionViewer(self.paths, index, parent)
+                    self._viewer.finished.connect(self._viewer_closed)
+                    self.destroyed.connect(self._viewer.close)
+                else:
+                    self._viewer.set_collection(self.paths, index)
+                self._viewer.show()
+                self._viewer.raise_()
+                self._viewer.activateWindow()
+                self._viewer.image_view.setFocus()
+
+            def _viewer_closed(self, _result):
+                self._viewer = None
 
             def selected_path(self) -> str:
                 if self.selected_index >= 0 and self.selected_index < len(self.paths):
@@ -4107,8 +4189,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 else:
                     self.pixmaps = []
                     self.paths = []
+                    self._image_sizes = []
+                    self._thumbnail_cache = {}
                     self.offsets = []
                     self.rects = []
+                    self.hovered_index = -1
                     self._set_canvas_height(int(node_item._IMG_CANVAS_H))
                     self._notify_outer_size_changed()
                     self.update()
@@ -4159,11 +4244,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
         v.addLayout(header)
 
         canvas = _InlineCanvas()
+        node_item._image_collection_canvas = canvas
         v.addWidget(canvas, 1)
 
         proxy_ref = {"proxy": None}
 
         def _sync_body_and_node():
+            custom_size = getattr(node_item.model, "_image_collection_size", None)
+            overhead = body.sizeHint().height() - canvas.height()
+            node_item._image_collection_min_h = float(y_cursor + overhead + 120 + node_item._PADDING)
+            canvas_h = canvas._canvas_height()
+            if custom_size is not None:
+                canvas_h = max(120, int(node_item.height - y_cursor - overhead - node_item._PADDING))
+            canvas_size = _QtCore.QSize(max(120, int(node_item.width) - 2 * node_item._PADDING - 12), canvas_h)
+            if canvas.size() != canvas_size:
+                canvas.setFixedSize(canvas_size)
+                canvas._layout_images()
             try:
                 body.updateGeometry()
                 layout = body.layout()
@@ -4180,7 +4276,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             proxy = proxy_ref.get("proxy")
             if proxy is not None:
                 try:
-                    proxy.resize(node_item.width, body_h)
+                    proxy.resize(node_item.width - 2 * node_item._PADDING, body_h)
                 except Exception:
                     pass
             try:
@@ -4192,6 +4288,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         pass
                     node_item.height = required_h
                     node_item.update()
+                if custom_size is not None:
+                    node_item.model._image_collection_size = (float(node_item.width), float(node_item.height))
             except Exception:
                 pass
 
@@ -4321,10 +4419,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
         proxy = QtWidgets.QGraphicsProxyWidget(node_item)
         proxy.setWidget(body)
         proxy.setZValue(node_item.zValue() + 0.1)
-        proxy.setPos(0, y_cursor)
+        # Leave the side borders exposed so the embedded widget cannot consume resize drags.
+        proxy.setPos(node_item._PADDING, y_cursor)
         proxy_ref["proxy"] = proxy
         h = max(body.sizeHint().height(), body.minimumSizeHint().height())
-        proxy.resize(node_item.width, h)
+        proxy.resize(node_item.width - 2 * node_item._PADDING, h)
         try:
             node_item._plugin_proxies.append(proxy)
         except Exception:
@@ -9496,6 +9595,8 @@ body {
 
     def _note_resize_available(self) -> bool:
         kind = (self.model.kind or "").lower()
+        if kind in ("image_collection", "imagecollection"):
+            return True
         if kind not in (
             "mocap_collection",
             "note",
@@ -9549,6 +9650,11 @@ body {
         near_top = abs(y - r.top()) <= margin
         near_bottom = abs(y - r.bottom()) <= margin
         kind = (self.model.kind or "").lower()
+
+        # Leave the header sockets available for wiring.
+        if kind in ("image_collection", "imagecollection") and margin < y <= self._BASE_H:
+            if near_left or near_right:
+                return None
 
         if kind in ("video_player", "video player", "videoplayer"):
             if near_left and near_bottom:
@@ -9621,6 +9727,9 @@ body {
         if kind == "mocap_collection":
             min_w = float(getattr(self, "_mocap_collection_min_w", 460))
             min_h = float(getattr(self, "_mocap_collection_min_h", self._BASE_H))
+        elif kind in ("image_collection", "imagecollection"):
+            min_w = float(getattr(self, "_image_collection_min_w", 360))
+            min_h = float(getattr(self, "_image_collection_min_h", 240))
         elif kind in ("chatbot", "chat bot", "chat_bot"):
             min_w = float(getattr(self, "_chatbot_min_w", self._BASE_W))
             min_h = float(getattr(self, "_chatbot_min_h", self._BASE_H))
@@ -9692,6 +9801,8 @@ body {
         try:
             if kind == "note":
                 self.model._note_size = (float(self.width), float(self.height))
+            elif kind in ("image_collection", "imagecollection"):
+                self.model._image_collection_size = (float(self.width), float(self.height))
             elif kind == "mocap_collection":
                 self._set_param_value("__mocap_collection_size", f"{self.width:.3f},{self.height:.3f}",
                                       rebuild=False, notify_scene=False)
@@ -9716,7 +9827,10 @@ body {
         except Exception:
             pass
         try:
-            self._build_widgets()
+            if kind in ("image_collection", "imagecollection"):
+                self._image_collection_canvas._notify_outer_size_changed()
+            else:
+                self._build_widgets()
         except Exception:
             pass
         sc = self.scene()
@@ -9736,6 +9850,8 @@ body {
                 kind = (self.model.kind or "").lower()
                 if kind == "note":
                     self.model._note_size = (float(self.width), float(self.height))
+                elif kind in ("image_collection", "imagecollection"):
+                    self.model._image_collection_size = (float(self.width), float(self.height))
                 elif kind == "mocap_collection":
                     self._set_param_value("__mocap_collection_size", f"{self.width:.3f},{self.height:.3f}",
                                           rebuild=False, notify_scene=True)
@@ -9759,7 +9875,8 @@ body {
                     self.model._video_player_size = (float(self.width), float(self.height))
             except Exception:
                 pass
-            self._schedule_rebuild()
+            if kind not in ("image_collection", "imagecollection"):
+                self._schedule_rebuild()
         self._note_resizing = False
         self._note_scene_start = QtCore.QPointF()
 
@@ -10200,6 +10317,9 @@ body {
 
     def shape(self):
         path = QtGui.QPainterPath()
+        if (self.model.kind or "").lower() in ("image_collection", "imagecollection"):
+            # Treat the overlapping body/socket hit regions as a union at the borders.
+            path.setFillRule(QtCore.Qt.WindingFill)
         hit_outset = max(6.0, float(getattr(self, "_PORT_EDGE_HIT_OUTSET", 6.0)))
         hit_inset = max(6.0, float(getattr(self, "_PORT_EDGE_HIT_INSET", 6.0)))
         path.addRoundedRect(QtCore.QRectF(0, 0, self.width, self.height), self.radius, self.radius)
@@ -11094,6 +11214,18 @@ body {
 
     def mouseDoubleClickEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:
+            if (self.model.kind or "").lower() in ("image_collection", "imagecollection"):
+                canvas = getattr(self, "_image_collection_canvas", None)
+                if canvas is not None and not canvas._edit_mode:
+                    proxy = canvas.window().graphicsProxyWidget()
+                    if proxy is not None:
+                        body_pos = proxy.mapFromItem(self, e.pos())
+                        pos = canvas.mapFrom(canvas.window(), body_pos.toPoint())
+                        for index, rect in enumerate(canvas.rects):
+                            if rect.contains(pos):
+                                canvas._open_viewer(index)
+                                e.accept()
+                                return
             if (self.model.kind or "").lower() == "note" and self._header_title_rect().contains(e.pos()):
                 self._prompt_rename_node()
                 e.accept()

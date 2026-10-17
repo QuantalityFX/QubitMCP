@@ -96,6 +96,7 @@ AGENTS.md
 !/tests/ui/test_mesh_polygons.py
 !/tests/ui/test_scene_lighting.py
 !/tests/ui/test_light_node_layout.py
+!/tests/ui/test_image_collection_viewer.py
 !/tests/ui/test_render_node_layout.py
 !/tests/ui/test_look_at_node.py
 !/tests/ui/test_look_at_viewport.py

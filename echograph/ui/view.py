@@ -3,6 +3,7 @@
 
 import math
 import time
+import os
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
 from echograph.services.profiler import profile_scope
 
@@ -36,6 +37,7 @@ class GraphView(QtWidgets.QGraphicsView):
         self.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)
 
         try:
             self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
@@ -96,6 +98,64 @@ class GraphView(QtWidgets.QGraphicsView):
         self._profiler_panel_h = 660
         self._profiler_panel_min_h = 240
         self._profiler_graph_min_h = 120
+
+    def _dropped_image_paths(self, mime):
+        if self._mode_3d or not mime.hasUrls():
+            return []
+        paths = []
+        seen = set()
+        for url in mime.urls():
+            if not url.isLocalFile():
+                continue
+            path = os.path.abspath(url.toLocalFile())
+            key = os.path.normcase(path)
+            if key in seen or not os.path.isfile(path):
+                continue
+            if not QtGui.QImageReader(path).canRead():
+                continue
+            seen.add(key)
+            paths.append(path)
+        return paths
+
+    def dragEnterEvent(self, event):
+        if self._dropped_image_paths(event.mimeData()):
+            event.setDropAction(QtCore.Qt.CopyAction)
+            event.accept()
+        elif event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self._dropped_image_paths(event.mimeData()):
+            event.setDropAction(QtCore.Qt.CopyAction)
+            event.accept()
+        elif event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        paths = self._dropped_image_paths(event.mimeData())
+        scene = self.scene()
+        if not paths or not callable(getattr(scene, "add_node", None)):
+            if event.mimeData().hasUrls():
+                event.ignore()
+            else:
+                super().dropEvent(event)
+            return
+        from echograph.model import GraphNode
+
+        point = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        position = self.mapToScene(point)
+        node = GraphNode("Image Collection", kind="image_collection",
+                         pos_xy=(position.x(), position.y()))
+        node._image_collection_state = {"paths": paths}
+        item = scene.add_node(node, position)
+        scene.clearSelection()
+        item.setSelected(True)
+        event.setDropAction(QtCore.Qt.CopyAction)
+        event.accept()
 
     def set_profiler_panel(self, panel) -> None:
         if panel is None:

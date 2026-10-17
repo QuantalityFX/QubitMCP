@@ -174,6 +174,12 @@ def _node_to_dict(node) -> Dict[str, Any]:
                 d["keyboard_sequence_size"] = [w, h]
 
     if k in ("image_collection", "imagecollection"):
+        size = getattr(node, "_image_collection_size", None)
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                d["image_collection_size"] = [int(size[0]), int(size[1])]
+            except (TypeError, ValueError, OverflowError):
+                pass
         st = getattr(node, "_image_collection_state", None) or {}
         if isinstance(st, dict):
             paths = [str(p) for p in st.get("paths", []) if isinstance(p, str) and p.strip()]
@@ -459,6 +465,12 @@ def deserialize_scene(
                     except Exception:
                         pass
             if (n.kind or "").lower() in ("image_collection", "imagecollection"):
+                size = nd.get("image_collection_size")
+                if isinstance(size, (list, tuple)) and len(size) >= 2:
+                    try:
+                        setattr(n, "_image_collection_size", (int(size[0]), int(size[1])))
+                    except (TypeError, ValueError, OverflowError):
+                        pass
                 paths = nd.get("image_collection_paths") or []
                 try:
                     paths = [str(p) for p in paths if isinstance(p, str) and p.strip()]
