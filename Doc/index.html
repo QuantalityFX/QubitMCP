@@ -592,6 +592,7 @@
             <li>Use <code>mocap_import</code>, <code>fbx_import</code>, and <code>anim_retarget</code> for skeleton/animation retargeting workflows before scene preview or render.</li>
             <li>Timeline sessions are context-aware and load per active scene (and selected scene owner when applicable).</li>
             <li>Use <strong>[</strong> and <strong>]</strong> controls for start/end range and the loop control for playback looping.</li>
+            <li>Drag the dotted top border upward to make more room for tracks and curves, or use <strong>Detach timeline</strong> to edit in a separate resizable window. Use the same button or close that window to dock it again. The toolbar and channel controls stay at the top as the graph grows; viewport correction and rig panels move above the docked timeline.</li>
             <li>The input order is <strong>Frame, End, FPS, Seed, Speed</strong>, followed by playback, range, and <strong>Loop</strong> controls. Seed is the shared procedural texture seed; Speed controls the selected Scene item's playback rate.</li>
             <li>When there is insufficient width for one row, every control after <strong>Loop</strong> moves below the input fields. Widen the viewport to restore the single row. The timeline makes room for the extra row while preserving the track area and control values.</li>
             <li>The <strong>cloth simulation toggle</strong> beside FX switches <strong>Simulate with timeline</strong> on every cloth solver in the current view. Node checkboxes stay synchronized, and the setting is saved with the nodes when you save the graph. Switching it off and on preserves calculated frames; changing solver or collider settings can still invalidate that cache.</li>
@@ -603,6 +604,9 @@
               <div class="tool-item"><img src="../icons/keyframe_Icon.png" alt="Set key icon" /><span>Set Key</span></div>
               <div class="tool-item"><img src="../icons/RemoveKey_Icon.png" alt="Delete key icon" /><span>Delete Selected Keys</span></div>
               <div class="tool-item"><img src="../icons/CurveEditor_Icon.png" alt="Curves icon" /><span>Curves Mode</span></div>
+              <div class="tool-item"><img src="../icons/VerticalCurveFit_Icon.png" alt="Vertical curve fit icon" /><span>Fit Curve Values</span></div>
+              <div class="tool-item"><img src="../icons/DetachPanel_Icon.png" alt="Detach timeline icon" /><span>Detach / Dock Timeline</span></div>
+              <div class="tool-item"><img src="../icons/SequencerBars_Icon.png" alt="Master timeline icon" /><span>Master Timeline</span></div>
               <div class="tool-item"><img src="../icons/StreightCurve_Icon.png" alt="Straight handle icon" /><span>Straight Handles</span></div>
               <div class="tool-item"><img src="../icons/Tiehandles_Icon.png" alt="Tied handle icon" /><span>Tied Handles</span></div>
               <div class="tool-item"><img src="../icons/Untiedhandle_Icon.png" alt="Untied handle icon" /><span>Untied Handles</span></div>
@@ -612,6 +616,21 @@
               <div class="tool-item"><img src="../icons/Microship_Toggle_Off_Icon.png" alt="Cloth timeline simulation off" /><span>Cloth Simulation Off</span></div>
             </div>
           </div>
+          <h3 id="timeline-curve-editor">Curve navigation and handles</h3>
+          <p>Switch to <strong>Curves Mode</strong> to edit position and rotation channels. Select <code>Px</code>, <code>Py</code>, <code>Pz</code>, <code>Rx</code>, <code>Ry</code>, or <code>Rz</code> to focus on the channels you need. The first ruler label shows the visible starting frame, including starts between the regular numbered ticks.</p>
+          <div class="table-wrap">
+            <table aria-label="Timeline curve navigation">
+              <thead><tr><th scope="col">Control</th><th scope="col">Action</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">Fit Curve Values</th><td>Fits the keys and handles on visible curves vertically without changing the visible time range.</td></tr>
+                <tr><th scope="row">F over the graph</th><td>Frames selected keys in time and value. With no keys selected, frames all keys on visible curves, including keys outside the current view.</td></tr>
+                <tr><th scope="row">Alt + middle mouse drag</th><td>Grabs and pans the graph in time and value. This gesture stays in the timeline and does not move the 3D camera.</td></tr>
+                <tr><th scope="row">Right mouse drag</th><td>Drag down to expand the value range or up to contract it. Drag right to narrow the time range or left to widen it. Alt + right mouse drag works too; right-click without dragging opens key actions.</td></tr>
+                <tr><th scope="row">Range bars</th><td>Move the bottom bar to pan in time, or its ends to change the visible time range. The vertical bar provides the same control over the value range.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>Use <strong>Straight Handles</strong> for a straight segment, <strong>Tied Handles</strong> to move both sides as a lever, or <strong>Untied Handles</strong> to adjust each side independently. Handles can be vertical, stretch beyond the visible value range, and overlap neighboring handles while staying on their own side of the key. IK curve handles are saved with the draft and used during playback and export. See the <a href="motion.html#animation-correction">Animation Correction workflow</a> for IK ranges and joint edits.</p>
         </section>
 
         <section id="audio-panel" class="section">
@@ -654,6 +673,7 @@
             <li>Settings menu includes <strong>Auto Save Layout</strong> to automatically persist panel visibility changes.</li>
             <li>Global layout state is persisted in <code>app_settings.json</code>.</li>
             <li>Workflow files also store panel visibility under <code>settings.panel_layout</code> and restore it on load.</li>
+            <li>Timeline height is kept for the current app session; it is not saved with the workflow or global layout preset.</li>
           </ul>
           <div class="callout">
             <strong>Animation session files:</strong> timeline keys/range/audio settings are stored under
@@ -686,8 +706,12 @@
                 <tr><td>Gizmo Translate / Rotate / Scale</td><td>T / R / E</td></tr>
                 <tr><td>Wireframe Toggle</td><td>H</td></tr>
                 <tr><td>Grid Toggle</td><td>G</td></tr>
-                <tr><td>Timeline Play / Pause</td><td>Space</td></tr>
+                <tr><td>Timeline Play / Pause (over the timeline)</td><td>Space+P</td></tr>
                 <tr><td>Timeline Set Key</td><td>K</td></tr>
+                <tr><td>Timeline Graph Pan</td><td>Alt+MiddleClick drag</td></tr>
+                <tr><td>Timeline Graph Scale Ranges</td><td>RightClick drag (also with Alt)</td></tr>
+                <tr><td>Timeline Graph Frame Selected / All Visible-Curve Keys</td><td>F</td></tr>
+                <tr><td>Timeline Join IK Ranges</td><td>Ctrl+J</td></tr>
                 <tr><td>View Mode 2D / Split / 3D</td><td>1 / 2 / 3</td></tr>
                 <tr><td>Add Wire Pin</td><td>Ctrl+LeftClick</td></tr>
                 <tr><td>Remove Wire</td><td>Alt+LeftClick</td></tr>

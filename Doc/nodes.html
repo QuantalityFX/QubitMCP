@@ -1205,7 +1205,7 @@
 
             <article class="card" id="node-animation-correction" data-kind="animation_correction">
               <h3><img class="inline-icon" src="../icons/AnimationCorrect_Icon.png" alt="" /> Animation Correction</h3><p class="node-kind"><code>animation_correction</code></p>
-              <p>Manually correct an animated BVH or FBX take with joint rotations, timeline keys, and arm or leg IK. Save per-take drafts and export an approved corrected BVH.</p>
+              <p>Manually correct an animated BVH or FBX take with joint position and rotation keys and body or limb IK ranges. Save per-take drafts and export an approved corrected BVH.</p>
               <a class="text-link" href="motion.html#animation-correction">Manual correction workflow &rarr;</a>
               <!-- node-reference:start -->
               <details class="node-reference">
@@ -1216,11 +1216,13 @@
               <table aria-label="animation_correction controls and editing actions">
               <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
               <tbody>
-              <tr><th scope="row">Preview / edit animation</th><td>Opens the input take in the 3D viewport and starts an editing session. Scrub the timeline and select a joint to rotate it. The embedded joint hierarchy helps select joints.</td></tr>
-              <tr><th scope="row">Arm / leg IK controls</th><td>Enables wrist and ankle cubes. Dragging previews a pose without creating keys. Press Start IK or Set key to key the start, then scrub, pose, and press End IK or Set key for the end. Yellow timeline bands connect the paired triangle keys. With IK off, local joint rotations can also override a saved IK pose.</td></tr>
+              <tr><th scope="row">Preview / edit animation</th><td>Opens the input take in the 3D viewport. Select a joint in the viewport or embedded hierarchy, then scrub and pose it. The panel's ? button opens editing hints.</td></tr>
+              <tr><th scope="row">IK Controls / FK keying</th><td>Enables pelvis, chest, wrist, and ankle controls. Dragging previews a pose without creating keys. With IK off, select a joint and use Set key to key its local position or rotation; the selected timeline channels determine which axes are keyed. Local FK edits can also override an IK pose.</td></tr>
+              <tr><th scope="row">Start IK / End IK / Set key</th><td>Start and End bound an overwrite, marked S and E above the triangle keys and yellow between them. Set key adds intermediate IK poses inside a range. Select Px, Py, or Pz before Start to limit the target coordinates; separate position axes can overlap in time and share boundary frames. Clear the channel selection for full IK keying, including chain rotations.</td></tr>
+              <tr><th scope="row">Join IK ranges (Fuse icon)</th><td>Between Start IK and End IK. Select an End and the next Start on the same control with matching channels and limb-lock settings; the right range must have its End. Joining fills the gap and keeps both selected keys as intermediate poses. The button is disabled and desaturated without a valid selection. Also available by right-click or Ctrl+J.</td></tr>
               <tr><th scope="row">Show colliders</th><td>Displays body and hand capsule guides when the input rig supports them. A Rig Limiter input supplies its saved limits and volumes.</td></tr>
-              <tr><th scope="row">Reload selected joint</th><td>Restores the selected joint's input keys. If IK drives it, also removes that limb's IK ranges.</td></tr>
-              <tr><th scope="row">Save draft</th><td>Saves corrections beside the source as <code>.bvh.animation_correction.json</code> or <code>.fbx.animation_correction.json</code>. Saved corrections are tied to the source take and base clip; changing the base animation can invalidate them.</td></tr>
+              <tr><th scope="row">Reload all / selected joint / selected axes</th><td>With no joint selected, restores the entire input take, including IK and regular edits. With a joint selected, restores that joint and removes IK ranges driving it. Select timeline channels to restore only those axes across the take. The reset is saved to the draft immediately and can be undone in the current session.</td></tr>
+              <tr><th scope="row">Save draft</th><td>Saves corrections beside the source as <code>.bvh.animation_correction.json</code> or <code>.fbx.animation_correction.json</code>. Keyframe actions and Reload also save the draft. Saved corrections are tied to the source take and base clip; changing the base animation can invalidate them.</td></tr>
               <tr><th scope="row">Approve &amp; export BVH</th><td>Saves the draft and writes a uniquely named <code>_corrected_</code> BVH beside the source. Keeps the original animation and records the approved export.</td></tr>
               </tbody></table>
               <h4>Using this node</h4>
@@ -1229,7 +1231,7 @@
               <li>Open Preview / edit animation, scrub to the affected frames, and adjust joints or key an IK range.</li>
               <li>Save the draft, review the motion, then approve and export or pass the saved corrected animation to Scene or Anim Retarget.</li>
               </ol>
-              <p>Use Settings &gt; Joint names to display joint labels. Undo and redo restore correction edits; a viewport drag is one undo step. Drafts remain specific to each source take; save the current edits before changing previews. Unkeyed IK previews are not included in drafts or BVH exports.</p>
+              <p>Use Settings &gt; Joint names to display joint labels. Undo and redo restore correction edits; a viewport drag is one undo step. Drafts remain specific to each source take; save the current edits before changing previews. Unkeyed IK previews are not included in drafts or BVH exports. Use the <a href="index.html#timeline-curve-editor">timeline curve editor</a> to fit or frame keys, pan and scale the graph, edit tied or independent handles, and expand or detach the panel.</p>
               </details>
               <!-- node-reference:end -->
             </article>
@@ -1260,13 +1262,13 @@
               <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
               <tbody>
               <tr><th scope="row">Preview</th><td>Opens the current source or available repaired clip without running a repair. Inspect joints and adjust limits and capsule volumes in the preview panel.</td></tr>
-              <tr><th scope="row">Repair</th><td>Turns red when the input or saved settings need repair. Click to calculate with progress/cancellation controls, report corrected frames, finger capsules, arm IK adjustments, and remaining overlap. Successful repair clears the indicator.</td></tr>
+              <tr><th scope="row">Repair</th><td>Turns red when the input or saved settings need repair. For a connected BVH import or collection, checks for matching saved repairs in the background as the path or settings change, without requiring Preview. Click to calculate with progress/cancellation controls and report corrected frames, finger capsules, arm IK adjustments, and remaining overlap.</td></tr>
               <tr><th scope="row">Export corrected BVH</th><td>Requires an up-to-date Repair result, then writes it to a chosen folder with a unique <code>_limited_</code> filename. Preserves hierarchy, root motion, timing, and End Sites.</td></tr>
               <tr><th scope="row">Export checked collection</th><td>Requires a directly connected Mocap Collection. Repairs its checked takes into new files while preserving collection entries and source BVHs. Completed files remain if the batch is interrupted.</td></tr>
               <tr><th scope="row">Save in the preview panel</th><td>Stores this node's joint limits, capsule radii, and collision option without repairing the animation. Save the graph to persist them. The previous repair stays visible until you click Repair again; compatible saved BVH repairs are restored when their source and settings still match. Otherwise the source is shown until repaired.</td></tr>
               <tr><th scope="row">Reset limits and volumes</th><td>Restores the default limits and capsule sizes. Run Repair again to apply them.</td></tr>
               </tbody></table>
-              <p>Repair progress includes solving and saving the corrected BVH. Stop, Escape, or closing the progress dialog requests cancellation. Matching saved repairs can be recovered after reopening the workflow without recalculating.</p>
+              <p>Repair progress includes solving and saving the corrected BVH. Stop, Escape, or closing the progress dialog requests cancellation. Matching saved repairs can be recovered after reopening the workflow without recalculating; compatible repairs saved by earlier versions are also recognized when their source and settings match.</p>
               <h4>Using this node</h4>
               <ol class="steps">
               <li>Connect an original PriorMDM/HumanML clip or collection before Anim Retarget.</li>
