@@ -34,6 +34,9 @@ class RepairFileTests(unittest.TestCase):
             source.write_bytes(b'original')
             for options in ('one', 'two'):
                 cache.save_repair(source, options, {}, lambda p: p.write_bytes(b'repaired'))
+            self.assertEqual(cache.find_repair(source,('one','two'))['options_sha'],'one')
+            self.assertEqual(cache.find_repair(source,('missing','two'))['options_sha'],'two')
+            self.assertIsNone(cache.find_repair(source,('missing','other')))
             before = cache.metadata_path(source).read_bytes()
             files = set(run.iterdir())
             def fail(path):

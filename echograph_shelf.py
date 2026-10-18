@@ -3703,6 +3703,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 pass
         view = getattr(self, "gl_view", None)
         if view is not None:
+            view._timeline_sync_graph_controls()
             view._mesh_component_held_keys = set()
             view._mesh_polygon_a_held = False
             view._mesh_polygon_preview = {}
@@ -3735,8 +3736,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         table.setAlternatingRowColors(True)
         table.setColumnWidth(0, 220)
-
-        wire_actions = {"wire_add_pin", "wire_remove"}
 
         def _mods_to_text(mods) -> str:
             bits = []
@@ -3810,7 +3809,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 editor.set_value(str(seq or ""))
                 table.setCellWidget(row, 1, editor)
                 editors[action_id] = ("camera", editor)
-            elif action_id in wire_actions:
+            elif action_id in hotkeys_config.MOUSE_ACTIONS:
                 editor = _MouseHotkeyEditor(table)
                 editor.set_value(str(seq or ""))
                 table.setCellWidget(row, 1, editor)

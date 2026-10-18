@@ -304,6 +304,23 @@ class RigPreviewPanel(QtWidgets.QFrame):
         # the panel. One or two complete cards must fit whenever the viewport can.
         return max(PANEL_HEIGHT+(visible-1)*(JOINT_SECTION_HEIGHT+SECTION_SPACING),cards+chrome+4)
 
+    def place(self):
+        if self.data is None:
+            return
+        renderer = self.renderer
+        x,y,w,h = self.data['rig_viewport']
+        right, bottom = min(x+w,renderer.width()), y+h
+        overlay_height = getattr(renderer,'_bottom_overlay_height',None)
+        if callable(overlay_height):
+            bottom = min(bottom,renderer.height()-float(overlay_height() or 0.))
+        width = max(1,min(PANEL_WIDTH,int(right-x)-24))
+        available = max(1,int(bottom-y)-24)
+        self.setMaximumHeight(available)
+        height = min(self.preferred_height(width),available)
+        rect = QtCore.QRect(int(max(x+12,right-width-12)),int(max(y+12,bottom-height-12)),width,height)
+        if self.geometry() != rect:
+            self.setGeometry(rect)
+
     def _update_status(self):
         guide = self.data['rig_guide']
         dirty = (self._snapshot() != guide['_saved_limit_fields'] or guide['volumes'] != guide['_saved_volumes']
@@ -417,14 +434,7 @@ def show_rig_panel(renderer, data, detail, *, labels=None):
         panel = RigPreviewPanel(renderer)
         renderer._priormdm_rig_panel = panel
     panel.sync(data,detail,labels=labels)
-    x,y,w,h = data['rig_viewport']
-    bottom = y+h
-    overlay_height = getattr(renderer,'_bottom_overlay_height',None)
-    if callable(overlay_height):
-        bottom = min(bottom,renderer.height()-float(overlay_height() or 0.))
-    width = max(1,min(PANEL_WIDTH,int(w)-24))
-    height = max(1,min(panel.preferred_height(width),int(bottom-y)-24))
-    panel.setGeometry(int(max(x+12,x+w-width-12)),int(max(y+12,bottom-height-12)),width,height)
+    panel.place()
     if panel.isHidden():
         panel.show()
         panel.raise_()

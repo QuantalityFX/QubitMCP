@@ -1,5 +1,6 @@
 """Exercise two lights and independent shadows in a real offscreen GL context."""
 import unittest
+from unittest.mock import Mock
 import moderngl
 import numpy as np
 
@@ -17,6 +18,44 @@ def light(scene, owner, kind="directional", intensity=.25):
 
 
 class SceneLightingStateTests(unittest.TestCase):
+    def test_render_reuses_owner_and_shadow_bounds_and_refreshes_on_the_next_pose(self):
+        renderer = MGLRendererMixin()
+        renderer._mgl_scene = scene = MGLScene()
+        context = dict(skeleton=object(), meshes=[])
+        for index in range(4):
+            scene.add(MGLSceneItem(f'rig-part-{index}',lambda *args: None,tag='scene-wire',
+                                  payload=dict(owner='Rig',fbx_rig_context=context)))
+        points = np.array([[1.,2.,3.],[3.,4.,5.]],dtype='f4')
+        renderer._mgl_retarget_world_bounds = lambda owner: None
+        renderer._mgl_scene_owner_visible = lambda owner: True
+        renderer._mgl_scene_owner_fbx_rig_context = lambda owner: context
+        renderer._mgl_retarget_joint_positions_for_context = positions = Mock(
+            side_effect=lambda *args,**kwargs: points.tolist())
+        renderer._mgl_scene_skeleton_display_positions = lambda owner,rows: (rows,None)
+        rendered = []
+        def paint_frame():
+            bounds = renderer._mgl_shadow_scene_bounds()
+            for _ in range(4):
+                renderer.get_scene_owner_bounds('Rig')
+                again = renderer._mgl_shadow_scene_bounds()
+                np.testing.assert_array_equal(again[0],bounds[0])
+                self.assertEqual(again[1],bounds[1])
+            rendered.append(bounds)
+        renderer._paint_mgl_frame = paint_frame
+        renderer._paint_mgl()
+        self.assertEqual(positions.call_count,1)
+        np.testing.assert_array_equal(rendered[-1][0],[2.,3.,4.])
+        self.assertIsNone(renderer._mgl_scene_bounds_read_cache)
+        points += 10.
+        renderer._paint_mgl()
+        self.assertEqual(positions.call_count,2)
+        np.testing.assert_array_equal(rendered[-1][0],[12.,13.,14.])
+        self.assertIsNone(renderer._mgl_scene_bounds_read_cache)
+        renderer._mgl_scene_visibility = {'Rig':False}
+        renderer._paint_mgl()
+        np.testing.assert_array_equal(rendered[-1][0],np.zeros(3))
+        self.assertEqual(positions.call_count,3)  # Only the explicit owner query needs its bounds.
+
     def test_render_sequence_hides_light_proxies_in_viewport_capture(self):
         renderer = MGLRendererMixin()
         renderer._mgl_render_output_active = True

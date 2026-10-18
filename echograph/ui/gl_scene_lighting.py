@@ -17,6 +17,18 @@ SHADOW_DEFAULTS = {
 
 
 class SceneLightingMixin:
+    @contextmanager
+    def _mgl_scene_bounds_scope(self):
+        """Reuse bounds during one render only; poses may change before the next."""
+        if getattr(self, '_mgl_scene_bounds_read_cache', None) is not None:
+            yield
+            return
+        self._mgl_scene_bounds_read_cache = {}
+        try:
+            yield
+        finally:
+            self._mgl_scene_bounds_read_cache = None
+
     def _mgl_set_light_config(self, owner, config):
         self._mgl_scene_light_owner = owner
         self._mgl_scene_light_type = self._mgl_normalize_light_type(config.get("type", "directional"))

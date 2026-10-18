@@ -247,7 +247,7 @@ class CorrectionHierarchy(QtWidgets.QWidget):
             if session is not None:
                 session.selectionChanged.connect(self.sync_selection)
         if session is not None:
-            self.sync_selection(session.selected)
+            self.sync_selection(session.reload_selection or '')
 
     def sync_selection(self,name):
         row = self._items.get(name)
@@ -257,6 +257,9 @@ class CorrectionHierarchy(QtWidgets.QWidget):
             while parent is not None:
                 parent.setExpanded(True)
                 parent = parent.parent()
+        else:
+            self.tree.clearSelection()
+            self.tree.setCurrentItem(None)
 
     def select_joint(self,row,_column=0):
         session = getattr(self.item.model,'_animation_correction_session',None)

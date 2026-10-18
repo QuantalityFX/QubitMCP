@@ -64,10 +64,68 @@ class CorrectionPanel(QtWidgets.QFrame):
         self.setObjectName('AnimationCorrectionPanel')
         self.setStyleSheet('QFrame#AnimationCorrectionPanel { background:#16212e; border:1px solid #475569; '
                            'border-radius:6px; } QLabel,QCheckBox { color:#e2e8f0; }')
-        layout = QtWidgets.QVBoxLayout(self)
-        title = QtWidgets.QLabel('Animation Correction — '+session.path.name)
-        title.setWordWrap(True)
-        layout.addWidget(title)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(2,2,2,2)
+        self.scroll = QtWidgets.QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet('QScrollArea, QScrollArea > QWidget { background:transparent; border:0; }')
+        self.content = QtWidgets.QWidget()
+        self.scroll.setWidget(self.content)
+        self.content.setAutoFillBackground(False)
+        layout = QtWidgets.QVBoxLayout(self.content)
+        outer.addWidget(self.scroll)
+        self.node_title = QtWidgets.QLabel('Animation Correction')
+        self.node_title.setAlignment(QtCore.Qt.AlignCenter)
+        self.node_title.setStyleSheet('background:#101923; color:#e2e8f0; border:1px solid #2e4054; '
+                                     'border-radius:4px; padding:1px 8px 3px; font-weight:600;')
+        header = QtWidgets.QHBoxLayout()
+        header.addWidget(self.node_title,0,QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        header.addStretch(1)
+        self.help_button = QtWidgets.QToolButton(self.content)
+        self.help_button.setObjectName('AnimationCorrectionHelpButton')
+        self.help_button.setText('?')
+        self.help_button.setAccessibleName('Animation correction help')
+        self.help_button.setToolTip('Animation correction help')
+        self.help_button.setFixedSize(20,20)
+        self.help_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.help_button.setStyleSheet('QToolButton { color:#e2e8f0; background:transparent; '
+            'border:1px solid #64748b; border-radius:10px; font-weight:bold; padding:0; } '
+            'QToolButton:hover { background:#334155; border-color:#94a3b8; } '
+            'QToolButton:pressed { background:#475569; }')
+        header.addWidget(self.help_button,0,QtCore.Qt.AlignTop)
+        layout.addLayout(header)
+        self.animation_name = QtWidgets.QLabel(session.path.name)
+        self.animation_name.setTextFormat(QtCore.Qt.PlainText)
+        self.animation_name.setSizePolicy(QtWidgets.QSizePolicy.Ignored,QtWidgets.QSizePolicy.Preferred)
+        self.animation_name.setStyleSheet('color:#aebed1; padding:0 2px 3px;')
+        self.animation_name.setToolTip(str(session.path))
+        layout.addWidget(self.animation_name)
+        self.help_popup = QtWidgets.QMenu(self)
+        self.help_popup.setObjectName('AnimationCorrectionHelpPopup')
+        self.help_popup.setStyleSheet('QMenu { background:#16212e; border:1px solid #64748b; padding:0; } '
+                                     'QLabel { color:#e2e8f0; background:transparent; border:0; }')
+        help_content = QtWidgets.QWidget(self.help_popup)
+        help_content.setFixedWidth(350)
+        help_layout = QtWidgets.QVBoxLayout(help_content)
+        help_layout.setContentsMargins(12,10,12,12)
+        help_title = QtWidgets.QLabel('Animation Correction help')
+        help_title.setStyleSheet('font-weight:bold;')
+        help_layout.addWidget(help_title)
+        help_text = QtWidgets.QLabel('Scrub the timeline. Click joints to rotate.\n\n'
+            'Drag blue pole circles to steer elbow / knee / spine bends.\n\n'
+            'Pose IK, then press Start IK / End IK or Set key. '
+            'Select Px / Py / Pz to limit IK target axes.\n\n'
+            'S marks the start and E marks the end of an IK overwrite. '
+            'Yellow bands connect paired IK keys.\n\n'
+            'Settings > Joint names shows all names.')
+        help_text.setWordWrap(True)
+        help_layout.addWidget(help_text)
+        help_action = QtWidgets.QWidgetAction(self.help_popup)
+        help_action.setDefaultWidget(help_content)
+        self.help_popup.addAction(help_action)
+        self.help_button.clicked.connect(self.show_help)
         self.ik = QtWidgets.QCheckBox('IK Controls')
         self.ik.setChecked(session.ik_enabled)
         self.ik.toggled.connect(session.set_ik)
@@ -99,28 +157,43 @@ class CorrectionPanel(QtWidgets.QFrame):
         visibility.addWidget(self.colliders)
         visibility.addWidget(self.limits)
         layout.addLayout(visibility)
-        note = QtWidgets.QLabel('Scrub the timeline. Click joints to rotate.\nDrag blue pole circles to steer elbow / knee / spine bends.\nPose IK, then press Start IK / End IK or Set key.\nSelect Px / Py / Pz to limit IK target axes.\nYellow bands connect paired IK keys.\nSettings > Joint names shows all names.')
-        note.setWordWrap(True)
-        layout.addWidget(note)
         self.ik_range = QtWidgets.QLabel()
-        self.ik_range.setWordWrap(True)
+        self.ik_range.setTextFormat(QtCore.Qt.PlainText)
+        self.ik_range.setSizePolicy(QtWidgets.QSizePolicy.Ignored,QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(self.ik_range)
+        icons = Path(__file__).resolve().parents[2]/'icons'
+        self.join_ik_button = QtWidgets.QPushButton(self.content)
+        self.join_ik_button.setObjectName('AnimationCorrectionJoinIKButton')
+        self.join_ik_button.setAccessibleName('Join IK ranges')
+        self.join_ik_button.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.join_ik_button.setAutoDefault(False)
+        self.join_ik_button.setIconSize(QtCore.QSize(32,32))
+        fuse = QtGui.QImage(str(icons/'fuse_Icon.png'))
+        if not fuse.isNull():
+            disabled = fuse.convertToFormat(QtGui.QImage.Format_Grayscale8).convertToFormat(QtGui.QImage.Format_ARGB32)
+            disabled.setAlphaChannel(fuse.convertToFormat(QtGui.QImage.Format_Alpha8))
+            fuse_icon = QtGui.QIcon(QtGui.QPixmap.fromImage(fuse))
+            fuse_icon.addPixmap(QtGui.QPixmap.fromImage(disabled),QtGui.QIcon.Disabled)
+            self.join_ik_button.setIcon(fuse_icon)
+        self.join_ik_button.clicked.connect(lambda _checked=False:viewport._timeline_join_selected_ik_ranges())
         row = QtWidgets.QHBoxLayout()
         self.ik_buttons = []
         for text,mode in (('Start IK','start'),('End IK','end')):
+            if mode == 'end':
+                row.addWidget(self.join_ik_button)
             button = QtWidgets.QPushButton(text)
             button.clicked.connect(lambda _checked=False,m=mode:session.key_ik(mode=m,save=True))
             row.addWidget(button)
             self.ik_buttons.append(button)
+        self.ik_buttons[0].ensurePolished()
+        self.join_ik_button.setFixedSize(52,self.ik_buttons[0].sizeHint().height())
         layout.addLayout(row)
         self.reload = QtWidgets.QPushButton('Reload selected joint')
-        icons = Path(__file__).resolve().parents[2]/'icons'
         refresh = icons/'Refresh_Icon_L.png'
         if not refresh.is_file():
             refresh = icons/'Refresh_Icon.png'
         self.reload.setIcon(QtGui.QIcon(str(refresh)))
         self.reload.setIconSize(QtCore.QSize(20,20))
-        self.reload.setToolTip('Restore this joint’s input BVH / FBX keys. If IK drives it, remove that limb’s IK ranges too.')
         self.reload.clicked.connect(session.reload_joint)
         layout.addWidget(self.reload)
         self.status = QtWidgets.QLabel('Edits save as a draft for this take.')
@@ -134,26 +207,84 @@ class CorrectionPanel(QtWidgets.QFrame):
             button.clicked.connect(callback)
             layout.addWidget(button)
         self.ensurePolished()
-        self.setFixedWidth(max(265,self.minimumSizeHint().width()))
+        scrollbar_width = self.style().pixelMetric(QtWidgets.QStyle.PM_ScrollBarExtent)
+        margins,frame = outer.contentsMargins(),self.contentsMargins()
+        chrome = margins.left()+margins.right()+frame.left()+frame.right()
+        self.setFixedWidth(max(265,self.content.minimumSizeHint().width()+scrollbar_width+chrome))
+        content_margins = layout.contentsMargins()
+        self._label_width = max(1,self.width()-chrome-scrollbar_width-content_margins.left()-content_margins.right())
+        self.animation_name.setText(self.animation_name.fontMetrics().elidedText(
+            session.path.name,QtCore.Qt.ElideMiddle,self._label_width-4))
+        self.ik_range.setFixedHeight(self.ik_range.fontMetrics().height()+2)
         self.adjustSize()
         viewport.installEventFilter(self)
         self.place()
         self.sync_selection()
 
+    def show_help(self):
+        self.help_popup.ensurePolished()
+        position = QtCore.QPoint(self.help_button.width()-self.help_popup.sizeHint().width(),
+                                self.help_button.height()+4)
+        self.help_popup.popup(self.help_button.mapToGlobal(position))
+
     def sync_selection(self):
         session = self.session
-        self.reload.setText('Reload '+session.selected)
-        pending = any(span['joint'] == session.selected and 'end' not in span for span in session.ik_spans)
+        name = session.reload_selection
+        axes = session.reload_axes()
+        channels = ', '.join(('Px','Py','Pz','Rx','Ry','Rz')[axis] for axis in axes)
+        self.reload.setText('Reload all' if name is None else
+                            'Reload '+(channels if len(axes) < 6 else name))
+        self.reload.setToolTip(('Restore the entire input animation, including all IK and FK edits.' if name is None else
+            'Restore '+channels+' on '+name+' across the entire take, including IK and regular keys.')+
+            ' The reset is saved to the draft and can be undone in this session.')
+        pending = any(span['joint'] == name and 'end' not in span for span in session.ik_spans)
         for button in self.ik_buttons:
-            button.setEnabled(session.ik_enabled and session.selected in session.endpoints)
-        self.ik_range.setText('IK start set. Scrub to the end and key its pose.' if pending else
-                              ('Selected pole: ' if session.selected_pole else 'Selected: ')+session.selected)
+            button.setEnabled(session.ik_enabled and name in session.endpoints)
+        self.sync_join_button()
+        selection = ('IK start set: '+name if pending else
+                     (('Selected pole: ' if session.selected_pole else 'Selected: ')+name
+                      if name is not None else 'No joint selected'))
+        displayed = self.ik_range.fontMetrics().elidedText(selection,QtCore.Qt.ElideMiddle,self._label_width)
+        self.ik_range.setText(displayed)
+        self.ik_range.setToolTip(selection if displayed != selection else '')
+        self.content.layout().activate()
         self.adjustSize()
         self.place()
+
+    def sync_join_button(self):
+        view,session = self.session.viewport,self.session
+        correction = view._timeline_correction_session()
+        active = correction is not None and correction[0] is session
+        state = (session.ik_spans,getattr(view,'_timeline_keys',None),active,
+                 frozenset(getattr(view,'_timeline_curve_selected',set()) or set()))
+        previous = getattr(self,'_join_button_state',None)
+        if previous is not None and previous[0] is state[0] and previous[1] is state[1] and previous[2:] == state[2:]:
+            return
+        self._join_button_state = state
+        enabled = False
+        tooltip = 'Select an End IK key and the next Start IK key on the same control.'
+        if active:
+            try:
+                corrections.ik_gap_pair(session.ik_spans,view._timeline_selected_ik_key_ids())
+                enabled = True
+                tooltip = 'Join IK ranges: extend overwrite across the gap, keeping both selected keys as intermediate IK keys.'
+            except ValueError as exc:
+                tooltip = str(exc)
+        self.join_ik_button.setEnabled(enabled)
+        self.join_ik_button.setToolTip(tooltip)
 
     def place(self):
         view = self.parentWidget()
         bottom = getattr(view,'_bottom_overlay_height',lambda:0)() or 0
+        available = max(1,view.height()-int(bottom)-16)
+        margins,frame = self.layout().contentsMargins(),self.contentsMargins()
+        chrome_w = margins.left()+margins.right()+frame.left()+frame.right()
+        chrome_h = margins.top()+margins.bottom()+frame.top()+frame.bottom()
+        width = max(1,self.width()-chrome_w-self.style().pixelMetric(QtWidgets.QStyle.PM_ScrollBarExtent))
+        preferred = self.content.heightForWidth(width) if self.content.hasHeightForWidth() else self.content.sizeHint().height()
+        height = min(max(preferred,self.content.minimumSizeHint().height())+chrome_h,available)
+        if self.height() != height:
+            self.setFixedHeight(height)
         self.move(max(4,view.width()-self.width()-12),max(4,view.height()-int(bottom)-self.height()-12))
         self.raise_()
 
@@ -227,6 +358,7 @@ class CorrectionSession(QtCore.QObject):
             self.guide = None
             self.guide_error = 'Collider preview unavailable: '+str(exc)
         self.selected = self.skeleton.joint_names[0]
+        self.reload_selection = None
         self.selected_pole = None
         self.pole_handles = []
         self.dirty = False
@@ -267,7 +399,7 @@ class CorrectionSession(QtCore.QObject):
             show_timeline(True)
         self.panel = CorrectionPanel(self,self.viewport)
         self.panel.show()
-        self.select(self.selected)
+        self.panel.sync_selection()
         token = self.renderer._mgl_scene_skeleton_joint_owner_token(self.item.model.name,self.selected)
         self.viewport.set_timeline_scene_context(owner_name=token,apply_current_frame=False,load_audio=False)
         self.viewport._timeline_load_from_disk(apply_current_frame=False)
@@ -312,7 +444,8 @@ class CorrectionSession(QtCore.QObject):
             self.panel.lock_limbs.setEnabled(self.ik_enabled)
         self.dirty = True
         self.renderer._mgl_scene_skeleton_update_owner_handles(self.item.model.name,force=True,upload=False)
-        self.select(self.selected)
+        if self.reload_selection is not None:
+            self.select(self.selected)
         self.save()
 
     def set_lock_limbs(self,enabled):
@@ -323,12 +456,24 @@ class CorrectionSession(QtCore.QObject):
 
     def select(self,name,*,pole=False):
         self.selected = name
+        self.reload_selection = name
         self.selected_pole = name if pole else None
         self.viewport._set_xform_gizmo_mode('translate' if self.ik_enabled and name in self.endpoints else 'rotate')
         self.viewport.set_gizmo_visible(True)
         if self.panel is not None:
             self.panel.sync_selection()
         self.selectionChanged.emit(name)
+
+    def clear_selection(self):
+        self.reload_selection = None
+        self.selected_pole = None
+        if self.panel is not None:
+            self.panel.sync_selection()
+        self.selectionChanged.emit('')
+
+    def reload_axes(self):
+        axes = getattr(self.viewport,'_timeline_curve_axes_filter',set()) or set()
+        return sorted(axis for axis in axes if isinstance(axis,int) and 0 <= axis < 6) or list(range(6))
 
     def select_pole(self,handle):
         self.select(handle['name'],pole=True)
@@ -409,23 +554,29 @@ class CorrectionSession(QtCore.QObject):
                 rows[round(source_frame)] = row
         else:
             rows = corrections.joint_timeline_keys(self.manual,name,fps)
+        position_rows = {frame:row for frame,row in rows.items() if any(row.get('fk_position_axes',[]))}
+        rotation_rows = {frame:row for frame,row in rows.items() if row.get('fk_key')}
         if include_ik:
             for span in self.ik_spans:
                 chain = corrections.ik_span_joints(self.skeleton,span)
                 if name not in chain:
                     continue
                 start,end = span['start'],span.get('end',span['start'])
-                ik_mask = ([bool(value) and name == span['joint'] for value in span['position_mask']]
-                           +[name != span['joint']]*3 if 'position_mask' in span
-                           else [name == span['joint']]*3+[True]*3)
+                ik_mask = corrections.ik_timeline_mask(span,name)
+                if not any(ik_mask):
+                    continue
+                masked = 'position_mask' in span or 'channel_masks' in span
                 kept = {}
                 for frame,row in rows.items():
                     if start['time']-1e-8 <= self.base.start_time+float(row.get('source_frame',frame))/fps <= end['time']+1e-8:
-                        if 'position_mask' not in span:
+                        if not masked:
                             continue
                         row = deepcopy(row)
                         row['axis_mask'] = [bool(value) and not keyed for value,keyed
                                             in zip(row.get('axis_mask',[True]*6),ik_mask)]
+                        if row.get('ik_key'):
+                            corrections.set_timeline_ik_axis_keys(row,[key if not ik_mask[axis] else None
+                                for axis,key in enumerate(corrections.timeline_ik_axis_keys(row))])
                         if not any(row['axis_mask']):
                             continue
                     kept[frame] = row
@@ -445,20 +596,53 @@ class CorrectionSession(QtCore.QObject):
                         rxyz=Rotation.from_quat(quaternion).as_euler('xyz',degrees=True).tolist())
                     frame = round(source_frame)
                     existing = rows.get(frame)
-                    if existing is not None and 'position_mask' in span:
+                    handles = {axis:deepcopy(value) for axis,value in (existing or {}).get('curve_handles',{}).items()
+                               if not ik_mask[int(axis)]}
+                    # IK handle times are stored in seconds, independently of
+                    # the display FPS and of the hidden source animation rows.
+                    authored = corrections.scale_curve_handles(key.get('curve_handles',{}).get(name,{}),fps)
+                    handles.update({axis:value for axis,value in authored.items() if ik_mask[int(axis)]})
+                    if handles:
+                        ik_row['curve_handles'] = handles
+                    if existing is not None and masked:
                         for field,offset in (('xyz',0),('rxyz',3)):
                             ik_row[field] = [ik_row[field][axis] if ik_mask[offset+axis]
                                              else existing.get(field,ik_row[field])[axis] for axis in range(3)]
                         ik_row['axis_mask'] = [a or b for a,b in zip(existing['axis_mask'],ik_mask)]
+                        corrections.set_timeline_ik_axis_keys(ik_row,[key['id'] if ik_mask[axis] else previous
+                            for axis,previous in enumerate(corrections.timeline_ik_axis_keys(existing))])
                     rows[frame] = ik_row
+        for frame,source in position_rows.items():
+            mask = [active and source['axis_mask'][axis] for axis,active in enumerate(source['fk_position_axes'])]
+            if not any(mask):
+                continue
+            row = rows.setdefault(frame,dict(axis_mask=[False]*6,source_frame=source['source_frame'],
+                source_time=source.get('source_time'),scene_skeleton_authored=True,animation_correction_key=True,
+                xyz=list(source['xyz']),rxyz=list(source.get('rxyz',[0.]*3))))
+            row['fk_position_axes'] = list(mask)
+            row['xyz'] = [source['xyz'][axis] if mask[axis] else row.get('xyz',source['xyz'])[axis] for axis in range(3)]
+            row['axis_mask'][:3] = [active or keyed for active,keyed in zip(row['axis_mask'][:3],mask)]
+            if 'ik_axis_mask' in row:
+                row['ik_axis_mask'] = [active and not (axis < 3 and mask[axis])
+                                       for axis,active in enumerate(row['ik_axis_mask'])]
         for stamp,quaternion in self.fk_keys.get(name,{}).items():
             source_frame = (float(stamp)-self.base.start_time)*fps
-            row = rows.setdefault(round(source_frame),dict(axis_mask=[False]*6))
+            frame = round(source_frame)
+            source = rotation_rows.get(frame,{})
+            # Old full-quaternion keys still need explicit axis ownership before
+            # a curve drag/deletion clears one component. Otherwise refreshing
+            # treats the remaining FK flag as a new key on all three axes.
+            mask = list(source.get('fk_rotation_axes',source.get('axis_mask',[True]*6)[3:]))
+            row = rows.setdefault(frame,dict(axis_mask=[False]*6))
+            angles = Rotation.from_quat(quaternion).as_euler('xyz',degrees=True).tolist()
             row.update(source_frame=source_frame,source_time=float(stamp),fk_key=True,
                        scene_skeleton_authored=True,animation_correction_key=True,
-                       rxyz=Rotation.from_quat(quaternion).as_euler('xyz',degrees=True).tolist(),
-                       rotation_quaternion=list(quaternion))
-            row['axis_mask'][3:6] = [True]*3
+                       fk_rotation_axes=mask,
+                       rxyz=[angles[axis] if mask[axis] else row.get('rxyz',angles)[axis] for axis in range(3)])
+            row['rotation_quaternion'] = Rotation.from_euler('xyz',row['rxyz'],degrees=True).as_quat().tolist()
+            row['axis_mask'][3:6] = [active or keyed for active,keyed in zip(row['axis_mask'][3:6],mask)]
+            if 'ik_axis_mask' in row:
+                row['ik_axis_mask'][3:6] = [active and not keyed for active,keyed in zip(row['ik_axis_mask'][3:6],mask)]
         if timeline_space:
             mapper = getattr(self.viewport,'_timeline_owner_timeline_frame_from_source_frame',None)
             if callable(mapper):
@@ -486,54 +670,99 @@ class CorrectionSession(QtCore.QObject):
         underlying = self.keys_map(name,fps=fps,include_ik=False)
         original_underlying = deepcopy(underlying)
         spans = deepcopy(self.ik_spans)
-        incoming = {row['ik_key']:row for row in rows.values() if row.get('ik_key')}
+        incoming = {key:row for row in rows.values() if row.get('ik_key')
+                    for key in corrections.timeline_ik_axis_keys(row) if key}
+        removed_ids = set()
         for frame,original in expected.items():
-            key_id = original.get('ik_key')
-            if key_id:
+            if not original.get('ik_key'):
+                if frame not in rows:
+                    underlying.pop(frame,None)
+                continue
+            axis_keys = corrections.timeline_ik_axis_keys(original)
+            for key_id in {key for key in axis_keys if key} or ({original['ik_key']} if original.get('ik_key') else set()):
                 row = incoming.get(key_id)
                 # A control boundary is atomic across the whole limb.
-                ik_mask = original.get('ik_axis_mask',[True]*6)
-                removed = row is None or any(keyed and not row.get('axis_mask',[False]*6)[axis]
+                ik_mask = [key == key_id for key in axis_keys]
+                if not any(ik_mask):
+                    # A full FK pose can cover every displayed IK channel at
+                    # this frame. Deleting that pose must reveal the boundary,
+                    # rather than deleting the hidden IK range as well.
+                    if frame not in rows:
+                        underlying.pop(frame,None)
+                    continue
+                removed = row is None or any(keyed and (not row.get('axis_mask',[False]*6)[axis] or
+                                             corrections.timeline_ik_axis_keys(row)[axis] != key_id)
                                              for axis,keyed in enumerate(ik_mask))
+                if removed:
+                    removed_ids.add(key_id)
                 for span in spans:
                     for boundary in ('start','end'):
                         key = span.get(boundary)
                         if key is None or key['id'] != key_id:
                             continue
                         if removed:
-                            span.pop(boundary)
+                            continue
                         elif row == original:
                             continue
                         else:
-                            key['time'] = self.base.start_time+float(row['source_frame'])/fps
-                            if name == span['joint']:
-                                mask = span.get('position_mask',[True]*3)
+                            if row['source_frame'] != original['source_frame']:
+                                key['time'] = self.base.start_time+float(row['source_frame'])/fps
+                            if name == span['joint'] and row['xyz'] != original['xyz']:
+                                mask = [active and ik_mask[axis] for axis,active in
+                                        enumerate(span.get('position_mask',[True]*3))]
                                 key['target'] = [row['xyz'][axis] if mask[axis] else key['target'][axis]
                                                  for axis in range(3)]
-                            key['rotations'][name] = Rotation.from_euler('xyz',row['rxyz'],degrees=True).as_quat().tolist()
-            elif frame not in rows:
-                underlying.pop(frame,None)
+                            if row['rxyz'] != original['rxyz']:
+                                key['rotations'][name] = Rotation.from_euler('xyz',row['rxyz'],degrees=True).as_quat().tolist()
+                            handles = {axis:value for axis,value in row.get('curve_handles',{}).items() if ik_mask[int(axis)]}
+                            if handles:
+                                key.setdefault('curve_handles',{})[name] = corrections.scale_curve_handles(handles,1./fps)
+                            elif name in key.get('curve_handles',{}):
+                                key['curve_handles'].pop(name)
+                                if not key['curve_handles']:
+                                    key.pop('curve_handles')
         for frame,row in rows.items():
-            if not row.get('ik_key'):
+            hidden_ik = row.get('ik_axis_mask') if row.get('ik_key') else expected.get(frame,{}).get('ik_axis_mask')
+            if hidden_ik is not None:
+                hidden_ik = [a or b for a,b in zip(hidden_ik,expected.get(frame,{}).get('ik_axis_mask',[False]*6))]
+            if hidden_ik is None:
                 underlying[frame] = row
-            elif 'ik_axis_mask' in row:
+            else:
                 # A source key can share a frame with a boundary on another axis.
+                # After moving that boundary, its former IK axes still hide
+                # source keys; an FK key left here must not delete those keys.
                 source = deepcopy(underlying.get(frame,dict(source_frame=row['source_frame'],
                     xyz=list(row['xyz']),rxyz=list(row['rxyz']),axis_mask=[False]*6)))
-                for axis,keyed in enumerate(row['ik_axis_mask']):
+                for axis,keyed in enumerate(hidden_ik):
                     if keyed:
                         continue
                     source['axis_mask'][axis] = row['axis_mask'][axis]
                     field = 'xyz' if axis < 3 else 'rxyz'
                     source.setdefault(field,list(row[field]))
                     source[field][axis%3] = row[field][axis%3]
+                    handle = row.get('curve_handles',{}).get(str(axis))
+                    if handle is not None:
+                        source.setdefault('curve_handles',{})[str(axis)] = deepcopy(handle)
+                    elif 'curve_handles' in source:
+                        source['curve_handles'].pop(str(axis),None)
+                        if not source['curve_handles']:
+                            source.pop('curve_handles')
+                for field in ('fk_key','fk_position_axes','fk_rotation_axes'):
+                    if field in row:
+                        source[field] = deepcopy(row[field])
+                    else:
+                        source.pop(field,None)
                 underlying[frame] = source
-        spans = [span for span in spans if 'start' in span or 'end' in span]
+        spans = corrections.remove_ik_keys(spans,removed_ids)
         for span in spans:
             if 'start' not in span:
                 span['start'] = span.pop('end')
             if 'end' in span and span['start']['time'] > span['end']['time']:
                 span['start'],span['end'] = span['end'],span['start']
+        paired_ids = {key['id'] for span in self.ik_spans if 'end' in span
+                      for key in (span['start'],span['end'])}
+        orphaned = [span for span in spans if removed_ids and 'end' not in span and span['start']['id'] in paired_ids]
+        spans = [span for span in spans if span not in orphaned]
         corrections.validate_ik_spans(self.skeleton,self.base,spans)
         # Keep the original rows underneath IK ranges, so deleting a control
         # or reloading a joint restores the source instead of baked samples.
@@ -549,16 +778,63 @@ class CorrectionSession(QtCore.QObject):
         # Removing/retiming an IK boundary must not reconstruct every source
         # key or invalidate the manual clip used by unchanged IK ranges.
         if source_changed:
-            track = corrections.track_from_timeline_keys(self.skeleton,self.base,name,rows,float(fps))
+            track = corrections.track_from_timeline_keys(self.skeleton,self.base,name,rows,float(fps),fk_source=self.manual)
             tracks[name] = track.to_dict()
             saved_rows[name] = dict(fps=float(fps),keys=rows)
-            fk_keys[name] = {format(self.base.start_time+float(row.get('source_frame',frame))/fps,'.12g'):
-                            Rotation.from_euler('xyz',row['rxyz'],degrees=True).as_quat().tolist()
-                            for frame,row in rows.items() if row.get('fk_key')}
+            from echograph.rigging.fbx_stage5_evaluator import _sample_quat_channel
+            fk_keys[name] = {}
+            for frame,row in rows.items():
+                if row.get('fk_key') and any(row.get('fk_rotation_axes',row['axis_mask'][3:])):
+                    time = self.base.start_time+float(row.get('source_frame',frame))/fps
+                    # A sparse row's unkeyed Euler values can be stale after a
+                    # move. Use the reconstructed channels at the new time.
+                    quaternion = _sample_quat_channel(track.rotation_keys,time,(0.,0.,0.,1.))
+                    fk_keys[name][format(time,'.12g')] = list(quaternion)
             if not fk_keys[name]:
                 fk_keys.pop(name)
+        for span in orphaned:
+            # A deleted boundary cancels its range. Preserve the sole remaining
+            # pose as ordinary FK keys, rather than leaving a stranded IK control.
+            from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
+            time = span['start']['time']
+            pose = evaluate_rig_at_time(self.skeleton,self._committed_clip,time,loop=False)
+            for joint in corrections.ik_span_joints(self.skeleton,span):
+                transform = pose.local_transforms[self.skeleton.joint_names.index(joint)]
+                fk_keys[joint] = dict(fk_keys.get(joint,{}))
+                fk_keys[joint][format(time,'.12g')] = list(transform.rotation)
+            if span['start'].get('translations'):
+                translations = {joint:pose.local_transforms[self.skeleton.joint_names.index(joint)].translation
+                                for joint in span['start']['translations']}
+                manual = corrections.apply_document(self.skeleton,self.base,dict(tracks=tracks))
+                manual = corrections.override_pose(self.skeleton,manual,time,{},translations)
+                for joint,value in translations.items():
+                    tracks[joint] = next(track for track in manual.tracks if track.joint_name == joint).to_dict()
+                    saved = saved_rows.get(joint)
+                    rate = float(saved['fps']) if saved else float(fps)
+                    joint_rows = (deepcopy(saved['keys']) if saved else
+                                  corrections.joint_timeline_keys(manual,joint,rate))
+                    source_frame = (time-self.base.start_time)*rate
+                    row = joint_rows.setdefault(round(source_frame),dict(axis_mask=[False]*6))
+                    row.update(xyz=list(value),source_frame=source_frame,source_time=time,
+                               scene_skeleton_authored=True,animation_correction_key=True,fk_position_axes=[True]*3)
+                    row['axis_mask'][:3] = [True]*3
+                    saved_rows[joint] = dict(fps=rate,keys=joint_rows)
         self.rebuild(tracks=tracks,rows=saved_rows,spans=spans,fk_keys=fk_keys)
         return True
+
+    def fk_positions(self,rows=None):
+        rows = self.rows if rows is None else rows
+        if rows is not getattr(self,'_fk_position_rows',None):
+            self._fk_position_cache = corrections.document_fk_positions(dict(timeline_rows=rows),self.base)
+            self._fk_position_rows = rows
+        return self._fk_position_cache
+
+    def fk_rotation_masks(self,rows=None):
+        rows = self.rows if rows is None else rows
+        if rows is not getattr(self,'_fk_rotation_rows',None):
+            self._fk_rotation_mask_cache = corrections.document_fk_rotation_masks(dict(timeline_rows=rows),self.base)
+            self._fk_rotation_rows = rows
+        return self._fk_rotation_mask_cache
 
     def rebuild(self,*,tracks=None,rows=None,spans=None,fk_keys=None):
         before = self._state()
@@ -569,7 +845,8 @@ class CorrectionSession(QtCore.QObject):
         manual = (self.manual if tracks == self.tracks else
                   corrections.apply_document(self.skeleton,self.base,dict(tracks=tracks)))
         draft = corrections.preview_clip(self.skeleton,manual,spans,self.fps,
-                                         fk_keys=fk_keys,cache=self._ik_bake_cache)
+            fk_keys=fk_keys,fk_positions=self.fk_positions(rows),fk_rotation_masks=self.fk_rotation_masks(rows),
+            cache=self._ik_bake_cache)
         self.tracks,self.rows,self.ik_spans = tracks,rows,spans
         self.fk_keys = fk_keys
         self.manual,self.draft = manual,draft
@@ -609,18 +886,36 @@ class CorrectionSession(QtCore.QObject):
             locked = bool(body and self.lock_limbs)
             span_options = dict(joint=name,lock_limbs=locked,
                                 keyframe_fps=float(getattr(self.viewport,'_timeline_fps',self.fps)))
-            matching = [span for span in self.ik_spans if span['joint'] == name and (
+            axes = getattr(self.viewport,'_timeline_curve_axes_filter',set()) or set()
+            position_axes = {axis for axis in axes if axis in (0,1,2)}
+            requested = dict(joint=name,position_mask=[axis in position_axes for axis in range(3)])
+            candidates = [span for span in self.ik_spans if span['joint'] == name and
+                          (not position_axes or not corrections.independent_ik_positions(span,requested))]
+            if mode == 'end' and not any('end' not in span for span in candidates):
+                unfinished = [span for span in self.ik_spans if span['joint'] == name and 'end' not in span]
+                # Retain the Start's channels if the filter changed before End.
+                # With multiple pending axes, an explicit selection chooses one.
+                if len(unfinished) == 1:
+                    candidates = unfinished
+            matching = [span for span in candidates if (
                 'end' not in span or (mode is None and span['start']['time'] <= time <= span['end']['time'])
                 or any(abs(span[boundary]['time']-time)<1e-7
                                        for boundary in ('start','end') if boundary in span))]
+            if mode is None:
+                # An unrelated unfinished start must not steal a key intended
+                # to refine the completed range underneath the playhead.
+                matching.sort(key=lambda span:0 if 'end' in span and
+                              span['start']['time'] <= time <= span['end']['time'] else 1)
             # A range keeps its Start IK channel selection when its end is keyed
             # or a boundary is refined, even if the timeline filter has changed.
             if matching and (mode != 'start' or any(
                     abs(span['start']['time']-time)<1e-7 for span in matching)):
                 if 'position_mask' in matching[0]:
                     span_options['position_mask'] = list(matching[0]['position_mask'])
+                for option in ('channel_masks','rotation_only'):
+                    if option in matching[0]:
+                        span_options[option] = deepcopy(matching[0][option])
             else:
-                axes = getattr(self.viewport,'_timeline_curve_axes_filter',set()) or set()
                 if axes:
                     mask = [axis in axes for axis in range(3)]
                     if not any(mask):
@@ -656,6 +951,8 @@ class CorrectionSession(QtCore.QObject):
                 if span['joint'] != name or span.get('lock_limbs',False) == locked:
                     continue
                 span['lock_limbs'] = locked
+                if 'channel_masks' in span:
+                    span['channel_masks'] = {joint:mask for joint,mask in span['channel_masks'].items() if joint in names}
                 for boundary in ('start','end'):
                     old = span.get(boundary)
                     if old is None:
@@ -664,15 +961,24 @@ class CorrectionSession(QtCore.QObject):
                     old['rotations'] = {joint:list(original.local_transforms[self.skeleton.joint_names.index(joint)].rotation)
                                         for joint in names}
                     old['locks'] = corrections.limb_world_targets(self.skeleton,original) if locked else {}
-            same = [(span,boundary) for span in spans if span['joint']==name for boundary in ('start','end')
+            compatible = [span for span in spans if corrections._same_ik_channels(span,span_options)]
+            same = [(span,boundary) for span in compatible for boundary in ('start','end')
                     if boundary in span and abs(span[boundary]['time']-time)<1e-7]
-            pending = next((span for span in spans if span['joint']==name and 'end' not in span),None)
+            pending = next((span for span in compatible if 'end' not in span),None)
+            containing = next((span for span in compatible if 'end' in span and
+                               span['start']['time'] < time < span['end']['time']),None)
             if same:
                 if mode == 'end' and pending is not None and abs(pending['start']['time']-time)<1e-7:
                     raise ValueError('Scrub to a different frame before setting the IK end.')
                 key['id'] = same[0][0][same[0][1]]['id']
+                if 'curve_handles' in same[0][0][same[0][1]]:
+                    key['curve_handles'] = deepcopy(same[0][0][same[0][1]]['curve_handles'])
                 for span,boundary in same:
                     span[boundary] = deepcopy(key)
+            elif mode is None and containing is not None:
+                # Keep both outer boundary keys and any pending range elsewhere.
+                spans.append(dict(span_options,start=deepcopy(key),end=containing['end']))
+                containing['end'] = key
             elif mode == 'start':
                 if pending is not None:
                     spans.remove(pending)
@@ -684,28 +990,39 @@ class CorrectionSession(QtCore.QObject):
             elif mode == 'end':
                 raise ValueError('Set an IK start pose first, then scrub to its end.')
             else:
-                containing = next((span for span in spans if span['joint']==name and
-                    span['start']['time'] < time < span.get('end',span['start'])['time']),None)
-                if containing is not None:
-                    # Refining an existing range creates two adjacent ranges.
-                    spans.append(dict(span_options,start=deepcopy(key),end=containing['end']))
-                    containing['end'] = key
-                else:
-                    spans.append(dict(span_options,start=key))
+                spans.append(dict(span_options,start=key))
             corrections.validate_ik_spans(self.skeleton,self.base,spans)
             affected = [span for span in spans if span['joint']==name and any(
                 span.get(boundary,{}).get('id') == key['id'] for boundary in ('start','end'))]
             fk_keys = dict(self.fk_keys)
+            rows = self.rows
             for joint in names:
                 if joint == name and affected and 'position_mask' in affected[0]:
                     continue
                 if joint in fk_keys:
-                    fk_keys[joint] = {stamp:value for stamp,value in fk_keys[joint].items() if not any(
+                    previous = fk_keys[joint]
+                    fk_keys[joint] = {stamp:value for stamp,value in previous.items() if not any(
                         span['start']['time']-1e-8 <= float(stamp) <= span.get('end',span['start'])['time']+1e-8
                         for span in affected)}
+                    saved = rows.get(joint)
+                    changed = {}
+                    for stamp in previous.keys()-fk_keys[joint].keys():
+                        if saved is None:
+                            break
+                        frame = round((float(stamp)-self.base.start_time)*saved['fps'])
+                        old = saved['keys'].get(frame)
+                        if old and old.get('fk_key'):
+                            row = deepcopy(old)
+                            row.pop('fk_key',None)
+                            row.pop('fk_rotation_axes',None)
+                            changed[frame] = row
+                    if changed:
+                        rows = dict(rows)
+                        rows[joint] = dict(saved,keys=dict(saved['keys']))
+                        rows[joint]['keys'].update(changed)
                     if not fk_keys[joint]:
                         fk_keys.pop(joint)
-            self.rebuild(spans=spans,fk_keys=fk_keys)
+            self.rebuild(spans=spans,fk_keys=fk_keys,rows=rows)
             self.refresh_timeline()
             if self.panel is not None:
                 mask = affected[0].get('position_mask') if affected else None
@@ -719,39 +1036,140 @@ class CorrectionSession(QtCore.QObject):
                 self.panel.status.setText(str(exc))
             return False
 
+    def join_ik_ranges(self,key_ids):
+        try:
+            left,right = corrections.ik_gap_pair(self.ik_spans,key_ids)
+            # Intermediate IK keys already share boundaries between adjacent
+            # solve segments. Fill the gap with a segment using the same keys,
+            # preserving their IDs, timing, targets, rotations, poles and handles.
+            bridge = dict(left,start=deepcopy(left['end']),end=deepcopy(right['start']))
+            spans = []
+            for span in self.ik_spans:
+                spans.append(span)
+                if span is left:
+                    spans.append(bridge)
+            corrections.validate_ik_spans(self.skeleton,self.base,spans)
+            # Newly covered animation follows the same IK precedence as keying
+            # a range. Leave independent FK edits in the old ranges untouched.
+            lo,hi = left['end']['time'],right['start']['time']
+            fk_keys = dict(self.fk_keys)
+            for joint in corrections.ik_span_joints(self.skeleton,bridge):
+                if joint == bridge['joint'] and 'position_mask' in bridge:
+                    continue
+                if joint in fk_keys:
+                    fk_keys[joint] = {stamp:value for stamp,value in fk_keys[joint].items()
+                                      if not lo+1e-8 < float(stamp) < hi-1e-8}
+                    if not fk_keys[joint]:
+                        fk_keys.pop(joint)
+            self.rebuild(spans=spans,fk_keys=fk_keys)
+            self.refresh_timeline()
+            saved = self.save(notify=False)
+            if saved and self.panel is not None:
+                self.panel.status.setText('IK ranges joined. Draft saved.')
+            return saved
+        except (ValueError,RuntimeError) as exc:
+            if self.panel is not None:
+                self.panel.status.setText(str(exc))
+            return False
+
     def reload_joint(self):
-        name = self.selected
-        removed = [span for span in self.ik_spans if name in
-            corrections.ik_span_joints(self.skeleton,span)]
-        spans = [span for span in self.ik_spans if span not in removed]
-        tracks,rows = dict(self.tracks),dict(self.rows)
-        tracks.pop(name,None)
-        rows.pop(name,None)
-        fk_keys = dict(self.fk_keys)
-        fk_keys.pop(name,None)
+        name = self.reload_selection
+        axes = self.reload_axes()
+        if name is None:
+            tracks,rows,spans,fk_keys = {},{},[],{}
+            description = 'the entire animation'
+        else:
+            tracks,rows,fk_keys = dict(self.tracks),dict(self.rows),dict(self.fk_keys)
+            fk_keys.pop(name,None)
+            if len(axes) == 6:
+                tracks.pop(name,None)
+                rows.pop(name,None)
+                spans = [span for span in self.ik_spans if name not in
+                         corrections.ik_span_joints(self.skeleton,span)]
+                description = name
+            else:
+                restored = corrections.reload_timeline_axes(self.base,name,
+                    self.keys_map(name,timeline_space=False,fps=self.fps,include_ik=False),axes,self.fps)
+                rows[name] = dict(fps=self.fps,keys=restored)
+                edited = override_rotation_keys(self.skeleton,self.manual,{name:self.fk_keys.get(name,{})})
+                tracks[name] = corrections.reload_track_axes(self.skeleton,self.base,edited,name,axes).to_dict()
+                spans = corrections.reload_ik_axes(self.skeleton,self.ik_spans,name,axes)
+                description = ', '.join(('Px','Py','Pz','Rx','Ry','Rz')[axis] for axis in axes)+' on '+name
         self.rebuild(tracks=tracks,rows=rows,spans=spans,fk_keys=fk_keys)
         self.refresh_timeline()
         saved = self.save()
         if saved and self.panel is not None:
-            self.panel.status.setText('Reloaded input keys for '+name+('. Removed its limb’s IK ranges.' if removed else '.'))
+            self.panel.status.setText('Reloaded '+description+' from the input animation. Draft saved.')
         return saved
+
+    def key_fk(self,name,*,axes=None,translation=None,rotation=None,save=False):
+        from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
+        axes = self.reload_axes() if axes is None else list(axes)
+        time,rate = self.time(),float(getattr(self.viewport,'_timeline_fps',self.fps))
+        pose = evaluate_rig_at_time(self.skeleton,self.draft,time,loop=False)
+        transform = pose.local_transforms[self.skeleton.joint_names.index(name)]
+        xyz = list(transform.translation if translation is None else translation)
+        quaternion = transform.rotation if rotation is None else rotation
+        angles = Rotation.from_quat(quaternion).as_euler('xyz',degrees=True).tolist()
+        keys = self.keys_map(name,include_ik=False,timeline_space=False,fps=rate)
+        source_frame = (time-self.base.start_time)*rate
+        row = keys.setdefault(round(source_frame),dict(axis_mask=[False]*6,xyz=list(xyz),rxyz=list(angles)))
+        for axis in axes:
+            field,values = ('xyz',xyz) if axis < 3 else ('rxyz',angles)
+            row.setdefault(field,list(values))[axis%3] = values[axis%3]
+            row['axis_mask'][axis] = True
+        row.update(source_frame=source_frame,source_time=time,scene_skeleton_authored=True,
+                   animation_correction_key=True)
+        if any(axis < 3 for axis in axes):
+            previous = row.get('fk_position_axes',[False]*3)
+            row['fk_position_axes'] = [active or axis in axes for axis,active in enumerate(previous)]
+        fk_keys = dict(self.fk_keys)
+        if any(axis >= 3 for axis in axes):
+            row['fk_key'] = True
+            previous = row.get('fk_rotation_axes',[False]*3)
+            row['fk_rotation_axes'] = [active or axis+3 in axes for axis,active in enumerate(previous)]
+            fk_keys[name] = dict(fk_keys.get(name,{}))
+            fk_keys[name][format(time,'.12g')] = Rotation.from_euler('xyz',row['rxyz'],degrees=True).as_quat().tolist()
+        tracks,saved_rows = dict(self.tracks),dict(self.rows)
+        tracks[name] = corrections.track_from_timeline_keys(self.skeleton,self.base,name,keys,rate,fk_source=self.manual).to_dict()
+        saved_rows[name] = dict(fps=rate,keys=keys)
+        self.rebuild(tracks=tracks,rows=saved_rows,fk_keys=fk_keys)
+        self.refresh_timeline()
+        return self.save(notify=False) if save else True
 
     def key_rotations(self,rotations):
         before = self._state()
         time = self.time()
         keys = dict(self.fk_keys)
+        rows = self.rows
         for name,quaternion in rotations.items():
             keys[name] = dict(keys.get(name,{}))
             keys[name][format(time,'.12g')] = list(quaternion)
+            saved = rows.get(name)
+            if saved:
+                frame = round((time-self.base.start_time)*float(saved['fps']))
+                source = saved['keys'].get(frame)
+                if source and 'fk_rotation_axes' in source and not all(source['fk_rotation_axes']):
+                    # A gizmo authors a full orientation, even if this time
+                    # previously held only a sparse curve-channel edit.
+                    row = deepcopy(source)
+                    row.update(fk_key=True,fk_rotation_axes=[True]*3,
+                               source_frame=(time-self.base.start_time)*float(saved['fps']),source_time=time)
+                    row['axis_mask'][3:] = [True]*3
+                    rows = dict(rows)
+                    rows[name] = dict(saved,keys=dict(saved['keys']))
+                    rows[name]['keys'][frame] = row
         # A local FK key wins at this frame, including inside a saved IK range.
         # Changing an elbow must not immediately be overwritten by the solver.
         if self.ik_spans:
             self.draft = corrections.preview_clip(self.skeleton,self.manual,self.ik_spans,self.fps,
-                                                 fk_keys=keys,cache=self._ik_bake_cache)
+                fk_keys=keys,fk_positions=self.fk_positions(rows),fk_rotation_masks=self.fk_rotation_masks(rows),
+                cache=self._ik_bake_cache)
         else:
             self.draft = override_rotation_keys(self.skeleton,self._committed_clip,
                 {name:{time:quaternion} for name,quaternion in rotations.items()})
         self.fk_keys = keys
+        self.rows = rows
         self._committed_clip = self.draft
         self._preview_time = None
         self._preview_locks = None
@@ -803,14 +1221,20 @@ class CorrectionSession(QtCore.QObject):
     def move(self,name,point):
         if self.selected_pole == name:
             return self.move_pole(name,point)
-        if not self.ik_enabled or name not in self.endpoints:
-            return
         try:
             matrix = self.renderer._mgl_scene_skeleton_display_model_matrix(self.item.model.name)
             target = np.asarray(point,dtype=float)
             if matrix is not None:
                 target = np.r_[target,1.] @ np.linalg.inv(np.asarray(matrix))
                 target = target[:3]/target[3]
+            if not self.ik_enabled or name not in self.endpoints:
+                from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
+                pose = evaluate_rig_at_time(self.skeleton,self.draft,self.time(),loop=False)
+                parent = self.skeleton.joints[self.skeleton.joint_names.index(name)].parent_index
+                if parent >= 0:
+                    target = (np.linalg.inv(np.asarray(pose.global_matrices[parent]).reshape(4,4))@np.r_[target,1.])[:3]
+                self.key_fk(name,axes=range(3),translation=target)
+                return
             self.preview_ik(name,target=target)
         except (ValueError,RuntimeError,np.linalg.LinAlgError) as exc:
             if self.panel is not None:
@@ -941,6 +1365,8 @@ class CorrectionSession(QtCore.QObject):
             self.viewport._timeline_update_key_markers()
             self.viewport._timeline_update_key_count_label()
             self.viewport._timeline_refresh_coord_labels()
+        if self.panel is not None:
+            self.panel.sync_join_button()
 
     def document(self):
         return dict(version=2,source_sha=self.source_sha,base_clip_sha=self.base_sha,

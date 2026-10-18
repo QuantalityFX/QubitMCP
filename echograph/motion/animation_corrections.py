@@ -1,5 +1,6 @@
 """Portable per-take animation edits and bounded IK overrides."""
 from copy import deepcopy
+from bisect import bisect_right
 from collections import OrderedDict
 from dataclasses import replace
 import hashlib
@@ -13,8 +14,12 @@ import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
 from echograph.rigging.fbx_canonical import AnimationClip, SkeletonAsset, JointAnimationTrack, QuatKeyframe, Vec3Keyframe
-from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time, replace_clip_tracks, override_rotation_keys
+from echograph.rigging.fbx_stage5_evaluator import (
+    evaluate_rig_at_time, replace_clip_tracks, override_rotation_keys,
+    _sample_vec3_channel, _sample_quat_channel,
+)
 from .rig_repair_cache import file_signature
+from .curve_interpolation import curve_value
 
 
 def sidecar_path(source):
@@ -479,7 +484,83 @@ def apply_document(skeleton, clip, document,*,ik_cache=None):
         result = replace_clip_tracks(skeleton,result,tracks)
         result.metadata['animation_correction'] = dict(joints=len(overrides))
     result = apply_ik_spans(skeleton,result,document_ik_spans(document),document.get('fps',clip.sample_rate_hz),cache=ik_cache)
-    return override_rotation_keys(skeleton,result,document['fk_keys']) if document.get('fk_keys') else result
+    if document.get('fk_keys'):
+        result = override_fk_rotation_keys(skeleton,result,document['fk_keys'],document_fk_rotation_masks(document,clip))
+    return override_position_keys(skeleton,result,document_fk_positions(document,clip))
+
+
+def document_fk_rotation_masks(document,clip):
+    """Index sparse FK rotation ownership once per document revision."""
+    result = {}
+    for joint,saved in document.get('timeline_rows',{}).items():
+        rate = float(saved['fps'])
+        for frame,row in saved['keys'].items():
+            if row.get('fk_key') and 'fk_rotation_axes' in row:
+                time = clip.start_time+float(row.get('source_frame',frame))/rate
+                mask = [bool(active) and row.get('axis_mask',[True]*6)[axis+3]
+                        for axis,active in enumerate(row['fk_rotation_axes'])]
+                if not all(mask):
+                    result.setdefault(joint,{})[format(time,'.12g')] = mask
+    return result
+
+
+def override_fk_rotation_keys(skeleton,clip,keys,masks=None):
+    """Apply authored FK components without replacing unselected IK rotations."""
+    if not masks:
+        return override_rotation_keys(skeleton,clip,keys) if keys else clip
+    originals = {track.joint_name:track for track in clip.tracks}
+    merged = {}
+    for joint,entries in keys.items():
+        track = originals.get(joint)
+        for stamp,quaternion in entries.items():
+            mask = masks.get(joint,{}).get(format(float(stamp),'.12g'),[True]*3)
+            if not any(mask):
+                continue
+            if not all(mask):
+                bind = skeleton.joints[skeleton.joint_names.index(joint)].local_bind.rotation
+                source = _sample_quat_channel(track.rotation_keys if track else [],float(stamp),bind)
+                angles = Rotation.from_quat(quaternion).as_euler('xyz',degrees=True)
+                original = Rotation.from_quat(source).as_euler('xyz',degrees=True)
+                quaternion = Rotation.from_euler('xyz',np.where(mask,angles,original),degrees=True).as_quat()
+            merged.setdefault(joint,{})[stamp] = quaternion
+    return override_rotation_keys(skeleton,clip,merged)
+
+
+def document_fk_positions(document,clip):
+    """Read independent local FK position keys from the existing timeline rows."""
+    result = {}
+    for joint,saved in document.get('timeline_rows',{}).items():
+        rate = float(saved['fps'])
+        for frame,row in saved['keys'].items():
+            axes = row.get('fk_position_axes',[False]*3)
+            mask = [bool(active) and row.get('axis_mask',[True]*6)[axis] for axis,active in enumerate(axes)]
+            if any(mask):
+                time = clip.start_time+float(row.get('source_frame',frame))/rate
+                result.setdefault(joint,{})[time] = dict(value=list(row['xyz']),mask=mask)
+    return result
+
+
+def override_position_keys(skeleton,clip,positions):
+    """Insert sparse local translation keys after IK without changing other axes."""
+    if not positions:
+        return clip
+    originals = {track.joint_name:track for track in clip.tracks}
+    tracks = {}
+    for joint,entries in positions.items():
+        if joint not in skeleton.joint_names:
+            raise ValueError('FK position keys do not match the input skeleton.')
+        original = originals.get(joint,JointAnimationTrack(joint))
+        keys = {key.time:key for key in original.translation_keys}
+        default = skeleton.joints[skeleton.joint_names.index(joint)].local_bind.translation
+        for time,entry in entries.items():
+            time = float(time)
+            value,mask = np.asarray(entry['value'],dtype=float),np.asarray(entry['mask'],dtype=bool)
+            if value.shape != (3,) or mask.shape != (3,) or not np.all(np.isfinite(value)) or not math.isfinite(time):
+                raise ValueError('Invalid FK position key.')
+            source = _sample_vec3_channel(original.translation_keys,time,tuple(default))
+            keys[time] = Vec3Keyframe(time,tuple(np.where(mask,value,source)))
+        tracks[joint] = replace(original,translation_keys=[keys[time] for time in sorted(keys)])
+    return replace_clip_tracks(skeleton,clip,tracks)
 
 
 def document_ik_spans(document):
@@ -491,13 +572,257 @@ def document_ik_spans(document):
     return spans
 
 
+def reload_timeline_axes(source, joint, rows, axes, fps):
+    """Restore source channel keys while retaining edits on the other axes."""
+    axes = set(axes)
+    restored = {}
+    for frame,entry in rows.items():
+        row = deepcopy(entry)
+        row['axis_mask'] = [bool(active) and axis not in axes
+                            for axis,active in enumerate(row.get('axis_mask',[True]*6))]
+        row.pop('fk_key',None)  # Retained FK components move into the manual track.
+        row.pop('fk_rotation_axes',None)
+        if 'fk_position_axes' in row:
+            row['fk_position_axes'] = [active and axis not in axes for axis,active in enumerate(row['fk_position_axes'])]
+        if axes.intersection((3,4,5)):
+            row.pop('rotation_quaternion',None)
+        if 'curve_handles' in row:
+            row['curve_handles'] = {axis:handle for axis,handle in row['curve_handles'].items()
+                                    if int(axis) not in axes}
+            if not row['curve_handles']:
+                row.pop('curve_handles')
+        if any(row['axis_mask']):
+            restored[frame] = row
+    for frame,source_row in joint_timeline_keys(source,joint,fps).items():
+        selected = [axis in axes and bool(active)
+                    for axis,active in enumerate(source_row['axis_mask'])]
+        if not any(selected):
+            continue
+        row = restored.setdefault(frame,dict(source_frame=source_row['source_frame'],
+            source_time=source_row['source_time'],axis_mask=[False]*6,
+            animation_correction_key=True,scene_skeleton_authored=True))
+        for axis,active in enumerate(selected):
+            if active:
+                field = 'xyz' if axis < 3 else 'rxyz'
+                row.setdefault(field,list(source_row[field]))[axis%3] = source_row[field][axis%3]
+                row['axis_mask'][axis] = True
+                interpolation = 'translation_interpolation' if axis < 3 else 'rotation_interpolation'
+                row.setdefault(interpolation,source_row.get(interpolation,'linear'))
+    return restored
+
+
+def reload_track_axes(skeleton, source, edited, joint, axes):
+    """Merge actual channel samples, including source keys between timeline frames."""
+    original = next((track for track in source.tracks if track.joint_name == joint),JointAnimationTrack(joint))
+    current = next((track for track in edited.tracks if track.joint_name == joint),JointAnimationTrack(joint))
+    result = replace(current)
+    bind = skeleton.joints[skeleton.joint_names.index(joint)].local_bind
+    for field,offset,sample,default,key_type in (
+            ('translation_keys',0,_sample_vec3_channel,bind.translation,Vec3Keyframe),
+            ('rotation_keys',3,_sample_quat_channel,bind.rotation,QuatKeyframe)):
+        mask = [offset+axis in axes for axis in range(3)]
+        if not any(mask):
+            continue
+        input_keys,current_keys = getattr(original,field),getattr(current,field)
+        if all(mask):
+            setattr(result,field,deepcopy(input_keys))
+            continue
+        stamps = sorted({key.time for key in input_keys+current_keys})
+        if not stamps:
+            continue
+        input_values = np.asarray([sample(input_keys,time,tuple(default)) for time in stamps])
+        current_values = np.asarray([sample(current_keys,time,tuple(default)) for time in stamps])
+        if offset:
+            input_values = Rotation.from_quat(input_values).as_euler('xyz',degrees=True)
+            current_values = Rotation.from_quat(current_values).as_euler('xyz',degrees=True)
+        values = np.where(mask,input_values,current_values)
+        if offset:
+            values = Rotation.from_euler('xyz',values,degrees=True).as_quat()
+        current_times = [key.time for key in current_keys]
+        merged = []
+        for time,value in zip(stamps,values):
+            index = max(0,bisect_right(current_times,time)-1)
+            interpolation = current_keys[index].interpolation if current_keys else 'linear'
+            merged.append(key_type(time,tuple(value),interpolation))
+        setattr(result,field,merged)
+    return result
+
+
+def reload_ik_axes(skeleton, spans, joint, axes):
+    """Remove selected IK channels without deleting independent control axes."""
+    result = []
+    for original in spans:
+        names = ik_span_joints(skeleton,original)
+        if joint not in names:
+            result.append(original)
+            continue
+        span = deepcopy(original)
+        masks = span.setdefault('channel_masks',{})
+        mask = masks.setdefault(joint,[True]*3+
+            ([False]*3 if joint == span['joint'] and 'position_mask' in original else [True]*3))
+        for axis in axes:
+            mask[axis] = False
+        if joint == span['joint'] and any(axis < 3 for axis in axes):
+            position = span.setdefault('position_mask',[True]*3)
+            for axis in axes:
+                if axis < 3:
+                    position[axis] = False
+            if not any(position):
+                # With no positional control left, keep only the endpoint's
+                # independent orientation. Its upstream bones follow input motion.
+                span['rotation_only'] = True
+                for name in names:
+                    if name != joint:
+                        masks[name] = [False]*6
+        if span.get('rotation_only') and not any(mask[3:]):
+            continue
+        for boundary in ('start','end'):
+            key = span.get(boundary)
+            if key is None:
+                continue
+            handles = key.get('curve_handles',{})
+            if joint in handles:
+                handles[joint] = {axis:value for axis,value in handles[joint].items() if int(axis) not in axes}
+                if not handles[joint]:
+                    handles.pop(joint)
+                if not handles:
+                    key.pop('curve_handles',None)
+        result.append(span)
+    return result
+
+
+def ik_position_mask(span):
+    mask = span.get('position_mask',[True]*3)
+    channels = span.get('channel_masks',{}).get(span['joint'],[True]*6)
+    return [bool(active and channels[axis]) for axis,active in enumerate(mask)]
+
+
+def independent_ik_positions(left,right):
+    """Separate target coordinates can control the same chain at the same time."""
+    return (left['joint'] == right['joint'] and 'position_mask' in left and 'position_mask' in right
+            and not left.get('rotation_only') and not right.get('rotation_only')
+            and not any(a and b for a,b in zip(ik_position_mask(left),ik_position_mask(right))))
+
+
+def ik_timeline_mask(span,joint):
+    endpoint = joint == span['joint']
+    mask = ([bool(value) and endpoint for value in span['position_mask']]+[not endpoint]*3
+            if 'position_mask' in span else [endpoint]*3+[True]*3)
+    if 'channel_masks' in span:
+        mask[3:] = [True]*3
+    return [active and keyed for active,keyed in zip(mask,span.get('channel_masks',{}).get(joint,[True]*6))]
+
+
+def timeline_ik_axis_keys(row):
+    keys = row.get('ik_axis_keys',[row.get('ik_key')]*6)
+    return [key if active else None for key,active in zip(keys,row.get('ik_axis_mask',[True]*6))]
+
+
+def set_timeline_ik_axis_keys(row,keys):
+    """Retain individual boundary IDs when independent axes share a frame."""
+    ids = {key for key in keys if key}
+    if not ids:
+        for field in ('ik_key','ik_axis_keys','ik_axis_mask','ik_control'):
+            row.pop(field,None)
+        return
+    row['ik_key'] = next(key for key in keys if key)
+    row['ik_axis_mask'] = [bool(key) for key in keys]
+    if len(ids) > 1:
+        row['ik_axis_keys'] = list(keys)
+    else:
+        row.pop('ik_axis_keys',None)
+
+
+def _same_ik_channels(left,right):
+    def masks(span):
+        # Reloaded/older documents may spell out masks that newer ranges leave
+        # implicit. Compare their effective channels, not that storage detail.
+        effective = dict(span.get('channel_masks',{}))
+        if 'position_mask' in span:
+            effective.setdefault(span['joint'],[True]*3+
+                                 ([True]*3 if 'channel_masks' in span else [False]*3))
+        return {name:tuple(mask) for name,mask in effective.items()
+                if mask != [True]*3+([False]*3 if name == span['joint'] and
+                                     'position_mask' in span else [True]*3)}
+    return left['joint'] == right['joint'] and masks(left) == masks(right) and all(
+        left.get(option,default) == right.get(option,default) for option,default in (
+            ('position_mask',None),('rotation_only',False),('lock_limbs',False)))
+
+
+def ik_gap_pair(spans,key_ids):
+    """Find compatible neighboring ranges from their selected inner boundaries."""
+    selected = set(key_ids)
+    if len(selected) != 2:
+        raise ValueError('Select an End IK key and the next Start IK key on the same control.')
+    pair = next(((left,right) for left in spans if left.get('end',{}).get('id') in selected
+                 for right in spans if right is not left and right['start']['id'] in selected
+                 and left['end']['id'] != right['start']['id']
+                 and left['joint'] == right['joint']
+                 and left['end']['time'] < right['start']['time']-1e-8),None)
+    if pair is None:
+        raise ValueError('Select an End IK key on the left and a Start IK key on the right, on the same control.')
+    left,right = pair
+    if 'end' not in right:
+        raise ValueError('Set the right range’s End IK key before joining the ranges.')
+    sections = sorted((span for span in spans if span['joint'] == left['joint']
+                       and not independent_ik_positions(span,left)),
+                      key=lambda span:span['start']['time'])
+    if sections[sections.index(left)+1] is not right:
+        raise ValueError('Select boundaries of neighboring IK ranges.')
+    if not _same_ik_channels(left,right):
+        raise ValueError('The two IK ranges must use the same channels and limb-lock settings.')
+    return left,right
+
+
+def remove_ik_keys(spans,key_ids):
+    """Delete keys while retaining the continuous ranges between surviving keys."""
+    result = list(spans)
+    if not key_ids:
+        return result
+    times = {key['id']:key['time'] for span in spans
+             for key in (span['start'],span.get('end',span['start']))}
+    for key_id in sorted(set(key_ids),key=lambda value:times.get(value,0.)):
+        left = next((span for span in result if span.get('end',{}).get('id') == key_id),None)
+        right = next((span for span in result if span['start']['id'] == key_id),None)
+        if left is not None and right is not None and left is not right and _same_ik_channels(left,right):
+            merged = dict(left)
+            if 'end' in right:
+                merged['end'] = right['end']
+            else:
+                merged.pop('end',None)
+            result = [merged if span is left else span for span in result if span is not right]
+        else:
+            updated = []
+            for span in result:
+                if not any(span.get(boundary,{}).get('id') == key_id for boundary in ('start','end')):
+                    updated.append(span)
+                    continue
+                remaining = {field:value for field,value in span.items()
+                             if field not in ('start','end') or value['id'] != key_id}
+                if 'start' not in remaining and 'end' in remaining:
+                    remaining['start'] = remaining.pop('end')
+                if 'start' in remaining:
+                    updated.append(remaining)
+            result = updated
+    # An outer boundary's deletion can leave a singleton at an existing
+    # intermediate key. That key is now the neighboring range's outer boundary,
+    # not a new pending Start IK range.
+    paired = {(span['joint'],key['id']) for span in result if 'end' in span
+              for key in (span['start'],span['end'])}
+    return [span for span in result if 'end' in span or (span['joint'],span['start']['id']) not in paired]
+
+
 def _ik_spans_with_transitions(spans,fps):
     """Interpolate End/Start pairs with no unkeyed editing frame between them."""
     result = list(spans)
-    controls = {}
+    controls = []
     for span in spans:
-        controls.setdefault(span['joint'],[]).append(span)
-    for sections in controls.values():
+        sections = next((group for group in controls if _same_ik_channels(group[0],span)),None)
+        if sections is None:
+            sections = []
+            controls.append(sections)
+        sections.append(span)
+    for sections in controls:
         sections = sorted(sections,key=lambda span:span['start']['time'])
         for left,right in zip(sections,sections[1:]):
             if 'end' not in left:
@@ -506,9 +831,29 @@ def _ik_spans_with_transitions(spans,fps):
             rate = min(float(left.get('keyframe_fps',fps)),float(right.get('keyframe_fps',fps)))
             if (1e-8 < gap <= 1./rate+1e-8
                     and left.get('position_mask') == right.get('position_mask')
+                    and left.get('channel_masks') == right.get('channel_masks')
+                    and left.get('rotation_only') == right.get('rotation_only')
                     and left.get('lock_limbs',False) == right.get('lock_limbs',False)):
                 result.append(dict(left,start=left['end'],end=right['start']))
     return result
+
+
+def scale_curve_handles(handles,scale):
+    """Convert horizontal handle lengths between timeline frames and seconds."""
+    result = deepcopy(handles)
+    for handle in result.values():
+        if handle.get('mode') != 'straight':
+            for side in ('in','out'):
+                vector = handle.get(side)
+                if vector is not None:
+                    handle[side] = [float(vector[0])*scale,float(vector[1])]
+    return result
+
+
+def _ik_curve_value(first,last,joint,axis,time,start_value,end_value):
+    """Use the same tangent interpolation as the curve editor."""
+    handles = [key.get('curve_handles',{}).get(joint,{}).get(str(axis)) for key in (first,last)]
+    return curve_value(first['time'],last['time'],start_value,end_value,time,*handles)
 
 
 def validate_ik_spans(skeleton,clip,spans):
@@ -518,10 +863,18 @@ def validate_ik_spans(skeleton,clip,spans):
             raise ValueError('Invalid IK keyframe rate.')
         chain = tuple(skeleton.joints[index].name for index in ik_chain(skeleton,span['joint']))
         affected = ik_span_joints(skeleton,span)
+        channel_masks = span.get('channel_masks',{})
+        if (not isinstance(channel_masks,dict) or set(channel_masks)-set(affected) or any(
+                not isinstance(mask,list) or len(mask) != 6 or
+                not all(isinstance(value,bool) for value in mask) for mask in channel_masks.values())):
+            raise ValueError('Invalid IK channel masks.')
         mask = span.get('position_mask')
         if mask is not None and (not isinstance(mask,list) or len(mask) != 3
-                or not all(isinstance(value,bool) for value in mask) or not any(mask)):
+                or not all(isinstance(value,bool) for value in mask)
+                or (not any(mask) and not span.get('rotation_only'))):
             raise ValueError('An IK position mask must select at least one of Px, Py or Pz.')
+        if 'rotation_only' in span and (span['rotation_only'] is not True or mask != [False]*3):
+            raise ValueError('Rotation-only IK must have no positional channels.')
         start = span['start']
         end = span.get('end',start)
         if end['time'] < start['time']:
@@ -539,6 +892,24 @@ def validate_ik_spans(skeleton,clip,spans):
             if set(key['rotations']) != set(affected):
                 raise ValueError('IK keys must contain the full control chain.')
             Rotation.from_quat([key['rotations'][name] for name in affected])
+            handles = key.get('curve_handles',{})
+            if not isinstance(handles,dict) or set(handles)-set(affected):
+                raise ValueError('IK curve handles must belong to the control chain.')
+            for channels in handles.values():
+                if not isinstance(channels,dict) or set(channels)-set(map(str,range(6))):
+                    raise ValueError('Invalid IK curve channel.')
+                for handle in channels.values():
+                    if not isinstance(handle,dict) or handle.get('mode') not in ('straight','tied','untied'):
+                        raise ValueError('Invalid IK curve handle mode.')
+                    if handle['mode'] == 'straight':
+                        continue
+                    for side,sign in (('in',-1),('out',1)):
+                        vector = np.asarray(handle.get(side),dtype=float)
+                        if vector.shape != (2,) or not np.all(np.isfinite(vector)) or sign*vector[0] < 0:
+                            raise ValueError('Invalid IK curve handle.')
+                    weights = handle.get('weighted',[])
+                    if not isinstance(weights,list) or any(side not in ('in','out') for side in weights):
+                        raise ValueError('Invalid IK curve weights.')
             translations = key.get('translations',{})
             expected = {chain[0]} if body_control(skeleton,span['joint']) == 'pelvis' else set()
             if set(translations) != expected or any(np.asarray(value).shape != (3,) or
@@ -556,33 +927,40 @@ def validate_ik_spans(skeleton,clip,spans):
                 if np.asarray(matrix).shape != (16,) or not np.all(np.isfinite(matrix)) or abs(np.linalg.det(np.asarray(matrix).reshape(4,4))) < 1e-10:
                     raise ValueError('Invalid IK body reference frame.')
         for name in chain:
-            for lo,hi in occupied.get(name,[]):
+            for lo,hi,other in occupied.get(name,[]):
+                if independent_ik_positions(span,other):
+                    continue
                 overlap = min(hi,end['time'])-max(lo,start['time']) > 1e-8
                 pending_inside = start['time'] == end['time'] and lo+1e-8 < start['time'] < hi-1e-8
                 contains_pending = lo == hi and start['time']+1e-8 < lo < end['time']-1e-8
                 if overlap or pending_inside or contains_pending:
                     raise ValueError('IK override ranges for the same control chain cannot overlap.')
-            occupied.setdefault(name,[]).append((start['time'],end['time']))
+            occupied.setdefault(name,[]).append((start['time'],end['time'],span))
 
 
-def preview_clip(skeleton,clip,spans,fps,*,fk_keys=None,cache=None):
+def preview_clip(skeleton,clip,spans,fps,*,fk_keys=None,fk_positions=None,fk_rotation_masks=None,cache=None):
     """Evaluate correction ranges on demand while editing, without baking a take."""
     if not spans:
-        return override_rotation_keys(skeleton,clip,fk_keys) if fk_keys else clip
+        result = override_fk_rotation_keys(skeleton,clip,fk_keys,fk_rotation_masks) if fk_keys else clip
+        return override_position_keys(skeleton,result,fk_positions)
     validate_ik_spans(skeleton,clip,spans)
     spans,fk_keys = deepcopy(spans),deepcopy(fk_keys or {})
+    fk_positions = deepcopy(fk_positions or {})
+    fk_rotation_masks = deepcopy(fk_rotation_masks or {})
     # Capture this revision's baked prefix. Later edits must not change an
     # older preview retained by undo/redo.
     baked = dict(cache or {})
     samples = OrderedDict()
-    result = override_rotation_keys(skeleton,clip,fk_keys) if fk_keys else replace_clip_tracks(skeleton,clip,{})
+    result = override_fk_rotation_keys(skeleton,clip,fk_keys,fk_rotation_masks) if fk_keys else replace_clip_tracks(skeleton,clip,{})
+    result = override_position_keys(skeleton,result,fk_positions)
     def sample(time):
         if time in samples:
             samples.move_to_end(time)
             return samples[time]
         value = apply_ik_spans(skeleton,clip,spans,fps,cache=baked,sample_time=time)
         if fk_keys:
-            value = override_rotation_keys(skeleton,value,fk_keys)
+            value = override_fk_rotation_keys(skeleton,value,fk_keys,fk_rotation_masks)
+        value = override_position_keys(skeleton,value,fk_positions)
         samples[time] = value
         if len(samples) > 16:
             samples.popitem(last=False)
@@ -628,9 +1006,17 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None,sample_time=None):
     baselines = {}
     for index,span in enumerate(sorted(spans,key=order)):
         baseline = baselines.setdefault(span['joint'],result)
+        independent = [other for other in spans if other is not span and independent_ik_positions(span,other)
+                       and other['start']['time'] <= span.get('end',span['start'])['time']+1e-8
+                       and other.get('end',other['start'])['time'] >= span['start']['time']-1e-8]
+        if independent:
+            # Compose target coordinates over the ranges already evaluated.
+            # Restoring every unkeyed coordinate from the original clip would
+            # erase Py as soon as a separate Px/Pz range was applied.
+            baseline = result
         # Neighboring ranges also control the source samples immediately
         # outside a boundary, even when that neighbor is baked later.
-        signature = (span,[(other['start']['time'],other.get('end',other['start'])['time'])
+        signature = (span,[(other['start']['time'],other.get('end',other['start'])['time'],other.get('position_mask'))
                            for other in spans if other is not span and other['joint'] == span['joint']])
         # Reuse only an identical prefix: later ranges depend on the results
         # of earlier body and limb controls. Never reuse across source edits.
@@ -648,6 +1034,13 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None,sample_time=None):
         tracks = {}
         first,last = span['start'],span.get('end',span['start'])
         lo,hi = first['time'],last['time']
+        curved_rotations = {}
+        for name in names:
+            channels = {axis for key in (first,last) for axis in key.get('curve_handles',{}).get(name,{})}
+            axes = [axis for axis in range(3) if str(axis+3) in channels]
+            if axes:
+                curved_rotations[name] = (axes,Rotation.from_quat(first['rotations'][name]).as_euler('xyz',degrees=True),
+                                          Rotation.from_quat(last['rotations'][name]).as_euler('xyz',degrees=True))
         if sample_time is not None:
             stamps = sorted({lo,hi,*[clip.start_time+frame/rate for frame in range(
                 math.ceil((max(lo,window_lo)-clip.start_time)*rate),
@@ -659,6 +1052,14 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None,sample_time=None):
                 if lo+1e-9 < clip.start_time+frame/rate < hi-1e-9]
             if hi-lo > 1e-9:
                 stamps.append(hi)
+        if independent:
+            # Preserve the other coordinates' boundary guards and subframe
+            # keys when replacing the combined vector/quaternion track.
+            extra = {stamp+offset for other in independent for boundary in ('start','end')
+                     if boundary in other for stamp in (other[boundary]['time'],) for offset in (-1e-7,0.,1e-7)
+                     if lo < stamp+offset < hi and
+                     (sample_time is None or window_lo <= stamp+offset <= window_hi)}
+            stamps = sorted(set(stamps)|extra)
         blends = {name:Slerp([lo,hi],Rotation.from_quat([first['rotations'][name],last['rotations'][name]]))
                   for name in names} if hi-lo > 1e-10 else {}
         lock_blends = {name:Slerp([lo,hi],Rotation.from_quat([value['rotation'],last['locks'][name]['rotation']]))
@@ -666,30 +1067,55 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None,sample_time=None):
         baked = {name:[] for name in names}
         moved = {name:[] for name in first.get('translations',{})}
         for time in stamps:
+            source_pose = None
             alpha = (time-lo)/(hi-lo) if hi > lo else 0.
             seed = {name:(blends[name]([time]).as_quat()[0] if blends else first['rotations'][name]) for name in names}
             target = (1-alpha)*np.asarray(first['target'])+alpha*np.asarray(last['target'])
+            for axis in range(3):
+                target[axis] = _ik_curve_value(first,last,joint,axis,time,first['target'][axis],last['target'][axis])
             target = _follow_body_target(skeleton,clip,result,spans,span,time,alpha,target)
             pole = span_ik_pole(skeleton,clip,span,time)
             if pole is not None:
                 pole = _follow_body_target(skeleton,clip,result,spans,span,time,alpha,pole)
             translations = {name:(1-alpha)*np.asarray(value)+alpha*np.asarray(last['translations'][name])
                             for name,value in first.get('translations',{}).items()}
-            if 'position_mask' in span:
+            if 'position_mask' in span and not span.get('rotation_only'):
                 # The unkeyed target coordinates and bend seed must come from
                 # this animated sample, not from interpolated boundary poses.
                 pose = evaluate_rig_at_time(skeleton,baseline,time,loop=False)
+                source_pose = pose
                 endpoint = skeleton.joint_names.index(joint)
                 animated_target = np.asarray(pose.global_matrices[endpoint]).reshape(4,4)[:3,3]
                 target = np.where(span['position_mask'],target,animated_target)
                 seed = {name:pose.local_transforms[skeleton.joint_names.index(name)].rotation for name in names}
                 translations = {name:pose.local_transforms[skeleton.joint_names.index(name)].translation
                                 for name in translations}
+            for name,(axes,start_angles,end_angles) in curved_rotations.items():
+                angles = Rotation.from_quat(seed[name]).as_euler('xyz',degrees=True)
+                for axis in axes:
+                    angles[axis] = _ik_curve_value(first,last,name,axis+3,time,start_angles[axis],end_angles[axis])
+                seed[name] = Rotation.from_euler('xyz',angles,degrees=True).as_quat()
             locks = {name:dict(target=(1-alpha)*np.asarray(value['target'])+alpha*np.asarray(last['locks'][name]['target']),
                 rotation=lock_blends[name]([time]).as_quat()[0] if lock_blends else value['rotation'])
                 for name,value in first.get('locks',{}).items()}
-            solved,translations,_ = solve_ik_pose(skeleton,result,joint,time,target,seed=seed,
-                translations=translations,locks=locks,pole=pole)
+            if span.get('rotation_only'):
+                solved = seed
+            else:
+                solved,translations,_ = solve_ik_pose(skeleton,result,joint,time,target,seed=seed,
+                    translations=translations,locks=locks,pole=pole)
+            if span.get('channel_masks'):
+                source_pose = source_pose or evaluate_rig_at_time(skeleton,baseline,time,loop=False)
+                for name,mask in span['channel_masks'].items():
+                    source = source_pose.local_transforms[skeleton.joint_names.index(name)]
+                    if not all(mask[3:]):
+                        if not any(mask[3:]):
+                            solved[name] = source.rotation
+                        else:
+                            angles = Rotation.from_quat(solved.get(name,seed[name])).as_euler('xyz',degrees=True)
+                            original_angles = Rotation.from_quat(source.rotation).as_euler('xyz',degrees=True)
+                            solved[name] = Rotation.from_euler('xyz',np.where(mask[3:],angles,original_angles),degrees=True).as_quat()
+                    if name in translations and not all(mask[:3]):
+                        translations[name] = np.where(mask[:3],translations[name],source.translation)
             for name in names:
                 baked[name].append(QuatKeyframe(float(time),tuple(solved.get(name,seed[name]))))
             for name in moved:
@@ -703,7 +1129,7 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None,sample_time=None):
             # from changing the interpolation leading into or out of it.
             for stamp in (lo-1e-7,hi+1e-7):
                 if clip.start_time <= stamp <= clip.end_time and not any(
-                        other is not span and other['joint'] == joint and
+                        other is not span and other['joint'] == joint and not independent_ik_positions(span,other) and
                         other['start']['time']-1e-8 <= stamp <= other.get('end',other['start'])['time']+1e-8
                         for other in spans):
                     pose = evaluate_rig_at_time(skeleton,baseline,stamp,loop=False)
@@ -714,7 +1140,7 @@ def apply_ik_spans(skeleton,clip,spans,fps,*,cache=None,sample_time=None):
                 kept = [key for key in track.translation_keys if key.time < lo-1e-9 or key.time > hi+1e-9]
                 for stamp in (lo-1e-7,hi+1e-7):
                     if clip.start_time <= stamp <= clip.end_time and not any(
-                            other is not span and other['joint'] == joint and
+                            other is not span and other['joint'] == joint and not independent_ik_positions(span,other) and
                             other['start']['time']-1e-8 <= stamp <= other.get('end',other['start'])['time']+1e-8
                             for other in spans):
                         pose = evaluate_rig_at_time(skeleton,baseline,stamp,loop=False)
@@ -787,7 +1213,7 @@ def joint_timeline_keys(clip, joint, fps):
     return rows
 
 
-def track_from_timeline_keys(skeleton, clip, joint, rows, fps):
+def track_from_timeline_keys(skeleton, clip, joint, rows, fps,*,fk_source=None):
     """Replace a joint's editable channels. Missing source keys stay deleted."""
     if joint not in skeleton.joint_names or not math.isfinite(fps) or fps <= 0:
         raise ValueError('Invalid joint or timeline frame rate.')
@@ -823,6 +1249,13 @@ def track_from_timeline_keys(skeleton, clip, joint, rows, fps):
                     quaternion = original_q
                 result.rotation_keys.append(QuatKeyframe(time,tuple(quaternion),row.get('rotation_interpolation','linear')))
             else:
+                if fk_source is not None and any(row.get('fk_position_axes',[])):
+                    source = next((track for track in fk_source.tracks if track.joint_name == joint),None)
+                    source_value = _sample_vec3_channel(source.translation_keys if source else [],time,tuple(bind.translation))
+                    # Independent FK positions apply after IK. Feeding them
+                    # into the solve first would change bone lengths and make
+                    # the solver counteract the user's FK translation.
+                    values = np.where(row['fk_position_axes'],source_value,values)
                 result.translation_keys.append(Vec3Keyframe(time,tuple(values),row.get('translation_interpolation','linear')))
     return result
 

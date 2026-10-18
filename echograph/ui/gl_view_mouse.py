@@ -585,6 +585,15 @@ def _handle_mouse_press_moderngl(self, e):
             mesh_object_mode = mode == "object"
         except Exception:
             mesh_element_mode = False
+        correction = getattr(self, '_animation_correction_session', None)
+        renderer = getattr(self, '_mgl_renderer', None) or self
+        correction_active = (correction is not None and
+            str(getattr(renderer, '_mgl_scene_skeleton_active_owner', '')).strip().casefold()
+            == correction.item.model.name.strip().casefold())
+        if correction_active:
+            # Mesh modes persist between previews. This editor contains a rig,
+            # so FK joint clicks must still reach the shared skeleton picker.
+            mesh_element_mode = mesh_object_mode = False
         mask_paint_press = getattr(self, "_handle_mask_paint_press", None)
         if callable(mask_paint_press) and mask_paint_press(e):
             return True
@@ -603,13 +612,13 @@ def _handle_mouse_press_moderngl(self, e):
         if getattr(self, "_cloth_mouse_press", lambda event: False)(e):
             return True
         try:
-            box_select_active = bool(self._mesh_box_select_active_mode())
+            box_select_active = not correction_active and bool(self._mesh_box_select_active_mode())
         except Exception:
             box_select_active = False
         if box_select_active and not bool(alt_pressed) and e.button() == QtCore.Qt.LeftButton:
             if self._handle_mouse_press_moderngl_left_gizmo(e):
                 return True
-        if self._handle_mouse_press_moderngl_mesh_box_select_start(e, alt_pressed):
+        if not correction_active and self._handle_mouse_press_moderngl_mesh_box_select_start(e, alt_pressed):
             return True
         if _handle_animation_correction_control_press(self,e,alt_pressed):
             return True
@@ -5774,6 +5783,10 @@ def _handle_mouse_release_moderngl_pick_empty(self):
         frame_keys = getattr(target, "_mgl_scene_skeleton_handle_frame_keys", None)
         if isinstance(frame_keys, dict):
             frame_keys.pop(getattr(target, "_mgl_scene_skeleton_active_owner", ""), None)
+
+    correction = getattr(self, '_animation_correction_session', None)
+    if correction is not None:
+        correction.clear_selection()
 
     # Clear gizmo selection state
     self._xform_gizmo_owner = None

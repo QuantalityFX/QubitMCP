@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
-from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation, Slerp
 
 from echograph.model import GraphNode
 from echograph.motion import animation_corrections as corrections
@@ -199,6 +199,261 @@ class CorrectionTests(unittest.TestCase):
             graph.assert_not_called()
             records.assert_not_called()
         self.assertAlmostEqual(corrections.read_document(session.path)['ik_spans'][0]['end']['time'],.2)
+
+    def test_fk_set_key_respects_position_rotation_and_mixed_axis_selections(self):
+        session = self.session()
+        session.set_ik(False)
+        self.select('left_wrist')
+        self.view._timeline_fps = 40.
+        for frame,axes in ((1,{0,1,2}),(3,{4}),(5,{0,5}),(7,set())):
+            self.view.frame = frame
+            self.view._timeline_curve_axes_filter = axes
+            self.view._timeline_on_set_key_clicked()
+            row = session.keys_map('left_wrist',fps=40.)[frame]
+            expected = [axis in axes for axis in range(6)] if axes else [True]*6
+            self.assertEqual(row['axis_mask'],expected)
+            self.assertFalse(row.get('ik_key'))
+            if axes == {0,1,2}:
+                self.assertNotIn('left_wrist',session.fk_keys)
+        document = corrections.read_document(session.path)
+        self.assertEqual(document['timeline_rows']['left_wrist']['keys']['1']['axis_mask'],[True]*3+[False]*3)
+        self.assertEqual(session.ik_spans,[])
+        restored = self.session()
+        self.assertEqual(restored.keys_map('left_wrist',fps=40.),session.keys_map('left_wrist',fps=40.))
+
+    def test_fk_position_drag_moves_the_wrist_without_rotating_or_moving_its_parents_and_reopens(self):
+        session = self.session()
+        session.set_ik(False)
+        self.select('left_wrist')
+        self.view.frame = 2
+        before = points(session.skeleton,session.draft,.1)
+        index = session.skeleton.joint_names.index('left_wrist')
+        chain = corrections.limb_chain(session.skeleton,'left_wrist')
+        target = before[index]+[.01,.03,-.02]
+        session.move('left_wrist',target)
+        session.commit()
+        after = points(session.skeleton,session.draft,.1)
+        np.testing.assert_allclose(after[index],target,atol=1e-8)
+        np.testing.assert_allclose(after[list(chain[:-1])],before[list(chain[:-1])],atol=1e-8)
+        self.assertEqual(session.ik_spans,[])
+        self.assertEqual(session.fk_keys,{})
+        self.assertEqual(session.keys_map('left_wrist')[2]['fk_position_axes'],[True]*3)
+        restored = self.session()
+        np.testing.assert_allclose(points(restored.skeleton,restored.draft,.1),after,atol=1e-8)
+        self.assertTrue(session.undo())
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.1),before,atol=1e-8)
+        self.assertTrue(session.redo())
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.1),after,atol=1e-8)
+
+    def test_moving_one_legacy_fk_rotation_axis_does_not_reinsert_it_or_key_other_axes(self):
+        session = self.separated_ik_session()
+        self.view._timeline_fps = 40.
+        self.view.frame = 9  # Between source samples, outside both IK ranges.
+        session.key_rotations({'left_shoulder':Rotation.from_euler('xyz',(12,23,34),degrees=True).as_quat()})
+        session.commit()
+        self.select('left_shoulder')
+        before = deepcopy(session.document())
+        spans = deepcopy(session.ik_spans)
+        for source,destination in ((9,10),(10,11),(11,12),(12,13)):
+            self.view._timeline_drag_axis_key(3,source,destination,12.,commit=False)
+            self.view._timeline_drag_axis_key(3,destination,destination,12.,commit=True)
+            rows = session.keys_map('left_shoulder',fps=40.)
+            self.assertFalse(rows[9]['axis_mask'][3])
+            self.assertEqual(rows[9]['fk_rotation_axes'],[False,True,True])
+            self.assertEqual(rows[destination]['fk_rotation_axes'],[True,False,False])
+            self.assertEqual(session.ik_spans,spans)
+            for old in (11,):
+                if old < destination:
+                    self.assertNotIn(old,rows)
+        rows = session.keys_map('left_shoulder',fps=40.)
+        self.assertEqual(rows[13]['axis_mask'][3:],[True,False,False])
+        restored = CorrectionSession(self.item,session.context,self.view)
+        self.addCleanup(restored.finish)
+        self.assertEqual(restored.keys_map('left_shoulder',fps=40.),rows)
+        for time in (.225,.275,.325):
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time),
+                                       points(restored.skeleton,restored.draft,time),atol=1e-8)
+        for _ in range(4):
+            self.assertTrue(session.undo())
+        self.assertEqual(session.document(),before)
+        self.assertTrue(session.redo())
+        self.assertFalse(session.keys_map('left_shoulder',fps=40.)[9]['axis_mask'][3])
+
+    def test_deleting_one_legacy_fk_rotation_axis_stays_deleted_after_refresh_and_reopen(self):
+        session = self.session()
+        self.view._timeline_fps = 40.
+        self.view.frame = 3
+        session.key_rotations({'left_shoulder':Rotation.from_euler('xyz',(12,23,34),degrees=True).as_quat()})
+        session.commit()
+        self.select('left_shoulder')
+        self.view._timeline_curve_selected = {(4,3)}
+        self.assertTrue(self.view.timeline_delete_selected_keys())
+        for candidate in (session,self.session()):
+            row = candidate.keys_map('left_shoulder',fps=40.)[3]
+            self.assertEqual(row['axis_mask'][3:],[True,False,True])
+            self.assertEqual(row['fk_rotation_axes'],[True,False,True])
+
+    def test_sparse_fk_rotation_on_a_source_frame_preserves_other_ik_axes_when_moved_and_reopened(self):
+        session = self.separated_ik_session()
+        self.view._timeline_fps = 40.
+        self.view.frame = 4
+        name = 'left_shoulder'
+        index = session.skeleton.joint_names.index(name)
+        original = session.draft
+        def angles(clip,time):
+            return Rotation.from_quat(evaluate_rig_at_time(session.skeleton,clip,time,loop=False)
+                                      .local_transforms[index].rotation).as_euler('xyz',degrees=True)
+        desired = angles(original,.1)
+        desired[0] += 5.
+        session.key_fk(name,axes=[3],rotation=Rotation.from_euler('xyz',desired,degrees=True).as_quat(),save=True)
+        np.testing.assert_allclose(angles(session.draft,.1),desired,atol=1e-7)
+        self.select(name)
+        self.assertFalse(self.view._timeline_key_is_ik(4,3))
+        self.view._timeline_drag_axis_key(3,4,5,desired[0],commit=True)
+        expected = angles(original,.125)
+        expected[0] = desired[0]
+        baked = corrections.apply_document(session.skeleton,session.base,session.document())
+        restored = CorrectionSession(self.item,session.context,self.view)
+        self.addCleanup(restored.finish)
+        for clip in (session.draft,baked,restored.draft):
+            np.testing.assert_allclose(angles(clip,.125),expected,atol=1e-7)
+        for time in (0.,.049999,.05,.075,.1,.12,.125,.14,.15,.150001,.2,.4,.6):
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time),
+                                       points(session.skeleton,baked,time),atol=1e-8)
+        # A subsequent full gizmo rotation must replace the sparse ownership.
+        self.view.frame = 5
+        session.key_rotations({name:Rotation.from_euler('xyz',(7,8,9),degrees=True).as_quat()})
+        session.commit()
+        self.assertEqual(session.keys_map(name,fps=40.)[5]['fk_rotation_axes'],[True]*3)
+        np.testing.assert_allclose(angles(session.draft,.125),(7,8,9),atol=1e-7)
+        np.testing.assert_allclose(angles(corrections.apply_document(session.skeleton,session.base,session.document()),.125),
+                                   (7,8,9),atol=1e-7)
+
+    def test_moving_an_ik_boundary_does_not_copy_an_unselected_fk_rotation_key_at_the_same_frame(self):
+        session = self.separated_ik_session()
+        self.view.frame = 3
+        session.key_fk('left_shoulder',axes=[3],rotation=Rotation.from_euler('xyz',(7,8,9),degrees=True).as_quat(),save=True)
+        self.select('left_shoulder')
+        self.assertFalse(self.view._timeline_key_is_ik(3,3))
+        self.assertTrue(self.view._timeline_key_is_ik(3,4))
+        original_fk = deepcopy(session.fk_keys)
+        original_source = session.keys_map('left_shoulder',include_ik=False)
+        self.view._timeline_curve_selected = {(4,3)}
+        self.assertEqual(self.view._timeline_drag_selected_curve_keys(1,0.,commit=True),(1,0.))
+        self.assertEqual(session.fk_keys.keys(),original_fk.keys())
+        for joint,entries in original_fk.items():
+            self.assertEqual(session.fk_keys[joint].keys(),entries.keys())
+            for stamp,value in entries.items():
+                np.testing.assert_allclose(session.fk_keys[joint][stamp],value,atol=1e-12)
+        self.assertEqual(session.keys_map('left_shoulder',include_ik=False)[3]['axis_mask'],original_source[3]['axis_mask'])
+        self.assertEqual(session.ik_spans[0]['end']['time'],.2)
+        self.assertEqual(session.keys_map('left_shoulder')[3]['fk_rotation_axes'],[True,False,False])
+        self.assertFalse(session.keys_map('left_shoulder')[4].get('fk_key'))
+
+    def test_moving_multiple_fk_rotation_curves_preserves_sparse_channels_and_removes_empty_rows(self):
+        session = self.separated_ik_session()
+        self.view._timeline_fps = 40.
+        self.view.frame = 9
+        session.key_rotations({'left_shoulder':Rotation.from_euler('xyz',(12,23,34),degrees=True).as_quat()})
+        session.commit()
+        self.select('left_shoulder')
+        self.view._timeline_curve_selected = {(3,9),(4,9)}
+        self.assertEqual(self.view._timeline_drag_selected_curve_keys(2,0.,commit=True),(2,0.))
+        rows = session.keys_map('left_shoulder',fps=40.)
+        self.assertEqual(rows[9]['axis_mask'][3:],[False,False,True])
+        self.assertEqual(rows[11]['axis_mask'][3:],[True,True,False])
+        self.view._timeline_curve_selected = {(3,11),(4,11),(5,9)}
+        self.assertEqual(self.view._timeline_drag_selected_keys(2,commit=True),2)
+        rows = session.keys_map('left_shoulder',fps=40.)
+        self.assertNotIn(9,rows)
+        self.assertEqual(rows[11]['axis_mask'][3:],[False,False,True])
+        self.assertEqual(rows[13]['axis_mask'][3:],[True,True,False])
+
+    def test_deleting_a_full_fk_pose_reveals_the_ik_boundary_without_deleting_its_range(self):
+        session = self.separated_ik_session()
+        self.view.frame = 3
+        session.key_rotations({'left_shoulder':Rotation.from_euler('xyz',(12,23,34),degrees=True).as_quat()})
+        session.commit()
+        self.select('left_shoulder')
+        spans = deepcopy(session.ik_spans)
+        self.assertTrue(all(not self.view._timeline_key_is_ik(3,axis) for axis in (3,4,5)))
+        self.view._timeline_curve_selected = {(axis,3) for axis in (3,4,5)}
+        self.assertTrue(self.view.timeline_delete_selected_keys())
+        self.assertEqual(session.ik_spans,spans)
+        self.assertNotIn('left_shoulder',session.fk_keys)
+        self.assertTrue(all(self.view._timeline_key_is_ik(3,axis) for axis in (3,4,5)))
+
+    def test_fk_position_overrides_ik_locally_without_deleting_the_range_and_matches_saved_evaluation(self):
+        session = self.session()
+        self.make_ik_range(session)
+        spans = deepcopy(session.ik_spans)
+        session.set_ik(False)
+        self.view._timeline_fps = 40.
+        self.view.frame = 3
+        time = session.time()
+        before = points(session.skeleton,session.draft,time)
+        endpoint = session.skeleton.joint_names.index('left_wrist')
+        target = before[endpoint]+[.02,.01,.03]
+        session.move('left_wrist',target)
+        session.commit()
+        np.testing.assert_allclose(points(session.skeleton,session.draft,time)[endpoint],target,atol=1e-8)
+        self.assertEqual(session.ik_spans,spans)
+        self.assertEqual(session.fk_keys,{})
+        row = session.keys_map('left_wrist',fps=40.)[3]
+        self.assertEqual(row['axis_mask'],[True]*3+[False]*3)
+        self.assertFalse(row.get('ik_key'))
+        restored = corrections.apply_document(session.skeleton,session.base,session.document())
+        for stamp in (.05,.075,.1,.125,.15):
+            np.testing.assert_allclose(points(session.skeleton,session.draft,stamp),
+                                       points(session.skeleton,restored,stamp),atol=1e-8)
+        session.select('left_wrist')
+        self.view._timeline_curve_axes_filter = {0,1,2}
+        self.assertTrue(session.reload_joint())
+        self.assertFalse(corrections.document_fk_positions(session.document(),session.base))
+
+    def test_fk_rotation_drags_reuse_the_position_index_without_scanning_timeline_rows_again(self):
+        session = self.session()
+        self.make_ik_range(session)
+        session.set_ik(False)
+        self.view.frame = 2
+        endpoint = session.skeleton.joint_names.index('left_wrist')
+        target = points(session.skeleton,session.draft,.1)[endpoint]+[.01,.02,.03]
+        session.move('left_wrist',target)
+        session.commit()
+        session.fk_positions()
+        session.fk_rotation_masks()
+        with patch.object(corrections,'document_fk_positions',side_effect=AssertionError('Rescanned unchanged rows')), \
+                patch.object(corrections,'document_fk_rotation_masks',side_effect=AssertionError('Rescanned rotation rows')):
+            session.begin_edit()
+            for angle in (5.,10.,15.):
+                session.rotate('left_elbow',(angle,0.,0.))
+            session.commit()
+
+    def test_fk_position_numeric_edit_and_curve_drag_keep_position_axes_and_do_not_change_ik_targets(self):
+        session = self.session()
+        self.make_ik_range(session)
+        session.set_ik(False)
+        self.view._timeline_fps = 40.
+        self.view.frame = 2  # Shared IK boundary: local FK position must not replace its world-space target.
+        original = deepcopy(session.ik_spans)
+        endpoint = session.skeleton.joint_names.index('left_wrist')
+        pose = evaluate_rig_at_time(session.skeleton,session.draft,session.time(),loop=False)
+        value = pose.local_transforms[endpoint].translation[0]+.01
+        self.view._timeline_on_coord_input_committed(0,SimpleNamespace(value=lambda:value))
+        self.assertEqual(session.ik_spans,original)
+        self.assertEqual(session.keys_map('left_wrist',fps=40.)[2]['fk_position_axes'],[True,False,False])
+        self.assertFalse(self.view._timeline_key_is_ik(2,0))
+        self.assertTrue(self.view._timeline_key_is_ik(2,3))
+        self.view._timeline_drag_axis_key(0,2,3,value+.02,commit=True)
+        self.assertEqual(session.ik_spans,original)
+        row = session.keys_map('left_wrist',fps=40.)[3]
+        self.assertEqual(row['fk_position_axes'],[True,False,False])
+        self.assertEqual(row['axis_mask'],[True,False,False,False,False,False])
+        self.assertFalse(row.get('ik_key'))
+        self.assertEqual(session.fk_keys,{})
+        expected = corrections.apply_document(session.skeleton,session.base,session.document())
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.075),
+                                   points(session.skeleton,expected,.075),atol=1e-8)
 
     def test_closing_preview_publishes_autosaved_changes_once_without_resaving_motion(self):
         session = self.session()
@@ -1251,6 +1506,100 @@ class CorrectionTests(unittest.TestCase):
         self.assertTrue(session.key_ik('left_wrist'))
         self.assertEqual([span['position_mask'] for span in session.ik_spans],[[False,True,False]]*2)
 
+    def test_pelvis_position_axes_have_independent_overlapping_ranges_and_shared_boundary_frames(self):
+        session = self.session()
+        session.lock_limbs = False
+        self.select('pelvis')
+        index = session.skeleton.joint_names.index('pelvis')
+        for axis,frames,values in ((1,(0,4),(.8,.9)),(0,(1,3),(.03,.06)),(2,(1,3),(.02,.04))):
+            self.view._timeline_curve_axes_filter = {axis}
+            for frame,value,mode in zip(frames,values,('start','end')):
+                self.view.frame = frame
+                target = points(session.skeleton,session.base,frame/20.)[index].copy()
+                target[axis] = value
+                self.assertTrue(session.key_ik('pelvis',mode=mode,target=target,save=True),session.panel.status.text())
+        self.assertEqual([span['position_mask'] for span in session.ik_spans],
+                         [[False,True,False],[True,False,False],[False,False,True]])
+        rows = session.keys_map('pelvis')
+        for frame,label in ((1,'S'),(3,'E')):
+            self.assertEqual(rows[frame]['ik_axis_mask'],[True,False,True,False,False,False])
+            self.assertNotEqual(rows[frame]['ik_axis_keys'][0],rows[frame]['ik_axis_keys'][2])
+            self.assertEqual(self.view._timeline_ik_boundary_label(frame,0),label)
+            self.assertEqual(self.view._timeline_ik_boundary_label(frame,2),label)
+        baked = corrections.apply_document(session.skeleton,session.base,session.document())
+        for frame in (0,.5,1,1.5,2,2.5,3,3.5,4):
+            time = frame/20.
+            expected = points(session.skeleton,session.base,time)[index].copy()
+            expected[1] = np.interp(frame,[0,4],[.8,.9])
+            if 1 <= frame <= 3:
+                expected[0] = np.interp(frame,[1,3],[.03,.06])
+                expected[2] = np.interp(frame,[1,3],[.02,.04])
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time)[index],expected,atol=1e-7)
+            np.testing.assert_allclose(points(session.skeleton,baked,time)[index],expected,atol=1e-7)
+        restored = self.session()
+        self.assertEqual(restored.ik_spans,session.ik_spans)
+        self.assertEqual(restored.keys_map('pelvis'),rows)
+
+    def test_shared_axis_ik_keys_edit_move_and_delete_without_changing_other_axes(self):
+        session = self.session()
+        session.lock_limbs = False
+        self.select('pelvis')
+        for axis in (1,0,2):
+            self.view._timeline_curve_axes_filter = {axis}
+            for frame,mode in ((1,'start'),(3,'end')):
+                self.view.frame = frame
+                self.assertTrue(session.key_ik('pelvis',mode=mode),session.panel.status.text())
+        original = deepcopy(session.ik_spans)
+        self.view._timeline_curve_selected = {(0,1)}
+        self.assertEqual(self.view._timeline_selected_ik_key_ids(),{original[1]['start']['id']})
+        self.assertTrue(self.view._timeline_set_axis_handle_value(0,1,'out',.4,.03,commit=True))
+        self.assertEqual(session.ik_spans[0],original[0])
+        self.assertEqual(session.ik_spans[2],original[2])
+        self.assertEqual(self.view._timeline_drag_selected_keys(-1,commit=True),-1)
+        self.assertEqual(session.ik_spans[1]['start']['time'],0.)
+        self.assertEqual(session.ik_spans[0],original[0])
+        self.assertEqual(session.ik_spans[2],original[2])
+        self.assertTrue(session.undo())
+        self.view._timeline_curve_selected = {(0,3)}
+        self.assertTrue(self.view.timeline_delete_selected_keys())
+        self.assertEqual([span for span in session.ik_spans if span['position_mask'] != [True,False,False]],
+                         [original[0],original[2]])
+        self.assertFalse(any(span['position_mask'] == [True,False,False] for span in session.ik_spans))
+        self.assertTrue(session.undo())
+        self.assertEqual(len(session.ik_spans),3)
+
+    def test_pending_position_axes_and_joining_refining_one_axis_leave_other_ranges_intact(self):
+        session = self.session()
+        session.lock_limbs = False
+        self.select('pelvis')
+        # Separate pending starts must be completed on their own axes.
+        for axis,frame in ((1,0),(0,0)):
+            self.view._timeline_curve_axes_filter = {axis}
+            self.view.frame = frame
+            self.assertTrue(session.key_ik('pelvis',mode='start'))
+        self.view.frame = 1
+        self.assertTrue(session.key_ik('pelvis',mode='end'))
+        self.view._timeline_curve_axes_filter = {1}
+        self.view.frame = 4
+        self.assertTrue(session.key_ik('pelvis',mode='end'))
+        y_range = deepcopy(session.ik_spans[0])
+        self.view._timeline_curve_axes_filter = {0}
+        for frame,mode in ((3,'start'),(4,'end')):
+            self.view.frame = frame
+            self.assertTrue(session.key_ik('pelvis',mode=mode))
+        x_ranges = [span for span in session.ik_spans if span['position_mask'][0]]
+        self.view._timeline_curve_selected = {(0,1),(0,3)}
+        self.assertTrue(self.view._timeline_join_selected_ik_ranges())
+        self.assertEqual(session.ik_spans[0],y_range)
+        self.view.frame = 2
+        self.view._timeline_on_set_key_clicked()
+        self.assertEqual(session.ik_spans[0],y_range)
+        self.assertEqual(len(session.ik_spans),5)
+        self.assertEqual(self.view._timeline_ik_boundary_label(2,0),'')
+        self.assertEqual(self.view._timeline_ik_boundary_label(4,1),'E')
+        self.assertEqual({key['id'] for span in x_ranges for key in (span['start'],span['end'])}-
+                         {key['id'] for span in session.ik_spans for key in (span['start'],span['end'])},set())
+
     def test_start_ik_supports_multiple_position_channels_and_rejects_rotation_only_selection(self):
         session = self.session()
         self.select('left_wrist')
@@ -1281,6 +1630,155 @@ class CorrectionTests(unittest.TestCase):
         self.assertEqual(set(self.view._timeline_keys),{0,1,2,3,4})
         self.assertFalse(any(row.get('ik_key') for row in self.view._timeline_keys.values()))
 
+    def test_ik_curve_handles_survive_save_refresh_rekey_and_reopening(self):
+        session = self.session()
+        self.make_ik_range(session)
+        self.select('left_wrist')
+        manual = session.manual
+        self.assertTrue(self.view._timeline_set_axis_handle_value(0,1,'out',.4,.03,commit=True))
+        handles = self.view._timeline_axis_handles_for_key(0,1)
+        np.testing.assert_allclose(handles['out'],[.4,.03])
+        session.refresh_timeline()
+        np.testing.assert_allclose(self.view._timeline_axis_handles_for_key(0,1)['out'],[.4,.03])
+        self.assertIs(session.manual,manual)
+        self.assertTrue(session.undo())
+        self.assertNotIn('0',self.view._timeline_keys[1].get('curve_handles',{}))
+        self.assertTrue(session.redo())
+        np.testing.assert_allclose(self.view._timeline_axis_handles_for_key(0,1)['out'],[.4,.03])
+        self.view.frame = 1
+        self.assertTrue(session.key_ik('left_wrist',save=True))
+        np.testing.assert_allclose(self.view._timeline_axis_handles_for_key(0,1)['out'],[.4,.03])
+        restored = self.session()
+        self.select('left_wrist')
+        np.testing.assert_allclose(self.view._timeline_axis_handles_for_key(0,1)['out'],[.4,.03])
+        doubled = restored.keys_map('left_wrist',fps=40.)
+        np.testing.assert_allclose(doubled[2]['curve_handles']['0']['out'],[.8,.03])
+
+    def test_ik_curve_handles_change_the_interpolated_target_in_preview_and_export(self):
+        session = self.session()
+        first,last = self.make_ik_range(session)
+        self.select('left_wrist')
+        for frame in (1,3):
+            self.view._timeline_set_entry_axis_handles(self.view._timeline_keys[frame],0,frame,'untied',
+                (-.5,0.),(.5,.04) if frame == 1 else (.5,0.))
+        self.view._timeline_save_to_disk()
+        expected = (first+last)*.5
+        # Midpoint Hermite contribution: h10(.5) * 2 frames * (.04/.5).
+        expected[0] += .02
+        index = session.skeleton.joint_names.index('left_wrist')
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.1)[index],expected,atol=1e-6)
+        baked = corrections.apply_document(session.skeleton,session.base,session.document())
+        np.testing.assert_allclose(points(session.skeleton,baked,.1)[index],expected,atol=1e-6)
+        output = session.approve()
+        self.assertTrue(output)
+        exported = ingest_bvh_animation_data(output)
+        target_index = exported.skeleton.joint_names.index('left_wrist')
+        np.testing.assert_allclose(points(exported.skeleton,exported.clips[0],.1)[target_index],expected,atol=1e-5)
+
+    def test_vertical_ik_tangents_and_untied_sides_survive_save_reopen_retime_and_bake(self):
+        session = self.session()
+        self.make_ik_range(session)
+        self.select('left_wrist')
+        self.view._timeline_curve_selected = {(0,1)}
+        self.assertTrue(self.view._timeline_set_axis_handle_value(0,1,'out',0.,.02,commit=True))
+        vertical = self.view._timeline_axis_handles_for_key(0,1)
+        self.assertEqual(vertical['out'][0],0.)
+        self.assertEqual(vertical['weighted'],['in','out'])
+        self.view._timeline_on_handle_untied_clicked()
+        self.assertTrue(self.view._timeline_set_axis_handle_value(0,1,'out',0.,.03,commit=True))
+        independent = self.view._timeline_axis_handles_for_key(0,1)
+        self.assertEqual(independent['in'],vertical['in'])
+        self.assertEqual(independent['mode'],'untied')
+        restored = self.session()
+        self.assertEqual(restored.keys_map('left_wrist')[1]['curve_handles']['0']['weighted'],['in','out'])
+        self.select('left_wrist')
+        index = session.skeleton.joint_names.index('left_wrist')
+        baked = corrections.apply_document(session.skeleton,session.base,session.document())
+        for time in (.05,.075,.1,.125,.15):
+            expected = self.view._timeline_eval_axis_curve(0,time*20.)
+            for clip in (session.draft,restored.draft,baked):
+                self.assertAlmostEqual(points(session.skeleton,clip,time)[index,0],expected,places=5)
+        self.view._timeline_curve_selected = {(0,1)}
+        self.assertEqual(self.view._timeline_drag_selected_keys(1,commit=True),1)
+        retimed = restored.keys_map('left_wrist')[2]['curve_handles']['0']
+        self.assertEqual(retimed['out'][0],0.)
+        self.assertEqual(retimed['mode'],'untied')
+        self.assertEqual(retimed['weighted'],['in','out'])
+
+    def test_overlapping_and_long_ik_handles_reopen_and_match_curve_preview_and_bake(self):
+        session = self.session()
+        self.make_ik_range(session)
+        self.select('left_wrist')
+        for frame,side,dx,dy in ((1,'out',1.5,8.),(3,'in',-1.5,-6.)):
+            self.view._timeline_curve_selected = {(5,frame)}
+            self.view._timeline_on_handle_untied_clicked()
+            self.assertTrue(self.view._timeline_set_axis_handle_value(5,frame,side,dx,dy,commit=True))
+        restored = self.session()
+        self.select('left_wrist')
+        np.testing.assert_allclose(restored.keys_map('left_wrist')[1]['curve_handles']['5']['out'],[1.5,8.],atol=1e-12)
+        np.testing.assert_allclose(restored.keys_map('left_wrist')[3]['curve_handles']['5']['in'],[-1.5,-6.],atol=1e-12)
+        baked = corrections.apply_document(session.skeleton,session.base,session.document())
+        index = session.skeleton.joint_names.index('left_wrist')
+        for frame in (1.,1.5,2.,2.5,3.):
+            expected = self.view._timeline_eval_axis_curve(5,frame)
+            for clip in (session.draft,restored.draft,baked):
+                quaternion = evaluate_rig_at_time(session.skeleton,clip,frame/20.,loop=False).local_transforms[index].rotation
+                self.assertAlmostEqual(Rotation.from_quat(quaternion).as_euler('xyz',degrees=True)[2],expected,places=6)
+        for frame,side,dx in ((1,'out',25.),(3,'in',-30.)):
+            self.assertTrue(self.view._timeline_set_axis_handle_value(5,frame,side,dx,8.,commit=True))
+        reopened = self.session()
+        for frame,side,dx in ((1,'out',25.),(3,'in',-30.)):
+            np.testing.assert_allclose(reopened.keys_map('left_wrist')[frame]['curve_handles']['5'][side],[dx,8.],atol=1e-12)
+
+    def test_rekeying_ik_end_restores_chain_rotation_endpoints_and_does_not_resurrect_fk_after_a_drag(self):
+        session = self.separated_ik_session()
+        self.view.frame = 3
+        session.key_fk('left_shoulder',axes=[3,4,5],rotation=Rotation.from_euler('xyz',(12,23,34),degrees=True).as_quat(),save=True)
+        self.select('left_shoulder')
+        self.assertFalse(self.view._timeline_key_is_ik(3,3))
+        self.select('left_wrist')
+        self.view._timeline_curve_axes_filter = set()
+        self.view._timeline_on_set_key_clicked()
+        self.assertNotIn('left_shoulder',session.fk_keys)
+        self.select('left_shoulder')
+        self.assertEqual(self.view._timeline_ik_boundary_label(3,3),'E')
+        self.view._timeline_curve_selected = {(3,3)}
+        self.view._timeline_drag_selected_keys(1,commit=True)
+        self.assertNotIn('left_shoulder',session.fk_keys)
+        self.assertEqual(self.view._timeline_ik_boundary_label(4,3),'E')
+
+    def test_shared_ik_and_fk_boundary_keeps_both_channels_curve_handles(self):
+        session = self.session()
+        self.select('left_wrist')
+        self.view._timeline_curve_axes_filter = {1}
+        self.make_ik_range(session)
+        self.assertTrue(self.view._timeline_set_axis_handle_value(3,1,'out',.25,2.,commit=True))
+        self.assertTrue(self.view._timeline_set_axis_handle_value(1,1,'out',.35,.04,commit=True))
+        np.testing.assert_allclose(self.view._timeline_axis_handles_for_key(3,1)['out'],[.25,2.])
+        np.testing.assert_allclose(self.view._timeline_axis_handles_for_key(1,1)['out'],[.35,.04])
+        self.assertEqual(set(session.ik_spans[0]['start']['curve_handles']['left_wrist']),{'1'})
+        self.assertNotIn('1',session.keys_map('left_wrist',include_ik=False)[1].get('curve_handles',{}))
+        self.session()
+        self.select('left_wrist')
+        np.testing.assert_allclose(self.view._timeline_axis_handles_for_key(3,1)['out'],[.25,2.])
+        np.testing.assert_allclose(self.view._timeline_axis_handles_for_key(1,1)['out'],[.35,.04])
+
+    def test_ik_rotation_handles_change_orientation_without_moving_the_target(self):
+        session = self.session()
+        self.make_ik_range(session)
+        self.select('left_wrist')
+        before = evaluate_rig_at_time(session.skeleton,session.draft,.1,loop=False)
+        for frame in (1,3):
+            self.view._timeline_set_entry_axis_handles(self.view._timeline_keys[frame],5,frame,'untied',
+                (-.5,0.),(.5,2.) if frame == 1 else (.5,0.))
+        self.view._timeline_save_to_disk()
+        after = evaluate_rig_at_time(session.skeleton,session.draft,.1,loop=False)
+        index = session.skeleton.joint_names.index('left_wrist')
+        old,new = [np.asarray(pose.global_matrices[index]).reshape(4,4) for pose in (before,after)]
+        np.testing.assert_allclose(new[:3,3],old[:3,3],atol=1e-7)
+        delta = Rotation.from_matrix(new[:3,:3])*Rotation.from_matrix(old[:3,:3]).inv()
+        self.assertAlmostEqual(np.degrees(delta.magnitude()),1.,places=5)
+
     def test_native_ik_set_key_creates_start_and_end_and_scrubbing_does_not_edit_them(self):
         session = self.session()
         self.select('left_wrist')
@@ -1295,6 +1793,357 @@ class CorrectionTests(unittest.TestCase):
             self.view.frame = frame
             self.view._timeline_apply_frame_if_keyed(frame,force=True)
         self.assertEqual(session.document(),before)
+
+    def separated_ik_session(self,*,duration=.6):
+        context = self.context()
+        source = context['clip']
+        context['clip'] = replace(source,end_time=duration,tracks=[replace(track,rotation_keys=[
+            replace(track.rotation_keys[frame%len(track.rotation_keys)],time=frame/20.)
+            for frame in range(13)]) for track in source.tracks])
+        session = CorrectionSession(self.item,context,self.view)
+        session.open(self.window)
+        self.addCleanup(session.finish)
+        self.select('left_wrist')
+        session.select('left_wrist')
+        for frame,mode in ((1,'start'),(3,'end'),(7,'start'),(9,'end')):
+            self.view.frame = frame
+            start,_,end = corrections.limb_chain(session.skeleton,'left_wrist')
+            source = points(session.skeleton,session.base,frame/20.)
+            target = source[start]+.7*(source[end]-source[start])+[0.,.01*frame,.015*frame]
+            pole = source[start]+[0.,.4,.04*frame]
+            quaternion = Rotation.from_euler('xyz',(4*frame,frame,-frame),degrees=True).as_quat()
+            self.assertTrue(session.key_ik('left_wrist',mode=mode,target=target,
+                                         rotations={'left_wrist':quaternion},pole=pole))
+        return session
+
+    def test_ik_boundary_labels_follow_joining_deletion_and_undo_without_labeling_intermediate_keys(self):
+        session = self.separated_ik_session()
+        view = self.view
+        def labels():
+            return {frame:view._timeline_ik_boundary_label(frame,0) for frame in (1,3,7,9)}
+        self.assertEqual(labels(),{1:'S',3:'E',7:'S',9:'E'})
+        self.assertIs(view._timeline_ik_boundary_labels(),view._timeline_ik_boundary_labels())
+        self.assertEqual(view._timeline_ik_boundary_label(0,0),'')
+        left,right = session.ik_spans
+        self.assertTrue(session.join_ik_ranges({left['end']['id'],right['start']['id']}))
+        self.assertEqual(labels(),{1:'S',3:'',7:'',9:'E'})
+        view._timeline_curve_selected = {(0,9)}
+        self.assertTrue(view.timeline_delete_selected_keys())
+        self.assertEqual(labels(),{1:'S',3:'',7:'E',9:''})
+        self.assertTrue(session.undo())
+        self.assertEqual(labels(),{1:'S',3:'',7:'',9:'E'})
+        self.assertTrue(session.undo())
+        self.assertEqual(labels(),{1:'S',3:'E',7:'S',9:'E'})
+
+    def test_pending_and_axis_specific_ik_keys_label_only_their_ik_channels(self):
+        session = self.session()
+        self.select('left_wrist')
+        self.view._timeline_curve_axes_filter = {1}
+        self.view.frame = 1
+        self.assertTrue(session.key_ik('left_wrist',mode='start'))
+        self.assertEqual(self.view._timeline_ik_boundary_label(1,1),'S')
+        self.assertEqual(self.view._timeline_ik_boundary_label(1,3),'')
+        self.view.frame = 3
+        self.assertTrue(session.key_ik('left_wrist',mode='end'))
+        self.assertEqual(self.view._timeline_ik_boundary_label(3,1),'E')
+        self.assertEqual(self.view._timeline_ik_boundary_label(3,3),'')
+        self.view._timeline_curve_selected = {(1,3)}
+        self.assertTrue(self.view.timeline_delete_selected_keys())
+        self.assertEqual(self.view._timeline_ik_boundary_label(1,1),'')
+        self.assertFalse(self.view._timeline_ik_boundary_labels())
+
+    def test_fuse_button_sits_between_ik_buttons_and_tracks_joinable_selection_with_cached_validation(self):
+        self.view.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
+        self.view.show()
+        session = self.separated_ik_session()
+        APP.processEvents()
+        panel = session.panel
+        button = panel.join_ik_button
+        self.assertLess(panel.ik_buttons[0].geometry().right(),button.geometry().left())
+        self.assertLess(button.geometry().right(),panel.ik_buttons[1].geometry().left())
+        self.assertFalse(button.isEnabled())
+        self.assertFalse(button.icon().isNull())
+        normal = button.icon().pixmap(24,24,QtGui.QIcon.Normal).toImage()
+        disabled = button.icon().pixmap(24,24,QtGui.QIcon.Disabled).toImage()
+        colors = [normal.pixelColor(x,y) for y in range(normal.height()) for x in range(normal.width())]
+        grays = [disabled.pixelColor(x,y) for y in range(disabled.height()) for x in range(disabled.width())]
+        self.assertTrue(any(color.alpha() and max(color.red(),color.green(),color.blue())-
+                            min(color.red(),color.green(),color.blue()) > 20 for color in colors))
+        self.assertTrue(any(color.alpha() for color in grays))
+        self.assertTrue(all(color.red() == color.green() == color.blue() for color in grays if color.alpha()))
+        self.assertEqual(normal.pixelColor(0,0).alpha(),disabled.pixelColor(0,0).alpha())
+        self.view._timeline_curve_selected = {(0,3),(0,7)}
+        self.view._timeline_update_handle_mode_buttons()
+        self.assertTrue(button.isEnabled())
+        with patch.object(corrections,'ik_gap_pair',side_effect=AssertionError('Revalidated unchanged selection')), \
+                patch.object(session,'rebuild',side_effect=AssertionError('Rebuilt a preview to refresh a button')):
+            for _ in range(10):
+                self.view._timeline_update_handle_mode_buttons()
+                panel.sync_join_button()
+        for selected in ({(0,3)},{(0,1),(0,7)},{(3,0),(3,12)},set()):
+            self.view._timeline_curve_selected = selected
+            self.view._timeline_update_handle_mode_buttons()
+            self.assertFalse(button.isEnabled())
+        self.assertTrue(panel.rect().contains(QtCore.QRect(button.mapTo(panel,QtCore.QPoint()),button.size())))
+
+    def test_fuse_button_uses_existing_join_action_keeps_inner_keys_and_updates_after_undo_redo(self):
+        session = self.separated_ik_session()
+        self.select('left_elbow')
+        self.view._timeline_curve_selected = {(3,3),(4,7)}
+        self.view._timeline_update_handle_mode_buttons()
+        button = session.panel.join_ik_button
+        self.assertTrue(button.isEnabled())
+        left,right = deepcopy(session.ik_spans)
+        with patch.object(self.view,'_timeline_join_selected_ik_ranges',wraps=self.view._timeline_join_selected_ik_ranges) as action, \
+                patch.object(corrections,'save_document',wraps=corrections.save_document) as saved:
+            button.click()
+            action.assert_called_once_with()
+            saved.assert_called_once()
+        self.assertEqual(len(session.ik_spans),3)
+        self.assertEqual(session.ik_spans[1]['start'],left['end'])
+        self.assertEqual(session.ik_spans[1]['end'],right['start'])
+        self.assertEqual(self.view._timeline_curve_selected,{(3,3),(4,7)})
+        self.assertFalse(button.isEnabled())
+        self.assertTrue(session.undo())
+        self.assertTrue(button.isEnabled())
+        self.assertTrue(session.redo())
+        self.assertFalse(button.isEnabled())
+
+    def test_fuse_button_rejects_incompatible_channels_and_selection_from_another_owner(self):
+        session = self.separated_ik_session()
+        self.select('left_elbow')
+        self.view._timeline_curve_selected = {(3,3),(3,7)}
+        self.view._timeline_update_handle_mode_buttons()
+        button = session.panel.join_ik_button
+        self.assertTrue(button.isEnabled())
+        spans = deepcopy(session.ik_spans)
+        spans[1]['position_mask'] = [True,False,False]
+        session.rebuild(spans=spans)
+        self.assertFalse(button.isEnabled())
+        self.assertIn('same channels',button.toolTip())
+        self.assertTrue(session.undo())
+        self.assertTrue(button.isEnabled())
+        self.view._timeline_owner_name = 'Another owner'
+        self.view._timeline_update_handle_mode_buttons()
+        self.assertFalse(button.isEnabled())
+
+    def test_join_ik_ranges_keeps_every_key_pose_and_handle_and_fills_only_the_gap(self):
+        session = self.separated_ik_session()
+        spans = deepcopy(session.ik_spans)
+        handle = dict(mode='untied',**{'in':[-.02,-.001],'out':[.02,.001]})
+        for key in (spans[0]['end'],spans[1]['start']):
+            key['curve_handles'] = {'left_wrist':{'0':deepcopy(handle)}}
+        session.rebuild(spans=spans)
+        left,right = deepcopy(session.ik_spans)
+        before = {time:points(session.skeleton,session.draft,time) for time in
+                  (0.,.05,.1,.15,.35,.4,.45,.5,.6)}
+        manual,tracks,rows = session.manual,session.tracks,session.rows
+        self.select('left_elbow')  # Selecting one chain rotation identifies the whole control key.
+        self.view._timeline_curve_selected = {(3,3),(4,7)}
+        selected = set(self.view._timeline_curve_selected)
+        with patch.object(self.scene,'set_node_params') as graph, \
+                patch.object(collection,'refresh_repair_records') as records, \
+                patch.object(corrections,'save_document',wraps=corrections.save_document) as saved:
+            self.assertTrue(self.view._timeline_join_selected_ik_ranges())
+            saved.assert_called_once()
+            graph.assert_not_called()
+            records.assert_not_called()
+        self.assertIs(session.manual,manual)
+        self.assertIs(session.tracks,tracks)
+        self.assertIs(session.rows,rows)
+        self.assertEqual(self.view._timeline_curve_selected,selected)
+        self.assertEqual(session.ik_spans[0],left)
+        self.assertEqual(session.ik_spans[2],right)
+        self.assertEqual(session.ik_spans[1]['start'],left['end'])
+        self.assertEqual(session.ik_spans[1]['end'],right['start'])
+        self.assertEqual({frame for frame,row in session.keys_map('left_wrist').items() if row.get('ik_key')},
+                         {1,3,7,9})
+        for time,expected in before.items():
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time),expected,atol=1e-8)
+        endpoint = session.skeleton.joint_names.index('left_wrist')
+        orientation = Slerp([.15,.35],Rotation.from_quat([
+            left['end']['rotations']['left_wrist'],right['start']['rotations']['left_wrist']]))
+        for time in (.2,.25,.3):
+            expected = [corrections._ik_curve_value(left['end'],right['start'],'left_wrist',axis,time,
+                        left['end']['target'][axis],right['start']['target'][axis]) for axis in range(3)]
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time)[endpoint],expected,atol=1e-7)
+            pose = evaluate_rig_at_time(session.skeleton,session.draft,time,loop=False)
+            actual = Rotation.from_quat(pose.local_transforms[endpoint].rotation)
+            np.testing.assert_allclose(actual.as_matrix(),orientation([time]).as_matrix()[0],atol=1e-7)
+            alpha = (time-.15)/.2
+            expected_pole = (1-alpha)*np.asarray(left['end']['pole'])+alpha*np.asarray(right['start']['pole'])
+            np.testing.assert_allclose(corrections.ik_pole_at_time(session.skeleton,session.manual,
+                session.draft,session.ik_spans,'left_wrist',time),expected_pole,atol=1e-7)
+        self.assertEqual(corrections.read_document(session.path)['ik_spans'],session.ik_spans)
+        after = deepcopy(session.document())
+        self.assertTrue(session.undo())
+        self.assertEqual(session.ik_spans,[left,right])
+        self.assertTrue(session.redo())
+        self.assertEqual(session.document(),after)
+        restored = CorrectionSession(self.item,session.context,self.view)
+        restored.open(self.window)
+        self.addCleanup(restored.finish)
+        self.assertEqual(restored.ik_spans,session.ik_spans)
+        output = restored.approve()
+        self.assertTrue(output)
+        loaded = ingest_bvh_animation_data(output)
+        for time in (.05,.15,.2,.25,.3,.35,.45,.5):
+            np.testing.assert_allclose(points(loaded.skeleton,loaded.clips[0],time),
+                                       points(session.skeleton,session.draft,time),atol=2e-5)
+
+    def test_joining_a_ten_minute_ik_gap_only_samples_the_preview_not_the_entire_interval(self):
+        session = self.separated_ik_session(duration=600.)
+        spans = deepcopy(session.ik_spans)
+        spans[1]['start']['time'] = 599.7
+        spans[1]['end']['time'] = 599.9
+        session.rebuild(spans=spans)
+        self.select('left_wrist')
+        with patch.object(corrections,'apply_ik_spans',wraps=corrections.apply_ik_spans) as apply, \
+                patch.object(corrections,'solve_ik_pose',wraps=corrections.solve_ik_pose) as solve:
+            self.assertTrue(session.join_ik_ranges({spans[0]['end']['id'],spans[1]['start']['id']}))
+            self.assertLess(solve.call_count,80)
+            self.assertTrue(apply.call_args_list)
+            self.assertTrue(all(call.kwargs.get('sample_time') is not None for call in apply.call_args_list))
+
+    def test_joined_ik_band_has_continuous_yellow_fill_without_internal_edges(self):
+        session = self.separated_ik_session()
+        self.view._timeline_view_start = 0
+        self.view._timeline_local_frame_to_tracks_x_float = lambda frame,clamp=False:30+40*frame
+        def draw():
+            image = QtGui.QImage(600,90,QtGui.QImage.Format_ARGB32)
+            image.fill(QtCore.Qt.transparent)
+            painter = QtGui.QPainter(image)
+            self.view._timeline_paint_ik_ranges(painter,QtCore.QRectF(0,0,600,90))
+            painter.end()
+            return image
+        self.assertEqual(draw().pixelColor(230,45).alpha(),0)
+        self.view._timeline_curve_selected = {(0,3),(0,7)}
+        self.assertTrue(self.view._timeline_join_selected_ik_ranges())
+        image = draw()
+        for frame in (2,3,5,7,8):
+            self.assertEqual(image.pixelColor(30+40*frame,45),image.pixelColor(110,45))
+        self.assertEqual(image.pixelColor(230,45).alpha(),85)
+        self.assertEqual(image.pixelColor(30,45).alpha(),0)
+        self.assertEqual(image.pixelColor(430,45).alpha(),0)
+
+    def test_join_ik_ranges_rejects_invalid_pairs_without_changing_the_draft(self):
+        session = self.separated_ik_session()
+        left,right = session.ik_spans
+        cases = ({left['start']['id'],left['end']['id']},
+                 {left['start']['id'],right['start']['id']},
+                 {left['end']['id']},set())
+        before = deepcopy(session.document())
+        undo_count = len(session._undo)
+        for keys in cases:
+            with self.subTest(keys=keys):
+                self.assertFalse(session.join_ik_ranges(keys))
+                self.assertEqual(session.document(),before)
+                self.assertEqual(len(session._undo),undo_count)
+        ids = {left['end']['id'],right['start']['id']}
+        for kind in ('channels','pending','intervening'):
+            spans = deepcopy([left,right])
+            if kind == 'channels':
+                spans[1]['position_mask'] = [False,True,False]
+            elif kind == 'pending':
+                spans[1].pop('end')
+            else:
+                key = deepcopy(left['end'])
+                key.update(id='intervening',time=.25)
+                spans.append(dict(left,start=key))
+                spans[-1].pop('end')
+            session.rebuild(spans=spans)
+            before = deepcopy(session.document())
+            with self.subTest(kind=kind):
+                self.assertFalse(session.join_ik_ranges(ids))
+                self.assertEqual(session.document(),before)
+
+    def test_join_ik_ranges_respects_position_masks_and_leaves_other_channels_and_controls(self):
+        session = self.separated_ik_session()
+        spans = deepcopy(session.ik_spans)
+        for span in spans:
+            span['position_mask'] = [False,True,False]
+        # A redundant mask from an older/reloaded range must compare equal to
+        # the same default channels on the newly keyed neighboring range.
+        spans[0]['channel_masks'] = {'left_wrist':[True,True,True,False,False,False]}
+        session.rebuild(spans=spans)
+        self.view.frame = 5
+        session.key_rotations({'left_wrist':Rotation.from_euler('x',25,degrees=True).as_quat(),
+                               'left_elbow':Rotation.from_euler('y',30,degrees=True).as_quat(),
+                               'right_elbow':Rotation.from_euler('z',35,degrees=True).as_quat()})
+        before = deepcopy(session.fk_keys)
+        self.assertTrue(session.join_ik_ranges({spans[0]['end']['id'],spans[1]['start']['id']}))
+        self.assertEqual(session.ik_spans[1]['position_mask'],[False,True,False])
+        self.assertEqual(session.fk_keys['left_wrist'],before['left_wrist'])
+        self.assertEqual(session.fk_keys['right_elbow'],before['right_elbow'])
+        self.assertNotIn('left_elbow',session.fk_keys)
+        self.assertEqual(session.keys_map('left_wrist')[5]['rxyz'],
+                         session.keys_map('left_wrist',include_ik=False)[5]['rxyz'])
+
+    def test_deleting_outer_end_promotes_the_last_intermediate_key_and_restores_source_after_it(self):
+        session = self.separated_ik_session()
+        left,right = deepcopy(session.ik_spans)
+        self.assertTrue(session.join_ik_ranges({left['end']['id'],right['start']['id']}))
+        last_pose = points(session.skeleton,session.draft,.35)
+        self.view._timeline_curve_selected = {(0,9)}
+        self.assertTrue(self.view.timeline_delete_selected_keys())
+        self.assertEqual(len(session.ik_spans),2)
+        self.assertTrue(all('end' in span for span in session.ik_spans))
+        self.assertEqual(session.ik_spans[-1]['end'],right['start'])
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.35),last_pose,atol=1e-8)
+        for time in (.375,.4,.45,.5):
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time),
+                                       points(session.skeleton,session.base,time),atol=1e-8)
+        self.assertNotIn('IK start set',session.panel.ik_range.text())
+        self.assertEqual(corrections.read_document(session.path)['ik_spans'],session.ik_spans)
+        self.assertTrue(session.undo())
+        self.assertEqual(len(session.ik_spans),3)
+        self.assertTrue(session.redo())
+        self.assertEqual(session.ik_spans[-1]['end'],right['start'])
+
+    def test_deleting_intermediate_ik_keys_keeps_the_remaining_range_connected(self):
+        session = self.separated_ik_session()
+        left,right = deepcopy(session.ik_spans)
+        self.assertTrue(session.join_ik_ranges({left['end']['id'],right['start']['id']}))
+        self.view._timeline_curve_selected = {(0,3),(0,7)}
+        self.assertTrue(self.view.timeline_delete_selected_keys())
+        self.assertEqual(session.ik_spans,[dict(left,end=right['end'])])
+        self.assertEqual({frame for frame,row in session.keys_map('left_wrist').items() if row.get('ik_key')},{1,9})
+        self.assertTrue(session.undo())
+        self.view._timeline_curve_selected = {(0,7),(0,9)}
+        self.assertTrue(self.view.timeline_delete_selected_keys())
+        self.assertEqual(session.ik_spans,[left])
+
+    def test_regular_set_key_refines_a_yellow_block_and_leaves_an_unfinished_start_elsewhere(self):
+        session = self.session()
+        self.make_ik_range(session)
+        outer = deepcopy(session.ik_spans[0])
+        self.view.frame = 4
+        self.view._timeline_curve_axes_filter = {0}
+        self.view._timeline_on_set_key_clicked()
+        pending = deepcopy(next(span for span in session.ik_spans if 'end' not in span))
+        # Saved documents need not put completed ranges before pending starts.
+        session.rebuild(spans=[session.ik_spans[1],session.ik_spans[0]])
+        self.view._timeline_curve_axes_filter = {3}
+        self.view.frame = 2
+        self.view._timeline_on_set_key_clicked()
+        self.assertEqual(next(span for span in session.ik_spans if 'end' not in span),pending)
+        completed = sorted((span for span in session.ik_spans if 'end' in span),
+                           key=lambda span:span['start']['time'])
+        self.assertEqual(len(completed),2)
+        self.assertEqual(completed[0]['start'],outer['start'])
+        self.assertEqual(completed[-1]['end'],outer['end'])
+        self.assertEqual(completed[0]['end'],completed[1]['start'])
+        self.assertTrue(all('position_mask' not in span for span in completed))
+        row = session.keys_map('left_wrist')[2]
+        self.assertTrue(row['ik_key'])
+        self.assertEqual(row['ik_axis_mask'],[True]*6)
+        self.assertEqual(self.view._timeline_ik_boundary_label(2),'')
+        self.assertEqual(self.view._timeline_ik_boundary_label(4),'S')
+        self.assertEqual(corrections.read_document(session.path)['ik_spans'],session.ik_spans)
+        self.assertTrue(session.undo())
+        self.assertEqual(len(session.ik_spans),2)
+        self.assertTrue(session.redo())
+        self.assertEqual(len(session.ik_spans),3)
 
     def test_rejected_overlapping_ik_range_keeps_previous_draft_and_controls(self):
         session = self.session()
@@ -1323,14 +2172,17 @@ class CorrectionTests(unittest.TestCase):
     def test_deleting_one_ik_axis_removes_that_boundary_across_the_chain(self):
         session = self.session()
         self.make_ik_range(session)
+        retained = points(session.skeleton,session.draft,.15)
         self.select('left_elbow')
         self.view._timeline_curve_selected = {(3,1)}
         self.view._timeline_on_delete_key_clicked()
         for name in ('left_shoulder','left_elbow','left_wrist'):
             rows = session.keys_map(name)
-            self.assertEqual({frame for frame,row in rows.items() if row.get('ik_key')},{3})
+            self.assertFalse(any(row.get('ik_key') for row in rows.values()))
+            self.assertTrue(rows[3]['fk_key'])
             self.assertIn(2,rows)
         np.testing.assert_allclose(points(session.skeleton,session.draft,.1),points(session.skeleton,session.base,.1),atol=1e-8)
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.15),retained,atol=1e-8)
 
     def test_deleting_ik_control_reuses_remaining_bake_and_autosaves_without_graph_updates(self):
         session = self.session()
@@ -1361,7 +2213,50 @@ class CorrectionTests(unittest.TestCase):
         self.assertTrue(session.redo())
         self.assertIs(session.draft,after)
 
-    def test_deleting_end_ik_only_solves_the_remaining_pending_boundary(self):
+    def test_canceling_a_pair_restores_source_and_converts_the_remaining_start_pose_to_fk(self):
+        session = self.session()
+        self.make_ik_range(session)
+        expected = points(session.skeleton,session.draft,.05)
+        self.view._timeline_curve_selected = {(0,3)}
+        self.assertTrue(self.view.timeline_delete_selected_keys())
+        self.assertFalse(session.ik_spans)
+        self.assertFalse(self.view._timeline_ik_ranges())
+        self.assertFalse(any(row.get('ik_key') for row in session.keys_map('left_wrist').values()))
+        self.assertTrue(session.keys_map('left_wrist')[1]['fk_key'])
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.05),expected,atol=1e-8)
+        for stamp in (.1,.125,.15,.175,.2):
+            np.testing.assert_allclose(points(session.skeleton,session.draft,stamp),
+                                       points(session.skeleton,session.base,stamp),atol=1e-8)
+        restored = self.session()
+        self.assertFalse(restored.ik_spans)
+        np.testing.assert_allclose(points(restored.skeleton,restored.draft,.05),expected,atol=1e-8)
+        self.assertTrue(session.undo())
+        self.assertEqual(len(session.ik_spans),1)
+        self.assertTrue(session.redo())
+        self.assertFalse(session.ik_spans)
+
+    def test_canceling_body_ik_keeps_the_remaining_root_translation_as_an_ordinary_key(self):
+        session = self.session()
+        self.select('pelvis')
+        for frame,mode in ((1,'start'),(3,'end')):
+            self.view.frame = frame
+            pose = points(session.skeleton,session.draft,session.time())
+            pelvis = session.skeleton.joint_names.index('pelvis')
+            session.move('pelvis',pose[pelvis]+[0.,.03,0.])
+            self.assertTrue(session.key_ik('pelvis',mode=mode))
+        before = points(session.skeleton,session.draft,.05)
+        self.view._timeline_curve_selected = {(1,3)}
+        self.assertTrue(self.view.timeline_delete_selected_keys())
+        self.assertEqual(session.ik_spans,[])
+        np.testing.assert_allclose(points(session.skeleton,session.draft,.05),before,atol=1e-8)
+        row = session.keys_map('pelvis')[1]
+        self.assertTrue(row['fk_key'])
+        self.assertEqual(row['fk_position_axes'],[True]*3)
+        self.assertFalse(row.get('ik_key'))
+        restored = corrections.apply_document(session.skeleton,session.base,session.document())
+        np.testing.assert_allclose(points(session.skeleton,restored,.05),before,atol=1e-8)
+
+    def test_deleting_end_ik_keeps_the_remaining_pose_as_fk_without_rebaking_other_controls(self):
         session = self.session()
         self.make_ik_range(session,'left_wrist')
         self.make_ik_range(session,'right_wrist')
@@ -1370,9 +2265,9 @@ class CorrectionTests(unittest.TestCase):
         self.view._timeline_curve_selected = {(0,3)}
         with patch.object(corrections,'solve_ik_pose',wraps=corrections.solve_ik_pose) as solve:
             self.view._timeline_on_delete_key_clicked()
-            self.assertEqual(solve.call_count,1)
-            self.assertEqual(solve.call_args.args[2],'right_wrist')
-        expected = corrections.apply_ik_spans(session.skeleton,session.manual,session.ik_spans,session.fps)
+            self.assertEqual(solve.call_count,0)
+        self.assertEqual([span['joint'] for span in session.ik_spans],['left_wrist'])
+        expected = corrections.apply_document(session.skeleton,session.base,session.document())
         for time in (.05,.1,.15):
             np.testing.assert_allclose(points(session.skeleton,session.draft,time),
                                        points(session.skeleton,expected,time),atol=1e-8)
@@ -1485,6 +2380,149 @@ class CorrectionTests(unittest.TestCase):
         restored = self.session()
         self.assertEqual([span['joint'] for span in restored.ik_spans],['right_ankle'])
 
+    def test_reload_all_after_deselecting_clears_ik_fk_and_manual_edits_and_can_undo(self):
+        session = self.session()
+        self.assertEqual(session.panel.reload.text(),'Reload all')
+        self.make_ik_range(session)
+        self.make_ik_range(session,'right_ankle')
+        session.set_ik(False)
+        self.view.frame = 2
+        session.rotate('spine1',(12,23,34))
+        rows = session.keys_map('pelvis',timeline_space=False,include_ik=False)
+        rows[2]['xyz'][0] += .4
+        self.assertTrue(session.apply_keys('pelvis',rows,session.fps))
+        session.select('left_wrist')
+        before = session._state()
+        gl_view_mouse._handle_mouse_release_moderngl_pick_empty(self.view)
+        self.assertIsNone(session.reload_selection)
+        self.assertEqual(session.panel.reload.text(),'Reload all')
+        self.view._timeline_curve_axes_filter = {4}  # No joint: Reload all ignores a stale channel filter.
+        self.assertTrue(session.reload_joint())
+        self.assertFalse(session.tracks or session.rows or session.ik_spans or session.fk_keys)
+        for time in (0.,.05,.1,.15,.2):
+            np.testing.assert_allclose(points(session.skeleton,session.draft,time),
+                                       points(session.skeleton,session.base,time),atol=1e-8)
+        document = corrections.read_document(session.path)
+        self.assertFalse(document['tracks'] or document['timeline_rows'] or document['ik_spans'] or document['fk_keys'])
+        self.assertTrue(session.undo())
+        self.assertEqual(session.ik_spans,before['ik_spans'])
+        self.assertEqual(session.fk_keys,before['fk_keys'])
+        self.assertEqual(session.tracks,before['tracks'])
+        self.assertTrue(session.redo())
+        reopened = self.session()
+        self.assertFalse(reopened.tracks or reopened.rows or reopened.ik_spans or reopened.fk_keys)
+
+    def test_reload_selected_axes_restores_fk_and_deleted_input_keys_but_keeps_other_axes(self):
+        session = self.session()
+        session.set_ik(False)
+        session.select('pelvis')
+        self.view.frame = 2
+        session.rotate('pelvis',(12,23,34))
+        rows = session.keys_map('pelvis',timeline_space=False,include_ik=False)
+        for row in rows.values():
+            if 'xyz' in row:
+                row['xyz'] = (np.asarray(row['xyz'])+[.4,.5,.6]).tolist()
+        rows[2]['curve_handles'] = {'0':dict(mode='straight'),'1':dict(mode='straight')}
+        rows[2]['axis_mask'][0] = False
+        self.assertTrue(session.apply_keys('pelvis',rows,session.fps))
+        session.rotate('spine1',(5,6,7))
+        other = deepcopy(session.fk_keys['spine1'])
+        index = session.skeleton.joint_names.index('pelvis')
+        before = [evaluate_rig_at_time(session.skeleton,session.draft,t,loop=False).local_transforms[index]
+                  for t in (0.,.05,.1,.15,.2)]
+        self.view._timeline_on_axis_label_clicked(0)
+        self.view._timeline_on_axis_label_clicked(4,additive=True)
+        self.assertEqual(session.panel.reload.text(),'Reload Px, Ry')
+        self.assertTrue(session.reload_joint())
+        self.assertEqual(session.fk_keys['spine1'],other)
+        self.assertNotIn('0',session.rows['pelvis']['keys'][2]['curve_handles'])
+        self.assertIn('1',session.rows['pelvis']['keys'][2]['curve_handles'])
+        self.assertTrue(session.rows['pelvis']['keys'][2]['axis_mask'][0])
+        reopened = self.session()
+        for clip in (session.draft,reopened.draft):
+            for old,time in zip(before,(0.,.05,.1,.15,.2)):
+                source = evaluate_rig_at_time(session.skeleton,session.base,time,loop=False).local_transforms[index]
+                actual = evaluate_rig_at_time(session.skeleton,clip,time,loop=False).local_transforms[index]
+                np.testing.assert_allclose(actual.translation[0],source.translation[0],atol=1e-8)
+                np.testing.assert_allclose(actual.translation[1:],old.translation[1:],atol=1e-8)
+                angles = Rotation.from_quat(actual.rotation).as_euler('xyz',degrees=True)
+                original = Rotation.from_quat(source.rotation).as_euler('xyz',degrees=True)
+                previous = Rotation.from_quat(old.rotation).as_euler('xyz',degrees=True)
+                np.testing.assert_allclose(angles[1],original[1],atol=1e-7)
+                np.testing.assert_allclose(angles[[0,2]],previous[[0,2]],atol=1e-7)
+
+    def test_reload_one_ik_target_axis_preserves_other_targets_boundaries_and_independent_limbs(self):
+        session = self.session()
+        self.make_ik_range(session)
+        self.make_ik_range(session,'right_ankle')
+        other = deepcopy(session.ik_spans[1])
+        before = deepcopy(session.ik_spans[0])
+        session.select('left_wrist')
+        self.view._timeline_curve_axes_filter = {0}
+        self.assertTrue(session.reload_joint())
+        span = session.ik_spans[0]
+        self.assertEqual(span['position_mask'],[False,True,True])
+        self.assertEqual(session.ik_spans[1],other)
+        for boundary in ('start','end'):
+            self.assertEqual(span[boundary]['id'],before[boundary]['id'])
+            self.assertEqual(span[boundary]['target'],before[boundary]['target'])
+        rows = session.keys_map('left_wrist')
+        self.assertTrue(any(row.get('ik_axis_mask',[False]*6)[1] for row in rows.values()))
+        self.assertFalse(any(row.get('ik_axis_mask',[False]*6)[0] for row in rows.values()))
+        reopened = self.session()
+        self.assertEqual(reopened.ik_spans,session.ik_spans)
+        for time in (.05,.1,.15):
+            np.testing.assert_allclose(points(session.skeleton,reopened.draft,time),
+                                       points(session.skeleton,session.draft,time),atol=1e-7)
+
+    def test_reload_ik_rotation_axis_restores_input_in_preview_saved_draft_and_export(self):
+        session = self.session()
+        self.make_ik_range(session)
+        spans = deepcopy(session.ik_spans)
+        for boundary,angles in (('start',(12,23,34)),('end',(25,35,45))):
+            spans[0][boundary]['rotations']['left_wrist'] = Rotation.from_euler('xyz',angles,degrees=True).as_quat().tolist()
+        session.rebuild(spans=spans)
+        session.select('left_wrist')
+        index = session.skeleton.joint_names.index('left_wrist')
+        before = [Rotation.from_quat(evaluate_rig_at_time(session.skeleton,session.draft,t,loop=False)
+                  .local_transforms[index].rotation).as_euler('xyz',degrees=True) for t in (.05,.1,.15)]
+        self.view._timeline_curve_axes_filter = {3}
+        self.assertTrue(session.reload_joint())
+        self.assertEqual(session.ik_spans[0]['channel_masks']['left_wrist'],[True,True,True,False,True,True])
+        rows = session.keys_map('left_wrist')
+        self.assertFalse(any(row.get('ik_axis_mask',[False]*6)[3] for row in rows.values()))
+        self.assertTrue(any(row.get('ik_axis_mask',[False]*6)[4] for row in rows.values()))
+        exported = corrections.apply_document(session.skeleton,session.base,corrections.read_document(session.path))
+        for clip in (session.draft,exported):
+            for previous,time in zip(before,(.05,.1,.15)):
+                source = evaluate_rig_at_time(session.skeleton,session.base,time,loop=False).local_transforms[index]
+                actual = evaluate_rig_at_time(session.skeleton,clip,time,loop=False).local_transforms[index]
+                angles = Rotation.from_quat(actual.rotation).as_euler('xyz',degrees=True)
+                original = Rotation.from_quat(source.rotation).as_euler('xyz',degrees=True)
+                np.testing.assert_allclose(angles[0],original[0],atol=1e-7)
+                np.testing.assert_allclose(angles[1:],previous[1:],atol=1e-7)
+
+    def test_reload_all_ik_position_axes_retains_only_independent_endpoint_orientation(self):
+        session = self.session()
+        self.make_ik_range(session)
+        spans = deepcopy(session.ik_spans)
+        for boundary in ('start','end'):
+            spans[0][boundary]['rotations']['left_wrist'] = Rotation.from_euler('xyz',(12,23,34),degrees=True).as_quat().tolist()
+        session.rebuild(spans=spans)
+        session.select('left_wrist')
+        self.view._timeline_curve_axes_filter = {0,1,2}
+        self.assertTrue(session.reload_joint())
+        self.assertTrue(session.ik_spans[0]['rotation_only'])
+        exported = corrections.apply_document(session.skeleton,session.base,session.document())
+        index = session.skeleton.joint_names.index('left_wrist')
+        for clip in (session.draft,exported):
+            for time in (.05,.1,.15):
+                np.testing.assert_allclose(points(session.skeleton,clip,time)[index],
+                                           points(session.skeleton,session.base,time)[index],atol=1e-7)
+                angles = Rotation.from_quat(evaluate_rig_at_time(session.skeleton,clip,time,loop=False)
+                    .local_transforms[index].rotation).as_euler('xyz',degrees=True)
+                np.testing.assert_allclose(angles,(12,23,34),atol=1e-7)
+
     def test_infocard_embeds_entire_joint_hierarchy_and_selects_viewport_joint(self):
         session = self.session()
         host = QtWidgets.QWidget()
@@ -1512,6 +2550,24 @@ class CorrectionTests(unittest.TestCase):
 
 
 class CorrectionMathTests(unittest.TestCase):
+    def test_reload_track_axes_retains_subframe_input_keys_and_untouched_components(self):
+        skeleton,clip = fixture()
+        joint = 'pelvis'
+        source_track = deepcopy(next(track for track in clip.tracks if track.joint_name == joint))
+        edited_track = deepcopy(source_track)
+        source_track.rotation_keys.insert(1,QuatKeyframe(.025,tuple(
+            Rotation.from_euler('xyz',(10,20,30),degrees=True).as_quat())))
+        edited_track.rotation_keys.insert(1,QuatKeyframe(.025,tuple(
+            Rotation.from_euler('xyz',(40,50,60),degrees=True).as_quat())))
+        source = corrections.replace_clip_tracks(skeleton,clip,{joint:source_track})
+        edited = corrections.replace_clip_tracks(skeleton,clip,{joint:edited_track})
+        restored = corrections.reload_track_axes(skeleton,source,edited,joint,{4})
+        key = next(key for key in restored.rotation_keys if key.time == .025)
+        np.testing.assert_allclose(Rotation.from_quat(key.value).as_euler('xyz',degrees=True),(40,20,60),atol=1e-8)
+        self.assertEqual(restored.translation_keys,edited_track.translation_keys)
+        self.assertEqual(restored.scale_keys,edited_track.scale_keys)
+        self.assertEqual({key.time for key in restored.rotation_keys},{key.time for key in source_track.rotation_keys})
+
     def axis_range(self, joint='left_wrist', mask=None):
         from echograph.rigging.fbx_canonical import Vec3Keyframe
         skeleton,clip = fixture()
@@ -1554,6 +2610,42 @@ class CorrectionMathTests(unittest.TestCase):
                     np.testing.assert_allclose(points(skeleton,preview,time),
                                                points(skeleton,baked,time),atol=1e-7,
                                                err_msg=f'{joint} preview differs at {time}')
+
+    def test_independent_target_axes_compose_at_staggered_subframe_boundaries_in_preview_and_bake(self):
+        for joint in ('pelvis','left_wrist'):
+            with self.subTest(joint=joint):
+                skeleton,clip,template = self.axis_range(joint)
+                endpoint = skeleton.joint_names.index(joint)
+                spans = []
+                for axis,lo,hi,delta in ((1,.025,.175,.02),(0,.075,.15,.01),(2,.1,.2,.015)):
+                    span = deepcopy(template)
+                    span['position_mask'] = [index == axis for index in range(3)]
+                    for boundary,time in (('start',lo),('end',hi)):
+                        key = span[boundary]
+                        key.update(id=f'{axis}-{boundary}',time=time,
+                                   target=points(skeleton,clip,time)[endpoint].tolist())
+                        key['target'][axis] += delta
+                    spans.append(span)
+                cache = {}
+                baked = corrections.apply_ik_spans(skeleton,clip,spans,25.,cache=cache)
+                preview = corrections.preview_clip(skeleton,clip,spans,25.)
+                stamps = sorted({0.,.04,.061,.083,.097,.124,.149,.18,.2}|
+                    {key['time']+offset for span in spans for key in (span['start'],span['end'])
+                     for offset in (-2e-7,0.,2e-7) if 0 <= key['time']+offset <= .2})
+                for time in stamps:
+                    expected = points(skeleton,clip,time)[endpoint].copy()
+                    for span in spans:
+                        first,last = span['start'],span['end']
+                        if first['time'] <= time <= last['time']:
+                            axis = span['position_mask'].index(True)
+                            expected[axis] = np.interp(time,[first['time'],last['time']],
+                                                      [first['target'][axis],last['target'][axis]])
+                    np.testing.assert_allclose(points(skeleton,baked,time)[endpoint],expected,atol=2e-4,
+                                               err_msg=f'{joint} at {time}')
+                    np.testing.assert_allclose(points(skeleton,preview,time),points(skeleton,baked,time),atol=1e-7,
+                                               err_msg=f'{joint} preview at {time}')
+                with patch.object(corrections,'solve_ik_pose',side_effect=AssertionError('Rebaked unchanged ranges')):
+                    self.assertIs(corrections.apply_ik_spans(skeleton,clip,spans,25.,cache=cache),baked)
 
     def test_preview_and_scene_agree_for_adjacent_pelvis_ranges_with_an_internal_key(self):
         skeleton,clip,span = self.axis_range('pelvis')

@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtTest, QtWidgets
 
 from echograph.ui.gl_view import GraphGLView
 
@@ -38,13 +38,14 @@ class TimelineHeaderTests(unittest.TestCase):
         self.view._layout_timeline_panel()
         self.app.processEvents()
 
-    def test_controls_wrap_after_loop_and_restore_without_losing_state(self):
+    def test_controls_wrap_after_speed_and_restore_without_losing_state(self):
         view = self.view
         header = self.panel._header_layout
         primary = [header.primary.itemAt(i).widget() for i in range(header.primary.count())]
         secondary = [header.secondary.itemAt(i).widget() for i in range(header.secondary.count())
                      if header.secondary.itemAt(i).widget() is not None]
-        self.assertIs(primary[-1], view._timeline_loop_btn)
+        self.assertIs(primary[-1], view._timeline_speed_spin)
+        self.assertIn(view._timeline_loop_btn, secondary)
         self.assertEqual(primary.index(view._timeline_speed_spin),
                          primary.index(view._timeline_texture_seed_spin) + 2)
         self.assertEqual(secondary.index(view._timeline_cloth_btn),
@@ -76,9 +77,12 @@ class TimelineHeaderTests(unittest.TestCase):
                     self.assertEqual(self.panel.height(), original_height)
                     self.assertGreater(secondary[0].x(), primary[-1].geometry().right())
                 for i, widget in enumerate(primary + secondary):
+                    if widget.isHidden():
+                        continue
                     self.assertTrue(self.panel.rect().contains(widget.geometry()))
                     for other in (primary + secondary)[i + 1:]:
-                        self.assertFalse(widget.geometry().intersects(other.geometry()))
+                        if not other.isHidden():
+                            self.assertFalse(widget.geometry().intersects(other.geometry()))
                 self.assertEqual(view._timeline_texture_seed_spin.value(), 4321)
         # Reflow keeps the original controls and their signal connections.
         loop_enabled = view._timeline_loop_enabled
@@ -86,6 +90,63 @@ class TimelineHeaderTests(unittest.TestCase):
             view._timeline_loop_btn.click()
             self.assertEqual(view._timeline_loop_enabled, not loop_enabled)
             save.assert_called_once()
+
+    def test_every_toolbar_button_highlights_on_mouse_entry_and_clears_on_exit(self):
+        self.resize_timeline(1600)
+        self.panel.move(0, 0)
+        self.panel.show()
+        header = self.panel._header_layout
+        buttons = [row.itemAt(i).widget()
+                   for row in (header.primary, header.secondary)
+                   for i in range(row.count())
+                   if isinstance(row.itemAt(i).widget(), QtWidgets.QPushButton)]
+        self.assertEqual(len(buttons), 16)
+        buttons.append(self.view._timeline_back_btn)
+        self.view._timeline_back_btn.show()
+        self.app.processEvents()
+        window = self.host.windowHandle()
+        empty = QtCore.QPoint(self.host.width() - 2, self.host.height() - 2)
+
+        def move_to(point):
+            # Window-level input dispatches the real enter/leave sequence.
+            QtTest.QTest.mouseMove(window, point)
+            self.app.processEvents()
+
+        for button in buttons:
+            checked_states = (False, True) if button.isCheckable() else (False,)
+            for enabled in (True, False):
+                for checked in checked_states:
+                    with self.subTest(button=button.objectName(), enabled=enabled, checked=checked):
+                        blocker = QtCore.QSignalBlocker(button)
+                        button.setEnabled(enabled)
+                        button.setChecked(checked)
+                        del blocker
+                        move_to(empty)
+                        idle = button.grab().toImage()
+                        move_to(button.mapTo(self.host, button.rect().center()))
+                        hover = button.grab().toImage()
+                        self.assertNotEqual(idle, hover)
+                        move_to(empty)
+                        self.assertEqual(idle, button.grab().toImage())
+
+    def test_bracket_glyphs_keep_optical_alignment_and_their_background(self):
+        self.resize_timeline(1600)
+        self.panel.move(0, 0)
+        self.panel.show()
+        for button in (self.view._timeline_mark_in_btn, self.view._timeline_mark_out_btn):
+            with self.subTest(button=button.text()):
+                image = button.grab().toImage()
+                self.assertEqual(image.pixelColor(2, image.height() // 2).name(), '#1f2937')
+                if not QtGui.QFontMetrics(button.font()).inFont(button.text()):
+                    self.skipTest('This Qt platform has no font for bracket glyphs')
+                ink = [(x, y) for x in range(image.width()) for y in range(image.height())
+                       if min(image.pixelColor(x, y).red(), image.pixelColor(x, y).green(),
+                              image.pixelColor(x, y).blue()) > 150]
+                self.assertTrue(ink)
+                left, right = min(x for x, y in ink), max(x for x, y in ink)
+                top, bottom = min(y for x, y in ink), max(y for x, y in ink)
+                self.assertLessEqual(abs((left + right) - (image.width() - 1)), 1)
+                self.assertLessEqual(abs((top + bottom) - (image.height() + 1)), 1)
 
 
 if __name__ == '__main__':

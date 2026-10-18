@@ -12,7 +12,7 @@ import numpy as np
 from PySide6 import QtCore, QtTest, QtWidgets
 
 from echograph.model import GraphNode
-from echograph.motion.animation_corrections import read_document
+from echograph.motion.animation_corrections import read_timeline_range
 from echograph.motion.conversion import reconstruct_animation
 from echograph.motion.rig_preview import build_guide, preview_offsets
 from echograph.ui.gl_view import GraphGLView
@@ -231,7 +231,7 @@ class TimelineRangeControlsTests(unittest.TestCase):
         self.view._timeline_on_display_range_changed(100, 1000)
         bar = self.controls.bar
         left, right = bar.handle_positions()
-        with patch.object(self.session, 'save', wraps=self.session.save) as save:
+        with patch.object(self.session, 'save_timeline_range', wraps=self.session.save_timeline_range) as save:
             y = bar.height()//2
             QtTest.QTest.mousePress(bar, QtCore.Qt.LeftButton, pos=QtCore.QPoint(round(left), y))
             QtTest.QTest.mouseMove(bar, QtCore.QPoint(round(left+30), y))
@@ -265,7 +265,7 @@ class TimelineRangeControlsTests(unittest.TestCase):
         self.controls.end_spin.setValue(500)
         self.controls.view_start_spin.setValue(10)
         self.controls.view_end_spin.setValue(210)
-        saved = read_document(self.session.path)['timeline_range']
+        saved = read_timeline_range(self.session.path,self.session.source_sha)
         self.assertEqual(saved, dict(fps=30., start=0, end=500, view_start=10, view_end=210))
         self.session.finish()
         self.session = self.open_session()

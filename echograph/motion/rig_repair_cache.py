@@ -54,15 +54,19 @@ def repair_path(source, record):
 
 
 def find_repair(source, options=None):
+    """Find a verified repair, optionally trying settings signatures in order."""
     try:
         source_hash = file_signature(source)
-        for record in reversed(read_records(source)):
-            if record.get('source_sha') != source_hash or (options is not None and record.get('options_sha') != options):
-                continue
-            path = repair_path(source, record)
-            if path is not None and isinstance(record.get('report'), dict) and path.is_file():
-                if file_signature(path) == record.get('output_sha'):
-                    return record
+        records = read_records(source)
+        candidates = (None,) if options is None else ((options,) if isinstance(options,str) else tuple(options))
+        for signature in candidates:
+            for record in reversed(records):
+                if record.get('source_sha') != source_hash or (signature is not None and record.get('options_sha') != signature):
+                    continue
+                path = repair_path(source, record)
+                if path is not None and isinstance(record.get('report'), dict) and path.is_file():
+                    if file_signature(path) == record.get('output_sha'):
+                        return record
     except OSError:
         pass
     return None

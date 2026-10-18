@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 from scipy.optimize import minimize
 from scipy.spatial.transform import Rotation
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtTest, QtWidgets
 
 from echograph.model import GraphNode
 from echograph.motion.conversion import JOINT_NAMES, PARENTS, reconstruct_animation, write_bvh
@@ -203,6 +203,163 @@ class VolumeTests(unittest.TestCase):
 
 
 class RepairTests(unittest.TestCase):
+    def test_older_saved_repair_through_for_each_stays_recognized_before_and_after_preview(self):
+        from nodes.mocap_collection import spec as collection
+        from echograph.motion import rig_repair_cache
+        from unittest.mock import Mock
+        skeleton,clip,_,_ = fixture(2)
+        with tempfile.TemporaryDirectory() as folder:
+            source_path = Path(folder).resolve()/'motion.bvh'
+            spec.export_context(dict(skeleton=skeleton,clip=clip),source_path)
+            scene = Scene()
+            self.addCleanup(scene.clear)
+            source = scene.add_node(GraphNode('Input',kind='mocap_collection'),QtCore.QPointF())
+            collection.add_paths(source.model,[source_path],scene)
+            limiter = scene.add_node(GraphNode('Limiter',kind='rig_limiter'),QtCore.QPointF())
+            scene.add_edge('Input','Limiter')
+            scene._edges[-1].dst_port_name = 'animation'
+            with patch.object(spec,'run_repair',side_effect=lambda f,parent=None:f(lambda *args:None)):
+                spec.prepare_repair(limiter)
+            key = limiter.model._rig_limiter_cache[0]
+            metadata = rig_repair_cache.metadata_path(source_path)
+            saved = json.loads(metadata.read_text(encoding='utf-8'))
+            # Version 2 saved the same settings without the later Thorough
+            # repair option. This is the format in the reported workflow.
+            saved['repairs'][-1]['options_sha'] = rig_repair_cache.options_signature(key[2:-2]+(2,))
+            metadata.write_text(json.dumps(saved),encoding='utf-8')
+            before = metadata.read_bytes()
+            collection.refresh_repair_records(source.model,scene)
+            self.assertIn('rig_limiter',collection.entries(source.model)[0])
+            loop = SimpleNamespace(model=GraphNode('Loop',kind='for_each'),scene=lambda:scene)
+            scene._node_items['Loop'] = loop
+            scene.add_edge('Input','Loop')
+            scene._edges[-1].dst_port_name = 'source'
+            restored = scene.add_node(GraphNode('Restored',kind='rig_limiter',
+                params=json.loads(json.dumps(limiter.model.params))),QtCore.QPointF())
+            scene.add_edge('Loop','Restored')
+            scene._edges[-1].dst_port_name = 'animation'
+            controls = restored._plugin_proxies[0].widget()
+            window = SimpleNamespace(open_scene_assets=Mock(return_value=True),gl_view=None)
+            with patch.object(spec,'run_repair',side_effect=AssertionError('Saved repair must not rerun')):
+                with patch.object(spec,'resolve_context',side_effect=AssertionError('Color check evaluated animation')):
+                    controls.refresh()
+                    for _ in range(100):
+                        QtTest.QTest.qWait(10)
+                        if not controls.repair_button.property('repairPending'):
+                            break
+                self.assertFalse(controls.repair_button.property('repairPending'),controls.status.text())
+                with patch.object(scene,'views',return_value=[SimpleNamespace(window=lambda:window)]):
+                    controls.preview_button.click()
+                window.open_scene_assets.assert_called_once()
+                QtTest.QTest.qWait(100)
+                self.assertFalse(controls.repair_button.property('repairPending'),controls.status.text())
+                self.assertIn('rig_limiter',restored.model._rig_limiter_cache[1][0].metadata)
+                self.assertEqual(metadata.read_bytes(),before)
+                controls.thorough.setChecked(True)
+                spec.resolve_context(restored,[],[])
+                self.assertTrue(controls.repair_button.property('repairPending'))
+                controls.thorough.setChecked(False)
+                spec.resolve_context(restored,[],[])
+                self.assertFalse(controls.repair_button.property('repairPending'))
+                controls.collisions.setChecked(False)
+                spec.resolve_context(restored,[],[])
+                self.assertTrue(controls.repair_button.property('repairPending'))
+
+    def test_saved_repair_indicator_updates_after_late_connection_without_loading_animation(self):
+        from nodes.mocap_collection import spec as collection
+        from echograph.motion import rig_repair_cache
+        from threading import Event
+
+        class LinkedScene(Scene):
+            linksChanged = QtCore.Signal()
+
+        _, _, rotations, offsets = fixture(2)
+        with tempfile.TemporaryDirectory() as folder:
+            paths = [Path(folder).resolve()/name for name in ('repaired.bvh', 'unrepaired.bvh')]
+            for path in paths:
+                write_bvh(path, np.zeros((2, 22, 3)), 20, rotations, offsets)
+            scene = LinkedScene()
+            self.addCleanup(scene.clear)
+            source = scene.add_node(GraphNode('Input', kind='mocap_collection'), QtCore.QPointF())
+            collection.add_paths(source.model, paths, scene)
+            collection.save_state(source.model, collection.entries(source.model), 1, scene)
+            limiter = scene.add_node(GraphNode('Limiter', kind='rig_limiter'), QtCore.QPointF())
+            scene.add_edge('Input', 'Limiter')
+            scene._edges[-1].dst_port_name = 'animation'
+            with patch.object(spec, 'run_repair', side_effect=lambda f, parent=None: f(lambda *args: None)):
+                spec.prepare_repair(limiter)
+            self.assertIsNotNone(rig_repair_cache.find_repair(paths[0]))
+            later = scene.add_node(GraphNode('Later', kind='rig_limiter', params=json.loads(json.dumps(limiter.model.params))), QtCore.QPointF())
+            APP.processEvents()  # The initial widget timer fires before this node has edges.
+            controls = later._plugin_proxies[0].widget()
+            started, release = Event(), Event()
+            find_repair = rig_repair_cache.find_repair
+            worker_threads = []
+            def delayed_lookup(*args, **kwargs):
+                worker_threads.append(QtCore.QThread.currentThread() != APP.thread())
+                started.set()
+                release.wait(2.)
+                return find_repair(*args, **kwargs)
+            with patch.object(spec, 'resolve_context', side_effect=AssertionError('Color check evaluated the graph')), \
+                    patch.object(spec, 'run_repair', side_effect=AssertionError('Color check ran a repair')), \
+                    patch('echograph.rigging.bvh_ingest.ingest_bvh_animation_data',
+                          side_effect=AssertionError('Color check loaded animation')), \
+                    patch.object(rig_repair_cache, 'find_repair', side_effect=delayed_lookup):
+                scene.add_edge('Input', 'Later')
+                scene._edges[-1].dst_port_name = 'animation'
+                scene.linksChanged.emit()
+                for _ in range(50):
+                    QtTest.QTest.qWait(10)
+                    if started.is_set():
+                        break
+                try:
+                    self.assertTrue(started.is_set(), 'Connecting the node did not check for its saved repair')
+                    ticks = []
+                    QtCore.QTimer.singleShot(0, lambda: ticks.append(True))
+                    QtTest.QTest.qWait(20)
+                    self.assertTrue(ticks, 'Repair status blocked the UI event loop')
+                finally:
+                    release.set()
+                for _ in range(100):
+                    QtTest.QTest.qWait(10)
+                    if not controls.repair_button.property('repairPending'):
+                        break
+                self.assertFalse(controls.repair_button.property('repairPending'), controls.status.text())
+                self.assertTrue(worker_threads and all(worker_threads))
+                self.assertIsNone(getattr(later.model, '_rig_limiter_cache', None))
+                with patch.object(controls,'refresh',wraps=controls.refresh) as refresh:
+                    scene.paramChanged.emit('Unrelated',[])
+                    refresh.assert_not_called()
+                # A slow result for another take must not repaint the current
+                # take red after the user switches back to this saved repair.
+                started.clear()
+                release.clear()
+                collection.save_state(source.model, collection.entries(source.model), 2, scene)
+                for _ in range(50):
+                    QtTest.QTest.qWait(10)
+                    if started.is_set():
+                        break
+                try:
+                    self.assertTrue(started.is_set())
+                    collection.save_state(source.model, collection.entries(source.model), 1, scene)
+                finally:
+                    release.set()
+                states = []
+                spec.repair_status(later.model).changed.connect(
+                    lambda: states.append(spec.repair_status(later.model).pending))
+                for _ in range(100):
+                    QtTest.QTest.qWait(10)
+                    if controls._status_job is None and not controls._status_timer.isActive():
+                        break
+                self.assertFalse(controls.repair_button.property('repairPending'))
+                self.assertNotIn(True, states)
+                collection.save_state(source.model, collection.entries(source.model), 2, scene)
+                for _ in range(100):
+                    QtTest.QTest.qWait(10)
+                    if controls.repair_button.property('repairPending'):
+                        break
+                self.assertTrue(controls.repair_button.property('repairPending'))
+
     def test_collection_folder_rename_keeps_repair_linked_to_exact_bvh(self):
         from nodes.mocap_collection import spec as collection, review_data
         from echograph.motion import rig_repair_cache
@@ -322,7 +479,10 @@ class RepairTests(unittest.TestCase):
             restored_scene.add_edge('Input', 'Restored')
             restored_scene._edges[-1].dst_port_name = 'animation'
             with patch.object(spec, 'run_repair', side_effect=AssertionError('Saved repair must be reused')):
-                APP.processEvents()
+                for _ in range(100):
+                    QtTest.QTest.qWait(10)
+                    if not restored._plugin_proxies[0].widget().repair_button.property('repairPending'):
+                        break
                 self.assertFalse(restored._plugin_proxies[0].widget().repair_button.property('repairPending'))
                 current = spec.resolve_context(restored, [], [])
                 spec.prepare_repair(restored)
@@ -646,7 +806,8 @@ class RepairTests(unittest.TestCase):
         controls = limiter._plugin_proxies[0].widget()
         def rebuild(*args,**kwargs):
             delete(controls)
-        with patch.object(spec,'resolve_context',side_effect=rebuild):
+        with patch.object(spec,'_status_source',return_value=(False,'',None)), \
+                patch.object(spec,'resolve_context',side_effect=rebuild):
             controls.refresh()
         self.assertFalse(isValid(controls))
         APP.processEvents()  # The queued initial refresh must be cancelled with its widget.

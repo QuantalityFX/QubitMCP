@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_left, bisect_right
+from contextlib import contextmanager
 from copy import deepcopy
 import math
 import time
@@ -15,6 +17,37 @@ except Exception:
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
 from echograph.ui.fps_camera import FpsCamera
 from echograph.ui.gl_view_math import fps_scene_rot_from_forward as _gv_fps_scene_rot_from_forward
+from echograph.motion.curve_interpolation import curve_value, weighted_sides
+
+
+def paint_timeline_ik_boundary_label(painter,label,x,y,*,radius=4.,bounds=None):
+    """Draw a compact, readable boundary letter without changing the key marker."""
+    if not label:
+        return
+    painter.save()
+    font = painter.font()
+    font.setPixelSize(9)
+    font.setBold(True)
+    painter.setFont(font)
+    baseline = float(y)-radius-1.
+    metrics = painter.fontMetrics()
+    if bounds is not None:
+        bounds = QtCore.QRectF(bounds)
+        available = baseline-bounds.top()
+        while available >= 6 and metrics.capHeight() > available and font.pixelSize() > 6:
+            font.setPixelSize(font.pixelSize()-1)
+            painter.setFont(font)
+            metrics = painter.fontMetrics()
+    width = metrics.horizontalAdvance(label)
+    left = float(x)-width*.5
+    if bounds is not None:
+        left = max(bounds.left(),min(left,bounds.right()-width))
+    position = QtCore.QPointF(left,baseline)
+    painter.setPen(QtGui.QColor('#0f172a'))
+    painter.drawText(position+QtCore.QPointF(1.,1.),label)
+    painter.setPen(QtGui.QColor('#f8fafc'))
+    painter.drawText(position,label)
+    painter.restore()
 
 
 class TimelineKeyMarker(QtWidgets.QWidget):
@@ -72,6 +105,8 @@ class TimelineCorrectionKeys(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.Antialiasing,True)
         self.view._timeline_paint_ik_ranges(painter)
         selected = getattr(self.view,'_timeline_curve_selected',set()) or set()
+        labels = self.view._timeline_ik_boundary_labels()
+        boundary_points = []
         for axis,frame,x,y,_value in self.view._timeline_visible_row_key_points():
             chosen = (axis,frame) in selected
             color = '#fde047' if chosen else ('#ef4444','#22c55e','#3b82f6')[axis%3]
@@ -80,8 +115,13 @@ class TimelineCorrectionKeys(QtWidgets.QWidget):
             if self.view._timeline_key_is_ik(frame,axis):
                 painter.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(x,y-4),
                     QtCore.QPointF(x+4,y+4),QtCore.QPointF(x-4,y+4)]))
+                label = self.view._timeline_ik_boundary_label(frame,axis,labels=labels)
+                if label:
+                    boundary_points.append((label,x,y))
             else:
                 painter.drawEllipse(QtCore.QPointF(x,y),3.3,3.3)
+        for label,x,y in boundary_points:
+            paint_timeline_ik_boundary_label(painter,label,x,y,bounds=self.rect())
 
 
 class GraphGLTimelineModelMixin:
@@ -90,9 +130,9 @@ class GraphGLTimelineModelMixin:
         if correction is None:
             return []
         session,joint = correction
-        from echograph.motion.animation_corrections import ik_span_joints
-        preview = {row['ik_key']:frame for frame,row in (getattr(self,'_timeline_keys',{}) or {}).items()
-                   if row.get('ik_key')}
+        from echograph.motion.animation_corrections import ik_span_joints, ik_timeline_mask, timeline_ik_axis_keys
+        preview = {key:frame for frame,row in (getattr(self,'_timeline_keys',{}) or {}).items()
+                   if row.get('ik_key') for key in timeline_ik_axis_keys(row) if key}
         result = []
         for span in session.ik_spans:
             if 'end' not in span or joint not in ik_span_joints(session.skeleton,span):
@@ -104,8 +144,7 @@ class GraphGLTimelineModelMixin:
                     session.item.model.name,frame,allow_owner_key_mode=True)
                 frames.append(float(preview.get(key['id'],mapped if mapped is not None else frame)))
             endpoint = joint == span['joint']
-            axes = ([bool(value) and endpoint for value in span['position_mask']]+[not endpoint]*3
-                    if 'position_mask' in span else [endpoint]*3+[True]*3)
+            axes = ik_timeline_mask(span,joint)
             result.append((frames[0],frames[1],endpoint,axes) if include_axes else (frames[0],frames[1],endpoint))
         return result
 
@@ -163,24 +202,105 @@ class GraphGLTimelineModelMixin:
         row = (getattr(self,'_timeline_keys',{}) or {}).get(int(frame),{})
         return bool(row.get('ik_key')) and (axis is None or row.get('ik_axis_mask',[True]*6)[int(axis)])
 
+    def _timeline_ik_boundary_labels(self):
+        correction = self._timeline_correction_session()
+        if correction is None:
+            return {}
+        spans = correction[0].ik_spans
+        cached = getattr(self,'_timeline_ik_boundary_label_cache',None)
+        if cached is not None and cached[0] is spans:
+            return cached[1]
+        roles = {}
+        for span in spans:
+            roles.setdefault(span['start']['id'],set()).add('S')
+            if 'end' in span:
+                roles.setdefault(span['end']['id'],set()).add('E')
+        # Joined and refined ranges share their inner boundary IDs. Those
+        # keys are ordinary intermediate IK poses, not starts or ends.
+        labels = {key:next(iter(role)) for key,role in roles.items() if len(role) == 1}
+        self._timeline_ik_boundary_label_cache = (spans,labels)
+        return labels
+
+    def _timeline_ik_boundary_label(self,frame,axis=None,*,labels=None):
+        if not self._timeline_key_is_ik(frame,axis):
+            return ''
+        labels = self._timeline_ik_boundary_labels() if labels is None else labels
+        from echograph.motion.animation_corrections import timeline_ik_axis_keys
+        row = self._timeline_keys[int(frame)]
+        key = timeline_ik_axis_keys(row)[axis] if axis is not None else row['ik_key']
+        return labels.get(key,'')
+
+    def _timeline_selected_ik_key_ids(self):
+        from echograph.motion.animation_corrections import timeline_ik_axis_keys
+        rows = getattr(self,'_timeline_keys',{}) or {}
+        return {timeline_ik_axis_keys(rows[frame])[axis] for axis,frame in
+                (getattr(self,'_timeline_curve_selected',set()) or set())
+                if self._timeline_key_is_ik(frame,axis)}
+
+    def _timeline_join_selected_ik_ranges(self):
+        correction = self._timeline_correction_session()
+        if correction is None:
+            return False
+        session,_joint = correction
+        return session.join_ik_ranges(self._timeline_selected_ik_key_ids())
+
+    def _timeline_show_key_context_menu(self,parent,global_pos):
+        correction = self._timeline_correction_session()
+        if correction is None:
+            return False
+        from echograph.motion.animation_corrections import ik_gap_pair
+        from echograph.ui import hotkeys_config
+        session,_joint = correction
+        menu = QtWidgets.QMenu(parent)
+        menu.setToolTipsVisible(True)
+        action = menu.addAction('Join IK ranges')
+        action.setShortcut(QtGui.QKeySequence(hotkeys_config.keyseq('timeline_join_ik_ranges','Ctrl+J')))
+        action.setToolTip('Extend IK overwrite across the gap. Keep the selected End IK and next Start IK as intermediate IK keys.')
+        try:
+            ik_gap_pair(session.ik_spans,self._timeline_selected_ik_key_ids())
+        except ValueError as exc:
+            action.setEnabled(False)
+            action.setToolTip(str(exc))
+            reason = QtWidgets.QLabel(str(exc))
+            reason.setTextFormat(QtCore.Qt.PlainText)
+            reason.setWordWrap(True)
+            reason.setFixedWidth(280)
+            reason.setStyleSheet('color:#94a3b8; padding:6px 10px;')
+            reason_action = QtWidgets.QWidgetAction(menu)
+            reason_action.setDefaultWidget(reason)
+            menu.addAction(reason_action)
+        action.triggered.connect(lambda _checked=False:self._timeline_join_selected_ik_ranges())
+        try:
+            menu.exec(global_pos)
+        finally:
+            menu.deleteLater()
+        return True
+
     def _timeline_ik_drag_selection(self,selected):
+        from echograph.motion.animation_corrections import timeline_ik_axis_keys, set_timeline_ik_axis_keys
         metadata = {}
         expanded = set(selected)
+        selected_ids = {}
         for axis,frame in selected:
             row = (getattr(self,'_timeline_keys',{}) or {}).get(frame,{})
             if self._timeline_key_is_ik(frame,axis):
+                selected_ids.setdefault(frame,set()).add(timeline_ik_axis_keys(row)[axis])
+            elif row.get('fk_key') or any(row.get('fk_position_axes',[])):
                 metadata[frame] = deepcopy(row)
-                mask = row.get('ik_axis_mask',row.get('axis_mask',[True]*6))
-                if not any(mask[3:6]):
-                    metadata[frame].pop('fk_key',None)
-                expanded.update((index,frame) for index,keyed in enumerate(mask) if keyed)
-            elif row.get('fk_key'):
-                metadata[frame] = deepcopy(row)
-                for field in ('ik_key','ik_control','ik_axis_mask'):
+                for field in ('ik_key','ik_control','ik_axis_mask','ik_axis_keys'):
                     metadata[frame].pop(field,None)
+        for frame,ids in selected_ids.items():
+            row = (getattr(self,'_timeline_keys',{}) or {})[frame]
+            metadata[frame] = deepcopy(row)
+            keys = [key if key in ids else None for key in timeline_ik_axis_keys(row)]
+            set_timeline_ik_axis_keys(metadata[frame],keys)
+            if not any(keys[3:6]):
+                metadata[frame].pop('fk_key',None)
+            expanded.update((axis,frame) for axis,key in enumerate(keys) if key)
         return expanded,metadata
 
     def _timeline_clamp_ik_drag(self,delta,metadata):
+        from echograph.motion.animation_corrections import timeline_ik_axis_keys
         correction = self._timeline_correction_session() if metadata else None
         if correction is None:
             return delta
@@ -189,13 +309,16 @@ class GraphGLTimelineModelMixin:
         mapped = self._timeline_owner_timeline_frame_from_source_frame(session.item.model.name,end,allow_owner_key_mode=True)
         end = math.floor((mapped if mapped is not None else end)+1e-8)
         lower,upper = -min(metadata),max(0,end-max(metadata))
-        moving = {row['ik_key'] for row in metadata.values() if row.get('ik_key')}
-        stationary = [frame for frame,row in (getattr(self,'_timeline_keys',{}) or {}).items()
-                      if row.get('ik_key') and row['ik_key'] not in moving]
+        moving = {key for row in metadata.values() for key in timeline_ik_axis_keys(row) if key}
         for source,row in metadata.items():
             if not row.get('ik_key'):
                 continue
-            for frame in stationary:
+            axes = timeline_ik_axis_keys(row)
+            for frame,other in (getattr(self,'_timeline_keys',{}) or {}).items():
+                if not other.get('ik_key'):
+                    continue
+                if not any(a and b and b not in moving for a,b in zip(axes,timeline_ik_axis_keys(other))):
+                    continue
                 if frame < source:
                     lower = max(lower,frame+1-source)
                 elif frame > source:
@@ -203,17 +326,27 @@ class GraphGLTimelineModelMixin:
         return max(lower,min(delta,upper)) if lower <= upper else 0
 
     @staticmethod
-    def _timeline_move_ik_metadata(destination,original):
-        if original is not None and original.get('fk_key'):
+    def _timeline_move_ik_metadata(destination,original,axis=None):
+        from echograph.motion.animation_corrections import timeline_ik_axis_keys, set_timeline_ik_axis_keys
+        if (original is not None and original.get('fk_key') and
+                (axis is None or axis >= 3 and original.get('fk_rotation_axes',[True]*3)[axis-3])):
             destination['fk_key'] = True
-        if original is not None and original.get('ik_key') and destination.get('ik_key') != original['ik_key']:
-            mask = list(original.get('ik_axis_mask',original.get('axis_mask',[True]*6)))
+        if original is not None and axis is not None:
+            for field,offset in (('fk_position_axes',0),('fk_rotation_axes',3)):
+                if offset <= axis < offset+3 and original.get(field,[False]*3)[axis-offset]:
+                    mask = list(destination.get(field,[False]*3))
+                    mask[axis-offset] = True
+                    destination[field] = mask
+        if original is not None and original.get('ik_key'):
+            incoming = timeline_ik_axis_keys(original)
+            previous = timeline_ik_axis_keys(destination)
+            mask = [bool(key and key != previous[index]) for index,key in enumerate(incoming)]
             for field,offset in (('xyz',0),('rxyz',3)):
                 values = destination.get(field,original[field])
                 destination[field] = [original[field][axis] if mask[offset+axis] else values[axis]
                                       for axis in range(3)]
-            destination.update(ik_key=original['ik_key'],ik_control=original['ik_control'],
-                               ik_axis_mask=mask,axis_mask=list(destination.get('axis_mask',[False]*6)))
+            destination.update(ik_control=original['ik_control'],axis_mask=list(destination.get('axis_mask',[False]*6)))
+            set_timeline_ik_axis_keys(destination,[a or b for a,b in zip(incoming,previous)])
             # Source-key initialization must not reset the IK axes as each
             # component is restored onto an existing source frame.
             destination.pop('fbx_clip_key',None)
@@ -221,11 +354,12 @@ class GraphGLTimelineModelMixin:
 
     @staticmethod
     def _timeline_clear_moved_ik_metadata(keys,metadata):
+        from echograph.motion.animation_corrections import timeline_ik_axis_keys, set_timeline_ik_axis_keys
         for frame,original in metadata.items():
             row = keys.get(frame)
-            if isinstance(row,dict) and original.get('ik_key') and row.get('ik_key') == original['ik_key']:
-                for field in ('ik_key','ik_control','ik_axis_mask'):
-                    row.pop(field,None)
+            if isinstance(row,dict) and original.get('ik_key'):
+                moving = {key for key in timeline_ik_axis_keys(original) if key}
+                set_timeline_ik_axis_keys(row,[key if key not in moving else None for key in timeline_ik_axis_keys(row)])
 
     def _timeline_current_frame(self) -> int:
         spin = getattr(self, "_timeline_frame_spin", None)
@@ -1816,6 +1950,8 @@ class GraphGLTimelineModelMixin:
                             "in": [float(in_raw[0]), float(in_raw[1])],
                             "out": [float(out_raw[0]), float(out_raw[1])],
                         }
+                        if weighted_sides(av):
+                            ch_out[str(axis_idx)]['weighted'] = weighted_sides(av)
                     except Exception:
                         continue
                 if ch_out:
@@ -2133,6 +2269,8 @@ class GraphGLTimelineModelMixin:
                             "in": [float(in_raw[0]), float(in_raw[1])],
                             "out": [float(out_raw[0]), float(out_raw[1])],
                         }
+                        if weighted_sides(av):
+                            ch_out[str(axis_idx)]['weighted'] = weighted_sides(av)
                     except Exception:
                         continue
                 if ch_out:
@@ -3364,6 +3502,24 @@ class GraphGLTimelineModelMixin:
                 value = float(str(widget.text()).strip())
             except Exception:
                 return
+        correction = self._timeline_correction_session()
+        if correction is not None:
+            session,joint = correction
+            if not session.ik_enabled or joint not in session.endpoints:
+                from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
+                pose = evaluate_rig_at_time(session.skeleton,session.draft,session.time(),loop=False)
+                transform = pose.local_transforms[session.skeleton.joint_names.index(joint)]
+                if idx < 3:
+                    xyz = list(transform.translation)
+                    xyz[idx] = value
+                    session.key_fk(joint,axes=[idx],translation=xyz,save=True)
+                else:
+                    from scipy.spatial.transform import Rotation
+                    angles = Rotation.from_quat(transform.rotation).as_euler('xyz',degrees=True)
+                    angles[idx-3] = value
+                    session.key_fk(joint,axes=[idx],rotation=Rotation.from_euler('xyz',angles,degrees=True).as_quat(),save=True)
+                self.update()
+                return
         try:
             frame = max(0, int(self._timeline_current_frame()))
         except Exception:
@@ -3674,13 +3830,19 @@ class GraphGLTimelineModelMixin:
             start = 0
         end = int(start + local_max)
         first_major = int(((start + 14) // 15) * 15)
+        frame_labels = list(range(first_major, end + 1, 15))
+        if not frame_labels or frame_labels[0] != start:
+            frame_labels.insert(0, start)
         majors = []
-        for frame_val in range(first_major, end + 1, 15):
+        for frame_val in frame_labels:
             try:
                 local = int(frame_val - start)
                 x = self._timeline_slider_value_to_x(local, slider=slider)
                 if x is None:
                     continue
+                # The curve view reserves space for its value labels beside
+                # the slider; ruler labels live in the wider parent widget.
+                x = ticks_frame.mapFromGlobal(slider.mapToGlobal(QtCore.QPoint(int(x), 0))).x()
                 majors.append((int(frame_val), int(x)))
             except Exception:
                 continue
@@ -3716,7 +3878,9 @@ class GraphGLTimelineModelMixin:
             try:
                 lb.setText(text)
                 lb.setGeometry(int(round(float(x) - (float(width) * 0.5))), 0, int(width), int(height))
-                lb.show()
+                # Keep the starting-frame number readable beside a nearby
+                # multiple of 15 (for example, starting at frame 14).
+                lb.setVisible(i == 0 or lb.x() > labels[0].geometry().right()+3)
             except Exception:
                 pass
         self._timeline_tick_labels = labels
@@ -3808,6 +3972,13 @@ class GraphGLTimelineModelMixin:
         mask[idx] = bool(keyed)
         entry["axis_mask"] = mask
         if not bool(keyed):
+            field,component = ('fk_position_axes',idx) if idx < 3 else ('fk_rotation_axes',idx-3)
+            if field in entry:
+                authored = list(entry[field])
+                authored[component] = False
+                entry[field] = authored
+                if field == 'fk_rotation_axes' and not any(authored):
+                    entry.pop('fk_key',None)
             try:
                 self._timeline_remove_entry_axis_handles(entry, int(idx))
             except Exception:
@@ -3937,6 +4108,18 @@ class GraphGLTimelineModelMixin:
         axes = [i for i in range(6) if bool(mask[i])]
         return tuple(axes)
 
+    @contextmanager
+    def _timeline_curve_read_scope(self):
+        """Share curve indexes within one read operation, never across edits."""
+        if getattr(self, '_timeline_curve_read_cache', None) is not None:
+            yield
+            return
+        self._timeline_curve_read_cache = dict(points={}, frames={}, neighbors={}, handles={}, track_x={})
+        try:
+            yield
+        finally:
+            self._timeline_curve_read_cache = None
+
     def _timeline_axis_key_points(self, axis: int) -> List[Tuple[int, float]]:
         try:
             idx = int(axis)
@@ -3944,6 +4127,9 @@ class GraphGLTimelineModelMixin:
             return []
         if idx < 0 or idx > 5:
             return []
+        cache = getattr(self, '_timeline_curve_read_cache', None)
+        if cache is not None and idx in cache['points']:
+            return cache['points'][idx]
         keys = getattr(self, "_timeline_keys", {}) or {}
         try:
             items = sorted(keys.items(), key=lambda kv: int(kv[0]))
@@ -3961,6 +4147,9 @@ class GraphGLTimelineModelMixin:
             if val is None:
                 continue
             out.append((frame, float(val)))
+        if cache is not None:
+            cache['points'][idx] = out
+            cache['frames'][idx] = [frame for frame, _ in out]
         return out
 
     def _timeline_axis_neighbor_frames(self, axis: int, frame: int) -> Tuple[Optional[int], Optional[int]]:
@@ -3989,16 +4178,18 @@ class GraphGLTimelineModelMixin:
             cur = int(frame)
         except Exception:
             return (None, None)
-        prev_pt = None
-        next_pt = None
-        for ff, vv in self._timeline_axis_key_points(idx):
-            if int(ff) < int(cur):
-                prev_pt = (int(ff), float(vv))
-                continue
-            if int(ff) > int(cur):
-                next_pt = (int(ff), float(vv))
-                break
-        return (prev_pt, next_pt)
+        cache = getattr(self, '_timeline_curve_read_cache', None)
+        key = (idx, cur)
+        if cache is not None and key in cache['neighbors']:
+            return cache['neighbors'][key]
+        points = self._timeline_axis_key_points(idx)
+        frames = cache['frames'].get(idx, []) if cache is not None else [ff for ff, _ in points]
+        before, after = bisect_left(frames, cur)-1, bisect_right(frames, cur)
+        result = (points[before] if before >= 0 else None,
+                  points[after] if after < len(points) else None)
+        if cache is not None:
+            cache['neighbors'][key] = result
+        return result
 
     def _timeline_default_axis_handles(
         self,
@@ -4078,16 +4269,8 @@ class GraphGLTimelineModelMixin:
             base = 3.0
         base = max(0.6, min(4.0, float(base)))
         out_dy = float(tangent) * float(base)
-        max_dy = 4.0
-        try:
-            vmin = float(getattr(self, "_timeline_curve_min", -5.0))
-            vmax = float(getattr(self, "_timeline_curve_max", 5.0))
-            if vmax < vmin:
-                vmin, vmax = vmax, vmin
-            vspan = max(1.0, float(vmax) - float(vmin))
-            max_dy = max(1.0, min(6.0, float(vspan) * 0.45))
-        except Exception:
-            max_dy = 4.0
+        # Graph zoom is a view setting; it must not change implicit tangents.
+        max_dy = 4.5
         out_dy = max(-float(max_dy), min(float(max_dy), float(out_dy)))
         return {"mode": "tied", "in": (-float(base), -float(out_dy)), "out": (float(base), float(out_dy))}
 
@@ -4100,44 +4283,22 @@ class GraphGLTimelineModelMixin:
         mode: str,
     ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
         try:
-            idx = int(axis)
-            cur = int(frame)
             inx = float(in_vec[0])
             iny = float(in_vec[1])
             outx = float(out_vec[0])
             outy = float(out_vec[1])
         except Exception:
             return ((-3.0, 0.0), (3.0, 0.0))
-        prev_frame, next_frame = self._timeline_axis_neighbor_frames(idx, cur)
-        min_len = 0.05
-        max_len = 8.0
-        in_limit = max_len
-        out_limit = max_len
-        try:
-            if prev_frame is not None:
-                in_limit = min(float(max_len), max(float(min_len), float(cur - int(prev_frame)) * 0.49))
-            if next_frame is not None:
-                out_limit = min(float(max_len), max(float(min_len), float(int(next_frame) - cur) * 0.49))
-        except Exception:
-            in_limit = max_len
-            out_limit = max_len
         if str(mode or "tied").strip().lower() != "untied":
-            src_x = abs(float(outx))
+            src_x = max(0.,float(outx))
             src_y = float(outy)
-            if src_x <= 1.0e-6:
-                src_x = abs(float(inx))
-                src_y = -float(iny)
-            lim = min(float(in_limit), float(out_limit))
-            src_x = max(float(min_len), min(float(lim), float(src_x)))
             outx = float(src_x)
             outy = float(src_y)
             inx = -float(src_x)
             iny = -float(src_y)
         else:
-            in_mag = abs(float(inx))
-            out_mag = abs(float(outx))
-            in_mag = max(float(min_len), min(float(in_limit), float(in_mag)))
-            out_mag = max(float(min_len), min(float(out_limit), float(out_mag)))
+            in_mag = max(0.,-float(inx))
+            out_mag = max(0.,float(outx))
             inx = -float(in_mag)
             outx = float(out_mag)
         return ((float(inx), float(iny)), (float(outx), float(outy)))
@@ -4198,11 +4359,14 @@ class GraphGLTimelineModelMixin:
         if not (isinstance(out_raw, (list, tuple)) and len(out_raw) >= 2):
             return None
         try:
-            return {
+            result = {
                 "mode": mode,
                 "in": [float(in_raw[0]), float(in_raw[1])],
                 "out": [float(out_raw[0]), float(out_raw[1])],
             }
+            if weighted_sides(raw):
+                result['weighted'] = weighted_sides(raw)
+            return result
         except Exception:
             return None
 
@@ -4214,6 +4378,7 @@ class GraphGLTimelineModelMixin:
         mode: str,
         in_vec: Tuple[float, float],
         out_vec: Tuple[float, float],
+        *, weighted=None,
     ) -> Dict[str, object]:
         if not isinstance(entry, dict):
             return {"mode": "tied", "in": (-3.0, 0.0), "out": (3.0, 0.0)}
@@ -4233,12 +4398,15 @@ class GraphGLTimelineModelMixin:
         cmap = self._timeline_entry_curve_handles_dict(entry, create=True)
         if not isinstance(cmap, dict):
             return {"mode": mode_norm, "in": in_v, "out": out_v}
+        sides = weighted_sides(cmap.get(str(idx),{})) if weighted is None else weighted
         cmap[str(idx)] = {
             "mode": str(mode_norm),
             "in": [float(in_v[0]), float(in_v[1])],
             "out": [float(out_v[0]), float(out_v[1])],
         }
-        return {"mode": str(mode_norm), "in": in_v, "out": out_v}
+        if sides:
+            cmap[str(idx)]['weighted'] = list(sides)
+        return {**cmap[str(idx)],'in':in_v,'out':out_v}
 
     def _timeline_initialize_entry_axis_handle_if_missing(
         self,
@@ -4315,6 +4483,7 @@ class GraphGLTimelineModelMixin:
         mode = "tied"
         in_vec = None
         out_vec = None
+        raw = None
         cmap = self._timeline_entry_curve_handles_dict(entry, create=False)
         if isinstance(cmap, dict):
             raw = cmap.get(str(idx))
@@ -4347,8 +4516,9 @@ class GraphGLTimelineModelMixin:
                     (0.0, 0.0),
                 )
             return {"mode": "straight", "in": (0.0, 0.0), "out": (0.0, 0.0)}
-        key_val = self._timeline_axis_value_for_entry(entry, idx)
-        default_pair = self._timeline_default_axis_handles(idx, frm, key_value=key_val)
+        if in_vec is None or out_vec is None:
+            key_val = self._timeline_axis_value_for_entry(entry, idx)
+            default_pair = self._timeline_default_axis_handles(idx, frm, key_value=key_val)
         if in_vec is None:
             in_vec = tuple(default_pair.get("in", (-3.0, 0.0)))
         if out_vec is None:
@@ -4356,7 +4526,10 @@ class GraphGLTimelineModelMixin:
         if create:
             return self._timeline_set_entry_axis_handles(entry, idx, frm, mode, in_vec, out_vec)
         in_v, out_v = self._timeline_clamp_axis_handle_pair(idx, frm, in_vec, out_vec, mode)
-        return {"mode": mode, "in": in_v, "out": out_v}
+        result = {"mode": mode, "in": in_v, "out": out_v}
+        if isinstance(raw,dict) and weighted_sides(raw):
+            result['weighted'] = weighted_sides(raw)
+        return result
 
     def _timeline_axis_handles_for_key(self, axis: int, frame: int, *, create: bool = False):
         try:
@@ -4364,10 +4537,17 @@ class GraphGLTimelineModelMixin:
             frm = int(frame)
         except Exception:
             return None
+        cache = getattr(self, '_timeline_curve_read_cache', None) if not create else None
+        key = (idx, frm)
+        if cache is not None and key in cache['handles']:
+            return cache['handles'][key]
         entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(frm))
         if not isinstance(entry, dict):
             return None
-        return self._timeline_entry_axis_handles(entry, idx, frm, create=bool(create))
+        handles = self._timeline_entry_axis_handles(entry, idx, frm, create=bool(create))
+        if cache is not None:
+            cache['handles'][key] = handles
+        return handles
 
     def _timeline_axis_handle_mode_for_key(self, axis: int, frame: int) -> str:
         h = self._timeline_axis_handles_for_key(axis, frame, create=False)
@@ -4419,14 +4599,17 @@ class GraphGLTimelineModelMixin:
         in_v = tuple(prev.get("in", (-3.0, 0.0)))
         out_v = tuple(prev.get("out", (3.0, 0.0)))
         if side_norm == "in":
-            in_v = (float(hx), float(hy))
+            in_v = (min(0.,float(hx)), float(hy))
             if mode == "tied":
-                out_v = (-float(hx), -float(hy))
+                out_v = (-in_v[0], -in_v[1])
         else:
-            out_v = (float(hx), float(hy))
+            out_v = (max(0.,float(hx)), float(hy))
             if mode == "tied":
-                in_v = (-float(hx), -float(hy))
-        newv = self._timeline_set_entry_axis_handles(entry, idx, frm, mode, in_v, out_v)
+                in_v = (-out_v[0], -out_v[1])
+        sides = set(weighted_sides(prev))
+        sides.update(('in','out') if mode == 'tied' else (side_norm,))
+        newv = self._timeline_set_entry_axis_handles(entry, idx, frm, mode, in_v, out_v,
+                                                   weighted=[side for side in ('in','out') if side in sides])
         keys[int(frm)] = entry
         self._timeline_keys = keys
         changed = True
@@ -4439,6 +4622,7 @@ class GraphGLTimelineModelMixin:
             new_mode = str(newv.get("mode", "tied") or "tied")
             changed = (
                 old_mode != new_mode
+                or weighted_sides(prev) != weighted_sides(newv)
                 or abs(float(old_in[0]) - float(new_in[0])) > 1.0e-6
                 or abs(float(old_in[1]) - float(new_in[1])) > 1.0e-6
                 or abs(float(old_out[0]) - float(new_out[0])) > 1.0e-6
@@ -4506,6 +4690,11 @@ class GraphGLTimelineModelMixin:
                 h = self._timeline_entry_axis_handles(entry, int(axis), int(frame), create=True)
                 if not isinstance(h, dict):
                     continue
+                if h.get('mode') == 'straight' or not any(abs(float(value)) > 1e-12
+                        for side in ('in','out') for value in h.get(side,(0.,0.))):
+                    # Straight/collapsed tangents have both handles at the key.
+                    # Give Untie two distinct, pickable handles to work with.
+                    h = self._timeline_default_axis_handles(int(axis),int(frame),key_value=key_val)
                 in_v = tuple(h.get("in", (-3.0, 0.0)))
                 out_v = tuple(h.get("out", (3.0, 0.0)))
             self._timeline_set_entry_axis_handles(
@@ -4680,34 +4869,7 @@ class GraphGLTimelineModelMixin:
                 int(f2),
                 key_value=float(v2),
             )
-            try:
-                out_dx, out_dy = tuple(h1.get("out", (3.0, 0.0)))
-            except Exception:
-                out_dx, out_dy = (3.0, 0.0)
-            try:
-                in_dx, in_dy = tuple(h2.get("in", (-3.0, 0.0)))
-            except Exception:
-                in_dx, in_dy = (-3.0, 0.0)
-            try:
-                m1 = float(out_dy) / float(out_dx) if abs(float(out_dx)) > 1.0e-6 else 0.0
-            except Exception:
-                m1 = 0.0
-            try:
-                m2 = float(in_dy) / float(in_dx) if abs(float(in_dx)) > 1.0e-6 else 0.0
-            except Exception:
-                m2 = 0.0
-            u2 = u * u
-            u3 = u2 * u
-            h00 = (2.0 * u3) - (3.0 * u2) + 1.0
-            h10 = u3 - (2.0 * u2) + u
-            h01 = (-2.0 * u3) + (3.0 * u2)
-            h11 = u3 - u2
-            return (
-                (h00 * float(v1))
-                + (h10 * span * float(m1))
-                + (h01 * float(v2))
-                + (h11 * span * float(m2))
-            )
+            return curve_value(float(f1),float(f2),float(v1),float(v2),tframe,h1,h2)
         return None
 
     def _timeline_eval_frame_values(self, frame: float) -> Tuple[Optional[Tuple[float, float, float]], Optional[Tuple[float, float, float]]]:
@@ -4830,19 +4992,44 @@ class GraphGLTimelineModelMixin:
         except Exception:
             return None
 
+    def _timeline_slider_x_to_value(self, x_slider: float, *, slider=None) -> Optional[int]:
+        slider = slider if slider is not None else getattr(self, '_timeline_frame_slider', None)
+        if slider is None:
+            return None
+        minimum, maximum = int(slider.minimum()), int(slider.maximum())
+        first = self._timeline_slider_value_to_x(minimum, slider=slider)
+        last = self._timeline_slider_value_to_x(maximum, slider=slider)
+        if first is None or last is None:
+            return None
+        if first == last:
+            return minimum
+        # The icon handle's styled width can differ from PM_SliderLength.
+        # Invert the actual painted endpoints so clicks match every frame.
+        span = abs(last-first)
+        position = round((float(x_slider)-first)*(1 if last > first else -1))
+        return int(QtWidgets.QStyle.sliderValueFromPosition(
+            minimum, maximum, max(0, min(span, position)), span))
+
     def _timeline_slider_to_tracks_x(self, local_frame: int) -> Optional[int]:
         tracks = getattr(self, "_timeline_tracks_frame", None)
         slider = getattr(self, "_timeline_frame_slider", None)
         if tracks is None or slider is None:
             return None
         try:
+            cache = getattr(self, '_timeline_curve_read_cache', None)
+            frame = int(local_frame)
+            if cache is not None and frame in cache['track_x']:
+                return cache['track_x'][frame]
             x_slider = self._timeline_slider_value_to_x(int(local_frame), slider=slider)
             if x_slider is None:
                 return None
             gx = slider.mapToGlobal(QtCore.QPoint(int(x_slider), 0))
             x = int(tracks.mapFromGlobal(gx).x())
             width = int(max(1, tracks.width()))
-            return max(0, min(width - 1, int(x)))
+            x = max(0, min(width - 1, int(x)))
+            if cache is not None:
+                cache['track_x'][frame] = x
+            return x
         except Exception:
             return None
 
@@ -4854,47 +5041,7 @@ class GraphGLTimelineModelMixin:
         try:
             gx = tracks.mapToGlobal(QtCore.QPoint(int(x_tracks), 0))
             sx = int(slider.mapFromGlobal(gx).x())
-            opt = QtWidgets.QStyleOptionSlider()
-            slider.initStyleOption(opt)
-            style = slider.style()
-            groove = style.subControlRect(
-                QtWidgets.QStyle.CC_Slider,
-                opt,
-                QtWidgets.QStyle.SC_SliderGroove,
-                slider,
-            )
-            span = int(
-                max(
-                    1,
-                    style.pixelMetric(
-                        QtWidgets.QStyle.PM_SliderSpaceAvailable,
-                        opt,
-                        slider,
-                    ),
-                )
-            )
-            slider_len = int(
-                max(
-                    1,
-                    style.pixelMetric(
-                        QtWidgets.QStyle.PM_SliderLength,
-                        opt,
-                        slider,
-                    ),
-                )
-            )
-            pos = int(round(float(sx) - float(groove.left()) - (float(slider_len) * 0.5)))
-            pos = max(0, min(span, pos))
-            value = int(
-                QtWidgets.QStyle.sliderValueFromPosition(
-                    int(slider.minimum()),
-                    int(slider.maximum()),
-                    int(pos),
-                    int(span),
-                    bool(getattr(opt, "upsideDown", False)),
-                )
-            )
-            return max(int(slider.minimum()), min(int(slider.maximum()), value))
+            return self._timeline_slider_x_to_value(sx, slider=slider)
         except Exception:
             return None
 
@@ -4969,6 +5116,9 @@ class GraphGLTimelineModelMixin:
 
     def _timeline_update_mode_controls(self) -> None:
         comp = bool(self._timeline_is_composition_mode())
+        sync_graph = getattr(self, '_timeline_sync_graph_controls', None)
+        if callable(sync_graph):
+            sync_graph()
         stack = getattr(self, "_timeline_tracks_stack", None)
         if stack is not None:
             try:
@@ -5014,7 +5164,6 @@ class GraphGLTimelineModelMixin:
                 master_btn.blockSignals(True)
                 master_btn.setChecked(comp)
                 master_btn.setEnabled(not comp)
-                master_btn.setText("Master" if not comp else "Master")
                 master_btn.setToolTip("Return to the master composition timeline" if not comp else "Master composition timeline")
             except Exception:
                 pass
@@ -5448,6 +5597,9 @@ class GraphGLTimelineModelMixin:
             }
         self._timeline_curve_selected = selected
         self._timeline_update_axis_label_styles()
+        correction = getattr(self, '_animation_correction_session', None)
+        if correction is not None and correction.panel is not None:
+            correction.panel.sync_selection()
         self._timeline_update_key_markers()
         canvas = getattr(self, "_timeline_curves_canvas", None)
         if canvas is not None:
@@ -6276,6 +6428,10 @@ class GraphGLTimelineModelMixin:
         return "mixed"
 
     def _update_timeline_handle_mode_buttons(self) -> None:
+        session = getattr(self,'_animation_correction_session',None)
+        panel = getattr(session,'panel',None)
+        if panel is not None:
+            panel.sync_join_button()
         straight_btn = getattr(self, "_timeline_handle_straight_btn", None)
         tied_btn = getattr(self, "_timeline_handle_tied_btn", None)
         untied_btn = getattr(self, "_timeline_handle_untied_btn", None)
@@ -6345,7 +6501,7 @@ class GraphGLTimelineModelMixin:
                 untied_btn.blockSignals(True)
                 untied_btn.setChecked(mode == "untied")
                 untied_btn.blockSignals(False)
-                untied_btn.setToolTip("Set Selected Keys To Untied Handles")
+                untied_btn.setToolTip("Untie selected key handles: move the left and right handles independently")
             except Exception:
                 pass
 
@@ -6380,6 +6536,9 @@ class GraphGLTimelineModelMixin:
             return
         mode = bool(enabled)
         self._timeline_curves_mode = mode
+        sync_graph = getattr(self, '_timeline_sync_graph_controls', None)
+        if callable(sync_graph):
+            sync_graph()
         btn = getattr(self, "_timeline_curves_btn", None)
         if sync_button and btn is not None:
             try:
@@ -6453,6 +6612,8 @@ class GraphGLTimelineModelMixin:
                 self._timeline_save_to_disk()
             return src+int(moved)
         handle_copy = self._timeline_copy_entry_axis_handles(src_entry, idx)
+        fk_metadata = {field:deepcopy(src_entry[field]) for field in
+                       ('fk_key','fk_position_axes','fk_rotation_axes') if field in src_entry}
         if dst != src:
             self._timeline_set_axis_keyed(src_entry, idx, False)
             src_entry["camera_state"] = {}
@@ -6466,6 +6627,7 @@ class GraphGLTimelineModelMixin:
             dst_entry = keys.get(dst)
             if not isinstance(dst_entry, dict):
                 dst_entry = {}
+            self._timeline_move_ik_metadata(dst_entry,fk_metadata,idx)
             self._timeline_set_axis_value_for_entry(
                 dst_entry,
                 idx,
@@ -6494,6 +6656,7 @@ class GraphGLTimelineModelMixin:
                             mode,
                             (float(in_raw[0]), float(in_raw[1])),
                             (float(out_raw[0]), float(out_raw[1])),
+                            weighted=weighted_sides(handle_copy),
                         )
                 except Exception:
                     pass
@@ -6618,7 +6781,7 @@ class GraphGLTimelineModelMixin:
             dst_entry = keys.get(int(dst))
             if not isinstance(dst_entry, dict):
                 dst_entry = {}
-            self._timeline_move_ik_metadata(dst_entry,ik_metadata.get(src))
+            self._timeline_move_ik_metadata(dst_entry,ik_metadata.get(src),axis)
             self._timeline_set_axis_value_for_entry(
                 dst_entry,
                 int(axis),
@@ -6647,6 +6810,7 @@ class GraphGLTimelineModelMixin:
                             mode,
                             (float(in_raw[0]), float(in_raw[1])),
                             (float(out_raw[0]), float(out_raw[1])),
+                            weighted=weighted_sides(hcopy),
                         )
                 except Exception:
                     pass
@@ -6787,7 +6951,7 @@ class GraphGLTimelineModelMixin:
             dst_entry = keys.get(int(dst))
             if not isinstance(dst_entry, dict):
                 dst_entry = {}
-            self._timeline_move_ik_metadata(dst_entry,ik_metadata.get(src))
+            self._timeline_move_ik_metadata(dst_entry,ik_metadata.get(src),axis)
             self._timeline_set_axis_value_for_entry(
                 dst_entry,
                 int(axis),
@@ -6816,6 +6980,7 @@ class GraphGLTimelineModelMixin:
                             mode,
                             (float(in_raw[0]), float(in_raw[1])),
                             (float(out_raw[0]), float(out_raw[1])),
+                            weighted=weighted_sides(hcopy),
                         )
                 except Exception:
                     pass
@@ -7725,11 +7890,7 @@ class GraphGLTimelineModelMixin:
             if session.ik_enabled and joint in session.endpoints:
                 session.key_ik(joint,save=True)
                 return
-            from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
-            pose = evaluate_rig_at_time(session.skeleton,session.draft,session.time(),loop=False)
-            index = session.skeleton.joint_names.index(joint)
-            session.key_rotations({joint:pose.local_transforms[index].rotation})
-            session.commit()
+            session.key_fk(joint,save=True)
             return
         locked_camera_owner = self._timeline_active_locked_camera_owner()
         try:

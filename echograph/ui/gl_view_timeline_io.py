@@ -5,6 +5,7 @@ import math
 import tempfile
 from pathlib import Path
 from typing import Dict
+from echograph.motion.curve_interpolation import weighted_sides
 
 
 class GraphGLTimelineIOMixin:
@@ -879,6 +880,8 @@ class GraphGLTimelineIOMixin:
                             "in": [float(in_raw[0]), float(in_raw[1])],
                             "out": [float(out_raw[0]), float(out_raw[1])],
                         }
+                        if weighted_sides(av):
+                            ch_out[str(axis_idx)]['weighted'] = weighted_sides(av)
                     except Exception:
                         continue
                 if ch_out:
@@ -1150,6 +1153,8 @@ class GraphGLTimelineIOMixin:
                             "in": [float(in_raw[0]), float(in_raw[1])],
                             "out": [float(out_raw[0]), float(out_raw[1])],
                         }
+                        if weighted_sides(av):
+                            ch_out[str(axis_idx)]['weighted'] = weighted_sides(av)
                     except Exception:
                         continue
                 if ch_out:

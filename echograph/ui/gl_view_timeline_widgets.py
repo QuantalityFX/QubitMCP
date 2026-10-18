@@ -7,8 +7,14 @@ from pathlib import Path
 from typing import List, Optional
 
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
+from echograph.ui import hotkeys_config
+from echograph.motion.curve_interpolation import curve_controls
+from echograph.ui.gl_view_timeline_model import paint_timeline_ik_boundary_label
 from echograph.ui.timeline_range_controls import (
     TimelineRangeControls, TimelineSpeedSpinBox, timeline_spinbox_button_style,
+)
+from echograph.ui.timeline_graph_navigation import (
+    CURVE_LABEL_GUTTER, TimelineGraphNavigationMixin, TimelinePanel, TimelineValueRangeBar, curve_ticks,
 )
 
 try:
@@ -204,6 +210,53 @@ class _TimelineAudioWaveformWidget(QtWidgets.QWidget):
         p.end()
 
 
+class _TimelineToolbarButton(QtWidgets.QPushButton):
+    """Keep hover feedback for flat, checked, and disabled timeline tools."""
+
+    def __init__(self, *args, centered_symbol=False):
+        super().__init__(*args)
+        self._hovered = False
+        self._centered_symbol = centered_symbol
+        self.setAttribute(QtCore.Qt.WA_Hover, True)
+        self.setProperty('timelineHovered', False)
+
+    def event(self, event):
+        # Native button hover styling excludes disabled tools. Track entry
+        # explicitly so every toolbar icon can show the same feedback.
+        if event.type() in (QtCore.QEvent.Enter, QtCore.QEvent.HoverEnter):
+            hovered = True
+        elif event.type() in (QtCore.QEvent.Leave, QtCore.QEvent.HoverLeave, QtCore.QEvent.Hide):
+            hovered = False
+        else:
+            return super().event(event)
+        if hovered != self._hovered:
+            self._hovered = hovered
+            self.setProperty('timelineHovered', hovered)
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self.update()
+        return super().event(event)
+
+    def paintEvent(self, event):
+        if not self._centered_symbol:
+            return super().paintEvent(event)
+        option = QtWidgets.QStyleOptionButton()
+        self.initStyleOption(option)
+        symbol = option.text
+        option.text = ''
+        painter = QtWidgets.QStylePainter(self)
+        painter.drawControl(QtWidgets.QStyle.CE_PushButton, option)
+        if symbol:
+            # Center the visible glyph, with a small optical offset downward.
+            painter.setFont(self.font())
+            bounds = QtGui.QFontMetricsF(painter.font(), self).tightBoundingRect(symbol)
+            painter.setPen(option.palette.color(QtGui.QPalette.ButtonText))
+            painter.drawText(QtCore.QPointF(
+                self.width() / 2. - bounds.center().x(),
+                self.height() / 2. - bounds.center().y() + 1.,
+            ), symbol)
+
+
 class _TimelineHeaderLayout(QtWidgets.QGridLayout):
     """Keep numeric inputs together and wrap timeline tools to a second row."""
 
@@ -237,14 +290,14 @@ class _TimelineHeaderLayout(QtWidgets.QGridLayout):
                 + self.verticalSpacing()) if wrapped else 0
 
 
-class GraphGLTimelineWidgetsMixin:
+class GraphGLTimelineWidgetsMixin(TimelineGraphNavigationMixin):
     def _bottom_overlay_height(self) -> float:
         h = 0.0
         controls = getattr(self, "_controls", None)
         if controls is not None and controls.isVisible():
             h += float(getattr(self, "_controls_h", 0) or 0)
         panel = getattr(self, "_timeline_panel", None)
-        if panel is not None and panel.isVisible():
+        if panel is not None and panel.isVisible() and not getattr(self, '_timeline_detached', False):
             h += float(getattr(self, "_timeline_h", 0) or 0)
         audio_panel = getattr(self, "_timeline_audio_panel", None)
         if audio_panel is not None and audio_panel.isVisible():
@@ -264,6 +317,8 @@ class GraphGLTimelineWidgetsMixin:
 
         panel = getattr(self, "_timeline_panel", None)
         if panel is not None and panel.isVisible():
+            detached = bool(getattr(self, '_timeline_detached', False))
+            panel_width = panel.width() if detached else view_w
             header = panel._header_layout
             margins = panel.layout().contentsMargins()
             row_widths = [header.primary.sizeHint().width(), header.secondary.sizeHint().width()]
@@ -274,12 +329,20 @@ class GraphGLTimelineWidgetsMixin:
                 400,
                 int(max(row_widths)) + margins.left() + margins.right(),
             )
-            if int(self.minimumWidth()) != minimum_view_width:
-                self.setMinimumWidth(minimum_view_width)
-                view_w = max(1, int(self.width()))
-            extra_h = header.reflow(view_w - margins.left() - margins.right())
+            target = self._timeline_window if detached else self
+            if int(target.minimumWidth()) != minimum_view_width:
+                target.setMinimumWidth(minimum_view_width)
+                panel_width = panel.width() if detached else max(1, int(self.width()))
+            if detached and self.minimumWidth() != 400:
+                self.setMinimumWidth(400)
+            extra_h = header.reflow(panel_width - margins.left() - margins.right())
             previous_extra_h = getattr(panel, "_header_extra_height", 0)
-            panel._header_extra_height = extra_h
+            if not detached:
+                panel._header_extra_height = extra_h
+            panel.layout().activate()
+            # Reserve the full ruler/slider height before measuring the panel.
+            # Otherwise its first resize shifts the fixed channel list down.
+            self._timeline_sync_row_alignment()
             panel.layout().activate()
             pref_h = 0
             try:
@@ -288,13 +351,14 @@ class GraphGLTimelineWidgetsMixin:
                 pref_h = 0
             # Add room for the second row without shrinking the tracks, and
             # release that room again when the viewport becomes wide enough.
-            base_h = int(getattr(self, "_timeline_h", 72) or 72) - previous_extra_h
-            h = int(max(88, base_h, pref_h - extra_h) + extra_h)
-            self._timeline_h = h
-            y = max(0, int(y_cursor) - int(h))
-            panel.setGeometry(0, y, view_w, h)
-            panel.raise_()
-            y_cursor = y
+            if not detached:
+                base_h = int(getattr(self, "_timeline_h", 72) or 72) - previous_extra_h
+                h = int(max(88, base_h, pref_h - extra_h) + extra_h)
+                self._timeline_h = h
+                y = max(0, int(y_cursor) - int(h))
+                panel.setGeometry(0, y, panel_width, h)
+                panel.raise_()
+                y_cursor = y
             self._timeline_sync_row_alignment()
             self._timeline_update_key_markers()
             self._timeline_update_playhead()
@@ -313,6 +377,17 @@ class GraphGLTimelineWidgetsMixin:
             ay = max(0, int(y_cursor) - int(ah))
             audio_panel.setGeometry(0, ay, view_w, ah)
             audio_panel.raise_()
+
+        # The viewport itself does not resize when the timeline's top edge
+        # moves, so its floating editors need a geometry update explicitly.
+        session = getattr(self, '_animation_correction_session', None)
+        correction_panel = getattr(session, 'panel', None)
+        renderer = getattr(self, '_mgl_renderer', None) or self
+        rig_panel = getattr(renderer, '_priormdm_rig_panel', None)
+        for editor in (correction_panel, rig_panel):
+            if editor is not None and editor.isVisible():
+                editor.place()
+                editor.raise_()
 
     def _build_timeline_panel(self) -> None:
         existing = getattr(self, "_timeline_panel", None)
@@ -467,7 +542,7 @@ class GraphGLTimelineWidgetsMixin:
                     + handle_url
                     + "\");background:transparent;border:0px;width:24px;height:24px;margin:-11px 0;}"
                 )
-            panel = QtWidgets.QFrame(self)
+            panel = TimelinePanel(self)
             panel.setObjectName("GLTimelinePanel")
             panel.setAttribute(QtCore.Qt.WA_StyledBackground, True)
             panel.setStyleSheet(
@@ -480,48 +555,19 @@ class GraphGLTimelineWidgetsMixin:
                     "#GLTimelinePanel QSlider#GLTimelineFrameSlider::sub-page:horizontal{background:#334155;border-radius:1px;}",
                     "#GLTimelinePanel QSlider#GLTimelineFrameSlider::add-page:horizontal{background:#334155;border-radius:1px;}",
                     slider_handle_css,
-                    "#GLTimelinePanel QPushButton{padding:2px 8px;font-weight:600;color:#e2e8f0;background:#1f2937;border-radius:4px;}",
-                    "#GLTimelinePanel QPushButton:hover{background:#334155;}",
-                    "#GLTimelinePanel QPushButton#GLTimelinePlayButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelinePlayButton:hover{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelinePlayButton:checked{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineLoopButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineLoopButton:hover{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineLoopButton:checked{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineBackButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineBackButton:hover{background:rgba(148,163,184,45);border-radius:3px;}",
+                    "#GLTimelinePanel QPushButton{padding:0px;font-weight:600;color:#e2e8f0;background:transparent;border:0px;border-radius:4px;}",
+                    '#GLTimelinePanel QPushButton:hover,#GLTimelinePanel QPushButton[timelineHovered="true"]{background:rgba(148,163,184,45);}',
+                    "#GLTimelinePanel QPushButton#GLTimelineMarkInButton,#GLTimelinePanel QPushButton#GLTimelineMarkOutButton{background:#1f2937;}",
+                    '#GLTimelinePanel QPushButton#GLTimelineMarkInButton:hover,#GLTimelinePanel QPushButton#GLTimelineMarkOutButton:hover,#GLTimelinePanel QPushButton#GLTimelineMarkInButton[timelineHovered="true"],#GLTimelinePanel QPushButton#GLTimelineMarkOutButton[timelineHovered="true"]{background:#334155;}',
+                    "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton{padding:0px;background:rgba(0,0,0,220);border:1px solid rgba(226,232,240,215);border-radius:15px;}",
+                    '#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:hover,#GLTimelinePanel QPushButton#GLTimelineSetKeyButton[timelineHovered="true"]{background:rgba(34,211,238,65);border:1px solid rgba(34,211,238,240);}',
+                    "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:pressed{background:rgba(34,211,238,90);border:1px solid rgba(125,211,252,255);}",
                     "#GLTimelinePanel QFrame#GLTimelineTracks{background:rgba(15,18,22,120);border:1px solid #334155;border-radius:4px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTrackRow{background:rgba(15,18,22,34);border-radius:3px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTrackLine{background:rgba(148,163,184,80);border:0px;}",
                     "#GLTimelinePanel QFrame#GLTimelineKeyDot{background:#ef4444;border:1px solid #991b1b;border-radius:4px;}",
                     "#GLTimelinePanel QFrame#GLTimelinePlayhead{background:#ffffff;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineCurvesButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:hover{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:checked{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineMaterialLiveButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineMaterialLiveButton:hover{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineMaterialLiveButton:checked{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineFXInstancesButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineFXInstancesButton:hover{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineFXInstancesButton:checked{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineClothButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineClothButton:hover{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineClothButton:checked{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton:hover{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton:checked{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineHandleTiedButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineHandleTiedButton:hover{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineHandleTiedButton:checked{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineHandleUntiedButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineHandleUntiedButton:hover{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineHandleUntiedButton:checked{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineAxisButton{padding:0px 4px;text-align:left;background:transparent;border:0px;border-radius:3px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton{padding:0px;background:rgba(0,0,0,220);border:1px solid rgba(226,232,240,215);border-radius:15px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:hover{background:rgba(34,211,238,65);border:1px solid rgba(34,211,238,240);}",
-                    "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:pressed{background:rgba(34,211,238,90);border:1px solid rgba(125,211,252,255);}",
-                    "#GLTimelinePanel QPushButton#GLTimelineDeleteKeyButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineDeleteKeyButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QWidget#GLTimelineCurveCanvas{background:rgba(15,18,22,34);border-radius:3px;}",
                     "#GLTimelinePanel QDoubleSpinBox#GLTimelineValue{color:#f8fafc;}",
                     "#GLTimelinePanel QFrame#GLTimelineTicks QLabel{color:#94a3b8;font-size:10px;}",
@@ -536,7 +582,7 @@ class GraphGLTimelineWidgetsMixin:
                 ))
             )
             root = QtWidgets.QVBoxLayout(panel)
-            root.setContentsMargins(10, 6, 10, 8)
+            root.setContentsMargins(10, 10, 10, 8)
             root.setSpacing(6)
 
             header_rows = _TimelineHeaderLayout()
@@ -617,7 +663,7 @@ class GraphGLTimelineWidgetsMixin:
             # Speed form one toolbar row that moves below them when narrow.
             header = header_rows.secondary
 
-            play_btn = QtWidgets.QPushButton(panel)
+            play_btn = _TimelineToolbarButton(panel)
             play_btn.setObjectName("GLTimelinePlayButton")
             play_btn.setText("Play")
             play_btn.setCheckable(True)
@@ -628,23 +674,23 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_play_btn = play_btn
             self._update_timeline_play_button()
 
-            mark_in_btn = QtWidgets.QPushButton("[", panel)
+            mark_in_btn = _TimelineToolbarButton("[", panel, centered_symbol=True)
             mark_in_btn.setObjectName("GLTimelineMarkInButton")
-            mark_in_btn.setFixedSize(24, 24)
+            mark_in_btn.setFixedSize(26, 26)
             mark_in_btn.setToolTip("Set Start Frame ([)")
             mark_in_btn.clicked.connect(self._timeline_on_mark_in_clicked)
             header.addWidget(mark_in_btn, 0)
             self._timeline_mark_in_btn = mark_in_btn
 
-            mark_out_btn = QtWidgets.QPushButton("]", panel)
+            mark_out_btn = _TimelineToolbarButton("]", panel, centered_symbol=True)
             mark_out_btn.setObjectName("GLTimelineMarkOutButton")
-            mark_out_btn.setFixedSize(24, 24)
+            mark_out_btn.setFixedSize(26, 26)
             mark_out_btn.setToolTip("Set End Frame (])")
             mark_out_btn.clicked.connect(self._timeline_on_mark_out_clicked)
             header.addWidget(mark_out_btn, 0)
             self._timeline_mark_out_btn = mark_out_btn
 
-            loop_btn = QtWidgets.QPushButton(panel)
+            loop_btn = _TimelineToolbarButton(panel)
             loop_btn.setObjectName("GLTimelineLoopButton")
             loop_btn.setCheckable(True)
             loop_btn.setFixedSize(26, 26)
@@ -656,16 +702,20 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_update_range_button_tooltips()
 
             header = header_rows.secondary
-            master_btn = QtWidgets.QPushButton("Master", panel)
+            master_btn = _TimelineToolbarButton(panel)
             master_btn.setObjectName("GLTimelineMasterButton")
             master_btn.setCheckable(True)
-            master_btn.setFixedHeight(24)
+            master_btn.setFixedSize(26, 26)
+            master_btn.setFlat(True)
+            master_btn.setIcon(QtGui.QIcon(str(Path(__file__).resolve().parents[2]/'icons'/'SequencerBars_Icon.png')))
+            master_btn.setIconSize(QtCore.QSize(24, 24))
             master_btn.setToolTip("Master composition timeline")
+            master_btn.setAccessibleName("Master composition timeline")
             master_btn.clicked.connect(lambda _checked=False: self._timeline_show_composition_mode())
             header.addWidget(master_btn, 0)
             self._timeline_master_btn = master_btn
 
-            material_btn = QtWidgets.QPushButton(panel)
+            material_btn = _TimelineToolbarButton(panel)
             material_btn.setObjectName("GLTimelineMaterialLiveButton")
             material_btn.setCheckable(True)
             material_btn.setFixedSize(42, 34)
@@ -675,7 +725,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_material_live_btn = material_btn
             self._update_timeline_material_live_button()
 
-            fx_btn = QtWidgets.QPushButton(panel)
+            fx_btn = _TimelineToolbarButton(panel)
             fx_btn.setObjectName("GLTimelineFXInstancesButton")
             fx_btn.setCheckable(True)
             fx_btn.setFixedSize(42, 34)
@@ -687,7 +737,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_fx_instances_btn = fx_btn
             self._update_timeline_fx_instances_button()
 
-            cloth_btn = QtWidgets.QPushButton(panel)
+            cloth_btn = _TimelineToolbarButton(panel)
             cloth_btn.setObjectName("GLTimelineClothButton")
             cloth_btn.setAccessibleName("Simulate cloth with timeline")
             cloth_btn.setCheckable(True)
@@ -698,7 +748,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_cloth_btn = cloth_btn
             self._update_timeline_cloth_button()
 
-            curves_btn = QtWidgets.QPushButton("Curves", panel)
+            curves_btn = _TimelineToolbarButton("Curves", panel)
             curves_btn.setObjectName("GLTimelineCurvesButton")
             curves_btn.setCheckable(True)
             curves_btn.setFixedSize(26, 26)
@@ -708,7 +758,32 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_curves_btn = curves_btn
             self._update_timeline_curves_button()
 
-            straight_btn = QtWidgets.QPushButton(panel)
+            fit_btn = _TimelineToolbarButton(panel)
+            fit_btn.setObjectName('GLTimelineCurveFitButton')
+            fit_btn.setFixedSize(26, 26)
+            fit_btn.setFlat(True)
+            fit_btn.setIcon(QtGui.QIcon(str(Path(__file__).resolve().parents[2]/'icons'/'VerticalCurveFit_Icon.png')))
+            fit_btn.setIconSize(QtCore.QSize(24, 24))
+            fit_btn.setToolTip('Fit all visible curve values vertically')
+            fit_btn.setAccessibleName('Fit curve values vertically')
+            fit_btn.clicked.connect(self._timeline_fit_curve_values)
+            header.addWidget(fit_btn, 0)
+            self._timeline_curve_fit_btn = fit_btn
+
+            detach_btn = _TimelineToolbarButton(panel)
+            detach_btn.setObjectName('GLTimelineDetachButton')
+            detach_btn.setFixedSize(26, 26)
+            detach_btn.setCheckable(True)
+            detach_btn.setFlat(True)
+            detach_btn.setIcon(QtGui.QIcon(str(Path(__file__).resolve().parents[2]/'icons'/'DetachPanel_Icon.png')))
+            detach_btn.setIconSize(QtCore.QSize(24, 24))
+            detach_btn.setToolTip('Detach timeline')
+            detach_btn.setAccessibleName('Detach timeline')
+            detach_btn.toggled.connect(self._timeline_set_detached)
+            header.addWidget(detach_btn, 0)
+            self._timeline_detach_btn = detach_btn
+
+            straight_btn = _TimelineToolbarButton(panel)
             straight_btn.setObjectName("GLTimelineHandleStraightButton")
             straight_btn.setCheckable(True)
             straight_btn.setFixedSize(26, 26)
@@ -717,7 +792,7 @@ class GraphGLTimelineWidgetsMixin:
             header.addWidget(straight_btn, 0)
             self._timeline_handle_straight_btn = straight_btn
 
-            tied_btn = QtWidgets.QPushButton(panel)
+            tied_btn = _TimelineToolbarButton(panel)
             tied_btn.setObjectName("GLTimelineHandleTiedButton")
             tied_btn.setCheckable(True)
             tied_btn.setFixedSize(26, 26)
@@ -726,7 +801,7 @@ class GraphGLTimelineWidgetsMixin:
             header.addWidget(tied_btn, 0)
             self._timeline_handle_tied_btn = tied_btn
 
-            untied_btn = QtWidgets.QPushButton(panel)
+            untied_btn = _TimelineToolbarButton(panel)
             untied_btn.setObjectName("GLTimelineHandleUntiedButton")
             untied_btn.setCheckable(True)
             untied_btn.setFixedSize(26, 26)
@@ -736,10 +811,10 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_handle_untied_btn = untied_btn
             self._timeline_update_handle_mode_buttons()
 
-            del_btn = QtWidgets.QPushButton(panel)
+            del_btn = _TimelineToolbarButton(panel)
             del_btn.setObjectName("GLTimelineDeleteKeyButton")
             del_btn.setText("")
-            del_btn.setFixedSize(30, 30)
+            del_btn.setFixedSize(26, 26)
             del_btn.setFlat(True)
             del_btn.setToolTip("Delete Selected Keys")
             del_icon = getattr(self, "_timeline_icon_remove_key", None)
@@ -755,7 +830,7 @@ class GraphGLTimelineWidgetsMixin:
 
             header.addStretch(1)
 
-            key_btn = QtWidgets.QPushButton(panel)
+            key_btn = _TimelineToolbarButton(panel)
             key_btn.setObjectName("GLTimelineSetKeyButton")
             key_btn.setText("")
             key_btn.setFixedSize(30, 30)
@@ -792,9 +867,9 @@ class GraphGLTimelineWidgetsMixin:
             left_header_layout.setContentsMargins(0, 0, 6, 0)
             left_header_layout.setSpacing(3)
             left_header_layout.addStretch(1)
-            back_btn = QtWidgets.QPushButton(left_header_spacer)
+            back_btn = _TimelineToolbarButton(left_header_spacer)
             back_btn.setObjectName("GLTimelineBackButton")
-            back_btn.setFixedSize(22, 22)
+            back_btn.setFixedSize(26, 26)
             back_btn.setFlat(True)
             back_btn.setFocusPolicy(QtCore.Qt.NoFocus)
             back_btn.setToolTip("Back to master timeline")
@@ -1007,50 +1082,7 @@ class GraphGLTimelineWidgetsMixin:
                     return QtCore.QPoint(0, 0)
 
                 def _pixel_x_to_value(self, x_pos: int) -> Optional[int]:
-                    try:
-                        opt = QtWidgets.QStyleOptionSlider()
-                        self.initStyleOption(opt)
-                        style = self.style()
-                        groove = style.subControlRect(
-                            QtWidgets.QStyle.CC_Slider,
-                            opt,
-                            QtWidgets.QStyle.SC_SliderGroove,
-                            self,
-                        )
-                        span = int(
-                            max(
-                                1,
-                                style.pixelMetric(
-                                    QtWidgets.QStyle.PM_SliderSpaceAvailable,
-                                    opt,
-                                    self,
-                                ),
-                            )
-                        )
-                        slider_len = int(
-                            max(
-                                1,
-                                style.pixelMetric(
-                                    QtWidgets.QStyle.PM_SliderLength,
-                                    opt,
-                                    self,
-                                ),
-                            )
-                        )
-                        pos = int(round(float(x_pos) - float(groove.left()) - (float(slider_len) * 0.5)))
-                        pos = max(0, min(span, pos))
-                        val = int(
-                            QtWidgets.QStyle.sliderValueFromPosition(
-                                int(self.minimum()),
-                                int(self.maximum()),
-                                int(pos),
-                                int(span),
-                                bool(getattr(opt, "upsideDown", False)),
-                            )
-                        )
-                        return max(int(self.minimum()), min(int(self.maximum()), int(val)))
-                    except Exception:
-                        return None
+                    return self._view._timeline_slider_x_to_value(x_pos, slider=self)
 
                 def mousePressEvent(self, ev):
                     if ev.button() != QtCore.Qt.LeftButton:
@@ -1289,10 +1321,14 @@ class GraphGLTimelineWidgetsMixin:
             frame_slider.setObjectName("GLTimelineFrameSlider")
             frame_slider.setRange(0, 7)
             frame_slider.setValue(0)
-            frame_slider.setMinimumHeight(28)
+            frame_slider.setFixedHeight(28)
             frame_slider.setTickPosition(QtWidgets.QSlider.NoTicks)
             frame_slider.valueChanged.connect(self._timeline_on_frame_slider_changed)
-            timeline_area_layout.addWidget(frame_slider, 0)
+            slider_row = QtWidgets.QHBoxLayout()
+            slider_row.setContentsMargins(0, 0, 0, 0)
+            slider_row.addWidget(frame_slider)
+            timeline_area_layout.addLayout(slider_row, 0)
+            self._timeline_frame_slider_row = slider_row
             self._timeline_frame_slider = frame_slider
 
             class _TimelineCurveCanvas(QtWidgets.QWidget):
@@ -1301,11 +1337,13 @@ class GraphGLTimelineWidgetsMixin:
                     self._view = view
                     self._drag = None
                     self._handle_drag = None
+                    self._range_drag = None
                     self._selecting = False
                     self._select_origin = QtCore.QPointF()
                     self._selection_rect = QtCore.QRectF()
                     self.setObjectName("GLTimelineCurveCanvas")
                     self.setMouseTracking(True)
+                    self.setFocusPolicy(QtCore.Qt.StrongFocus)
                     self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
 
                 @staticmethod
@@ -1318,16 +1356,22 @@ class GraphGLTimelineWidgetsMixin:
                     return ev.pos()
 
                 def _graph_rect(self):
-                    left = 30
+                    cache = getattr(self._view, '_timeline_curve_read_cache', None)
+                    if cache is not None and 'graph_rect' in cache:
+                        return cache['graph_rect']
+                    left = CURVE_LABEL_GUTTER
                     top = 8
                     right = 8
                     bottom = 8
-                    return QtCore.QRect(
+                    rect = QtCore.QRect(
                         int(left),
                         int(top),
                         int(max(1, self.width() - left - right)),
                         int(max(1, self.height() - top - bottom)),
                     )
+                    if cache is not None:
+                        cache['graph_rect'] = rect
+                    return rect
 
                 def _value_to_y(self, value: float) -> float:
                     rect = self._graph_rect()
@@ -1335,20 +1379,22 @@ class GraphGLTimelineWidgetsMixin:
                     vmax = float(getattr(self._view, "_timeline_curve_max", 5.0))
                     if vmax <= vmin:
                         return float(rect.center().y())
-                    vv = max(vmin, min(vmax, float(value)))
+                    vv = float(value)
                     t = (vmax - vv) / (vmax - vmin)
                     return float(rect.top()) + (t * float(max(1, rect.height())))
 
-                def _y_to_value(self, y_pos: float) -> float:
+                def _y_to_value(self, y_pos: float, *, clamp: bool = True) -> float:
                     rect = self._graph_rect()
                     vmin = float(getattr(self._view, "_timeline_curve_min", -5.0))
                     vmax = float(getattr(self._view, "_timeline_curve_max", 5.0))
                     if vmax <= vmin:
                         return 0.0
-                    yy = max(float(rect.top()), min(float(rect.bottom()), float(y_pos)))
+                    yy = float(y_pos)
+                    if clamp:
+                        yy = max(float(rect.top()), min(float(rect.bottom()), yy))
                     t = (yy - float(rect.top())) / float(max(1, rect.height()))
                     vv = vmax - (t * (vmax - vmin))
-                    return float(max(vmin, min(vmax, vv)))
+                    return float(max(vmin, min(vmax, vv))) if clamp else float(vv)
 
                 def _axis_points(self):
                     out = {i: [] for i in range(6)}
@@ -1637,7 +1683,8 @@ class GraphGLTimelineWidgetsMixin:
 
                 def _nearest_handle(self, posf):
                     pts_by_axis = self._axis_points()
-                    handles = self._selected_handle_points(pts_by_axis)
+                    with self._view._timeline_curve_read_scope():
+                        handles = self._selected_handle_points(pts_by_axis)
                     if not handles:
                         return None
                     px = float(posf.x())
@@ -1665,6 +1712,10 @@ class GraphGLTimelineWidgetsMixin:
                     return best
 
                 def paintEvent(self, ev):
+                    with self._view._timeline_curve_read_scope():
+                        self._paint_curves(ev)
+
+                def _paint_curves(self, ev):
                     _ = ev
                     p = QtGui.QPainter(self)
                     try:
@@ -1673,16 +1724,15 @@ class GraphGLTimelineWidgetsMixin:
                         pass
                     rect = self._graph_rect()
                     p.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 0))
+                    p.fillRect(QtCore.QRect(0, 0, rect.left(), self.height()), QtGui.QColor(0, 0, 0, 40))
                     self._view._timeline_paint_ik_ranges(p,rect)
                     p.setPen(QtGui.QPen(QtGui.QColor("#334155"), 1))
                     p.drawLine(rect.left(), rect.top(), rect.left(), rect.bottom())
                     p.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
 
-                    vmin = int(round(float(getattr(self._view, "_timeline_curve_min", -5.0))))
-                    vmax = int(round(float(getattr(self._view, "_timeline_curve_max", 5.0))))
-                    if vmax < vmin:
-                        vmin, vmax = vmax, vmin
-                    for vv in range(vmax, vmin - 1, -1):
+                    vmin = float(self._view._timeline_curve_min)
+                    vmax = float(self._view._timeline_curve_max)
+                    for vv in curve_ticks(vmin, vmax, rect.height()):
                         y = int(round(self._value_to_y(float(vv))))
                         line_col = QtGui.QColor(148, 163, 184, 70)
                         if vv == 0:
@@ -1690,8 +1740,9 @@ class GraphGLTimelineWidgetsMixin:
                         p.setPen(QtGui.QPen(line_col, 1))
                         p.drawLine(rect.left(), y, rect.right(), y)
                         p.setPen(QtGui.QPen(QtGui.QColor("#cbd5e1"), 1))
-                        p.drawText(2, y - 2, f"{vv}")
+                        p.drawText(2, y - 2, f"{vv:.5g}")
 
+                    p.setClipRect(rect.adjusted(-1, -1, 1, 1))
                     pts_by_axis = self._axis_points()
                     curve_rows_by_axis = self._axis_curve_rows()
                     try:
@@ -1699,6 +1750,8 @@ class GraphGLTimelineWidgetsMixin:
                     except Exception:
                         start = 0
                     selected = self._selected_set()
+                    boundary_labels = self._view._timeline_ik_boundary_labels()
+                    boundary_points = []
                     for axis in range(6):
                         rows = curve_rows_by_axis.get(axis, [])
                         if not rows:
@@ -1735,20 +1788,13 @@ class GraphGLTimelineWidgetsMixin:
                                 if mode1 == "straight" or mode2 == "straight":
                                     path.lineTo(QtCore.QPointF(float(x2), float(y2)))
                                     continue
-                                try:
-                                    out_dx, out_dy = tuple(h1.get("out", (3.0, 0.0)))
-                                except Exception:
-                                    out_dx, out_dy = (3.0, 0.0)
-                                try:
-                                    in_dx, in_dy = tuple(h2.get("in", (-3.0, 0.0)))
-                                except Exception:
-                                    in_dx, in_dy = (-3.0, 0.0)
+                                (cx1,cy1),(cx2,cy2) = curve_controls(float(f1),float(f2),float(v1),float(v2),h1,h2)
                                 c1x = self._view._timeline_local_frame_to_tracks_x_float(
-                                    (float(f1) - float(start)) + float(out_dx),
+                                    cx1-float(start),
                                     clamp=False,
                                 )
                                 c2x = self._view._timeline_local_frame_to_tracks_x_float(
-                                    (float(f2) - float(start)) + float(in_dx),
+                                    cx2-float(start),
                                     clamp=False,
                                 )
                                 if c1x is None:
@@ -1757,8 +1803,8 @@ class GraphGLTimelineWidgetsMixin:
                                     c2x = float(x2)
                                 c1x = self._clamp_curve_x(float(c1x))
                                 c2x = self._clamp_curve_x(float(c2x))
-                                c1y = self._value_to_y(float(v1) + float(out_dy))
-                                c2y = self._value_to_y(float(v2) + float(in_dy))
+                                c1y = self._value_to_y(cy1)
+                                c2y = self._value_to_y(cy2)
                                 path.cubicTo(
                                     QtCore.QPointF(float(c1x), float(c1y)),
                                     QtCore.QPointF(float(c2x), float(c2y)),
@@ -1781,6 +1827,9 @@ class GraphGLTimelineWidgetsMixin:
                                 p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(float(x),float(y)-radius),
                                     QtCore.QPointF(float(x)+radius,float(y)+radius),
                                     QtCore.QPointF(float(x)-radius,float(y)+radius)]))
+                                label = self._view._timeline_ik_boundary_label(frame,axis,labels=boundary_labels)
+                                if label:
+                                    boundary_points.append((label,x,y,radius))
                             else:
                                 p.drawEllipse(QtCore.QPointF(float(x),float(y)),radius,radius)
                     try:
@@ -1805,6 +1854,8 @@ class GraphGLTimelineWidgetsMixin:
                                 p.setPen(QtGui.QPen(QtGui.QColor(15, 23, 42, 220), 1))
                                 p.setBrush(QtGui.QBrush(hcol))
                                 p.drawEllipse(QtCore.QPointF(float(hx), float(hy)), 3.4, 3.4)
+                    for label,x,y,radius in boundary_points:
+                        paint_timeline_ik_boundary_label(p,label,x,y,radius=radius,bounds=rect)
                     if bool(self._selecting):
                         rr = self._norm_rect(self._selection_rect)
                         p.setPen(QtGui.QPen(QtGui.QColor("#fde047"), 1, QtCore.Qt.DashLine))
@@ -1813,8 +1864,33 @@ class GraphGLTimelineWidgetsMixin:
                     p.end()
 
                 def mousePressEvent(self, ev):
+                    mods = ev.modifiers() & hotkeys_config._MOD_MASK
+                    pan_mods, pan_button = hotkeys_config.mouse_binding('timeline_graph_pan', 'Alt+MiddleClick')
+                    scale_mods, scale_button = hotkeys_config.mouse_binding('timeline_graph_scale', 'RightClick')
+                    pan = ev.button() == pan_button and mods == pan_mods
+                    scale = ev.button() == scale_button and mods in (
+                        scale_mods, scale_mods | QtCore.Qt.AltModifier)
+                    if pan or scale:
+                        self.setFocus(QtCore.Qt.MouseFocusReason)
+                        span = self._view._timeline_view_span
+                        x0 = self._view._timeline_local_frame_to_tracks_x_float(0)
+                        x1 = self._view._timeline_local_frame_to_tracks_x_float(span)
+                        pixels_per_frame = (x1-x0)/max(1,span) if x0 is not None and x1 is not None else 1.
+                        self._range_drag = dict(press=QtCore.QPointF(self._event_pos(ev)),
+                            values=(self._view._timeline_curve_min,self._view._timeline_curve_max),
+                            frames=(self._view._timeline_view_start,
+                                    self._view._timeline_view_start+self._view._timeline_view_span),
+                            pan=pan, button=ev.button(), height=max(1,self._graph_rect().height()),
+                            pixels_per_frame=max(1e-6,pixels_per_frame),
+                            horizontal_changed=False,context_menu=(ev.button() == QtCore.Qt.RightButton
+                                and mods == QtCore.Qt.NoModifier))
+                        if pan:
+                            self.setCursor(QtCore.Qt.ClosedHandCursor)
+                        ev.accept()
+                        return
                     if ev.button() != QtCore.Qt.LeftButton:
                         return super().mousePressEvent(ev)
+                    self.setFocus(QtCore.Qt.MouseFocusReason)
                     posf = self._event_pos(ev)
                     handle_hit = self._nearest_handle(posf)
                     if handle_hit is not None:
@@ -1863,6 +1939,13 @@ class GraphGLTimelineWidgetsMixin:
                     ev.accept()
 
                 def mouseMoveEvent(self, ev):
+                    if self._range_drag is not None:
+                        delta = self._event_pos(ev)-self._range_drag['press']
+                        navigate = (self._view._timeline_pan_graph_view if self._range_drag['pan']
+                                    else self._view._timeline_scale_graph_view)
+                        navigate(self._range_drag,delta.x(),delta.y())
+                        ev.accept()
+                        return
                     if isinstance(self._handle_drag, dict):
                         posf = self._event_pos(ev)
                         axis = int(self._handle_drag.get("axis", 0))
@@ -1882,11 +1965,12 @@ class GraphGLTimelineWidgetsMixin:
                         if abs(float(px_per_frame)) <= 1.0e-6:
                             px_per_frame = 1.0
                         dx_frame = (float(posf.x()) - float(kx)) / float(px_per_frame)
-                        dy_value = self._y_to_value(float(posf.y())) - float(value)
-                        if side == "in":
-                            dx_frame = -abs(float(dx_frame))
-                        else:
-                            dx_frame = abs(float(dx_frame))
+                        dy_value = self._y_to_value(float(posf.y()),clamp=False) - float(value)
+                        # Stop at the key's vertical plane, with a small snap
+                        # distance so a perfectly vertical tangent is reachable.
+                        if abs(float(posf.x())-float(kx)) <= 3.:
+                            dx_frame = 0.
+                        dx_frame = min(0.,dx_frame) if side == 'in' else max(0.,dx_frame)
                         changed = bool(
                             self._view._timeline_set_axis_handle_value(
                                 int(axis),
@@ -1950,6 +2034,19 @@ class GraphGLTimelineWidgetsMixin:
                     ev.accept()
 
                 def mouseReleaseEvent(self, ev):
+                    if self._range_drag is not None and ev.button() == self._range_drag['button']:
+                        self.mouseMoveEvent(ev)
+                        drag = self._range_drag
+                        if drag['horizontal_changed']:
+                            self._view._timeline_range_save_to_disk()
+                        if drag['pan']:
+                            self.unsetCursor()
+                        self._range_drag = None
+                        ev.accept()
+                        if (drag.get('context_menu') and not drag['horizontal_changed']
+                                and not drag.get('vertical_changed')):
+                            self._view._timeline_show_key_context_menu(self,ev.globalPosition().toPoint())
+                        return
                     if ev.button() != QtCore.Qt.LeftButton:
                         return super().mouseReleaseEvent(ev)
                     if isinstance(self._handle_drag, dict):
@@ -2026,6 +2123,11 @@ class GraphGLTimelineWidgetsMixin:
                             self._set_selected_set({(int(self._drag.get("axis", 0)), int(new_frame))})
                     self._drag = None
                     self.update()
+                    ev.accept()
+
+                def contextMenuEvent(self,ev):
+                    if ev.reason() == QtGui.QContextMenuEvent.Keyboard:
+                        self._view._timeline_show_key_context_menu(self,ev.globalPos())
                     ev.accept()
 
             class _TimelineRowsHost(QtWidgets.QWidget):
@@ -2224,6 +2326,10 @@ class GraphGLTimelineWidgetsMixin:
                     self._drag = None
                     self._view._timeline_update_key_markers()
                     self.update()
+                    ev.accept()
+
+                def contextMenuEvent(self,ev):
+                    self._view._timeline_show_key_context_menu(self,ev.globalPos())
                     ev.accept()
 
             class _TimelineCompositionCanvas(QtWidgets.QWidget):
@@ -2685,6 +2791,7 @@ class GraphGLTimelineWidgetsMixin:
                 row_layout.addStretch(1)
                 tracks_layout.addWidget(row_frame, 0)
                 track_rows.append(row_frame)
+            tracks_layout.addStretch(1)
             tracks_stack.addWidget(rows_host)
 
             curves_canvas = _TimelineCurveCanvas(self, tracks_frame)
@@ -2721,7 +2828,8 @@ class GraphGLTimelineWidgetsMixin:
                 def eventFilter(self, obj, ev):
                     if ev.type() == QtCore.QEvent.MouseButtonPress:
                         try:
-                            self._view.setFocus(QtCore.Qt.MouseFocusReason)
+                            target = obj if getattr(self._view, '_timeline_detached', False) else self._view
+                            target.setFocus(QtCore.Qt.MouseFocusReason)
                         except Exception:
                             try:
                                 self._view.setFocus()
@@ -2754,8 +2862,12 @@ class GraphGLTimelineWidgetsMixin:
             curves_canvas.installEventFilter(tracks_frame._timeline_tracks_filter)
             composition_canvas.installEventFilter(tracks_frame._timeline_tracks_filter)
 
-            tracks_grid.addWidget(timeline_area, 0, 2, len(channels) + 1, 1)
-            tracks_grid.addWidget(composition_vscroll, 0, 3, len(channels) + 1, 1)
+            tracks_grid.setRowStretch(len(channels)+1, 1)
+            tracks_grid.addWidget(timeline_area, 0, 2, len(channels) + 2, 1)
+            tracks_grid.addWidget(composition_vscroll, 0, 3, len(channels) + 2, 1)
+            value_bar = TimelineValueRangeBar(self,panel)
+            self._timeline_value_range_bar = value_bar
+            tracks_grid.addWidget(value_bar,1,3,len(channels)+1,1)
             tracks_grid.setColumnStretch(2, 1)
             root.addLayout(tracks_grid, 1)
 
@@ -2851,6 +2963,8 @@ class GraphGLTimelineWidgetsMixin:
             panel = getattr(self, "_timeline_panel", None)
             if panel is not None:
                 panel.setVisible(want)
+                if getattr(self, '_timeline_detached', False):
+                    self._timeline_window.setVisible(want)
                 self._layout_timeline_panel()
             if not want:
                 try:
@@ -2885,6 +2999,8 @@ class GraphGLTimelineWidgetsMixin:
         panel = getattr(self, "_timeline_panel", None)
         if panel is not None:
             panel.setVisible(want)
+            if getattr(self, '_timeline_detached', False):
+                self._timeline_window.setVisible(want)
             self._layout_timeline_panel()
         if want:
             try:

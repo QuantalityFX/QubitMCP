@@ -10,6 +10,7 @@ _KEYMAP_CACHE = None
 CAMERA_VIEW_ACTIONS = (
     "gl_view_perspective", "gl_view_top_bottom", "gl_view_front_back", "gl_view_left_right",
 )
+MOUSE_ACTIONS = {"wire_add_pin", "wire_remove", "timeline_graph_pan", "timeline_graph_scale"}
 
 # Action ids -> default key sequences
 DEFAULT_KEYMAP = {
@@ -43,6 +44,10 @@ DEFAULT_KEYMAP = {
     "gl_grid_toggle": "G",
     "timeline_play_toggle": "Space+P",
     "timeline_set_key": "K",
+    "timeline_graph_pan": "Alt+MiddleClick",
+    "timeline_graph_scale": "RightClick",
+    "timeline_graph_frame_selected": "F",
+    "timeline_join_ik_ranges": "Ctrl+J",
     "app_fullscreen": "F11",
     "wire_add_pin": "Ctrl+LeftClick",
     "wire_remove": "Alt+LeftClick",
@@ -50,6 +55,10 @@ DEFAULT_KEYMAP = {
 
 ACTION_LABELS = {
     "timeline_play_toggle": "Timeline: play / pause",
+    "timeline_graph_pan": "Timeline graph: pan",
+    "timeline_graph_scale": "Timeline graph: scale ranges",
+    "timeline_graph_frame_selected": "Timeline graph: frame keys",
+    "timeline_join_ik_ranges": "Timeline graph: join IK ranges",
     "gl_view_perspective": "3D: Perspective view",
     "gl_view_top_bottom": "3D: Top / Bottom views",
     "gl_view_front_back": "3D: Front / Back views",
@@ -61,6 +70,10 @@ ACTION_LABELS = {
 
 ACTION_DESCRIPTIONS = {
     "timeline_play_toggle": "Play or pause with the pointer over the timeline panel. Default: hold Space and press P. Video review uses its own Space shortcut.",
+    "timeline_graph_pan": "Drag to grab the curve graph and pan in time and value without changing its scale or moving the 3D camera. Default: Alt + middle mouse.",
+    "timeline_graph_scale": "Drag down/up to expand/contract the value range, or right/left to contract/expand the time range. Default: right mouse. Alt may also be held while dragging.",
+    "timeline_graph_frame_selected": "Fit selected curve points in time and value, or all keys on visible curves when no points are selected. Includes keys outside the current view. Applies inside the timeline graph; the 3D viewport keeps its own frame shortcut. Default: F.",
+    "timeline_join_ik_ranges": "Extend IK overwrite between the selected End IK and next Start IK on the same control. Both keys keep their timing and poses as intermediate IK keys in the continuous range. Default: Ctrl + J.",
     "gl_view_perspective": "Restore the previous perspective camera view. Hold Space while pressing the key when Hold Space is checked.",
     "gl_view_top_bottom": "Alternate between orthographic Top and Bottom views.",
     "gl_view_front_back": "Alternate between orthographic Front and Back views.",

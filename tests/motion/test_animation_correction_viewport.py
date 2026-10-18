@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation
 from echograph.model import GraphNode
 from echograph.motion.conversion import reconstruct_animation
 from echograph.motion.rig_preview import build_guide, preview_offsets
-from echograph.rigging.fbx_canonical import QuatKeyframe
+from echograph.rigging.fbx_canonical import JointAnimationTrack, QuatKeyframe
 from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
 from echograph.ui.gl_view import GraphGLView
 from echograph.ui.timeline_controller import TimelineController
@@ -70,6 +70,140 @@ class AnimationCorrectionViewportTests(unittest.TestCase):
         self.view._timeline_frame_spin.setValue(frame)
         self.view.repaint()
         self.app.processEvents()
+
+    def test_reload_scope_tracks_real_joint_axis_and_empty_viewport_selection_without_rebuilding(self):
+        from echograph.ui.gl_view_mouse import _handle_mouse_release_moderngl_pick_empty
+        session,view = self.session,self.view
+        self.assertEqual(session.panel.reload.text(),'Reload all')
+        self.assertIsNone(session.reload_selection)
+        self.assertTrue(session.select_joint('left_wrist'))
+        self.app.processEvents()
+        self.assertEqual(session.reload_selection,'left_wrist')
+        self.assertEqual(session.panel.reload.text(),'Reload left_wrist')
+        with patch.object(session,'rebuild') as rebuild, patch.object(session,'save') as save:
+            QtTest.QTest.mouseClick(view._timeline_axis_labels[1],QtCore.Qt.LeftButton)
+            self.app.processEvents()
+            self.assertEqual(view._timeline_curve_axes_filter,{1})
+            self.assertEqual(session.panel.reload.text(),'Reload Py')
+            _handle_mouse_release_moderngl_pick_empty(view)
+            self.assertEqual(session.panel.reload.text(),'Reload all')
+            self.assertIsNone(session.reload_selection)
+            self.assertFalse(any(button.isEnabled() for button in session.panel.ik_buttons))
+            rebuild.assert_not_called()
+            save.assert_not_called()
+
+    def test_fk_position_axis_selection_and_numeric_edit_use_actual_timeline_controls(self):
+        session,view = self.session,self.view
+        session.set_ik(False)
+        session.select_joint('left_wrist')
+        view._timeline_set_fps(40.)
+        self.paint_frame(3)
+        QtTest.QTest.mouseClick(view._timeline_axis_labels[1],QtCore.Qt.LeftButton)
+        self.assertEqual(view._timeline_curve_axes_filter,{1})
+        button = view._timeline_panel.findChild(QtWidgets.QPushButton,'GLTimelineSetKeyButton')
+        button.click()
+        self.app.processEvents()
+        self.assertEqual(view._timeline_keys[3]['axis_mask'],[False,True,False,False,False,False])
+        self.assertEqual(session.fk_keys,{})
+        field = view._timeline_coord_y
+        value = field.value()+.02
+        field.setValue(value)
+        field.editingFinished.emit()
+        self.app.processEvents()
+        index = session.skeleton.joint_names.index('left_wrist')
+        pose = evaluate_rig_at_time(session.skeleton,session.draft,session.time(),loop=False)
+        self.assertAlmostEqual(pose.local_transforms[index].translation[1],value,places=6)
+        self.assertFalse(view._timeline_key_is_ik(3,1))
+        self.assertEqual(session.fk_keys,{})
+
+    def test_join_ik_ranges_shortcut_keeps_all_four_controller_keys(self):
+        from echograph.ui import hotkeys_config
+        session,view = self.session,self.view
+        session.select_joint('left_wrist')
+        for frame,mode in ((0,'start'),(1,'end'),(3,'start'),(4,'end')):
+            self.paint_frame(frame)
+            self.assertTrue(session.key_ik('left_wrist',mode=mode))
+        left,right = session.ik_spans
+        view._timeline_set_curves_mode(True)
+        view._timeline_curve_selected = {(0,1),(0,3)}
+        with patch.object(hotkeys_config,'_KEYMAP_CACHE',dict(hotkeys_config.DEFAULT_KEYMAP)):
+            QtTest.QTest.keyClick(view._timeline_curves_canvas,QtCore.Qt.Key_J,QtCore.Qt.ControlModifier)
+        self.assertEqual(len(session.ik_spans),3)
+        self.assertEqual(session.ik_spans[1]['start'],left['end'])
+        self.assertEqual(session.ik_spans[1]['end'],right['start'])
+        self.assertEqual({frame for frame,row in view._timeline_keys.items() if row.get('ik_key')},{0,1,3,4})
+
+    def test_fuse_button_follows_rows_and_curve_selection_and_joins_without_losing_selected_keys(self):
+        session,view = self.session,self.view
+        session.select_joint('left_wrist')
+        for frame,mode in ((0,'start'),(1,'end'),(3,'start'),(4,'end')):
+            self.paint_frame(frame)
+            self.assertTrue(session.key_ik('left_wrist',mode=mode))
+        left,right = session.ik_spans
+        button = session.panel.join_ik_button
+        view._timeline_set_curves_mode(False)
+        view._timeline_curve_selected = {(0,1),(0,3)}
+        view._timeline_update_key_markers()
+        self.assertTrue(button.isEnabled())
+        view._timeline_set_curves_mode(True)
+        canvas = view._timeline_curves_canvas
+        canvas._set_selected_set({(0,1)})
+        self.assertFalse(button.isEnabled())
+        canvas._set_selected_set({(0,1),(0,3)})
+        self.assertTrue(button.isEnabled())
+        height_before = session.panel.height()
+        QtTest.QTest.mouseClick(button,QtCore.Qt.LeftButton)
+        session.panel.sync_selection()
+        self.app.processEvents()
+        self.assertEqual(len(session.ik_spans),3)
+        self.assertEqual(session.ik_spans[1]['start'],left['end'])
+        self.assertEqual(session.ik_spans[1]['end'],right['start'])
+        self.assertEqual(view._timeline_curve_selected,{(0,1),(0,3)})
+        self.assertLessEqual(session.panel.height(),height_before)
+        self.assertEqual(session.panel.status.text(),'IK ranges joined. Draft saved.')
+        self.assertFalse(button.isEnabled())
+        self.assertTrue(session.undo())
+        self.assertTrue(button.isEnabled())
+        self.assertTrue(session.redo())
+        self.assertFalse(button.isEnabled())
+        self.assertLess(session.panel.geometry().bottom(),view._timeline_panel.geometry().top())
+
+    def test_correction_panel_stays_above_the_resized_timeline_and_scrolls_when_needed(self):
+        view = self.view
+        view.resize(1200,1200)
+        self.app.processEvents()
+        panel, timeline = self.session.panel,view._timeline_panel
+        initial_top = panel.y()
+        original_clip = self.session.draft
+        with patch.object(self.session,'rebuild') as rebuild:
+            view._timeline_resize_panel(timeline.height()+180)
+            self.app.processEvents()
+            self.assertLess(panel.y(),initial_top)
+            self.assertLess(panel.geometry().bottom(),timeline.y())
+            # Constrain the available space relative to the panel's content;
+            # moving help text into a popup makes the panel substantially shorter.
+            view._timeline_resize_panel(view.height()-panel.height()+64)
+            self.app.processEvents()
+            self.assertGreaterEqual(panel.y(),4)
+            self.assertLess(panel.geometry().bottom(),timeline.y())
+            self.assertGreater(panel.scroll.verticalScrollBar().maximum(),0)
+            view._timeline_set_detached(True)
+            self.app.processEvents()
+            self.assertGreater(panel.geometry().bottom(),timeline.y())
+            self.assertEqual(panel.scroll.verticalScrollBar().maximum(),0)
+            view._timeline_set_detached(False)
+            self.app.processEvents()
+            self.assertLess(panel.geometry().bottom(),timeline.y())
+            view._timeline_resize_panel(300)
+            self.app.processEvents()
+            self.assertEqual(panel.scroll.verticalScrollBar().maximum(),0)
+            bottom = panel.geometry().bottom()
+            view.set_timeline_visible(False)
+            self.app.processEvents()
+            self.assertGreater(panel.geometry().bottom(),bottom)
+            self.assertTrue(panel.isVisible())
+            rebuild.assert_not_called()
+        self.assertIs(self.session.draft,original_clip)
 
     def test_scrub_and_frame_keep_joints_and_guides_on_the_current_pose(self):
         for frame in (0, 4, 1, 3, 2):
@@ -172,6 +306,15 @@ class AnimationCorrectionViewportTests(unittest.TestCase):
                 self.assertNotIn('end',self.session.ik_spans[0])
             self.view._timeline_on_set_key_clicked()
         self.assertEqual([pair[:2] for pair in self.view._timeline_ik_ranges()],[(1.,3.)])
+        self.paint_frame(4)
+        self.view._timeline_on_set_key_clicked()  # Leave a new Start IK unfinished.
+        pending = next(span for span in self.session.ik_spans if 'end' not in span)
+        self.paint_frame(2)
+        self.view._timeline_on_set_key_clicked()
+        self.assertEqual(len(self.session.ik_spans),3)
+        self.assertIn(pending,self.session.ik_spans)
+        self.assertTrue(self.view._timeline_key_is_ik(2,0))
+        self.assertEqual(self.view._timeline_ik_boundary_label(2,0),'')
         self.view.repaint()
         self.app.processEvents()
         layers = [layer for layer in self.view.findChildren(TimelineCorrectionKeys) if layer.isVisible()]
@@ -196,6 +339,191 @@ class AnimationCorrectionViewportTests(unittest.TestCase):
         self.app.processEvents()
         self.assertFalse(any(row.get('ik_control') for row in self.view._mgl_scene_skeleton_handles_by_owner['Correction']))
         self.assertEqual(self.session.pole_handles,[])
+
+    def test_dragged_ik_in_and_out_curve_handles_stay_after_release_and_refresh(self):
+        from echograph.motion.animation_corrections import limb_chain
+        for frame,mode in ((1,'start'),(3,'end')):
+            self.paint_frame(frame)
+            pose = evaluate_rig_at_time(self.session.skeleton,self.session.draft,self.session.time(),loop=False)
+            positions = np.asarray(pose.global_matrices).reshape(-1,4,4)[:,:3,3]
+            start,_,end = limb_chain(self.session.skeleton,'left_wrist')
+            self.session.move('left_wrist',positions[start]+.8*(positions[end]-positions[start])+[0,0,.02])
+            self.session.commit()
+            self.assertTrue(self.session.key_ik('left_wrist',mode=mode))
+        self.session.select_joint('left_wrist')
+        self.view._timeline_curve_axes_filter = {0}
+        self.view._timeline_fit_curve_values()
+        self.app.processEvents()
+        canvas = self.view._timeline_curves_canvas
+        for frame,side in ((1,'out'),(3,'in')):
+            with self.subTest(frame=frame,side=side):
+                self.view._timeline_curve_selected = {(0,frame)}
+                self.view._timeline_update_handle_mode_buttons()
+                self.view._timeline_handle_untied_btn.click()
+                handles = canvas._selected_handle_points(canvas._axis_points())
+                handle = next(handle for handle in handles if handle['frame'] == frame)
+                point = QtCore.QPointF(*handle[side])
+                rect = canvas._graph_rect()
+                target = QtCore.QPointF(point.x()+(16 if side == 'out' else -16),
+                    rect.top()-48. if side == 'out' else rect.bottom()+48.)
+                before = self.view._timeline_axis_handles_for_key(0,frame)
+                canvas.mousePressEvent(QtGui.QMouseEvent(QtCore.QEvent.MouseButtonPress,point,point,
+                    QtCore.Qt.LeftButton,QtCore.Qt.LeftButton,QtCore.Qt.NoModifier))
+                self.assertIsNotNone(canvas._handle_drag)
+                canvas.mouseMoveEvent(QtGui.QMouseEvent(QtCore.QEvent.MouseMove,target,target,
+                    QtCore.Qt.NoButton,QtCore.Qt.LeftButton,QtCore.Qt.NoModifier))
+                expected = self.view._timeline_axis_handles_for_key(0,frame)
+                self.assertNotEqual(before[side],expected[side])
+                handle_value = handle['value']+expected[side][1]
+                if side == 'out':
+                    self.assertGreater(handle_value,self.view._timeline_curve_max)
+                else:
+                    self.assertLess(handle_value,self.view._timeline_curve_min)
+                other = 'in' if side == 'out' else 'out'
+                self.assertEqual(expected['mode'],'untied')
+                self.assertEqual(before[other],expected[other])
+                canvas.mouseReleaseEvent(QtGui.QMouseEvent(QtCore.QEvent.MouseButtonRelease,target,target,
+                    QtCore.Qt.LeftButton,QtCore.Qt.NoButton,QtCore.Qt.NoModifier))
+                self.view._timeline_load_from_disk(apply_current_frame=False)
+                self.app.processEvents()
+                after = self.view._timeline_axis_handles_for_key(0,frame)
+                np.testing.assert_allclose(after['in'],expected['in'])
+                np.testing.assert_allclose(after['out'],expected['out'])
+                self.assertEqual(after['mode'],'untied')
+                self.assertEqual(after.get('weighted'),expected.get('weighted'))
+
+    def test_graph_navigation_shortcuts_never_reach_the_3d_camera(self):
+        from echograph.ui import hotkeys_config
+        view = self.view
+        view._timeline_set_curves_mode(True)
+        view._timeline_in_frame,view._timeline_out_frame = 0,40
+        view._timeline_curve_axes_filter = {0}
+        view._timeline_keys = {frame:dict(xyz=[value,0.,0.],axis_mask=[True,False,False,False,False,False])
+                               for frame,value in ((5,-10.),(15,20.))}
+        view._timeline_curve_selected = {(0,5),(0,15)}
+        canvas = view._timeline_curves_canvas
+        camera_events = []
+        class CameraEvents(QtCore.QObject):
+            def eventFilter(self, obj, event):
+                if event.type() in (QtCore.QEvent.MouseButtonPress,QtCore.QEvent.MouseMove,
+                                    QtCore.QEvent.MouseButtonRelease):
+                    camera_events.append(event.type())
+                return False
+        tracker = CameraEvents(view)
+        view.installEventFilter(tracker)
+        camera_center = np.asarray(view._mgl_center).copy()
+        camera_rotation = np.asarray(view._mgl_arcball.Transform).copy()
+        camera_zoom = view._mgl_camera_zoom
+        with patch.object(hotkeys_config,'_KEYMAP_CACHE',dict(hotkeys_config.DEFAULT_KEYMAP)), \
+                patch.object(view,'_on_frame_clicked') as frame_camera, \
+                patch.object(view,'_timeline_range_save_to_disk'):
+            for detached in (False,True):
+                with self.subTest(detached=detached):
+                    view._timeline_set_detached(detached)
+                    view._timeline_on_display_range_changed(10,30)
+                    view._timeline_set_curve_range(-5.,5.)
+                    self.app.processEvents()
+                    point = QtCore.QPointF(canvas.rect().center())
+                    # Deliver through Qt so ignored events really propagate to parents.
+                    for widget in (canvas,view._timeline_panel,view._timeline_axis_labels[0]):
+                        for kind,position,button,buttons in (
+                            (QtCore.QEvent.MouseButtonPress,point,QtCore.Qt.MiddleButton,QtCore.Qt.MiddleButton),
+                            (QtCore.QEvent.MouseMove,point+QtCore.QPointF(-80,30),QtCore.Qt.NoButton,QtCore.Qt.MiddleButton),
+                            (QtCore.QEvent.MouseButtonRelease,point+QtCore.QPointF(-80,30),QtCore.Qt.MiddleButton,QtCore.Qt.NoButton)):
+                            event = QtGui.QMouseEvent(kind,position,widget.mapToGlobal(position.toPoint()),
+                                                     button,buttons,QtCore.Qt.AltModifier)
+                            QtWidgets.QApplication.sendEvent(widget,event)
+                            if widget is canvas:
+                                self.assertTrue(event.isAccepted())
+                    self.assertGreater(view._timeline_view_start,10)
+                    self.assertEqual(view._timeline_view_span,20)
+                    self.assertGreater(view._timeline_curve_min,-5.)
+                    for kind,position,button,buttons in (
+                        (QtCore.QEvent.MouseButtonPress,point,QtCore.Qt.RightButton,QtCore.Qt.RightButton),
+                        (QtCore.QEvent.MouseMove,point+QtCore.QPointF(80,30),QtCore.Qt.NoButton,QtCore.Qt.RightButton),
+                        (QtCore.QEvent.MouseButtonRelease,point+QtCore.QPointF(80,30),QtCore.Qt.RightButton,QtCore.Qt.NoButton)):
+                        event = QtGui.QMouseEvent(kind,position,canvas.mapToGlobal(position.toPoint()),
+                                                 button,buttons,QtCore.Qt.AltModifier)
+                        QtWidgets.QApplication.sendEvent(canvas,event)
+                        self.assertTrue(event.isAccepted())
+                    self.assertLess(view._timeline_view_span,20)
+                    self.assertGreater(view._timeline_curve_max-view._timeline_curve_min,10.)
+                    QtTest.QTest.keyClick(canvas,QtCore.Qt.Key_F)
+                    self.assertLessEqual(view._timeline_view_start,5)
+                    self.assertGreaterEqual(view._timeline_view_start+view._timeline_view_span,15)
+                    self.assertLess(view._timeline_curve_min,-10.)
+                    self.assertGreater(view._timeline_curve_max,20.)
+            frame_camera.assert_not_called()
+        self.assertEqual(camera_events,[])
+        np.testing.assert_array_equal(view._mgl_center,camera_center)
+        np.testing.assert_array_equal(view._mgl_arcball.Transform,camera_rotation)
+        self.assertEqual(view._mgl_camera_zoom,camera_zoom)
+
+    def test_fk_joint_clicks_work_with_mesh_selection_modes_still_enabled(self):
+        self.session.set_ik(False)
+        self.paint_frame(1)
+        data = self.view._mgl_scene_skeleton_qt_overlay_data()
+        point = next(point for point in data['points'] if point and point['name'] == 'left_elbow')
+        cursor = QtCore.QPointF(point['x'], point['y'])
+        for mode in ('object', 'point', 'edge', 'face'):
+            with self.subTest(mode=mode):
+                self.session.select_joint('pelvis')
+                self.view._mesh_select_mode = mode
+                self.view._mesh_box_select_enabled = True
+                press = QtGui.QMouseEvent(QtCore.QEvent.MouseButtonPress, cursor, cursor,
+                    QtCore.Qt.LeftButton, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier)
+                self.view.mousePressEvent(press)
+                self.view.mouseReleaseEvent(QtGui.QMouseEvent(QtCore.QEvent.MouseButtonRelease, cursor, cursor,
+                    QtCore.Qt.LeftButton, QtCore.Qt.NoButton, QtCore.Qt.NoModifier))
+                self.assertEqual(self.session.selected, 'left_elbow')
+                self.assertEqual(self.view._xform_gizmo_mode, 'rotate')
+                self.assertTrue(self.view._mgl_gizmo_visible)
+                self.assertIsNone(getattr(self.view, '_mesh_box_select_drag', None))
+
+    def test_bent_fingers_share_the_animation_pose_with_bones_handles_and_colliders(self):
+        from echograph.motion.hands import add_preview_hands, FINGER_NAMES
+        from echograph.ui.priormdm_rig_overlay import rig_guide_shapes
+        self.session.finish()
+        self.app.processEvents()
+        skeleton = add_preview_hands(self.context['skeleton'])
+        fingers = [JointAnimationTrack(name, rotation_keys=[QuatKeyframe(i/20., tuple(
+            Rotation.from_euler('z', (25+i*7)*(1 if name.startswith('left') else -1),
+                                degrees=True).as_quat())) for i in range(5)]) for name in FINGER_NAMES]
+        clip = replace(self.context['clip'], tracks=self.context['clip'].tracks+fingers)
+        context = dict(self.context, skeleton=skeleton, clip=clip)
+        self.session = CorrectionSession(self.session.item, context, self.view)
+        self.session.open(SimpleNamespace(open_scene_assets=self.view.load_scene_assets))
+        renderer = self.session.renderer
+        for frame in (0, 4, 2):
+            with self.subTest(frame=frame):
+                renderer._mgl_scene_skeleton_invalidate_owner('Correction')
+                with patch.object(renderer, '_mgl_add_wire_item_from_points',
+                                  wraps=renderer._mgl_add_wire_item_from_points) as wire:
+                    self.paint_frame(frame)
+                pose = evaluate_rig_at_time(skeleton, self.session.draft, self.session.time(), loop=False)
+                positions = np.asarray(pose.global_matrices).reshape(-1, 4, 4)[:, :3, 3]
+                expected_lines = np.asarray([positions[j] for i, joint in enumerate(skeleton.joints)
+                    if joint.parent_index >= 0 for j in (joint.parent_index, i)])
+                bone_calls = [call for call in wire.call_args_list if call.kwargs.get('tag') == 'scene-rig-joints']
+                self.assertTrue(bone_calls)
+                for call in bone_calls:
+                    np.testing.assert_allclose(call.kwargs['line_points'], expected_lines, atol=2e-6)
+                handles = renderer._mgl_scene_skeleton_handles_by_owner['Correction']
+                np.testing.assert_allclose([handle['position'] for handle in handles], positions, atol=2e-6)
+                rig_guide_shapes(renderer, renderer._mgl_scene_skeleton_qt_overlay_data())
+                guide_matrices = np.frombuffer(self.session.guide['_posed_shapes'][0][0]).reshape(-1, 4, 4)
+                np.testing.assert_allclose(guide_matrices[:, :3, 3],
+                    positions[self.session.guide['joint_indices']], atol=2e-6)
+        # Arm IK changes its chain while preserving the local finger motion on
+        # both hands, including the hand being moved.
+        from echograph.motion.animation_corrections import limb_chain
+        start,_,end = limb_chain(skeleton,'left_wrist')
+        self.session.move('left_wrist',positions[start]+.8*(positions[end]-positions[start]))
+        after = evaluate_rig_at_time(skeleton,self.session.draft,self.session.time(),loop=False)
+        for name in FINGER_NAMES:
+            index = skeleton.joint_names.index(name)
+            np.testing.assert_allclose(Rotation.from_quat(after.local_transforms[index].rotation).as_matrix(),
+                Rotation.from_quat(pose.local_transforms[index].rotation).as_matrix(),atol=2e-6)
 
     def test_ik_boxes_follow_animated_joint_axes_and_pole_gizmo_edits_the_bend(self):
         renderer = self.session.renderer
@@ -384,6 +712,30 @@ class AnimationCorrectionViewportTests(unittest.TestCase):
             expected = np.asarray(original.global_matrices[chain]).reshape(4,4)[:3,3]
             actual = np.asarray(corrected.global_matrices[chain]).reshape(4,4)[:3,3]
             np.testing.assert_allclose(actual[[0,2]],expected[[0,2]],atol=1e-6)
+
+    def test_pelvis_start_end_buttons_allow_px_and_pz_inside_a_py_range(self):
+        session,view = self.session,self.view
+        self.assertTrue(session.select_joint('pelvis'))
+        for axis,frames in ((1,(0,4)),(0,(1,3)),(2,(1,3))):
+            QtTest.QTest.mouseClick(view._timeline_axis_labels[axis],QtCore.Qt.LeftButton)
+            self.assertEqual(view._timeline_curve_axes_filter,{axis})
+            for frame,button in zip(frames,session.panel.ik_buttons):
+                self.paint_frame(frame)
+                QtTest.QTest.mouseClick(button,QtCore.Qt.LeftButton)
+                self.app.processEvents()
+        self.assertEqual([span['position_mask'] for span in session.ik_spans],
+                         [[False,True,False],[True,False,False],[False,False,True]])
+        self.assertTrue(all('end' in span for span in session.ik_spans))
+        view._timeline_set_curves_mode(True)
+        for axis in (0,2):
+            self.assertTrue(view._timeline_key_is_ik(1,axis))
+            self.assertTrue(view._timeline_key_is_ik(3,axis))
+            self.assertEqual(view._timeline_ik_boundary_label(1,axis),'S')
+            self.assertEqual(view._timeline_ik_boundary_label(3,axis),'E')
+        view._timeline_curves_canvas._set_selected_set({(0,1)})
+        self.assertEqual(view._timeline_selected_ik_key_ids(),{session.ik_spans[1]['start']['id']})
+        for frame in (0,1,2,3,4):
+            self.paint_frame(frame)
 
     def test_all_axis_views_keep_drawn_and_pickable_gizmos_at_constant_size_during_zoom(self):
         self.session.select_joint('left_wrist')

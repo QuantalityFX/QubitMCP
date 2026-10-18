@@ -96,6 +96,17 @@ def repair_key(skeleton,clip,limits,volumes,collisions,hands,*,ik_repair=True,th
             ik_repair,thorough_repair,REPAIR_VERSION)
 
 
+def repair_option_signatures(options):
+    """Keep verified older BVHs usable when their actual settings still match."""
+    signatures = [repair_files.options_signature(options)]
+    # Versions 2 and 3 used these same user settings, before Thorough repair
+    # was introduced. They cannot satisfy a request for Thorough repair.
+    if not options[-2]:
+        signatures.extend(repair_files.options_signature(tuple(options[:-2])+(version,))
+                          for version in (3,2))
+    return tuple(signatures)
+
+
 def restore_repair(model, context, key):
     """Restore a saved result without ever running the repair algorithm."""
     path = Path(context.get('path') or '')
@@ -104,7 +115,7 @@ def restore_repair(model, context, key):
     model._rig_limiter_disk_source = source
     if source is None:
         return
-    record = repair_files.find_repair(source, repair_files.options_signature(key[2:]))
+    record = repair_files.find_repair(source, repair_option_signatures(key[2:]))
     cached = getattr(model, '_rig_limiter_cache', None)
     if record is None or (cached is not None and cached[0] == key
                           and getattr(model, '_rig_limiter_disk_record', None) == record):
@@ -146,14 +157,20 @@ def refresh_repair_status(model, key=None):
     same_source = cached is not None and cached[0][:2] == key[:2]
     pending = cached is None or cached[0] != key
     source = getattr(model, '_rig_limiter_disk_source', None)
-    if source is not None and repair_files.find_repair(source, repair_files.options_signature(key[2:])) is None:
+    record = repair_files.find_repair(source, repair_option_signatures(key[2:])) if source is not None else None
+    if source is not None and record is None:
         pending = True
+    report = cached[1][1] if same_source and not pending else None
+    earlier = record is not None and record['options_sha'] != repair_files.options_signature(key[2:])
+    return _publish_repair_status(model,pending,report,same_source=same_source,saved_earlier=earlier)
+
+
+def _publish_repair_status(model,pending,report=None,*,same_source=False,saved_earlier=False):
     lines = []
     if pending:
         lines.append('Repair needed. Press Repair.')
         lines.append('Showing previous repair.' if same_source else 'Showing input animation until repaired.')
-    if same_source and not pending:
-        report = cached[1][1]
+    if report is not None and not pending:
         lines.extend((f"{report['corrected_frames']} / {report['frame_count']} source frames corrected",
                       f"{report['finger_collider_count']} finger capsules; {report['arm_ik_corrected_frames']} frames adjusted by arm IK",
                       f"{report.get('output_remaining_proxy_overlap_frames',report['remaining_proxy_overlap_frames'])} output samples with remaining capsule overlap"))
@@ -163,6 +180,8 @@ def refresh_repair_status(model, key=None):
         if report.get('remaining_interpolated_contact_samples',0):
             lines.append(f"{report['remaining_interpolated_contact_samples']} checks still show added between-frame overlap")
         lines.append('Thorough repair' if report.get('thorough_repair') else 'Fast repair')
+        if saved_earlier:
+            lines.append('Using saved repair from an earlier version.')
     summary = '\n'.join(lines)
     model._rig_limiter_summary = summary
     status = repair_status(model)
@@ -170,6 +189,62 @@ def refresh_repair_status(model, key=None):
         status.pending, status.summary = pending, summary
         status.changed.emit()
     return status
+
+
+def _status_input(item):
+    """Follow For Each pass-throughs without evaluating their animations."""
+    from nodes.anim_retarget import spec as retarget
+    scene = item.scene() or getattr(item.model,'_graph_scene',None)
+    port,seen,watched = 'animation',{id(item)},set()
+    for _ in range(32):
+        upstream,_ = retarget._connected_item_for_port(scene,item,port)
+        if upstream is None or id(upstream) in seen:
+            return None,watched
+        seen.add(id(upstream))
+        watched.add(upstream.model.name)
+        if upstream.model.kind.lower() != 'for_each':
+            return upstream,watched
+        item,port = upstream,'source'
+    return None,watched
+
+
+def _status_source(item):
+    """Read the selected BVH path without evaluating/loading animation."""
+    upstream,_ = _status_input(item)
+    if upstream is None:
+        return True,'',None
+    kind = upstream.model.kind.lower()
+    if kind == 'mocap_collection':
+        from nodes.mocap_collection.spec import entries,output_number
+        rows,number = entries(upstream.model),output_number(upstream.model)
+        raw = rows[number-1]['path'] if number else ''
+    elif kind in ('mocap_import','bvh_import'):
+        raw = mocap._param_value(upstream.model,'path')
+    else:
+        return False,'',None
+    return True,raw,mocap._workflow_dir_for_node(item)
+
+
+class _StatusLookupSignals(QtCore.QObject):
+    finished = QtCore.Signal(object,object)
+
+
+class _StatusLookup(QtCore.QRunnable):
+    def __init__(self,request):
+        super().__init__()
+        self.request = request
+        self.signals = _StatusLookupSignals()
+
+    def run(self):
+        raw,base,options = self.request
+        record = None
+        try:
+            path = mocap._resolve_existing_path(raw,base)
+            if path is not None and path.suffix.lower() == '.bvh':
+                record = repair_files.find_repair(path,options)
+        except (OSError,ValueError,TypeError):
+            pass
+        self.signals.finished.emit(self,record)
 
 
 def input_context(item, errors, warnings, *, _depth=0, _visited=None):
@@ -469,6 +544,12 @@ class LimiterControls(QtWidgets.QWidget):
     def __init__(self,item):
         super().__init__()
         self.item = item
+        self._status_job = None
+        self._status_request = None
+        self._status_timer = QtCore.QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.setInterval(40)
+        self._status_timer.timeout.connect(self._start_status_lookup)
         layout = QtWidgets.QVBoxLayout(self)
         self.collisions = QtWidgets.QCheckBox('Correct capsule intersections')
         self.collisions.setChecked(settings(item.model)[2])
@@ -517,7 +598,9 @@ class LimiterControls(QtWidgets.QWidget):
         layout.addWidget(self.status)
         scene = item.scene() or getattr(item.model,'_graph_scene',None)
         if scene is not None and hasattr(scene,'paramChanged'):
-            scene.paramChanged.connect(self.refresh)
+            scene.paramChanged.connect(self._params_changed)
+        if scene is not None and hasattr(scene,'linksChanged'):
+            scene.linksChanged.connect(self.refresh)
         repair_status(item.model).changed.connect(self._refresh_repair_button)
         self.refresh()
         # Workflow loading creates node widgets before reconnecting their edges.
@@ -538,13 +621,35 @@ class LimiterControls(QtWidgets.QWidget):
                           if status.pending else 'A repair for the current source and saved settings is available.')
         self.status.setText(status.summary)
 
+    @QtCore.Slot(str,list)
+    def _params_changed(self,name,_params):
+        if name != self.item.model.name:
+            upstream,watched = _status_input(self.item)
+            if upstream is None or (upstream.model.kind.lower() in ('mocap_collection','mocap_import','bvh_import')
+                                    and name not in watched):
+                return
+        self.refresh()
+
     @QtCore.Slot()
     def refresh(self,*args):
         if not isValid(self) or getattr(self, '_refreshing', False):
             return
         self._refreshing = True
         try:
-            resolve_context(self.item, [], [])
+            direct,raw,base = _status_source(self.item)
+            if direct:
+                limits,volumes,collisions = settings(self.item.model)
+                options = repair_key(None,None,limits,volumes,collisions,hand_settings(self.item.model),
+                    ik_repair=ik_repair_enabled(self.item.model),
+                    thorough_repair=thorough_repair_enabled(self.item.model))[2:]
+                # Replacing this tuple also invalidates an in-flight lookup,
+                # including when a repair was just saved for the same path.
+                self._status_request = (raw,base,repair_option_signatures(options))
+                self._status_timer.start()
+            else:
+                self._status_request = None
+                self._status_timer.stop()
+                resolve_context(self.item, [], [])
         finally:
             self._refreshing = False
         if not isValid(self) or not isValid(self.collisions) or not isValid(self.ik_repair) or not isValid(self.thorough):
@@ -558,8 +663,29 @@ class LimiterControls(QtWidgets.QWidget):
         blocker = QtCore.QSignalBlocker(self.thorough)
         self.thorough.setChecked(thorough_repair_enabled(self.item.model))
         del blocker
-        refresh_repair_status(self.item.model)
+        if not direct:
+            refresh_repair_status(self.item.model)
         self._refresh_repair_button()
+
+    @QtCore.Slot()
+    def _start_status_lookup(self):
+        if self._status_job is not None or self._status_request is None:
+            return
+        job = self._status_job = _StatusLookup(self._status_request)
+        job.signals.finished.connect(self._status_lookup_finished)
+        QtCore.QThreadPool.globalInstance().start(job)
+
+    @QtCore.Slot(object,object)
+    def _status_lookup_finished(self,job,record):
+        if not isValid(self):
+            return
+        self._status_job = None
+        if job.request is self._status_request:
+            earlier = record is not None and record['options_sha'] != job.request[2][0]
+            _publish_repair_status(self.item.model,record is None,record['report'] if record else None,
+                                   saved_earlier=earlier)
+        elif self._status_request is not None:
+            self._status_timer.start()
 
     def set_collisions(self,enabled):
         mocap._set_param_value(self.item.model,'collisions','1' if enabled else '0')
@@ -593,6 +719,10 @@ class LimiterControls(QtWidgets.QWidget):
 
     def preview(self):
         try:
+            # Preview resolves the saved result itself. A lookup started before
+            # that must not overwrite its authoritative status afterward.
+            self._status_request = None
+            self._status_timer.stop()
             asset = build_scene_asset(self.item,preview=True)
             if asset is None:
                 raise ValueError(getattr(self.item.model,'_rig_limiter_error','Could not build the preview.'))

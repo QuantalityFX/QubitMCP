@@ -197,6 +197,8 @@ class _ViewportHotkeyFilter(QtCore.QObject):
         self._view = view
 
     def eventFilter(self, obj, ev):
+        if self._view._handle_timeline_graph_key(ev, obj):
+            return True
         if self._view._handle_timeline_play_key(ev):
             return True
         if ev.type() == QtCore.QEvent.KeyRelease and ev.key() == QtCore.Qt.Key_Space:
@@ -916,6 +918,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._cam_select_lock_btn = None
         self._cam_select_syncing = False
         self._timeline_panel = None
+        self._timeline_detached = False
+        self._timeline_window = None
+        self._timeline_curve_fit_btn = None
+        self._timeline_detach_btn = None
+        self._timeline_value_range_bar = None
         self._timeline_h = 220
         self._timeline_enabled = False
         self._timeline_mode = "composition"
@@ -5355,6 +5362,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             widget = getattr(self, name, None)
             if widget is None or not widget.isVisible():
                 continue
+            if name == '_timeline_panel' and getattr(self, '_timeline_detached', False):
+                continue
             try:
                 if widget.geometry().contains(point):
                     return True
@@ -9722,7 +9731,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         target = QtWidgets.QApplication.widgetAt(QtGui.QCursor.pos()) or focus
         in_panel = panel is not None and panel.isVisible() and target is not None and (
             target is panel or panel.isAncestorOf(target))
-        if not in_panel or (focus is not None and focus.window() is not self.window()):
+        if not in_panel or (focus is not None and focus.window() not in (self.window(), panel.window())):
             self._timeline_space_held = False
             return False
         if isinstance(focus, (QtWidgets.QLineEdit, QtWidgets.QTextEdit,
@@ -9888,6 +9897,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self.update()
 
     def keyPressEvent(self, e):
+        if self._handle_timeline_graph_key(e):
+            return
         if self._handle_timeline_play_key(e):
             return
         if self._handle_camera_view_key(e):

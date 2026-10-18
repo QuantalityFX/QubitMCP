@@ -15738,6 +15738,15 @@ void main() {
         return points.min(axis=0), points.max(axis=0)
 
     def get_scene_owner_bounds(self, owner: str):
+        cache = getattr(self, '_mgl_scene_bounds_read_cache', None)
+        if cache is None:
+            return self._mgl_scene_owner_bounds_uncached(owner)
+        key = ('owner', str(owner or '').strip().casefold())
+        if key not in cache:
+            cache[key] = self._mgl_scene_owner_bounds_uncached(owner)
+        return cache[key]
+
+    def _mgl_scene_owner_bounds_uncached(self, owner: str):
         key = str(owner or "").strip()
         if not key:
             if np is None:
@@ -23927,6 +23936,14 @@ void main() {
         return True
 
     def _mgl_shadow_scene_bounds(self):
+        cache = getattr(self, '_mgl_scene_bounds_read_cache', None)
+        if cache is None:
+            return self._mgl_shadow_scene_bounds_uncached()
+        if 'shadow' not in cache:
+            cache['shadow'] = self._mgl_shadow_scene_bounds_uncached()
+        return cache['shadow']
+
+    def _mgl_shadow_scene_bounds_uncached(self):
         if np is None:
             return None
         mins_list = []
@@ -26461,6 +26478,11 @@ void main() {
 
         self._mgl_upload_pending_splats()
 
+        # Dynamic animation, visibility and deformation updates above may
+        # change the bounds used earlier while choosing projection matrices.
+        bounds_cache = getattr(self, '_mgl_scene_bounds_read_cache', None)
+        if bounds_cache is not None:
+            bounds_cache.clear()
         try:
             self._mgl_render_scene_light_shadows()
         except Exception:
@@ -28783,6 +28805,10 @@ void main() {
                 pass
 
     def _paint_mgl(self) -> None:
+        with self._mgl_scene_bounds_scope():
+            self._paint_mgl_frame()
+
+    def _paint_mgl_frame(self) -> None:
         with profile_scope("render.3d.mgl"):
             if getattr(self, "_render_paused", False):
                 return
