@@ -66,16 +66,10 @@ class CorrectionPanel(QtWidgets.QFrame):
                            'border-radius:6px; } QLabel,QCheckBox { color:#e2e8f0; }')
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(2,2,2,2)
-        self.scroll = QtWidgets.QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.scroll.setStyleSheet('QScrollArea, QScrollArea > QWidget { background:transparent; border:0; }')
-        self.content = QtWidgets.QWidget()
-        self.scroll.setWidget(self.content)
+        self.content = QtWidgets.QWidget(self)
         self.content.setAutoFillBackground(False)
         layout = QtWidgets.QVBoxLayout(self.content)
-        outer.addWidget(self.scroll)
+        outer.addWidget(self.content)
         self.node_title = QtWidgets.QLabel('Animation Correction')
         self.node_title.setAlignment(QtCore.Qt.AlignCenter)
         self.node_title.setStyleSheet('background:#101923; color:#e2e8f0; border:1px solid #2e4054; '
@@ -207,17 +201,18 @@ class CorrectionPanel(QtWidgets.QFrame):
             button.clicked.connect(callback)
             layout.addWidget(button)
         self.ensurePolished()
-        scrollbar_width = self.style().pixelMetric(QtWidgets.QStyle.PM_ScrollBarExtent)
         margins,frame = outer.contentsMargins(),self.contentsMargins()
         chrome = margins.left()+margins.right()+frame.left()+frame.right()
-        self.setFixedWidth(max(265,self.content.minimumSizeHint().width()+scrollbar_width+chrome))
+        self.setFixedWidth(max(265,self.content.minimumSizeHint().width()+chrome))
         content_margins = layout.contentsMargins()
-        self._label_width = max(1,self.width()-chrome-scrollbar_width-content_margins.left()-content_margins.right())
+        self._label_width = max(1,self.width()-chrome-content_margins.left()-content_margins.right())
         self.animation_name.setText(self.animation_name.fontMetrics().elidedText(
             session.path.name,QtCore.Qt.ElideMiddle,self._label_width-4))
         self.ik_range.setFixedHeight(self.ik_range.fontMetrics().height()+2)
         self.adjustSize()
         viewport.installEventFilter(self)
+        self.installEventFilter(self)
+        self.content.installEventFilter(self)
         self.place()
         self.sync_selection()
 
@@ -276,20 +271,20 @@ class CorrectionPanel(QtWidgets.QFrame):
     def place(self):
         view = self.parentWidget()
         bottom = getattr(view,'_bottom_overlay_height',lambda:0)() or 0
-        available = max(1,view.height()-int(bottom)-16)
         margins,frame = self.layout().contentsMargins(),self.contentsMargins()
         chrome_w = margins.left()+margins.right()+frame.left()+frame.right()
         chrome_h = margins.top()+margins.bottom()+frame.top()+frame.bottom()
-        width = max(1,self.width()-chrome_w-self.style().pixelMetric(QtWidgets.QStyle.PM_ScrollBarExtent))
+        width = max(1,self.width()-chrome_w)
         preferred = self.content.heightForWidth(width) if self.content.hasHeightForWidth() else self.content.sizeHint().height()
-        height = min(max(preferred,self.content.minimumSizeHint().height())+chrome_h,available)
+        height = max(preferred,self.content.minimumSizeHint().height())+chrome_h
         if self.height() != height:
             self.setFixedHeight(height)
         self.move(max(4,view.width()-self.width()-12),max(4,view.height()-int(bottom)-self.height()-12))
         self.raise_()
 
     def eventFilter(self,obj,event):
-        if event.type() in (QtCore.QEvent.Resize,QtCore.QEvent.Show,QtCore.QEvent.LayoutRequest):
+        if (obj is self.parentWidget() and event.type() in (QtCore.QEvent.Resize,QtCore.QEvent.Show)
+                or event.type() == QtCore.QEvent.LayoutRequest):
             self.place()
         return False
 
@@ -1436,8 +1431,9 @@ class CorrectionSession(QtCore.QObject):
             from nodes.rig_limiter.spec import export_context
             clip = corrections.apply_ik_spans(self.skeleton,self.manual,self.ik_spans,self.fps,cache=self._ik_bake_cache)
             if self.fk_keys:
-                clip = override_rotation_keys(self.skeleton,clip,self.fk_keys)
-            export_context(corrections.bvh_export_context(self.skeleton,clip),output)
+                clip = corrections.override_fk_rotation_keys(self.skeleton,clip,self.fk_keys,self.fk_rotation_masks())
+            clip = corrections.override_position_keys(self.skeleton,clip,self.fk_positions())
+            export_context(corrections.bvh_export_context(self.skeleton,clip),output,allow_joint_positions=True)
             self.approved = dict(file=output.name,output_sha=file_signature(output),source_sha=self.source_sha)
             self.exports.append(dict(self.approved))
             if not self.save():

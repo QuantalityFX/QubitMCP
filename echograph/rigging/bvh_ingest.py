@@ -437,12 +437,14 @@ def _build_clip_from_parsed(
                 for channel_index, channel in enumerate(channels):
                     key = str(channel or "").strip().lower()
                     value = float(frame_values[start + channel_index])
+                    # BVH position channels are displacements from OFFSET on
+                    # both the root and joints with their own position channels.
                     if key == "xposition":
-                        tx = value
+                        tx = bind_translation[0] + value
                     elif key == "yposition":
-                        ty = value
+                        ty = bind_translation[1] + value
                     elif key == "zposition":
-                        tz = value
+                        tz = bind_translation[2] + value
                 translation_keys.append(
                     Vec3Keyframe(
                         time=t,

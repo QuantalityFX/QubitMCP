@@ -148,12 +148,19 @@ def write_bvh(path: Path, positions: np.ndarray, fps: float, local_rot: np.ndarr
 
 
 def write_bvh_frames(path: Path, frames, count: int, fps: float, offsets: np.ndarray,
-                     *, names=JOINT_NAMES, parents=PARENTS, end_sites=None, progress=None) -> None:
-    """Write an iterator of (root channel position, local rotation matrices).
+                     *, names=JOINT_NAMES, parents=PARENTS, end_sites=None, progress=None,
+                     position_joints=()) -> None:
+    """Write an iterator of (position channels, local rotation matrices).
 
     Keep only a small batch of Euler angles and text in memory. A cancelled or
     failed export removes its own partial file and never overwrites a file.
+    With non-root position_joints, positions are an N-by-3 array of channel
+    translations relative to each joint's OFFSET, instead of a root vector.
     """
+    position_joints = {0,*position_joints}
+    if any(not isinstance(index,(int,np.integer)) or not 0 <= index < len(names) for index in position_joints):
+        raise ValueError('BVH position channels must belong to the exported skeleton.')
+    joint_positions = len(position_joints) > 1
     lines = ["HIERARCHY"]
     order = []
 
@@ -162,7 +169,7 @@ def write_bvh_frames(path: Path, frames, count: int, fps: float, offsets: np.nda
         order.append(index)
         lines.extend([f"{indent}{'ROOT' if index == 0 else 'JOINT'} {names[index]}", indent + "{"])
         lines.append(indent + "  OFFSET " + " ".join(f"{v:.9f}" for v in offsets[index]))
-        channels = "6 Xposition Yposition Zposition Zrotation Xrotation Yrotation" if index == 0 else "3 Zrotation Xrotation Yrotation"
+        channels = "6 Xposition Yposition Zposition Zrotation Xrotation Yrotation" if index in position_joints else "3 Zrotation Xrotation Yrotation"
         lines.append(indent + "  CHANNELS " + channels)
         children = [j for j, p in enumerate(parents) if p == index]
         for child in children:
@@ -201,7 +208,17 @@ def write_bvh_frames(path: Path, frames, count: int, fps: float, offsets: np.nda
                     angles = Rotation.from_matrix(rotations.reshape(-1,3,3)).as_euler(
                         'ZXY',degrees=True).reshape(len(batch),len(names),3)
                 for frame,(root,_) in enumerate(batch):
-                    values = [*root,*angles[frame,order].ravel()]
+                    if joint_positions:
+                        positions = np.asarray(root,dtype=float)
+                        if positions.shape != (len(names),3) or not np.isfinite(positions).all():
+                            raise ValueError('BVH joint position samples must contain three finite coordinates per joint.')
+                        values = []
+                        for index in order:
+                            if index in position_joints:
+                                values.extend(positions[index])
+                            values.extend(angles[frame,index])
+                    else:
+                        values = [*root,*angles[frame,order].ravel()]
                     stream.write(' '.join(f'{value:.9f}' for value in values)+'\n')
                 written += len(batch)
             if written != count:

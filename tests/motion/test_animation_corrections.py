@@ -18,7 +18,7 @@ from echograph.motion import animation_corrections as corrections
 from echograph.motion.conversion import reconstruct_animation
 from echograph.motion.rig_preview import build_guide, preview_offsets
 from echograph.rigging.bvh_ingest import ingest_bvh_animation_data
-from echograph.rigging.fbx_canonical import AnimationClip, Joint, JointTransform, JointAnimationTrack, QuatKeyframe
+from echograph.rigging.fbx_canonical import AnimationClip, Joint, JointTransform, JointAnimationTrack, QuatKeyframe, Vec3Keyframe
 from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
 from echograph.ui import gl_view_mouse
 from echograph.ui.gl_mgl_renderer import MGLRendererMixin
@@ -1080,6 +1080,54 @@ class CorrectionTests(unittest.TestCase):
             self.assertFalse(session.approve())
         self.assertIsNone(corrections.read_document(self.paths[0])['approved'])
         self.assertEqual(len(list(self.paths[0].parent.glob('*.bvh'))),2)
+
+    def test_approval_exports_joint_positions_and_sparse_fk_rotations_as_shown_in_preview(self):
+        session = self.session()
+        original = session.path.read_bytes()
+        self.make_ik_range(session)
+        name = 'left_wrist'
+        index = session.skeleton.joint_names.index(name)
+        for frame,delta in ((0,.01),(4,.035)):
+            self.view.frame = frame
+            value = np.asarray(session.skeleton.joints[index].local_bind.translation)+[0,0,delta]
+            self.assertTrue(session.key_fk(name,axes=[2],translation=value,save=True))
+        self.view.frame = 2
+        self.assertTrue(session.key_fk('left_shoulder',axes=[3],rotation=
+            Rotation.from_euler('xyz',(13,24,35),degrees=True).as_quat(),save=True))
+        before = {time:evaluate_rig_at_time(session.skeleton,session.draft,time,loop=False)
+                  for time in (0.,.05,.1,.15,.2)}
+        output = session.approve()
+        self.assertTrue(output,session.panel.status.text())
+        self.assertTrue(output.is_file())
+        self.assertEqual(session.path.read_bytes(),original)
+        loaded = ingest_bvh_animation_data(output)
+        self.assertIn('Xposition',loaded.skeleton.metadata['channels'][name])
+        self.assertNotIn('Xposition',loaded.skeleton.metadata['channels']['right_wrist'])
+        order = [loaded.skeleton.joint_names.index(joint) for joint in session.skeleton.joint_names]
+        for time,pose in before.items():
+            actual = evaluate_rig_at_time(loaded.skeleton,loaded.clips[0],time,loop=False)
+            np.testing.assert_allclose(np.asarray(actual.global_matrices)[order],pose.global_matrices,atol=2e-6)
+        self.assertEqual(corrections.read_document(session.path)['approved']['file'],output.name)
+
+    def test_approval_preserves_a_saved_constant_wrist_offset_without_relaxing_rig_limiter(self):
+        from nodes.rig_limiter import spec as limiter
+        session = self.session()
+        name = 'left_wrist'
+        track = deepcopy(next(track for track in session.base.tracks if track.joint_name == name))
+        index = session.skeleton.joint_names.index(name)
+        value = np.asarray(session.skeleton.joints[index].local_bind.translation)+[.012,-.004,.008]
+        track.translation_keys = [Vec3Keyframe(.1,tuple(value))]
+        session.rebuild(tracks={name:track.to_dict()})
+        rejected = self.paths[0].with_name('rejected.bvh')
+        with self.assertRaisesRegex(ValueError,'fixed offsets'):
+            limiter.export_context(dict(skeleton=session.skeleton,clip=session.manual),rejected)
+        self.assertFalse(rejected.exists())
+        before = [points(session.skeleton,session.draft,time) for time in (0.,.1,.2)]
+        output = session.approve()
+        self.assertTrue(output,session.panel.status.text())
+        loaded = ingest_bvh_animation_data(output)
+        for time,expected in zip((0.,.1,.2),before):
+            np.testing.assert_allclose(points(loaded.skeleton,loaded.clips[0],time),expected,atol=2e-6)
 
     def test_wireframe_cubes_are_submitted_to_renderer_and_disappear_when_ik_is_off(self):
         session = self.session()
@@ -2550,6 +2598,34 @@ class CorrectionTests(unittest.TestCase):
 
 
 class CorrectionMathTests(unittest.TestCase):
+    def test_bvh_joint_position_channels_preserve_scaled_bones_and_nonzero_root_offsets(self):
+        skeleton,clip = fixture()
+        skeleton.joints[0].local_bind.translation = (.3,-.2,.4)
+        skeleton.joints[0].local_bind.scale = (.01,)*3
+        root = next(track for track in clip.tracks if track.joint_name == skeleton.joints[0].name)
+        root.translation_keys = [Vec3Keyframe(key.time,tuple(np.asarray(key.value)+[.3,-.2,.4]))
+                                 for key in root.translation_keys]
+        name = 'left_wrist'
+        index = skeleton.joint_names.index(name)
+        offset = np.asarray(skeleton.joints[index].local_bind.translation)
+        track = next(track for track in clip.tracks if track.joint_name == name)
+        track.translation_keys = [Vec3Keyframe(time,tuple(offset+delta)) for time,delta in
+                                  ((0.,np.array((.1,.02,-.03))),(.1,np.array((.2,-.01,.04))),
+                                   (.2,np.array((.12,.05,.02))))]
+        before = deepcopy(clip.to_dict())
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder)/'joint_positions.bvh'
+            context = corrections.bvh_export_context(skeleton,clip)
+            export_context(context,output,allow_joint_positions=True)
+            loaded = ingest_bvh_animation_data(output)
+            order = [loaded.skeleton.joint_names.index(joint) for joint in skeleton.joint_names]
+            for time in (0.,.05,.1,.15,.2):
+                np.testing.assert_allclose(points(loaded.skeleton,loaded.clips[0],time)[order],
+                                           points(skeleton,clip,time),atol=2e-7)
+            self.assertEqual(loaded.skeleton.joints[0].local_bind.translation,(.3,-.2,.4))
+            np.testing.assert_allclose(loaded.skeleton.joints[order[index]].local_bind.translation,offset*.01,atol=1e-9)
+        self.assertEqual(clip.to_dict(),before)
+
     def test_reload_track_axes_retains_subframe_input_keys_and_untouched_components(self):
         skeleton,clip = fixture()
         joint = 'pelvis'

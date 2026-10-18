@@ -506,26 +506,35 @@ def prepare_repair(item, parent=None):
         refresh_repair_records(context['model'], item.scene())
 
 
-def export_context(context, path, *, progress=None):
+def export_context(context, path, *, progress=None, allow_joint_positions=False):
+    """Stream a take; correction approval can preserve non-root position edits."""
     skeleton,clip = context['skeleton'],context['clip']
     count = max(1,int(round(clip.duration*clip.sample_rate_hz))+1)
     offsets = np.array([j.local_bind.translation for j in skeleton.joints])
+    tracks = {track.joint_name:track for track in clip.tracks}
+    position_joints = []
+    if allow_joint_positions:
+        for index,joint in enumerate(skeleton.joints[1:],start=1):
+            track = tracks.get(joint.name)
+            if track is not None and track.translation_keys and not np.allclose(
+                    [key.value for key in track.translation_keys],offsets[index],atol=1e-6,rtol=1e-5):
+                position_joints.append(index)
     def frames():
         for frame in range(count):
             if progress is not None:
                 progress(frame,count)
             time = clip.start_time+clip.duration*frame/max(1,count-1)
-            local = evaluate_rig_at_time(skeleton,clip,time).local_transforms
+            local = evaluate_rig_at_time(skeleton,clip,time,loop=False).local_transforms
             positions = np.array([j.translation for j in local])
-            if not np.allclose(positions[1:],offsets[1:],atol=1e-6,rtol=1e-5):
+            if not allow_joint_positions and not np.allclose(positions[1:],offsets[1:],atol=1e-6,rtol=1e-5):
                 raise ValueError('BVH export requires fixed offsets on every non-root joint.')
             if not np.allclose([j.scale for j in local],1.,atol=1e-6):
                 raise ValueError('BVH export cannot store animated bone scale.')
-            # BVH root channels are relative to its OFFSET.
-            yield positions[0]-offsets[0],Rotation.from_quat([j.rotation for j in local]).as_matrix()
+            # Position channels are displacements from each joint's OFFSET.
+            yield (positions-offsets if position_joints else positions[0]-offsets[0]),Rotation.from_quat([j.rotation for j in local]).as_matrix()
     write_bvh_frames(Path(path),frames(),count,clip.sample_rate_hz,offsets,
                      names=skeleton.joint_names,parents=[j.parent_index for j in skeleton.joints],
-                     end_sites=skeleton.metadata.get('end_sites'),progress=progress)
+                     end_sites=skeleton.metadata.get('end_sites'),progress=progress,position_joints=position_joints)
 
 
 def build_ports(item):

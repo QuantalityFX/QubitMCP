@@ -168,7 +168,7 @@ class AnimationCorrectionViewportTests(unittest.TestCase):
         self.assertFalse(button.isEnabled())
         self.assertLess(session.panel.geometry().bottom(),view._timeline_panel.geometry().top())
 
-    def test_correction_panel_stays_above_the_resized_timeline_and_scrolls_when_needed(self):
+    def test_correction_panel_grows_upward_for_messages_without_a_scrollbar(self):
         view = self.view
         view.resize(1200,1200)
         self.app.processEvents()
@@ -180,23 +180,30 @@ class AnimationCorrectionViewportTests(unittest.TestCase):
             self.app.processEvents()
             self.assertLess(panel.y(),initial_top)
             self.assertLess(panel.geometry().bottom(),timeline.y())
-            # Constrain the available space relative to the panel's content;
-            # moving help text into a popup makes the panel substantially shorter.
-            view._timeline_resize_panel(view.height()-panel.height()+64)
+            height,bottom,top = panel.height(),panel.geometry().bottom(),panel.y()
+            panel.status.setText('BVH export requires fixed offsets on every non-root joint. '
+                                 'Select the corrected take and review its joint position keys before exporting.')
             self.app.processEvents()
-            self.assertGreaterEqual(panel.y(),4)
+            self.assertGreater(panel.height(),height)
+            self.assertLess(panel.y(),top)
+            self.assertEqual(panel.geometry().bottom(),bottom)
             self.assertLess(panel.geometry().bottom(),timeline.y())
-            self.assertGreater(panel.scroll.verticalScrollBar().maximum(),0)
+            self.assertFalse(panel.findChildren(QtWidgets.QScrollArea))
+            bounds = panel.status.fontMetrics().boundingRect(
+                QtCore.QRect(0,0,panel.status.width(),10000),QtCore.Qt.TextWordWrap,panel.status.text())
+            self.assertLessEqual(bounds.height(),panel.status.height())
+            for button in panel.findChildren(QtWidgets.QPushButton):
+                self.assertTrue(panel.rect().contains(QtCore.QRect(button.mapTo(panel,QtCore.QPoint()),button.size())))
             view._timeline_set_detached(True)
             self.app.processEvents()
             self.assertGreater(panel.geometry().bottom(),timeline.y())
-            self.assertEqual(panel.scroll.verticalScrollBar().maximum(),0)
+            self.assertFalse(panel.findChildren(QtWidgets.QScrollArea))
             view._timeline_set_detached(False)
             self.app.processEvents()
             self.assertLess(panel.geometry().bottom(),timeline.y())
             view._timeline_resize_panel(300)
             self.app.processEvents()
-            self.assertEqual(panel.scroll.verticalScrollBar().maximum(),0)
+            self.assertFalse(panel.findChildren(QtWidgets.QScrollArea))
             bottom = panel.geometry().bottom()
             view.set_timeline_visible(False)
             self.app.processEvents()
