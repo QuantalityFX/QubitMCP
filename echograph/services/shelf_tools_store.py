@@ -2,18 +2,56 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 import uuid
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from echograph.constants import script_dir
+from echograph.constants import LLM_SCALE_DEFAULT, script_dir
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SUPPORTED_TOOL_TYPES = {"python_script", "python_code", "workflow_shortcut", "graph_snippet"}
 WORKFLOW_OPEN_MODES = {"new_instance", "current_window"}
-SHELF_TOOLS_PATH = script_dir() / "shelf_tools.json"
+SNIPPET_OPEN_MODES = {"current_graph", "popup_window"}
+SHELF_DIR = script_dir() / "shelf"
+SHELF_TOOLS_PATH = SHELF_DIR / "shelf_tools.json"
+LEGACY_SHELF_TOOLS_PATH = script_dir() / "shelf_tools.json"
+
+
+def _write_json_atomic(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+            temporary_path = Path(stream.name)
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _workflow_from_payload(payload: Dict[str, Any], base=None) -> Dict[str, Any]:
+    data = deepcopy(base or {})
+    data.update({key: deepcopy(value) for key, value in payload.items()
+                 if key not in {"format", "version", "centroid"}})
+    for key in ("nodes", "edges", "comments"):
+        data.setdefault(key, [])
+    data.setdefault("llm_scale", LLM_SCALE_DEFAULT)
+    data.setdefault("settings", {"llm_scale": data["llm_scale"]})
+    return data
+
+
+def _payload_from_workflow(data: Dict[str, Any]) -> Dict[str, Any]:
+    payload = _normalize_graph_snippet_payload(data)
+    positions = [entry.get("pos", [0.0, 0.0]) for entry in payload["nodes"]]
+    payload["centroid"] = [
+        sum(float(pos[axis]) for pos in positions) / len(positions) if positions else 0.0
+        for axis in (0, 1)
+    ]
+    return payload
 
 
 def _slugify(value: str) -> str:
@@ -190,9 +228,13 @@ def normalize_tool(raw: Dict[str, Any], index: int = 0, existing_ids: Iterable[s
             }
         )
     elif tool_type == "graph_snippet":
+        open_mode = str(tool.get("open_mode", "") or "").strip().lower()
         normalized.update(
             {
                 "payload": _normalize_graph_snippet_payload(tool.get("payload")),
+                "open_mode": open_mode if open_mode in SNIPPET_OPEN_MODES else "current_graph",
+                "workflow_path": str(tool.get("workflow_path", "") or "").strip(),
+                "path_mode": str(tool.get("path_mode", "shelf_relative") or "shelf_relative"),
             }
         )
     else:
@@ -218,8 +260,10 @@ def _normalize_execution(value: Any) -> Dict[str, Any]:
 
 
 class ShelfToolsStore:
-    def __init__(self, path: str | Path | None = None):
+    def __init__(self, path: str | Path | None = None, *, legacy_path: str | Path | None = None):
         self.path = Path(path) if path is not None else SHELF_TOOLS_PATH
+        self._legacy_path = (Path(legacy_path) if legacy_path is not None
+                             else LEGACY_SHELF_TOOLS_PATH if path is None else None)
         self.schema_version = SCHEMA_VERSION
         self.tools: List[Dict[str, Any]] = []
         self.load_error = ""
@@ -228,11 +272,14 @@ class ShelfToolsStore:
     def load(self) -> List[Dict[str, Any]]:
         self.load_error = ""
         self.unsupported_schema = False
-        if not self.path.exists():
+        source_path = self.path
+        if not source_path.exists() and self._legacy_path is not None and self._legacy_path.exists():
+            source_path = self._legacy_path
+        if not source_path.exists():
             self.tools = []
             return self.tools
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(source_path.read_text(encoding="utf-8"))
         except Exception as exc:
             self.load_error = f"Failed to read shelf tools: {exc}"
             self.tools = []
@@ -242,7 +289,7 @@ class ShelfToolsStore:
             self.tools = []
             return self.tools
         try:
-            version = int(data.get("schema_version", SCHEMA_VERSION))
+            version = int(data.get("schema_version", 1))
         except Exception:
             version = SCHEMA_VERSION
         self.schema_version = version
@@ -254,24 +301,87 @@ class ShelfToolsStore:
             raw_tools = []
         self.tools = []
         seen: set[str] = set()
+        needs_migration = source_path != self.path or version < SCHEMA_VERSION
         for idx, raw in enumerate(raw_tools):
             if not isinstance(raw, dict):
                 continue
             tool = normalize_tool(raw, idx, seen)
+            if tool["type"] == "graph_snippet":
+                if tool.get("workflow_path"):
+                    try:
+                        tool["payload"] = self.load_snippet_payload(tool)
+                    except Exception as exc:
+                        self.load_error += f'\nCould not read shelf workflow "{tool["label"]}": {exc}'
+                else:
+                    needs_migration = True
             seen.add(tool["id"])
             self.tools.append(tool)
         self.tools.sort(key=lambda t: _coerce_order(t.get("order"), 0))
         self._renumber()
+        if needs_migration and not self.unsupported_schema and not self.load_error:
+            try:
+                self.save()
+                if source_path != self.path:
+                    backup = self.path.parent / "shelf_tools.legacy.json"
+                    if backup.exists():
+                        backup = backup.with_name(f"shelf_tools.legacy-{uuid.uuid4().hex[:8]}.json")
+                    source_path.replace(backup)
+            except Exception as exc:
+                self.load_error = f"Could not migrate shelf tools; the original data has been retained: {exc}"
         return self.tools
 
     def save(self) -> None:
         self._renumber()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tools = []
+        for tool in self.tools:
+            if tool.get("type") == "graph_snippet" and not tool.get("workflow_path"):
+                # Each shelf subnetwork is an ordinary workflow JSON, with a stable link.
+                name = f'{_slugify(tool.get("label", "subnet"))}-{uuid.uuid4().hex[:8]}.json'
+                _write_json_atomic(self.path.parent / name, _workflow_from_payload(tool.get("payload") or {}))
+                tool["workflow_path"] = name
+                tool["path_mode"] = "shelf_relative"
+            entry = deepcopy(tool)
+            if entry.get("type") == "graph_snippet":
+                entry.pop("payload", None)
+            tools.append(entry)
         payload = {
             "schema_version": SCHEMA_VERSION,
-            "tools": self.tools,
+            "tools": tools,
         }
-        self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(self.path, payload)
+        self.schema_version = SCHEMA_VERSION
+
+    def snippet_workflow_path(self, tool: Dict[str, Any]) -> Path:
+        raw = str(tool.get("workflow_path", "") or "").strip()
+        if not raw:
+            raise ValueError("This shelf snippet has no linked workflow file.")
+        if tool.get("path_mode", "shelf_relative") == "shelf_relative":
+            return (self.path.parent / raw).resolve()
+        return resolve_stored_path(raw, tool.get("path_mode"))
+
+    def load_snippet_workflow(self, tool: Dict[str, Any]) -> Dict[str, Any]:
+        if not tool.get("workflow_path"):
+            return _workflow_from_payload(tool.get("payload") or {})
+        path = self.snippet_workflow_path(tool)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
+            raise ValueError(f"Not a workflow JSON: {path}")
+        for key in ("edges", "comments"):
+            if key in data and not isinstance(data[key], list):
+                raise ValueError(f"Invalid workflow {key}: {path}")
+        return data
+
+    def load_snippet_payload(self, tool: Dict[str, Any]) -> Dict[str, Any]:
+        return _payload_from_workflow(self.load_snippet_workflow(tool))
+
+    def save_snippet_workflow(self, tool_id: str, data: Dict[str, Any]) -> None:
+        idx = self._index_of(tool_id)
+        if idx < 0 or self.tools[idx].get("type") != "graph_snippet":
+            raise ValueError("The original shelf node snippet no longer exists.")
+        tool = self.tools[idx]
+        payload = _payload_from_workflow(data)
+        _write_json_atomic(self.snippet_workflow_path(tool), data)
+        tool["payload"] = payload
 
     def all_tools(self) -> List[Dict[str, Any]]:
         return [dict(tool) for tool in self.tools]
@@ -283,7 +393,7 @@ class ShelfToolsStore:
         self._renumber()
         if save:
             self.save()
-        return dict(normalized)
+        return dict(self.tools[-1])
 
     def update_tool(self, tool_id: str, patch: Dict[str, Any], *, save: bool = True) -> Dict[str, Any] | None:
         idx = self._index_of(tool_id)
@@ -294,7 +404,11 @@ class ShelfToolsStore:
         current["id"] = self.tools[idx]["id"]
         current["order"] = self.tools[idx].get("order", idx)
         existing = {t.get("id", "") for i, t in enumerate(self.tools) if i != idx}
-        self.tools[idx] = normalize_tool(current, idx, existing)
+        normalized = normalize_tool(current, idx, existing)
+        if save and normalized["type"] == "graph_snippet" and "payload" in patch and normalized.get("workflow_path"):
+            workflow = _workflow_from_payload(normalized["payload"], self.load_snippet_workflow(self.tools[idx]))
+            _write_json_atomic(self.snippet_workflow_path(normalized), workflow)
+        self.tools[idx] = normalized
         self._renumber()
         if save:
             self.save()
@@ -315,6 +429,9 @@ class ShelfToolsStore:
         if idx < 0:
             return None
         duplicate = deepcopy(self.tools[idx])
+        if duplicate.get("type") == "graph_snippet":
+            duplicate["payload"] = self.load_snippet_payload(duplicate)
+            duplicate.pop("workflow_path", None)
         duplicate.pop("id", None)
         duplicate["label"] = f"{duplicate.get('label', 'Tool')} Copy"
         duplicate["order"] = idx + 1

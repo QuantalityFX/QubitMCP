@@ -1521,8 +1521,28 @@ class FullscreenPlayerDialog(QtWidgets.QDialog):
         self._play_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self._play_shortcut.setAutoRepeat(False)
         self._play_shortcut.activated.connect(self.player._on_play_clicked)
+        self._owner_window = parent.window() if parent is not None else None
+        self._return_to_front = QtCore.QTimer(self)
+        self._return_to_front.setSingleShot(True)
+        self._return_to_front.timeout.connect(self._raise_above_owner)
+        if self._owner_window is not None:
+            self._owner_window.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if watched is self._owner_window and event.type() == QtCore.QEvent.WindowActivate:
+            # Wait until Windows finishes activating the main window before
+            # restoring the open player above it.
+            self._return_to_front.start(0)
+        return super().eventFilter(watched, event)
+
+    def _raise_above_owner(self):
+        if (self.isVisible() and not self.isMinimized()
+                and self._owner_window is not None and self._owner_window.isActiveWindow()):
+            self.raise_()
+            self.activateWindow()
 
     def done(self, result):
+        self._return_to_front.stop()
         self.was_playing = (self.player._seq_timer.isActive() if self.player._mode == "sequence"
                             else self.player._player_is_playing())
         self.player._stop_playback()

@@ -3032,7 +3032,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 "app_save",
                 "Ctrl+S",
                 self._save_graph,
-                context=QtCore.Qt.ApplicationShortcut,
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
             self._register_shortcut("app_save", self._shortcut_save)
         except Exception:
@@ -3701,6 +3701,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 sc.setKey(QtGui.QKeySequence(str(seq or "")))
             except Exception:
                 pass
+        shelf = getattr(self, "_shelf_bar", None)
+        if shelf is not None:
+            shelf.apply_hotkey_map(mapping)
         view = getattr(self, "gl_view", None)
         if view is not None:
             view._timeline_sync_graph_controls()

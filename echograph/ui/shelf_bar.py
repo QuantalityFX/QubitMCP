@@ -18,6 +18,7 @@ from echograph.services.shelf_tools_store import (
     resolve_stored_path,
 )
 from echograph.ui.shelf_tool_dialogs import edit_shelf_tool
+from echograph.ui.shelf_snippet_window import ShelfSnippetWindow
 
 
 _SHELF_TOOL_MIME = "application/x-qubit-shelf-tool-id"
@@ -321,6 +322,8 @@ class ShelfBar(QtWidgets.QFrame):
         self._store = ShelfToolsStore()
         self._buttons: Dict[str, QtWidgets.QToolButton] = {}
         self._output_dialogs = []
+        self._snippet_windows = {}
+        window.installEventFilter(self)
         self.setObjectName("ShelfBar")
         self.setFixedHeight(58)
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -415,6 +418,18 @@ class ShelfBar(QtWidgets.QFrame):
             self._tools_layout.addWidget(button, 0)
             self._buttons[str(tool.get("id", ""))] = button
         self._tools_layout.addStretch(1)
+
+    def eventFilter(self, obj, event):
+        if obj is self._window and event.type() == QtCore.QEvent.Close:
+            for window in list(self._snippet_windows.values()):
+                if not window.close():
+                    event.ignore()
+                    return True
+        return super().eventFilter(obj, event)
+
+    def apply_hotkey_map(self, mapping):
+        for window in self._snippet_windows.values():
+            window.apply_hotkey_map(mapping)
 
     def add_python_node_snapshot(self, node: Any) -> None:
         label = str(getattr(node, "name", "") or "Python Tool")
@@ -513,6 +528,10 @@ class ShelfBar(QtWidgets.QFrame):
         elif tool_type == "workflow_shortcut":
             parts.append(str(resolve_stored_path(tool.get("workflow_path", ""), tool.get("path_mode"))))
         elif tool_type == "graph_snippet":
+            try:
+                parts.append(str(self._store.snippet_workflow_path(tool)))
+            except ValueError:
+                pass
             payload = tool.get("payload") if isinstance(tool.get("payload"), dict) else {}
             nodes = payload.get("nodes") if isinstance(payload, dict) else []
             edges = payload.get("edges") if isinstance(payload, dict) else []
@@ -525,6 +544,7 @@ class ShelfBar(QtWidgets.QFrame):
                 wrapper_word = "wrapper" if comment_count == 1 else "wrappers"
                 summary = f"{summary}, {comment_count} comment {wrapper_word}"
             parts.append(summary)
+            parts.append("Open in popup window" if tool.get("open_mode") == "popup_window" else "Paste into current graph")
         elif tool_type not in SUPPORTED_TOOL_TYPES:
             parts.append(f"Unsupported shelf tool type: {tool_type}")
         missing = self._tool_missing_path(tool)
@@ -573,7 +593,7 @@ class ShelfBar(QtWidgets.QFrame):
         if tool.get("type") == "workflow_shortcut":
             action_label = "Open"
         elif tool.get("type") == "graph_snippet":
-            action_label = "Paste"
+            action_label = "Open Popup" if tool.get("open_mode") == "popup_window" else "Paste"
         run_action = QAction(action_label, menu)
         run_action.triggered.connect(lambda: self._run_tool_by_id(tool_id))
         menu.addAction(run_action)
@@ -719,6 +739,13 @@ class ShelfBar(QtWidgets.QFrame):
         tool = self._store.tool_by_id(tool_id)
         if not tool:
             return
+        if tool.get("type") == "graph_snippet":
+            try:
+                tool["payload"] = self._store.load_snippet_payload(tool)
+                tool["_workflow_display_path"] = str(self._store.snippet_workflow_path(tool))
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Failed to read shelf workflow:\n{exc}")
+                return
         edited = edit_shelf_tool(self, tool=tool, default_type=str(tool.get("type", "python_script")))
         if edited is None:
             return
@@ -885,12 +912,39 @@ class ShelfBar(QtWidgets.QFrame):
         elif tool_type == "workflow_shortcut":
             self._open_workflow_shortcut(tool)
         elif tool_type == "graph_snippet":
-            self._paste_graph_snippet(tool)
+            if tool.get("open_mode") == "popup_window":
+                self._open_graph_snippet(tool)
+            else:
+                self._paste_graph_snippet(tool)
         else:
             QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Unsupported shelf tool type:\n{tool_type}")
 
+    def _open_graph_snippet(self, tool: Dict[str, Any]) -> None:
+        tool_id = str(tool.get("id", ""))
+        window = self._snippet_windows.get(tool_id)
+        if window is None:
+            try:
+                window = ShelfSnippetWindow(
+                    self._window, scene_factory=type(self._window.scene), store=self._store, tool=tool
+                )
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Failed to open node snippet:\n{exc}")
+                return
+            self._snippet_windows[tool_id] = window
+            window.closed.connect(lambda tid: self._snippet_windows.pop(tid, None))
+            window.saved.connect(self.refresh)
+        if window.isMinimized():
+            window.setWindowState(window.windowState() & ~QtCore.Qt.WindowMinimized)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
     def _paste_graph_snippet(self, tool: Dict[str, Any]) -> None:
-        payload = tool.get("payload") if isinstance(tool.get("payload"), dict) else None
+        try:
+            payload = self._store.load_snippet_payload(tool)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Failed to read shelf workflow:\n{exc}")
+            return
         if not payload:
             QtWidgets.QMessageBox.warning(self, APP_TITLE, "This shelf node snippet has no saved payload.")
             return

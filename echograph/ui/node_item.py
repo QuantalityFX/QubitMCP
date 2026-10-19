@@ -3916,6 +3916,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
 
+    def add_images_to_collection(self, paths) -> bool:
+        canvas = getattr(self, "_image_collection_canvas", None)
+        if (self.model.kind or "").lower() not in ("image_collection", "imagecollection") or canvas is None:
+            return False
+        state = dict(getattr(self.model, "_image_collection_state", None) or {})
+        existing = list(state.get("paths", []))
+        combined = list(existing)
+        seen = {os.path.normcase(os.path.abspath(path)) for path in existing}
+        for path in paths:
+            if not path:
+                continue
+            path = str(path)
+            key = os.path.normcase(os.path.abspath(path))
+            if key not in seen:
+                seen.add(key)
+                combined.append(path)
+        if combined != existing:
+            canvas.load_images(combined, append=False)
+            state["paths"] = combined
+            self.model._image_collection_state = state
+            self._emit_param_changed()
+        return True
+
     def _render_image_collection_inline(self, y_cursor: int) -> int:
         """Fallback renderer if plugin registration failed; keeps button visible."""
         try:
@@ -4349,21 +4372,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             )
             if not paths:
                 return
-            canvas.load_images(paths, append=True)
-            try:
-                existing = getattr(node_item.model, "_image_collection_state", {}) or {}
-                base = list(existing.get("paths", []))
-                combined = base + list(paths)
-                seen = set()
-                dedup = []
-                for p in combined:
-                    if p in seen:
-                        continue
-                    seen.add(p)
-                    dedup.append(p)
-                setattr(node_item.model, "_image_collection_state", {"paths": dedup})
-            except Exception:
-                pass
+            node_item.add_images_to_collection(paths)
 
         btn.clicked.connect(_pick)
 

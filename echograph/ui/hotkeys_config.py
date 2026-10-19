@@ -23,6 +23,7 @@ DEFAULT_KEYMAP = {
     "node_menu": "Tab",
     "node_view": "V",
     "node_frame_selected": "Shift+F",
+    "shelf_snippet_maximize": "Shift+F",
     "view_mode_2d": "1",
     "view_mode_split": "2",
     "view_mode_3d": "3",
@@ -54,6 +55,7 @@ DEFAULT_KEYMAP = {
 }
 
 ACTION_LABELS = {
+    "shelf_snippet_maximize": "Shelf popup: maximize / restore",
     "timeline_play_toggle": "Timeline: play / pause",
     "timeline_graph_pan": "Timeline graph: pan",
     "timeline_graph_scale": "Timeline graph: scale ranges",
@@ -69,6 +71,7 @@ ACTION_LABELS = {
 }
 
 ACTION_DESCRIPTIONS = {
+    "shelf_snippet_maximize": "Toggle the shelf snippet window between maximized and its previous size. Default: Shift + F.",
     "timeline_play_toggle": "Play or pause with the pointer over the timeline panel. Default: hold Space and press P. Video review uses its own Space shortcut.",
     "timeline_graph_pan": "Drag to grab the curve graph and pan in time and value without changing its scale or moving the 3D camera. Default: Alt + middle mouse.",
     "timeline_graph_scale": "Drag down/up to expand/contract the value range, or right/left to contract/expand the time range. Default: right mouse. Alt may also be held while dragging.",

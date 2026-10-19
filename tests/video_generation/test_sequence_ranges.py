@@ -91,6 +91,29 @@ class SequenceRangeTests(unittest.TestCase):
             controls._open_btn.click()
             launch.assert_called_once_with(QtCore.QUrl.fromLocalFile(str(path.resolve())))
 
+    def test_large_player_returns_above_reactivated_owner_only_while_open(self):
+        item, _ = self.make_node("video_player", path=self.paths[0])
+        owner = QtWidgets.QWidget()
+        self.addCleanup(owner.deleteLater)
+        dialog = video.FullscreenPlayerDialog(item, owner)
+        self.addCleanup(dialog.deleteLater)
+        dialog.show()
+        with patch.object(owner, "isActiveWindow", return_value=True), \
+                patch.object(dialog, "raise_") as raise_player, \
+                patch.object(dialog, "activateWindow") as activate:
+            QtWidgets.QApplication.sendEvent(owner, QtCore.QEvent(QtCore.QEvent.WindowActivate))
+            APP.processEvents()
+            raise_player.assert_called_once()
+            activate.assert_called_once()
+            dialog.hide()
+            QtWidgets.QApplication.sendEvent(owner, QtCore.QEvent(QtCore.QEvent.WindowActivate))
+            APP.processEvents()
+            self.assertEqual(raise_player.call_count, 1)
+            dialog.show()
+            with patch.object(owner, "isActiveWindow", return_value=False):
+                dialog._raise_above_owner()
+            self.assertEqual(raise_player.call_count, 1)
+
     def test_auto_full_range_and_inclusive_custom_boundaries(self):
         item, controls = self.make_node("sequence_to_mp4", source=self.paths[0])
         info, _, _ = export._effective_sequence_info(item, str(self.paths[0]))

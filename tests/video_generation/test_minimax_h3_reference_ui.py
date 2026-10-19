@@ -3,6 +3,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import json
 import threading
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -37,6 +38,45 @@ class Graph(QtWidgets.QGraphicsScene):
 
 
 class ReferenceVideoUITests(unittest.TestCase):
+    def test_output_browser_starts_in_generation_folder_and_respects_override(self):
+        _, item, widget = self.make_item()
+        with tempfile.TemporaryDirectory() as temporary, patch(
+                "nodes.minimax_h3_reference_video.spec._workflow_dir_for_node", return_value=Path(temporary)):
+            expected = Path(temporary) / "videos" / "minimax_h3_reference"
+            with patch.object(QtWidgets.QFileDialog, "getExistingDirectory", return_value="") as dialog:
+                widget._browse_output()
+                self.assertEqual(Path(dialog.call_args.args[2]), expected)
+                self.assertTrue(expected.is_dir())
+                self.assertEqual(widget._settings(False).output_dir, expected)
+                custom = Path(temporary) / "custom"
+                widget.output_dir.setText(str(custom))
+                widget._browse_output()
+                self.assertEqual(Path(dialog.call_args.args[2]), custom)
+                self.assertTrue(custom.is_dir())
+
+    def test_all_browse_dialogs_use_graph_window_and_preserve_selections(self):
+        scene, item, widget = self.make_item()
+        view = QtWidgets.QGraphicsView(scene)
+        self.addCleanup(view.deleteLater)
+        self.addCleanup(view.close)
+        for port, path in (("reference_videos", "previs.mp4"),
+                           ("reference_images", "design.png"),
+                           ("reference_audio", "voice.wav")):
+            with self.subTest(port=port), patch.object(
+                    QtWidgets.QFileDialog, "getOpenFileNames", return_value=([path], "")) as dialog:
+                widget.browsers[port].click()
+                self.assertIs(dialog.call_args.args[0], view.window())
+                self.assertEqual(widget.fields[port].toPlainText(), path)
+                widget.browsers[port].click()
+                self.assertEqual(widget.fields[port].toPlainText(), path)
+        with patch.object(Path, "mkdir"), patch.object(QtWidgets.QFileDialog, "getExistingDirectory", return_value="C:/renders") as dialog:
+            widget._browse_output()
+            self.assertIs(dialog.call_args.args[0], view.window())
+            self.assertEqual(value(item.model, "output_dir"), "C:/renders")
+        with patch.object(Path, "mkdir"), patch.object(QtWidgets.QFileDialog, "getExistingDirectory", return_value=""):
+            widget._browse_output()
+            self.assertEqual(value(item.model, "output_dir"), "C:/renders")
+
     def make_item(self, model=None):
         scene = Graph()
         item = NodeItem(model or GraphNode("Previs H3", kind=KIND))

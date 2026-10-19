@@ -148,10 +148,19 @@ class GraphView(QtWidgets.QGraphicsView):
 
         point = event.position().toPoint() if hasattr(event, "position") else event.pos()
         position = self.mapToScene(point)
-        node = GraphNode("Image Collection", kind="image_collection",
-                         pos_xy=(position.x(), position.y()))
-        node._image_collection_state = {"paths": paths}
-        item = scene.add_node(node, position)
+        item = self.itemAt(point)
+        # Embedded controls are graphics children of their owning node.
+        while item is not None and getattr(item, "model", None) is None:
+            item = item.parentItem()
+        if (getattr(getattr(item, "model", None), "kind", "") or "").lower() in ("image_collection", "imagecollection"):
+            if not item.add_images_to_collection(paths):
+                event.ignore()
+                return
+        else:
+            node = GraphNode("Image Collection", kind="image_collection",
+                             pos_xy=(position.x(), position.y()))
+            node._image_collection_state = {"paths": paths}
+            item = scene.add_node(node, position)
         scene.clearSelection()
         item.setSelected(True)
         event.setDropAction(QtCore.Qt.CopyAction)

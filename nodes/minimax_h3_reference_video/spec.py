@@ -12,7 +12,7 @@ from nodes.qwen_image.port_item import PortDot
 from nodes.minimax_h3_api_video.spec import (
     _button_style, _field_style, _default_api_key, _default_api_base_url,
     _param_value, _ensure_param, _ensure_hidden_params, _ordered_in_edges,
-    _edge_port, _workflow_dir_for_node, _resolve_path,
+    _edge_port, _workflow_dir_for_node, _resolve_path, _dialog_parent,
 )
 from .client import Settings, Result, RATIOS, run_job
 from .media import parse_refs
@@ -352,13 +352,29 @@ class ReferenceVideoWidget(QtWidgets.QWidget):
         filters = {"reference_videos": "Video (*.mp4 *.mov)",
                    "reference_images": "Images (*.jpg *.jpeg *.png *.webp *.heic *.heif)",
                    "reference_audio": "Audio (*.wav *.mp3)"}
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Add references (in numbered order)", "", filters[port])
+        # Native dialogs need the actual application window, not a widget
+        # embedded in a QGraphicsProxyWidget (which can close them on Windows).
+        parent = _dialog_parent(self.item)
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(parent, "Add references (in numbered order)", "", filters[port])
         if paths:
             existing = parse_refs(self.fields[port].toPlainText())
             self.fields[port].setPlainText("\n".join(dict.fromkeys(existing + paths)))
 
+    def _default_output_dir(self):
+        workflow = _workflow_dir_for_node(self.item)
+        return (workflow / "videos" / "minimax_h3_reference" if workflow else
+                Path(tempfile.gettempdir()) / "EchoGraph" / "minimax_h3_reference")
+
     def _browse_output(self):
-        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Save generated videos", self.output_dir.text())
+        parent = _dialog_parent(self.item)
+        raw_dir = self.output_dir.text().strip()
+        start = _resolve_path(self.item, raw_dir) if raw_dir else self._default_output_dir()
+        try:
+            start.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            QtWidgets.QMessageBox.warning(self, "Save folder", f"Cannot open output folder:\n{start}\n\n{error}")
+            return
+        folder = QtWidgets.QFileDialog.getExistingDirectory(parent, "Save generated videos", str(start))
         if folder:
             self.output_dir.setText(folder)
             self._commit()
@@ -377,9 +393,7 @@ class ReferenceVideoWidget(QtWidgets.QWidget):
         base_dir = workflow or Path.cwd()
         raw_dir = value(self.model, "task_output_dir") if resume else ""
         raw_dir = raw_dir or self.output_dir.text().strip()
-        output_dir = _resolve_path(self.item, raw_dir) if raw_dir else (
-            workflow / "videos" / "minimax_h3_reference" if workflow else
-            Path(tempfile.gettempdir()) / "EchoGraph" / "minimax_h3_reference")
+        output_dir = _resolve_path(self.item, raw_dir) if raw_dir else self._default_output_dir()
         return Settings(prompt=effective["prompt"], images=parse_refs(effective["reference_images"]),
                         videos=parse_refs(effective["reference_videos"]), audio=parse_refs(effective["reference_audio"]),
                         model=self.model_combo.currentText(), resolution=self.resolution.currentText(),

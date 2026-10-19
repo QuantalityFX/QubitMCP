@@ -205,10 +205,24 @@ class ShelfToolDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
+        open_form = QtWidgets.QFormLayout()
+        self.snippet_open_mode_combo = QtWidgets.QComboBox(page)
+        self.snippet_open_mode_combo.addItem("Current Graph", "current_graph")
+        self.snippet_open_mode_combo.addItem("Popup Window", "popup_window")
+        open_form.addRow("Open In", self.snippet_open_mode_combo)
+        layout.addLayout(open_form)
+        hint = QtWidgets.QLabel("Popup edits can be saved to this snippet's workflow JSON when you close the window.", page)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
         self.snippet_summary_label = QtWidgets.QLabel(page)
         self.snippet_summary_label.setWordWrap(True)
         self.snippet_summary_label.setStyleSheet("QLabel{color:#cbd5e1;}")
         layout.addWidget(self.snippet_summary_label, 0)
+        self.snippet_path_label = QtWidgets.QLabel(page)
+        self.snippet_path_label.setWordWrap(True)
+        self.snippet_path_label.setTextFormat(QtCore.Qt.PlainText)
+        self.snippet_path_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout.addWidget(self.snippet_path_label)
 
         actions = QtWidgets.QWidget(page)
         actions_layout = QtWidgets.QHBoxLayout(actions)
@@ -255,6 +269,8 @@ class ShelfToolDialog(QtWidgets.QDialog):
         workflow_open_mode = str(tool.get("open_mode", "new_instance") or "new_instance")
         idx = self.workflow_open_mode_combo.findData(workflow_open_mode)
         self.workflow_open_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        idx = self.snippet_open_mode_combo.findData(tool.get("open_mode", "current_graph"))
+        self.snippet_open_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self._load_snippet_summary(tool)
         self._sync_page()
 
@@ -267,6 +283,8 @@ class ShelfToolDialog(QtWidgets.QDialog):
     def _load_snippet_summary(self, tool: Dict[str, Any]) -> None:
         payload = tool.get("payload") if isinstance(tool.get("payload"), dict) else {}
         self._snippet_payload = deepcopy(payload)
+        path = tool.get("_workflow_display_path") or tool.get("workflow_path")
+        self.snippet_path_label.setText(f"Workflow: {path}" if path else "A workflow JSON will be created in shelf/ when saved.")
         self._render_snippet_summary()
 
     def _render_snippet_summary(self) -> None:
@@ -466,7 +484,10 @@ class ShelfToolDialog(QtWidgets.QDialog):
                 }
             )
         else:
-            base.update({"payload": deepcopy(self._snippet_payload or {})})
+            base.update({
+                "payload": deepcopy(self._snippet_payload or {}),
+                "open_mode": str(self.snippet_open_mode_combo.currentData() or "current_graph"),
+            })
         return base
 
     def accept(self) -> None:
