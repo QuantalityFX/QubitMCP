@@ -132,6 +132,7 @@ def register_defaults() -> None:
     register("youtube_downloader", stripe_color="#dc2626")
     register("minimax_h3_video", stripe_color="#4f46e5")
     register("minimax_h3_api_video", stripe_color="#06b6d4")
+    register("minimax_h3_reference_video", stripe_color="#22d3ee")
     register("minimax_tts_api", stripe_color="#14b8a6")
     register("wan22_video", stripe_color="#0f766e")
     register("qwen_image", stripe_color="#d28ff7")
@@ -265,6 +266,12 @@ def register_defaults() -> None:
             _minimax_h3_api_video.register(core=sys.modules[__name__])
     except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] MiniMax H3 API Video auto-register failed:", exc)
+
+    try:
+        from nodes import minimax_h3_reference_video
+        minimax_h3_reference_video.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:
+        print("[EchoGraph] MiniMax H3 Reference Video auto-register failed:", exc)
 
     # Auto-register MiniMax TTS API so saved workflows can rebuild its generator body early.
     try:

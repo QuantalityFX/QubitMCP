@@ -4,7 +4,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 try:
@@ -34,6 +34,7 @@ class SequenceInfo:
     frame_count: int
     padding: int
     example_path: Path | None = None
+    frame_numbers: tuple[int, ...] = ()
 
 
 def _param_value(model, name: str) -> str:
@@ -326,6 +327,7 @@ def _sequence_from_pattern(path: Path) -> SequenceInfo | None:
         frame_count=len(matches),
         padding=padding,
         example_path=matches[0][1],
+        frame_numbers=tuple(row[0] for row in matches),
     )
 
 
@@ -355,6 +357,7 @@ def _sequence_from_numeric_file(path: Path) -> SequenceInfo | None:
         frame_count=len(matches),
         padding=padding,
         example_path=matches[0][1],
+        frame_numbers=tuple(row[0] for row in matches),
     )
 
 
@@ -420,8 +423,40 @@ def _effective_sequence_info(node_item, fallback_source: str, *, apply_postproce
     source = _connected_sequence_source(node_item, apply_postprocess=apply_postprocess)
     if source is not None and (source.text or "").strip():
         info = _resolve_sequence(source.owner_item, source.text)
-        return info, str(source.label or "connected source"), True
-    return _resolve_sequence(node_item, fallback_source), "", False
+        return _selected_sequence(info, node_item, getattr(source, "range_owner", None)), str(source.label or "connected source"), True
+    return _selected_sequence(_resolve_sequence(node_item, fallback_source), node_item), "", False
+
+
+def _range_param(model, name: str) -> int:
+    raw = str(_param_value(model, name)).strip()
+    if not raw or raw.lower() == "auto":
+        return -1
+    try:
+        return max(-1, int(raw))
+    except ValueError as exc:
+        raise ValueError(f"{name.replace('_', ' ').title()} must be a frame number or Auto.") from exc
+
+
+def _selected_sequence(info: SequenceInfo, node_item, range_owner=None) -> SequenceInfo:
+    numbers = info.frame_numbers or tuple(range(info.start_number, info.start_number + info.frame_count))
+    model = getattr(node_item, "model", None)
+    inherited = getattr(range_owner, "model", None)
+    start, end = _range_param(model, "start_frame"), _range_param(model, "end_frame")
+    if start < 0:
+        start = _range_param(inherited, "start_frame")
+    if end < 0:
+        end = _range_param(inherited, "end_frame")
+    start = numbers[0] if start < 0 else start
+    end = numbers[-1] if end < 0 else end
+    if end < start:
+        raise ValueError("End frame must be greater than or equal to Start frame.")
+    if start < numbers[0] or end > numbers[-1]:
+        raise ValueError(f"Export range must stay within source frames {numbers[0]}-{numbers[-1]}.")
+    selected = tuple(number for number in numbers if start <= number <= end)
+    if not selected or len(selected) != end - start + 1:
+        raise ValueError("The selected range contains missing or duplicate frames. Choose a continuous range.")
+    example = info.input_pattern.with_name(re.sub(r"%0?(\d*)d", lambda match: str(start).zfill(int(match[1] or 1)), info.input_pattern.name))
+    return replace(info, start_number=start, frame_count=len(selected), example_path=example, frame_numbers=selected)
 
 
 def _normalize_codec(raw: str) -> str:
@@ -499,7 +534,7 @@ def _build_ffmpeg_command(info: SequenceInfo, output: Path, fps: float, codec: s
         cmd.extend(["-b:v", bitrate])
     else:
         cmd.extend(["-crf", "20" if codec_key == "h264" else "26"])
-    cmd.extend(["-movflags", "+faststart", str(output)])
+    cmd.extend(["-frames:v", str(info.frame_count), "-movflags", "+faststart", str(output)])
     return cmd
 
 
@@ -515,9 +550,11 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "codec", "h264")
     _ensure_param(node_item, "fps", "24")
     _ensure_param(node_item, "bitrate", "12M")
+    _ensure_param(node_item, "start_frame", "-1")
+    _ensure_param(node_item, "end_frame", "-1")
     _ensure_hidden_params(
         getattr(node_item, "model", None),
-        ["source", "output", "codec", "fps", "bitrate"],
+        ["source", "output", "codec", "fps", "bitrate", "start_frame", "end_frame"],
     )
     try:
         node_item.ensure_input("source")
@@ -594,6 +631,20 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
         settings_row.addWidget(self._fps_spin, 1)
         layout.addLayout(settings_row, 0)
 
+        range_row = QtWidgets.QHBoxLayout()
+        self._start_spin = QtWidgets.QSpinBox()
+        self._end_spin = QtWidgets.QSpinBox()
+        for label, spin in (("Start", self._start_spin), ("End", self._end_spin)):
+            range_row.addWidget(QtWidgets.QLabel(label))
+            spin.setRange(-1, 1_000_000_000)
+            spin.setSpecialValueText("Auto")
+            spin.setValue(-1)
+            spin.setKeyboardTracking(False)
+            spin.setToolTip("Inclusive source frame number. Auto uses the connected Video Player marker, or the full sequence boundary.")
+            spin.valueChanged.connect(self._on_settings_changed)
+            range_row.addWidget(spin, 1)
+        layout.addLayout(range_row)
+
         bitrate_row = QtWidgets.QHBoxLayout()
         bitrate_row.setContentsMargins(0, 0, 0, 0)
         bitrate_row.setSpacing(4)
@@ -622,9 +673,15 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
         self._ensure_scene()
         self._sync_controls_from_params()
         self._schedule_status_refresh(0)
+        QtCore.QTimer.singleShot(0, self._attach_scene)
+
+    def _attach_scene(self):
+        self._ensure_scene()
+        self._sync_controls_from_params()
+        self._schedule_status_refresh(0)
 
     def sizeHint(self):
-        return QtCore.QSize(240, 176)
+        return super().sizeHint().expandedTo(QtCore.QSize(300, 212))
 
     def _line_edit(self, placeholder: str) -> QtWidgets.QLineEdit:
         edit = QtWidgets.QLineEdit()
@@ -662,15 +719,18 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
                 self._scene.paramChanged.connect(self._on_scene_param_changed)
             except Exception:
                 pass
+        if hasattr(self._scene, "linksChanged"):
+            self._scene.linksChanged.connect(self._on_scene_links_changed)
         self._scene_connected = True
+
+    def _on_scene_links_changed(self, *_args):
+        self._sync_controls_from_params()
+        self._schedule_status_refresh(0)
 
     def _on_scene_param_changed(self, name=None, _params=None):
         if _param_change_relevant(self._node_item, name):
-            before_source = (self._source_edit.text() or "").strip()
             self._sync_controls_from_params()
-            after_source = (self._source_edit.text() or "").strip()
-            if after_source != before_source or after_source != self._last_status_source:
-                self._schedule_status_refresh()
+            self._schedule_status_refresh()
 
     def _sync_controls_from_params(self):
         model = getattr(self._node_item, "model", None)
@@ -681,6 +741,14 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
         codec = _normalize_codec(_param_value(model, "codec"))
         fps = _parse_fps(_param_value(model, "fps"))
         bitrate = (_param_value(model, "bitrate") or "").strip()
+        for name, spin in (("start_frame", self._start_spin), ("end_frame", self._end_spin)):
+            spin.blockSignals(True)
+            try:
+                spin.setValue(_range_param(model, name))
+            except ValueError:
+                spin.setValue(-1)
+            finally:
+                spin.blockSignals(False)
         connected_source = _connected_sequence_source(self._node_item, apply_postprocess=False)
         if output and _is_temp_video_path(output) and _workflow_dir_for_node(self._node_item) is not None:
             output = ""
@@ -735,8 +803,9 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
         _set_param_value(self._node_item, "codec", codec, notify_scene=False)
         _set_param_value(self._node_item, "fps", fps, notify_scene=False)
         _set_param_value(self._node_item, "bitrate", (self._bitrate_edit.text() or "").strip(), notify_scene=False)
-        if source != old_source:
-            self._schedule_status_refresh()
+        _set_param_value(self._node_item, "start_frame", str(self._start_spin.value()), notify_scene=False)
+        _set_param_value(self._node_item, "end_frame", str(self._end_spin.value()), notify_scene=True)
+        self._schedule_status_refresh()
 
     def _schedule_status_refresh(self, delay_ms: int = 250):
         try:
@@ -755,7 +824,8 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
         try:
             info, label, connected = _effective_sequence_info(self._node_item, source, apply_postprocess=False)
             prefix = f"Connected from {label}: " if connected else ""
-            self._status.setText(f"{prefix}{info.frame_count} frame(s), start {info.start_number}, pattern {info.input_pattern.name}")
+            self._status.setText(f"{prefix}Frames {info.start_number}-{info.start_number + info.frame_count - 1} "
+                                 f"({info.frame_count} frames, inclusive), pattern {info.input_pattern.name}")
         except Exception as exc:
             self._status.setText(str(exc))
 
@@ -912,7 +982,12 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setWidget(body)
     proxy.setZValue(node_item.zValue() + 0.1)
     proxy.setPos(0, y_cursor)
-    w = int(getattr(node_item, "width", 220))
+    hint = body.sizeHint().expandedTo(body.minimumSizeHint())
+    w = max(int(getattr(node_item, "width", 220)), hint.width())
+    node_item.prepareGeometryChange()
+    node_item.width = w
+    node_item._sequence_to_mp4_body_w = w
+    node_item._sequence_to_mp4_body_h = hint.height()
     try:
         body.setMinimumWidth(w)
         body.setMaximumWidth(w)
@@ -920,7 +995,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
         proxy.setMaximumWidth(w)
     except Exception:
         pass
-    h = body.sizeHint().height()
+    h = hint.height()
     proxy.resize(w, h)
     try:
         node_item._plugin_proxies.append(proxy)

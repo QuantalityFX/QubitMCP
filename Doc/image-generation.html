@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Generate and edit images with Qwen Image 2.1, configure local backends, and review results with Image Collection, slideshows, and pinned-reference comparisons in Qubit Field." />
+    <meta name="description" content="Generate and edit Qwen images, review Image Collections, and use character and environment designs with a previs clip in MiniMax H3 reference video generation." />
     <title>Image Generation and Review | Qubit Field Workbench</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -27,6 +27,7 @@
           <a href="#collection">Arrange an image collection</a>
           <a href="#viewer">Viewer and navigation</a>
           <a href="#compare">Pin a comparison reference</a>
+          <a href="#reference-video">Previs and H3 reference video</a>
           <a href="#troubleshooting">Troubleshooting</a>
         </nav>
       </aside>
@@ -36,7 +37,7 @@
           <h1>From a prompt to an image comparison</h1>
           <p class="lead">Use Qwen Image 2.1 to generate or edit local images. Review the saved PNGs in Image Collection, open the originals in a large viewer, and pin a reference to compare variations without losing your place.</p>
           <p class="workflow-path">Prompt or Note &rarr; Qwen Image &rarr; saved PNGs<br />Load or drag the PNG files into Image Collection &rarr; viewer &rarr; pinned comparison</p>
-          <p><a href="nodes.html?node=qwen-image">Qwen Image reference</a> &middot; <a href="nodes.html?node=image-collection">Image Collection reference</a> &middot; Updated 17 October 2026</p>
+          <p><a href="nodes.html?node=qwen-image">Qwen Image reference</a> &middot; <a href="nodes.html?node=image-collection">Image Collection reference</a> &middot; <a href="nodes.html?node=minimax-h3-reference-video">MiniMax H3 reference video</a> &middot; Updated 19 October 2026</p>
         </header>
 
         <section class="section" id="setup">
@@ -68,6 +69,7 @@
             <li>Leave <strong>Random seed</strong> enabled for variations. Disable it and enter a seed when you want to reuse the same generation settings.</li>
             <li>Choose <strong>Generate</strong>. Inspect the preview and status, then use <strong>Open PNG</strong> or double-click the Qwen preview to open the saved image in your system image viewer. <strong>Output Folder</strong> opens the save location.</li>
           </ol>
+          <p><strong>Note data stays available:</strong> checkboxes do not remove values from the Note's general output. Qwen Image and all three MiniMax H3 nodes select prompt values at their inputs: multiple visible Note parameters require checks, while exactly one visible parameter is used even unchecked. Only values enter the prompt, without parameter labels. An empty second visible parameter still counts; hidden/internal parameters do not.</p>
           <div class="table-wrap">
             <table aria-label="Qwen generation controls">
               <thead><tr><th scope="col">Control</th><th scope="col">Use</th></tr></thead>
@@ -143,6 +145,22 @@
           <p>Click the blue pin while viewing A to <strong>unpin</strong> and restore ordinary backward navigation. Click a gray pin while viewing another image to replace the reference. The pin belongs to the current viewer session.</p>
         </section>
 
+        <section class="section" id="reference-video">
+          <h2>7. Use designs in a previs-guided video</h2>
+          <p>Add <strong>MiniMax H3 Ref Video</strong> (<code>minimax_h3_reference_video</code>) from Create Node. It combines a layout/previs clip with character sheets, environment designs, and a prompt through the MiniMax cloud API. <strong>MiniMax H3 Local Video</strong> uses a local runtime; <strong>MiniMax API Vid</strong> is the separate text/first-last-frame/image-reference integration.</p>
+          <ol class="steps">
+            <li>For a rendered image sequence, optionally set <strong>[</strong> and <strong>]</strong> in Video Player, connect it to Sequence to MP4, and leave Start/End on <strong>Auto</strong> to inherit those flags. Explicit Start/End numbers override each boundary independently. Both endpoints are included.</li>
+            <li>Supply the encoded clip under <strong>Previs videos</strong>. Start with one short MP4 using H.264. MP4/MOV and H.264/HEVC are supported: 2&ndash;15 seconds per clip, 15 seconds combined, up to three clips, 50 MB each, and 23.976&ndash;60 FPS.</li>
+            <li>Connect each character, environment, or other <strong>Image Collection</strong> to the same <strong>Design images</strong> pin. Every collection contributes its paths, ordered by graph source position and then each collection's own image order. Duplicate paths are removed. The limit is <strong>nine images combined</strong>, not nine per collection.</li>
+            <li>Describe each reference's role in the prompt, or connect a Note and check the desired values if it has multiple parameters. For example: &ldquo;Use reference video 1 for camera movement, framing and poses; reference image 1 for character identity and costume; reference image 2 for the environment.&rdquo; Reference numbers follow list order within each media type.</li>
+            <li>Enter an eligible MiniMax pay-as-you-go key, or set <code>MINIMAX_API_KEY</code> / <code>MINIMAX_PAYG_API_KEY</code>. Choose H3 (4&ndash;15 seconds, 768P/2K) or H3 Max (5&ndash;15 seconds, 480P/768P), then <strong>Generate</strong>. Local inputs upload automatically and generation runs in the background.</li>
+            <li>Connect the resulting <code>mp4_path</code> to Video Player. Its large-player button opens original media in a maximized window with playback controls and a normal title bar. <strong>Space</strong> toggles play/pause; <strong>[X]</strong> clears flags.</li>
+          </ol>
+          <p>Optional audio references use WAV/MP3, up to three clips of 2&ndash;15 seconds and 15 seconds combined. Use at most 12 files across all media types. <a href="nodes.html?node=minimax-h3-reference-video">See the node reference for dimensions, formats, and file-size limits.</a></p>
+          <p><strong>Recover an existing generation:</strong> save the workflow to retain its task ID, then use <strong>Resume task</strong> to query/download without generating again. <strong>Stop waiting</strong> stops local waiting only; MiniMax continues submitted work and may charge for it. Entered keys stay in app memory and are excluded from saved workflows and task metadata.</p>
+          <p class="callout">Reference following is generative. The model can change camera, composition, timing, poses, or design details. Generated video and reference-video input use provider balance. First/last-frame roles cannot be mixed into this reference workflow.</p>
+        </section>
+
         <section class="section" id="troubleshooting">
           <h2>Troubleshooting</h2>
           <ul class="bullet">
@@ -154,6 +172,8 @@
             <li><strong>Dragging moves the wrong thing:</strong> in the graph, dragging an image moves the collection with Edit off. In the viewer, dragging navigates in Fit mode and pans at 100%.</li>
             <li><strong>Previous keeps showing the same image:</strong> a comparison pin is active. Return to the pinned image and click its blue pin to restore ordinary Previous navigation.</li>
             <li><strong>A file is missing:</strong> locate the original image. The viewer reports the error and lets you navigate to another entry.</li>
+            <li><strong>A connected H3 Note prompt is empty:</strong> check the desired rows when the Note has multiple parameters. The receiving node will not substitute a saved local prompt for an empty connected selection.</li>
+            <li><strong>Too many H3 design images:</strong> count all connected Image Collections together. Remove duplicates or reduce the combined list to nine; files are not silently truncated.</li>
           </ul>
         </section>
         <footer class="site-footer"><a href="index.html">Workbench manual</a> &middot; <a href="nodes.html">Node catalog</a> &middot; <a href="motion.html">Motion and batch rendering</a></footer>

@@ -873,7 +873,7 @@ class GraphView(QtWidgets.QGraphicsView):
             if isinstance(obj, QtWidgets.QGraphicsProxyWidget):
                 child = obj.widget()
                 if child is not None:
-                    return child
+                    return child.focusWidget() or child
             return obj
 
         def _is_text_widget(widget) -> bool:
@@ -950,6 +950,21 @@ class GraphView(QtWidgets.QGraphicsView):
         if _resolved_text_widget() is not None:
             super().keyPressEvent(e)
             return
+
+        if e.key() == QtCore.Qt.Key_Space and e.modifiers() == QtCore.Qt.NoModifier:
+            scene = self.scene()
+            videos = [item for item in scene.selectedItems()
+                      if str(getattr(getattr(item, "model", None), "kind", "")).lower()
+                      in {"video_player", "video player", "videoplayer"}] if scene is not None else []
+            if len(videos) == 1:
+                for proxy in getattr(videos[0], "_plugin_proxies", ()):
+                    controls = proxy.widget()
+                    toggle = getattr(controls, "_on_play_clicked", None)
+                    if callable(toggle):
+                        if not e.isAutoRepeat():
+                            toggle()
+                        e.accept()
+                        return
 
         active_text_widget = _resolved_text_widget()
         if active_text_widget is not None:

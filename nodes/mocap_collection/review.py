@@ -121,10 +121,16 @@ class ReviewPlayer(VideoPlayerWidget):
             button.setIconSize(self._play_btn.iconSize())
             button.setToolTip(f"{name} ({shortcut})")
             button.setAccessibleName(name)
+        self._transport_layout.removeWidget(self._play_btn)
         self._transport_layout.insertWidget(0, self.previous_button)
+        self._transport_layout.insertWidget(1, self._play_btn)
         self._transport_layout.insertWidget(2, self.next_button)
-        self._transport_layout.removeWidget(self._scrub_slider)
-        self.layout().insertWidget(self.layout().count() - 1, self._scrub_slider)
+        # The shared player now already gives the scrubber its own row.
+        self._start_btn.hide()
+        self._end_btn.hide()
+        self._range_reset.hide()
+        self._fullscreen_btn.hide()
+        self._open_btn.hide()
         transport_style = (
             "QToolButton { background:#303640; border:1px solid #434a54;"
             " border-radius:4px; padding:3px; }"

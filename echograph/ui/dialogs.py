@@ -250,9 +250,11 @@ def _kind_label(kind: str) -> str:
     if key in ("youtube_downloader", "youtube downloader", "youtube", "yt_downloader", "yt downloader", "youtube_to_mp4", "youtube to mp4"):
         return "YouTube Downloader"
     if key in ("minimax_h3_video", "minimax h3 video", "minimax_h3", "minimax h3", "h3_video", "h3 video"):
-        return "MiniMax H3 Video"
+        return "MiniMax H3 Local Video"
     if key in ("minimax_h3_api_video", "minimax h3 api video", "minimax_h3_api", "minimax h3 api", "minimax_api_video", "minimax api video", "hailuo_h3_api_video", "hailuo h3 api video"):
-        return "MiniMax H3 API Video"
+        return "MiniMax API Vid"
+    if key in ("minimax_h3_reference_video", "minimax h3 reference video", "minimax_h3_reference", "hailuo_h3_reference_video"):
+        return "MiniMax H3 Ref Video"
     if key in ("minimax_tts_api", "minimax text to speech", "minimax speech api", "minimax tts", "minimax_speech", "minimax_text_to_speech"):
         return "MiniMax TTS API"
     if key in ("translator", "translate", "translation", "direct_translator", "direct translator", "voice_translator", "voice translator"):
@@ -338,6 +340,7 @@ _NODE_KIND_SEARCH_HINTS = {
     "youtube_downloader": "youtube download video mp4 mp3 audio transcript captions subtitles markdown",
     "minimax_h3_video": "minimax h3 local huggingface video generation text to video image to video setup model mp4",
     "minimax_h3_api_video": "minimax h3 api cloud hailuo video generation text to video image to video first frame last frame reference images reference to video mp4",
+    "minimax_h3_reference_video": "minimax h3 max reference video previs layout 3d camera composition poses character sheets environment video to video hailuo api mp4",
     "minimax_tts_api": "minimax speech text to speech tts api voice audio mp3 wav token plan credits sk-cp",
     "wan22_video": "wan 2.2 ti2v local huggingface video generation text to video image to video setup model mp4",
     "export_fbx": "fbx export mesh",
@@ -625,6 +628,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
     elif key in ("minimax_h3_api_video", "minimax h3 api video", "minimax_h3_api", "minimax h3 api", "minimax_api_video", "minimax api video", "hailuo_h3_api_video", "hailuo h3 api video"):
         icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
+    elif key in ("minimax_h3_reference_video", "minimax h3 reference video", "minimax_h3_reference", "hailuo_h3_reference_video"):
+        icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
     elif key in ("minimax_tts_api", "minimax text to speech", "minimax speech api", "minimax tts", "minimax_speech", "minimax_text_to_speech"):
         icon_pm = node_icons._voice_actor_icon() or node_icons._audio_capture_icon() or node_icons._output_icon()
     elif key in ("wan22_video", "wan22", "wan 2.2 video", "wan2.2 video", "wan_video", "wan ti2v", "wan2.2 ti2v", "wan22_ti2v", "text_image_to_video", "text image to video"):
@@ -808,7 +813,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         _configure_node_type_popup_view(kind_popup_view)
         self.kind_edit.setView(kind_popup_view)
         self._kinds = [
-            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","fbx_animation","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","image_gs_splat","skinned_volume_mesh","instance","copy_to_points","look_at","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","youtube_downloader","minimax_h3_video","minimax_h3_api_video","minimax_tts_api","wan22_video","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
+            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","fbx_animation","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","image_gs_splat","skinned_volume_mesh","instance","copy_to_points","look_at","modeler","primitive","curve","normals","uv_unwrap","texture","texture_pro","texture_layer","mask","groom_guides","groom_deform","groom_guide_pose","groom_guide_sim","groom_guide_tube","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","youtube_downloader","minimax_h3_video","minimax_h3_api_video","minimax_h3_reference_video","minimax_tts_api","wan22_video","export_fbx","export_fbx_animation","html_preview","python","switch","output","local_server",
             "qwen_image", "pattern_design", "cloth_solver", "animation_blend", "priormdm", "mocap_collection", "delete_joint", "rig_limiter", "animation_correction", "for_each", "for_each_end",
             "gantt_chart","keyboard_sequence",
             "serial_com",

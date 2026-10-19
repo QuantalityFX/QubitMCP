@@ -37,6 +37,7 @@ class SequenceSource:
     owner_item: object
     label: str
     from_connection: bool = False
+    range_owner: object | None = None
 
 
 @dataclass
@@ -201,7 +202,21 @@ def _source_from_item(item, *, apply_postprocess: bool, _visited: set[int]) -> S
     kind = _kind_for_item(item)
     label = str(getattr(model, "name", "") or getattr(model, "kind", "") or "Source")
 
+    if kind in _VIDEO_PLAYER_KINDS:
+        source = find_sequence_source(item, apply_postprocess=apply_postprocess,
+                                      require_connection=True, _visited=_visited)
+        if source is None:
+            text = _param_value(model, "path").strip()
+            if text:
+                source = SequenceSource(text, item, label, True)
+        if source is not None:
+            source.range_owner = item
+            source.label = label
+        return source
+
     if kind in _POST_PROCESS_KINDS:
+        upstream = find_sequence_source(item, apply_postprocess=False, require_connection=False, _visited=set(_visited))
+        range_owner = upstream.range_owner if upstream is not None else None
         if apply_postprocess:
             result = resolve_post_process_sequence(item, apply=True, _visited=_visited)
             return SequenceSource(
@@ -209,10 +224,11 @@ def _source_from_item(item, *, apply_postprocess: bool, _visited: set[int]) -> S
                 owner_item=item,
                 label=label,
                 from_connection=True,
+                range_owner=range_owner,
             )
         cached = (_param_value(model, "output_pattern") or "").strip()
         if cached:
-            return SequenceSource(text=cached, owner_item=item, label=label, from_connection=True)
+            return SequenceSource(text=cached, owner_item=item, label=label, from_connection=True, range_owner=range_owner)
         return find_sequence_source(
             item,
             apply_postprocess=False,

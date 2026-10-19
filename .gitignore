@@ -82,6 +82,7 @@ AGENTS.md
 /tests/*
 !/tests/motion/
 !/tests/image_generation/
+!/tests/video_generation/
 !/tests/patterns/
 !/tests/physics/
 !/tests/ui/

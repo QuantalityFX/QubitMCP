@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import math
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 
 try:
@@ -42,7 +44,52 @@ class _JumpScrubSlider(QtWidgets.QSlider):
     def __init__(self, parent=None):
         super().__init__(QtCore.Qt.Horizontal, parent)
         self._jump_drag_active = False
+        self._marked_start = None
+        self._marked_end = None
+        self.outside_range_color = "#171e29"
         self.setMouseTracking(True)
+
+    def set_marked_range(self, start=None, end=None):
+        self._marked_start, self._marked_end = start, end
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._marked_start is None and self._marked_end is None:
+            return
+        option = QtWidgets.QStyleOptionSlider()
+        self.initStyleOption(option)
+        style = self.style()
+        groove = style.subControlRect(QtWidgets.QStyle.CC_Slider, option, QtWidgets.QStyle.SC_SliderGroove, self)
+        handle = style.subControlRect(QtWidgets.QStyle.CC_Slider, option, QtWidgets.QStyle.SC_SliderHandle, self)
+        span = max(1, groove.width() - handle.width())
+
+        def x_for(value):
+            value = max(self.minimum(), min(int(value), self.maximum()))
+            return groove.left() + handle.width() / 2 + QtWidgets.QStyle.sliderPositionFromValue(
+                self.minimum(), self.maximum(), value, span, option.upsideDown)
+
+        painter = QtGui.QPainter(self)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor(self.outside_range_color))
+        left = x_for(self._marked_start) if self._marked_start is not None else groove.left()
+        right = x_for(self._marked_end) if self._marked_end is not None else groove.right()
+        if self._marked_start is not None:
+            painter.drawRect(QtCore.QRectF(groove.left(), groove.top(), max(0, left - groove.left()), groove.height()))
+        if self._marked_end is not None:
+            painter.drawRect(QtCore.QRectF(right, groove.top(), max(0, groove.right() - right), groove.height()))
+        for value, color, direction in ((self._marked_start, "#67e8f9", 1), (self._marked_end, "#fbbf24", -1)):
+            if value is None:
+                continue
+            x = int(round(x_for(value)))
+            painter.setPen(QtGui.QPen(QtGui.QColor(color), 2))
+            painter.drawLine(x, groove.top() - 5, x, groove.bottom() + 5)
+            painter.drawLine(x, groove.top() - 5, x + direction * 4, groove.top() - 5)
+        # A stylesheet style may repaint the entire groove even when asked for
+        # SC_SliderHandle alone, undoing the masks. Redraw only our simple handle.
+        painter.setPen(QtGui.QPen(QtGui.QColor("#9ba4b3"), 1))
+        painter.setBrush(QtGui.QColor("#d8e0eb"))
+        painter.drawRoundedRect(QtCore.QRectF(handle).adjusted(0.5, 0.5, -0.5, -0.5), 1, 1)
 
     @staticmethod
     def _event_pos(ev) -> QtCore.QPoint:
@@ -499,22 +546,31 @@ def _resolve_image_sequence(node_item, text: str) -> list[Path]:
 
 class VideoPlayerWidget(QtWidgets.QWidget):
     _PREVIEW_H = 116
+    rangeChanged = QtCore.Signal()
 
-    def __init__(self, node_item, parent=None):
+    def __init__(self, node_item, parent=None, *, fullscreen=False):
         super().__init__(parent)
         self._node_item = node_item
         self._scene = None
         self._scene_connected = False
         self._loaded_path = None
         self._connected_path = ""
+        self._fullscreen_view = fullscreen
+        self._fullscreen_dialog = None
+        self._pending_video_seek = None
 
         self._mode = "none"
         self._seq_paths: list[Path] = []
+        self._seq_frame_numbers: list[int] = []
         self._seq_index = 0
+        self._sequence_bounds = (0, 0)
+        self._video_range_ms = (None, None)
 
         self._preview_image = QtGui.QImage()
+        self._preview_cache_key = None
 
         self._seq_timer = QtCore.QTimer(self)
+        self._seq_timer.setTimerType(QtCore.Qt.PreciseTimer)
         self._seq_timer.timeout.connect(self._on_sequence_tick)
 
         self._player = None
@@ -537,6 +593,9 @@ class VideoPlayerWidget(QtWidgets.QWidget):
 
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
+        # Keep playback text from resizing the preview and transport every frame.
+        self._status.setFixedHeight(16)
+        self._status.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(self._status, 0)
 
         row1 = QtWidgets.QHBoxLayout()
@@ -554,28 +613,29 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._preview = QtWidgets.QLabel("No media loaded")
         self._preview.setAlignment(QtCore.Qt.AlignCenter)
         self._preview.setMinimumHeight(72)
-        self._preview.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self._preview.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding)
         self._preview.setStyleSheet(
             "QLabel{background:#0b1220;color:#94a3b8;border:1px solid #334155;border-radius:4px;}"
         )
         layout.addWidget(self._preview, 1)
 
         row2 = QtWidgets.QHBoxLayout()
-        self._transport_layout = row2
         row2.setContentsMargins(0, 0, 0, 0)
         self._play_btn = QtWidgets.QToolButton()
         self._play_btn.setFixedSize(28, 28)
         self._play_btn.setIconSize(QtCore.QSize(18, 18))
         self._play_btn.setEnabled(False)
         self._play_btn.clicked.connect(self._on_play_clicked)
-        row2.addWidget(self._play_btn, 0)
         self._sound_btn = QtWidgets.QToolButton()
         self._sound_btn.setFixedSize(28, 28)
         self._sound_btn.setIconSize(QtCore.QSize(18, 18))
         self._sound_btn.setEnabled(False)
         self._sound_btn.clicked.connect(self._on_sound_clicked)
-        row2.addWidget(self._sound_btn, 0)
         self._scrub_slider = _JumpScrubSlider(self)
+        if fullscreen:
+            # The near-black node mask disappears into the large player's dark
+            # window background. Keep an actual, visible dark-slate track there.
+            self._scrub_slider.outside_range_color = "#334155"
         self._scrub_slider.setRange(0, 0)
         self._scrub_slider.setEnabled(False)
         self._scrub_slider.setTracking(True)
@@ -591,13 +651,57 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         row2.addWidget(self._scrub_slider, 1)
         layout.addLayout(row2, 0)
 
+        self._transport_layout = QtWidgets.QHBoxLayout()
+        transport = self._transport_layout
+        transport.setContentsMargins(0, 0, 0, 0)
+        transport.setSpacing(3)
+        self._range_reset = QtWidgets.QToolButton()
+        self._range_reset.setText("[X]")
+        self._range_reset.setFixedSize(32, 28)
+        self._range_reset.setToolTip("Clear both range markers and use the full source range")
+        self._range_reset.clicked.connect(self._clear_markers)
+        transport.addWidget(self._play_btn)
+        self._start_btn = QtWidgets.QToolButton()
+        self._end_btn = QtWidgets.QToolButton()
+        for button, text, tooltip, callback in (
+            (self._start_btn, "[", "Set start at the current frame (inclusive)", self._mark_start),
+            (self._end_btn, "]", "Set end at the current frame (inclusive)", self._mark_end),
+        ):
+            button.setText(text)
+            button.setFixedSize(26, 28)
+            button.setToolTip(tooltip)
+            button.clicked.connect(callback)
+            transport.addWidget(button)
+        transport.addWidget(self._range_reset)
+        self._fullscreen_btn = QtWidgets.QToolButton()
+        self._fullscreen_btn.setText("⛶")
+        self._fullscreen_btn.setFixedSize(28, 28)
+        self._fullscreen_btn.setToolTip("Restore/maximize player window" if fullscreen else "Open large player using original media")
+        self._fullscreen_btn.clicked.connect(self._open_fullscreen)
+        transport.addWidget(self._fullscreen_btn)
+        self._open_btn = QtWidgets.QToolButton()
+        self._open_btn.setText("Open")
+        self._open_btn.setFixedSize(46, 28)
+        self._open_btn.setToolTip("Open MP4 in the system video player")
+        self._open_btn.clicked.connect(self._open_external_video)
+        transport.addWidget(self._open_btn)
+        transport.addStretch(1)
+        transport.addWidget(self._sound_btn)
+        layout.addLayout(transport)
+
         self._set_play_button(False)
         self._set_sound_button(self._audio_muted)
         self._ensure_scene()
         self._sync_from_params(force=True)
+        QtCore.QTimer.singleShot(0, self._attach_scene)
+
+    def _attach_scene(self):
+        self._ensure_scene()
+        if self._scene is not None:
+            self._sync_from_params()
 
     def sizeHint(self):
-        return QtCore.QSize(240, 188)
+        return super().sizeHint().expandedTo(QtCore.QSize(340, 230))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -644,9 +748,157 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._browse_btn.setEnabled(not bool(connected_path))
         self._path_edit.setToolTip("Driven by connected path input." if connected_path else "")
         self._load_media(path_text, force=force)
+        self._refresh_markers()
+
+    def _marker(self, name):
+        try:
+            return int(_param_value(self._node_item.model, name) or "-1")
+        except (TypeError, ValueError):
+            return -1
+
+    def _video_fps(self):
+        if self._player is not None and QtMultimedia is not None:
+            try:
+                fps = float(self._player.metaData().value(QtMultimedia.QMediaMetaData.VideoFrameRate))
+                if fps > 0:
+                    return fps
+            except (AttributeError, TypeError, ValueError):
+                pass
+        return _DEFAULT_FPS
+
+    def _current_frame_number(self):
+        if self._mode == "sequence" and self._seq_frame_numbers:
+            return self._seq_frame_numbers[self._seq_index]
+        fps = self._video_fps()
+        last = max(0, math.ceil(self._scrub_slider.maximum() * fps / 1000) - 1)
+        return min(last, max(0, int(self._scrub_slider.value() * fps / 1000)))
+
+    def _range_indices(self):
+        if not self._seq_paths:
+            return 0, 0
+        start, end = self._marker("start_frame"), self._marker("end_frame")
+        first = bisect_left(self._seq_frame_numbers, start) if start >= 0 else 0
+        last = bisect_right(self._seq_frame_numbers, end) - 1 if end >= 0 else len(self._seq_paths) - 1
+        first = max(0, min(first, len(self._seq_paths) - 1))
+        return first, max(first, min(last, len(self._seq_paths) - 1))
+
+    def _store_markers(self, start, end, *, source=None):
+        values = {"start_frame": str(start), "end_frame": str(end)}
+        if source is not None:
+            values["range_source"] = source
+        model = self._node_item.model
+        for name, value in values.items():
+            _ensure_param(self._node_item, name, value)
+            # Update both boundaries before notifying dependent nodes.
+            for param in model.params:
+                if param.get("name") == name:
+                    param["value"] = value
+                    break
+        self._refresh_markers()
+        scene = self._node_item.scene()
+        if scene is not None and hasattr(scene, "paramChanged"):
+            scene.paramChanged.emit(model.name, list(model.params))
+        self.rangeChanged.emit()
+
+    def _mark_start(self):
+        start = self._current_frame_number()
+        end = self._marker("end_frame")
+        self._store_markers(start, max(start, end) if end >= 0 else -1)
+
+    def _mark_end(self):
+        end = self._current_frame_number()
+        start = self._marker("start_frame")
+        self._store_markers(min(start, end) if start >= 0 else -1, end)
+
+    def _clear_markers(self):
+        self._store_markers(-1, -1)
+
+    def _refresh_markers(self):
+        start, end = self._marker("start_frame"), self._marker("end_frame")
+        marked_start = marked_end = None
+        ready = self._mode in {"sequence", "video"}
+        self._sequence_bounds = (0, 0)
+        self._video_range_ms = (None, None)
+        if self._mode == "sequence" and self._seq_paths:
+            first, last = self._range_indices()
+            self._sequence_bounds = (first, last)
+            marked_start = first if start >= 0 else None
+            marked_end = last if end >= 0 else None
+        elif self._mode == "video":
+            fps = self._video_fps()
+            marked_start = round(start * 1000 / fps) if start >= 0 else None
+            marked_end = round(end * 1000 / fps) if end >= 0 else None
+            self._video_range_ms = (marked_start, round((end + 1) * 1000 / fps) if end >= 0 else None)
+        self._scrub_slider.set_marked_range(marked_start, marked_end)
+        text = "Full range" if start < 0 and end < 0 else f"{start if start >= 0 else 'First'}–{end if end >= 0 else 'Last'}"
+        self._scrub_slider.setToolTip(f"Inclusive export/playback frames: {text}")
+        self._range_reset.setEnabled(start >= 0 or end >= 0)
+        self._start_btn.setEnabled(ready)
+        self._end_btn.setEnabled(ready)
+        self._fullscreen_btn.setEnabled(ready)
+
+    def _open_fullscreen(self):
+        if self._fullscreen_view:
+            window = self.window()
+            window.showNormal() if window.isMaximized() else window.showMaximized()
+            return
+        if self._fullscreen_dialog is not None:
+            if self._fullscreen_dialog.isMinimized():
+                self._fullscreen_dialog.showMaximized()
+            else:
+                self._fullscreen_dialog.show()
+            self._fullscreen_dialog.raise_()
+            self._fullscreen_dialog.activateWindow()
+            return
+        if self._mode == "none":
+            return
+        playing = self._seq_timer.isActive() if self._mode == "sequence" else self._player_is_playing()
+        position = self._seq_index if self._mode == "sequence" else self._scrub_slider.value()
+        self._stop_playback()
+        self._set_play_button(False)
+        dialog = FullscreenPlayerDialog(self._node_item, _dialog_parent(self._node_item))
+        self._fullscreen_dialog = dialog
+        dialog.player._frame_interval_override = self._frame_interval_ms()
+        dialog.player._audio_muted = self._audio_muted
+        dialog.player._apply_audio_mute()
+        dialog.player.rangeChanged.connect(self._refresh_markers)
+        dialog.finished.connect(self._on_fullscreen_closed)
+        dialog.showMaximized()
+        if dialog.player._mode == "sequence":
+            dialog.player._seek_to_scrub(position)
+            if playing:
+                dialog.player._on_play_clicked()
+        else:
+            dialog.player._pending_video_seek = (position, playing)
+            dialog.player._restore_video_seek()
+
+    def _restore_video_seek(self):
+        if self._pending_video_seek is None or self._player is None or self._player.duration() <= 0:
+            return
+        position, playing = self._pending_video_seek
+        self._pending_video_seek = None
+        self._player.setPosition(position)
+        if playing:
+            self._player.play()
+
+    def _on_fullscreen_closed(self, *_args):
+        dialog = self._fullscreen_dialog
+        if dialog is None:
+            return
+        self._audio_muted = dialog.player._audio_muted
+        self._apply_audio_mute()
+        position = dialog.player._seq_index if self._mode == "sequence" else dialog.player._scrub_slider.value()
+        self._seek_to_scrub(position)
+        self._refresh_markers()
+        self._fullscreen_dialog = None
+        if dialog.was_playing:
+            self._on_play_clicked()
+        dialog.deleteLater()
 
     def _set_status(self, text: str):
         self._status.setText(str(text or ""))
+        if not self._seq_timer.isActive() and not self._video_playing:
+            self._status.setToolTip(str(text or ""))
 
     def _on_path_committed(self):
         if self._connected_path:
@@ -681,14 +933,23 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._path_edit.setText(chosen)
         self._on_path_committed()
 
+    def _open_external_video(self):
+        if not self._loaded_path:
+            return
+        source = _resolve_source_path(self._node_item, self._loaded_path)
+        if source.suffix.lower() in _VIDEO_EXTS and source.is_file():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(source.resolve())))
+
     def _load_media(self, text: str, force: bool = False):
         key = (text or "").strip()
         if not force and key == self._loaded_path:
             return
         self._loaded_path = key
+        self._open_btn.setEnabled(False)
         self._stop_playback()
         self._mode = "none"
         self._seq_paths = []
+        self._seq_frame_numbers = []
         self._seq_index = 0
         self._play_btn.setEnabled(False)
         self._sound_btn.setEnabled(False)
@@ -698,6 +959,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._set_play_button(False)
         self._set_sound_button(self._audio_muted)
         self._preview_image = QtGui.QImage()
+        self._preview_cache_key = None
         self._preview.setPixmap(QtGui.QPixmap())
         if not key:
             self._preview.setText("No media loaded")
@@ -705,11 +967,21 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             return
 
         source = _resolve_source_path(self._node_item, key)
+        identity = str(source.resolve())
+        previous = _param_value(self._node_item.model, "range_source")
+        if previous and previous != identity:
+            self._store_markers(-1, -1, source=identity)
+        else:
+            _ensure_param(self._node_item, "range_source", identity)
+            for param in self._node_item.model.params:
+                if param.get("name") == "range_source":
+                    param["value"] = identity
         try:
             is_video = source.is_file() and source.suffix.lower() in _VIDEO_EXTS
         except Exception:
             is_video = False
         if is_video:
+            self._open_btn.setEnabled(True)
             if self._load_video_source(source):
                 self._mode = "video"
                 self._play_btn.setEnabled(True)
@@ -718,6 +990,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
                 self._preview.setText("Press Play")
                 self._set_status(f"Video loaded: {source.name}")
                 self._sync_video_scrub_range()
+                self._refresh_markers()
             else:
                 self._preview.setText("MP4 preview unavailable")
                 self._set_status("This Qt build cannot preview .mp4 files in-node.")
@@ -731,6 +1004,10 @@ class VideoPlayerWidget(QtWidgets.QWidget):
 
         self._mode = "sequence"
         self._seq_paths = seq
+        self._seq_frame_numbers = []
+        for index, path in enumerate(seq):
+            number = re.search(r"(\d+)(?=\.[^.]+$)", path.name)
+            self._seq_frame_numbers.append(int(number.group(1)) if number else index)
         self._seq_index = 0
         self._set_scrub_range(0, max(0, len(seq) - 1))
         self._set_scrub_value(0)
@@ -738,6 +1015,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._show_sequence_frame(0)
         self._play_btn.setEnabled(True)
         self._set_status(f"Sequence loaded: {len(seq)} frame(s)")
+        self._refresh_markers()
 
     def _set_play_button(self, playing: bool):
         self._video_playing = bool(playing)
@@ -747,7 +1025,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             self._play_btn.setText("")
         else:
             self._play_btn.setText("Pause" if self._video_playing else "Play")
-        self._play_btn.setToolTip("Pause" if self._video_playing else "Play")
+        self._play_btn.setToolTip("Pause (Space)" if self._video_playing else "Play (Space)")
 
     def _set_sound_button(self, muted: bool):
         self._audio_muted = bool(muted)
@@ -846,6 +1124,8 @@ class VideoPlayerWidget(QtWidgets.QWidget):
                 pass
 
     def _frame_interval_ms(self) -> int:
+        if hasattr(self, "_frame_interval_override"):
+            return self._frame_interval_override
         try:
             fps = float(_DEFAULT_FPS)
         except Exception:
@@ -861,6 +1141,9 @@ class VideoPlayerWidget(QtWidgets.QWidget):
                 self._seq_timer.stop()
                 self._set_play_button(False)
             else:
+                first, last = self._sequence_bounds
+                if not first <= self._seq_index <= last:
+                    self._show_sequence_frame(first)
                 self._seq_timer.start(self._frame_interval_ms())
                 self._set_play_button(True)
             return
@@ -962,7 +1245,8 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             self._seq_timer.stop()
             self._set_play_button(False)
             return
-        self._seq_index = (self._seq_index + 1) % len(self._seq_paths)
+        first, last = self._sequence_bounds
+        self._seq_index = self._seq_index + 1 if first <= self._seq_index < last else first
         self._show_sequence_frame(self._seq_index)
 
     def _show_sequence_frame(self, index: int):
@@ -979,15 +1263,20 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         if not self._scrub_dragging:
             self._set_scrub_value(idx)
         self._refresh_preview_pixmap()
-        self._set_status(f"Frame {idx + 1}/{len(self._seq_paths)}: {frame_path.name}")
+        number = self._seq_frame_numbers[idx]
+        self._set_status(f"Frame {number} ({idx + 1}/{len(self._seq_paths)}): {frame_path.name}")
 
     def _refresh_preview_pixmap(self):
         if self._preview_image.isNull():
             return
-        pm = QtGui.QPixmap.fromImage(self._preview_image)
         target = self._preview.contentsRect().size()
         if target.width() <= 0 or target.height() <= 0:
             return
+        key = (self._preview_image.cacheKey(), target.width(), target.height())
+        if self._preview_cache_key == key:
+            return
+        self._preview_cache_key = key
+        pm = QtGui.QPixmap.fromImage(self._preview_image)
         scaled = pm.scaled(target, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
         self._preview.setText("")
         self._preview.setPixmap(scaled)
@@ -1024,6 +1313,8 @@ class VideoPlayerWidget(QtWidgets.QWidget):
                 self._player.durationChanged.connect(self._on_video_duration_changed)
             if hasattr(self._player, "positionChanged"):
                 self._player.positionChanged.connect(self._on_video_position_changed)
+            if hasattr(self._player, "metaDataChanged"):
+                self._player.metaDataChanged.connect(self._refresh_markers)
             self._apply_audio_mute()
             return True
         except Exception:
@@ -1149,6 +1440,8 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             except Exception:
                 pos = 0
             self._set_scrub_value(max(0, min(pos, dur)))
+        self._refresh_markers()
+        self._restore_video_seek()
 
     def _on_video_position_changed(self, position):
         try:
@@ -1158,6 +1451,13 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         if not self._scrub_dragging:
             self._set_scrub_value(pos)
         if self._mode == "video":
+            start, end = self._video_range_ms
+            if self._video_playing and not self._scrub_dragging and (start is not None or end is not None):
+                first = start if start is not None else 0
+                last = end if end is not None else self._scrub_slider.maximum()
+                if pos < first or pos >= last:
+                    self._player.setPosition(first)
+                    return
             try:
                 dur = int(self._player.duration() or 0) if self._player is not None else 0
             except Exception:
@@ -1199,9 +1499,49 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._refresh_preview_pixmap()
 
 
+class FullscreenPlayerDialog(QtWidgets.QDialog):
+    def __init__(self, node_item, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Video Player — original media")
+        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.WindowTitleHint
+                            | QtCore.Qt.WindowSystemMenuHint | QtCore.Qt.WindowMinMaxButtonsHint
+                            | QtCore.Qt.WindowCloseButtonHint)
+        self.setSizeGripEnabled(True)
+        self.resize(1280, 800)
+        self.was_playing = False
+        layout = QtWidgets.QVBoxLayout(self)
+        self.player = VideoPlayerWidget(node_item, self, fullscreen=True)
+        self.player._path_edit.hide()
+        self.player._browse_btn.hide()
+        self.player._preview.setMinimumHeight(180)
+        self.player._preview.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
+        layout.addWidget(self.player)
+        shortcut_type = getattr(QtGui, "QShortcut", None) or QtWidgets.QShortcut
+        self._play_shortcut = shortcut_type(QtGui.QKeySequence("Space"), self)
+        self._play_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+        self._play_shortcut.setAutoRepeat(False)
+        self._play_shortcut.activated.connect(self.player._on_play_clicked)
+
+    def done(self, result):
+        self.was_playing = (self.player._seq_timer.isActive() if self.player._mode == "sequence"
+                            else self.player._player_is_playing())
+        self.player._stop_playback()
+        super().done(result)
+
+    def keyPressEvent(self, event):
+        if event.key() == QtCore.Qt.Key_F11 or (event.key() == QtCore.Qt.Key_Escape and self.isFullScreen()):
+            self.showMaximized() if self.isFullScreen() else self.showFullScreen()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "path", "")
-    _ensure_hidden_params(getattr(node_item, "model", None), ["path"])
+    _ensure_param(node_item, "start_frame", "-1")
+    _ensure_param(node_item, "end_frame", "-1")
+    _ensure_param(node_item, "range_source", "")
+    _ensure_hidden_params(getattr(node_item, "model", None), ["path", "start_frame", "end_frame", "range_source"])
     try:
         setattr(node_item, "_default_named_input", "path")
         setattr(node_item, "_show_default_input_with_named", True)
@@ -1216,8 +1556,13 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setWidget(body)
     proxy.setZValue(node_item.zValue() + 0.1)
     proxy.setPos(0, y_cursor)
-    w = int(getattr(node_item, "width", 220))
-    base_h = int(body.sizeHint().height())
+    hint = body.sizeHint().expandedTo(body.minimumSizeHint())
+    w = max(int(getattr(node_item, "width", 220)), hint.width())
+    base_h = hint.height()
+    node_item.prepareGeometryChange()
+    node_item.width = w
+    node_item._video_player_body_w = w
+    node_item._video_player_body_h = base_h
     try:
         node_h = int(getattr(node_item, "height", 0) or 0)
     except Exception:
@@ -1226,7 +1571,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
         pad = int(getattr(node_item, "_PADDING", 8))
     except Exception:
         pad = 8
-    available_h = node_h - int(y_cursor) - max(0, pad)
+    available_h = node_h - int(y_cursor) - max(10, pad)
     h = max(base_h, int(available_h)) if available_h > 0 else base_h
     try:
         body.setMinimumWidth(w)
@@ -1236,6 +1581,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
     except Exception:
         pass
     proxy.resize(w, h)
+    node_item.height = max(float(getattr(node_item, "height", 0)), y_cursor + h + 10)
     try:
         node_item._plugin_proxies.append(proxy)
     except Exception:

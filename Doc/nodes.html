@@ -106,6 +106,7 @@
           <a href="nodes.html?node=qwen-image#node-qwen-image" data-node="qwen-image"><img src="../icons/ImageGen_Icon.png" alt="" /> qwen_image</a>
           <a href="nodes.html?node=image-collection#node-image-collection" data-node="image-collection"><img src="../icons/PhotoCollection.png" alt="" /> image_collection</a>
           <a href="nodes.html?node=minimax-h3-api-video#node-minimax-h3-api-video" data-node="minimax-h3-api-video"><img src="../icons/SequenceToVideo_Icon2_s.png" alt="" /> minimax_h3_api_video</a>
+          <a href="nodes.html?node=minimax-h3-reference-video#node-minimax-h3-reference-video" data-node="minimax-h3-reference-video"><img src="../icons/SequenceToVideo_Icon2_s.png" alt="" /> minimax_h3_reference_video</a>
           <a href="nodes.html?node=minimax-h3-video#node-minimax-h3-video" data-node="minimax-h3-video"><img src="../icons/SequenceToVideo_Icon2_s.png" alt="" /> minimax_h3_video</a>
           <a href="nodes.html?node=post-process#node-post-process" data-node="post-process"><img src="../icons/FX_node_icon.png" alt="" /> post_process</a>
           <a href="nodes.html?node=render#node-render" data-node="render"><img src="../icons/RenderNode_Icon.png" alt="" /> render</a>
@@ -213,6 +214,7 @@
               <summary>Inputs, parameters, buttons, and usage</summary>
               <h4>Connections and result</h4>
               <p>Use a Note to supply text or task parameters to downstream nodes. Gantt Chart can turn connected Note parameters into scheduled tasks.</p>
+              <p><strong>Output and checks:</strong> Note keeps all regular nonempty values available, with their parameter names as metadata, whether checked or unchecked. Prompt selection happens in the receiving Qwen Image or MiniMax H3 node: a Note with multiple visible parameters contributes only checked values, without parameter labels. A Note with exactly one visible parameter contributes its value even unchecked. Hidden/internal parameters do not count; an empty second visible parameter still makes it a multi-parameter Note. H3 also honors these selections through Append and Switch; an empty connected selection reports an error instead of using a saved local prompt.</p>
               <h4>Parameters and options</h4>
               <table aria-label="note parameters and options">
               <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
@@ -220,6 +222,7 @@
               <tr><th scope="row">Parameter name</th><td>Identifies a text value or task. Use distinct names when matching tasks between charts.</td></tr>
               <tr><th scope="row">Parameter value</th><td>Contains the text sent downstream. Select a parameter in the info panel to edit its contents.</td></tr>
               <tr><th scope="row">Featured parameter</th><td>Chooses which parameter is expanded in the node body; other parameters remain on the node.</td></tr>
+              <tr><th scope="row">Row checkbox</th><td>Marks a value for consumers that use selection, including Qwen Image and all MiniMax H3 prompt inputs. It does not remove unchecked data from the Note's general output.</td></tr>
               </tbody></table>
               <h4>Buttons and editing actions</h4>
               <table aria-label="note buttons and editing actions">
@@ -2844,7 +2847,7 @@
               <details class="node-reference">
               <summary>Inputs, parameters, buttons, and usage</summary>
               <h4>Connections and result</h4>
-              <p>Stores ordered image paths for review and compatible consumers, such as MiniMax H3 <code>reference_images</code>. A Qwen <code>image</code> or <code>reference_image</code> connection uses the first collection path.</p>
+              <p>Stores ordered image paths for review and compatible consumers. Connect multiple Image Collections to the <strong>Design images</strong> input (<code>reference_images</code>) of <a href="nodes.html?node=minimax-h3-reference-video">MiniMax H3 Ref Video</a> to combine character sheets, environments, and other designs. All collections contribute their paths, duplicates are removed in first-occurrence order, and the combined limit is nine images. Collections follow incoming source order, left-to-right then node name, while retaining their internal image order. A Qwen <code>image</code> or <code>reference_image</code> connection uses the first collection path.</p>
               <h4>Parameters and options</h4>
               <table aria-label="image_collection parameters and options">
               <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
@@ -2896,13 +2899,13 @@
               <details class="node-reference">
               <summary>Inputs, parameters, buttons, and usage</summary>
               <h4>Connections and result</h4>
-              <p>Connect a video path to path or choose a local file. Use it to review generated/downloaded media before delivery.</p>
+              <p>Connect a video or numbered image-sequence path to <code>path</code>, or choose a local file. For image-sequence delivery, connect Video Player to <a href="nodes.html?node=sequence-to-mp4">Sequence to MP4</a>: the exporter receives the sequence path and can inherit this player's marked range.</p>
               <h4>Parameters and options</h4>
               <table aria-label="video_player parameters and options">
               <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
               <tbody>
               <tr><th scope="row">Path</th><td>The media file to play. A connected path drives the field instead of the manual selection.</td></tr>
-              <tr><th scope="row">Scrub slider</th><td>Seeks through the loaded video for frame/position review.</td></tr>
+              <tr><th scope="row">Scrub slider</th><td>Seeks through the full source. Cyan/yellow start/end flags mark the selected range; the bar outside them is darker in both the node and large player.</td></tr>
               <tr><th scope="row">Preview</th><td>Displays the current frame and reports when no usable media is loaded.</td></tr>
               </tbody></table>
               <h4>Buttons and editing actions</h4>
@@ -2910,14 +2913,18 @@
               <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
               <tbody>
               <tr><th scope="row">Browse</th><td>Chooses a local video.</td></tr>
-              <tr><th scope="row">Play / Pause</th><td>Starts or pauses playback.</td></tr>
+              <tr><th scope="row">Play / Pause / Space</th><td>Starts or pauses playback, looping within the marked range. Space toggles playback for a selected Video Player when the graph has focus and throughout the large-player window. Space still enters text in the node's path field.</td></tr>
+              <tr><th scope="row">[ / ] / [X]</th><td>Set the inclusive first/last frame at the playhead, or clear both flags with [X]. Image sequences use their filename frame numbers. Markers save with the workflow and reset when the source changes.</td></tr>
+              <tr><th scope="row">Large player</th><td>Opens original media in a maximized window with matching controls and minimize, maximize/restore, and close caption buttons. F11 toggles full screen; Esc returns to the framed window from full screen or closes a framed window. Closing returns the frame position to the node.</td></tr>
+              <tr><th scope="row">Open</th><td>Opens the loaded MP4 in the system's default external video player, like the MiniMax H3 Reference Video node's Open Video button. Available beside the large-player button in both the node and large-player window. Works with local or connected MP4 paths, including when the in-node preview is unavailable; disabled for image sequences, missing files, or an empty path.</td></tr>
               <tr><th scope="row">Sound On / Off</th><td>Enables or mutes audio for the preview.</td></tr>
               </tbody></table>
               <h4>Using this node</h4>
               <ol class="steps">
               <li>Browse a clip or connect a generated mp4_path.</li>
               <li>Play and inspect its audio.</li>
-              <li>Scrub to check transitions, simulation problems, or rendering artifacts.</li>
+              <li>Scrub and click [ and ] to mark the first and last frames; use [X] to clear them. Play, range, clear, and large-player controls sit on the left of the lower row; audio sits on the right.</li>
+              <li>Open the large player to review the original-resolution source. For sequence export, connect this node to Sequence to MP4 and leave the desired boundaries on Auto.</li>
               </ol>
               </details>
               <!-- node-reference:end -->
@@ -2962,6 +2969,7 @@
             <div class="card" id="node-minimax-h3-video">
               <h3><img class="inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /> minimax_h3_video</h3>
               <p>Generate video from a prompt and optional first/last images through a local MiniMax H3 runtime.</p>
+              <p><strong>Create Node listing:</strong> MiniMax H3 Local Video. For a connected Note prompt, a single visible parameter is automatic; with multiple parameters, only checked values are used. Labels are omitted, and an empty connected selection does not fall back to local text. The Note itself continues to expose all regular nonempty values.</p>
               <p><strong>Setup:</strong> Use <strong>Setup Model</strong> to prepare the local checkpoint, choose the model folder and variant, and configure a running local H3 service URL. Generation requires both the checkpoint and the local service.</p>
               <p><strong>Connect:</strong> Inputs are <code>prompt</code>, <code>first_image</code>, and <code>last_image</code>. Choose duration, aspect ratio, resolution, and output folder, then click <strong>Generate</strong>. Outputs are <code>mp4_path</code>, <code>task_id</code>, and <code>h3_status</code>.</p>
               <!-- node-reference:start -->
@@ -3000,6 +3008,7 @@
             <div class="card" id="node-minimax-h3-api-video">
               <h3><img class="inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /> minimax_h3_api_video</h3>
               <p>Generate MiniMax H3 video through the cloud API using a prompt, frame images, or reference images.</p>
+              <p><strong>Create Node listing:</strong> MiniMax API Vid. Note prompts follow the same selection rule as Qwen and the other H3 nodes: one visible parameter is used even unchecked; multiple parameters require checked values. Use <a href="nodes.html?node=minimax-h3-reference-video">MiniMax H3 Ref Video</a> for previs-video, design-image, and audio references together.</p>
               <p><strong>Setup:</strong> Enter a MiniMax API key and select the API base, model, duration, aspect ratio, and resolution.</p>
               <p><strong>Connect:</strong> Use <code>prompt</code> with optional <code>first_image</code> and <code>last_image</code> in Image-to-video mode, or use <code>reference_images</code> in Reference-to-video mode. Reference images and first/last frames are separate modes. Outputs are <code>mp4_path</code>, <code>task_id</code>, and <code>h3_api_status</code>.</p>
               <!-- node-reference:start -->
@@ -3033,6 +3042,51 @@
               <li>Set credentials, model, and compatible clip settings.</li>
               <li>Generate and inspect the downloaded MP4 before using it downstream.</li>
               </ol>
+              </details>
+              <!-- node-reference:end -->
+            </div>
+            <div class="card" id="node-minimax-h3-reference-video">
+              <h3><img class="inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="" /> minimax_h3_reference_video</h3>
+              <p>Generate a video guided by a 3D layout/previs clip, character sheets, environment designs, an optional audio reference, and a required prompt.</p>
+              <p><strong>Create Node listing:</strong> MiniMax H3 Ref Video. The graph node keeps the full Reference Video name. This cloud API node is separate from MiniMax H3 Local Video and MiniMax API Vid.</p>
+              <a class="text-link" href="image-generation.html#reference-video">Follow the previs and reference-video workflow &rarr;</a>
+              <!-- node-reference:start -->
+              <details class="node-reference">
+              <summary>Inputs, parameters, buttons, and usage</summary>
+              <h4>Connections and result</h4>
+              <p>Connect <code>prompt</code>, <code>reference_videos</code> (Previs videos), <code>reference_images</code> (Design images), and optionally <code>reference_audio</code>. Browse local files or enter paths, public URLs, or <code>mm_file://</code> references, one per line. Local media is inspected and uploaded automatically. Outputs are <code>mp4_path</code>, <code>task_id</code>, <code>h3_reference_status</code>, <code>error</code>, and <code>metadata_path</code>; connect <code>mp4_path</code> to Video Player.</p>
+              <p><strong>Note prompts:</strong> With multiple visible Note parameters, only checked nonempty values enter the prompt, without labels. One visible parameter is used even unchecked. Selection also follows Note segments through Append/Switch. An empty connected selection reports an error; it cannot reuse local prompt text. This filtering happens in the H3 consumer, leaving Note output unchanged.</p>
+              <h4>Parameters and options</h4>
+              <table aria-label="minimax_h3_reference_video parameters and options">
+                <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
+                <tbody>
+                  <tr><th scope="row">Prompt</th><td>Required, up to 7,000 characters. Describe what each numbered reference should control: camera, timing, poses, character identity, environment, or lighting.</td></tr>
+                  <tr><th scope="row">Previs videos</th><td>Up to three MP4/MOV clips using H.264/HEVC, at most 50 MB each, 2&ndash;15 seconds per clip and 15 seconds total, at 23.976&ndash;60 FPS. Embedded audio must be AAC/MP3.</td></tr>
+                  <tr><th scope="row">Design images</th><td>Connect multiple Image Collections to this same pin. Their paths are combined in graph source order, each collection keeps its image order, and duplicate paths are removed. The combined limit is nine images, 30 MB each; supported formats are JPG/JPEG/PNG/WEBP/HEIC/HEIF.</td></tr>
+                  <tr><th scope="row">Audio references</th><td>Up to three WAV/MP3 clips, at most 15 MB each, 2&ndash;15 seconds per clip and 15 seconds total. Use at most 12 files across all reference types. Image/video dimensions must be 256&ndash;5760 pixels per side with a width/height ratio of 0.4&ndash;2.5.</td></tr>
+                  <tr><th scope="row">Model / Duration / Resolution</th><td>MiniMax-H3: 4&ndash;15 seconds at 768P or 2K. MiniMax-H3-Max: 5&ndash;15 seconds at 480P or 768P. Both accept reference images/video/audio. Ratio can be adaptive or an offered fixed ratio.</td></tr>
+                  <tr><th scope="row">H3 Max prompt</th><td>H3 Max prompt expansion: disabled, balanced, or quality.</td></tr>
+                  <tr><th scope="row">API key / Save folder</th><td>Requires an eligible MiniMax pay-as-you-go key. Enter it for this app session or set MINIMAX_API_KEY / MINIMAX_PAYG_API_KEY. Entered keys are excluded from saved workflows and task metadata. Outputs default to the workflow's videos/minimax_h3_reference folder, or temporary storage for an unsaved workflow.</td></tr>
+                </tbody>
+              </table>
+              <h4>Buttons and editing actions</h4>
+              <table aria-label="minimax_h3_reference_video buttons and editing actions">
+                <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
+                <tbody>
+                  <tr><th scope="row">Use previs prompt template / Browse</th><td>Insert a camera/motion/design instruction template or append local reference files. Reference numbers follow list order within each media type.</td></tr>
+                  <tr><th scope="row">Generate / Generate new</th><td>Upload local references, submit a new generation, poll in the background, and download its MP4. A new generation uses provider balance; reference-video input is also billed.</td></tr>
+                  <tr><th scope="row">Resume task</th><td>Query and download the saved task without uploading the original inputs or submitting another generation. Save the workflow to retain the task ID across app restarts. Tasks are queryable for seven days.</td></tr>
+                  <tr><th scope="row">Stop waiting</th><td>Stops local waiting after an in-flight request finishes or times out. Submitted work continues at MiniMax and may still incur charges; Resume retrieves the same task later.</td></tr>
+                  <tr><th scope="row">Open video</th><td>Opens the downloaded MP4 in the system player.</td></tr>
+                </tbody>
+              </table>
+              <h4>Using this node</h4>
+              <ol class="steps">
+                <li>Supply a short previs clip and connect character/environment Image Collections to Design images.</li>
+                <li>Write the prompt or connect a Note, checking the desired values when it has multiple parameters.</li>
+                <li>Choose the model and output settings, supply a pay-as-you-go key, generate, and review the MP4.</li>
+              </ol>
+              <p class="callout">Reference following is generative: exact camera, framing, timing, or pose preservation is not guaranteed. This node uses reference roles; first/last-frame inputs belong to the separate frame-generation node.</p>
               </details>
               <!-- node-reference:end -->
             </div>
@@ -3151,7 +3205,7 @@
               <details class="node-reference">
               <summary>Inputs, parameters, buttons, and usage</summary>
               <h4>Connections and result</h4>
-              <p>Connect an image sequence from Render or Post Process to source, or provide its supported sequence path. Produces an MP4 file.</p>
+              <p>Connect an image sequence from Render, Post Process, or Video Player to <code>source</code>, or provide a folder, numbered frame, or sequence pattern. Video Player supplies its image-sequence path and optional markers. This exporter encodes numbered images; it does not trim an existing MP4.</p>
               <h4>Parameters and options</h4>
               <table aria-label="sequence_to_mp4 parameters and options">
               <thead><tr><th scope="col">Control</th><th scope="col">What it does</th></tr></thead>
@@ -3159,6 +3213,7 @@
               <tr><th scope="row">Source</th><td>Input sequence to encode; use the upstream output pattern where available.</td></tr>
               <tr><th scope="row">Output</th><td>Destination MP4 path.</td></tr>
               <tr><th scope="row">Codec</th><td>Choose H.264 or H.265; initial selection H.264.</td></tr>
+              <tr><th scope="row">Start / End</th><td>Inclusive filename frame numbers. Each boundary independently defaults to Auto, using the corresponding connected Video Player marker or the first/last source frame when no marker is set. Type a number to override that boundary only. For example, 1020&ndash;1040 exports 21 frames. Invalid, out-of-source, or missing-frame ranges are rejected.</td></tr>
               <tr><th scope="row">FPS</th><td>Playback rate assigned to the frame sequence; initial value 24. Match the intended render playback rate.</td></tr>
               <tr><th scope="row">Bitrate</th><td>Target encoding bitrate, initially 12M. Higher values increase output size and can retain more detail.</td></tr>
               </tbody></table>
@@ -3172,7 +3227,7 @@
               <h4>Using this node</h4>
               <ol class="steps">
               <li>Connect a completed render or processed frame sequence.</li>
-              <li>Set the intended FPS, codec, and output file.</li>
+              <li>Set the intended FPS, codec, output file, and range. Leave Start/End on Auto to inherit Video Player flags, including through Post Process, or enter explicit source frame numbers.</li>
               <li>Convert and review the resulting MP4 in Video Player.</li>
               </ol>
               </details>

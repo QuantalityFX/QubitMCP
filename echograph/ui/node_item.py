@@ -1128,6 +1128,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _minimax_h3_api_video.register()
             except Exception:
                 pass
+        if (self.model.kind or "").strip().lower() in (
+            "minimax_h3_reference_video", "minimax h3 reference video",
+            "minimax_h3_reference", "hailuo_h3_reference_video",
+        ):
+            from nodes import minimax_h3_reference_video
+            minimax_h3_reference_video.register()
         # Ensure MiniMax TTS API spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in (
             "minimax_tts_api",
@@ -3259,14 +3265,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = max(self._BASE_W, self.width, getattr(self, "_render_node_min_w", 0))
         elif kind in ("video_player", "video player", "videoplayer"):
             # Keep extra bottom frame space for the Video Player preview controls.
-            body_h = 188
-            node_w = self._BASE_W
+            body_h = max(230, getattr(self, "_video_player_body_h", 0))
+            node_w = max(340, getattr(self, "_video_player_body_w", 0))
         elif kind in ("post_process", "postprocess", "post_processing", "post_process_effect"):
             body_h = 176
             node_w = self._BASE_W
         elif kind in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
-            body_h = 176
-            node_w = self._BASE_W
+            body_h = max(212, getattr(self, "_sequence_to_mp4_body_h", 0))
+            node_w = max(300, getattr(self, "_sequence_to_mp4_body_w", 0))
         elif kind in ("youtube_downloader", "youtube downloader", "youtube", "yt_downloader", "yt downloader", "youtube_to_mp4", "youtube to mp4"):
             body_h = 262
             node_w = max(self._BASE_W, 440)
@@ -3296,6 +3302,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = max(node_w, int(getattr(_minimax_h3_spec, "MINIMAX_H3_VIDEO_BODY_W", node_w)))
             except Exception:
                 pass
+        elif kind in (
+            "minimax_h3_reference_video", "minimax h3 reference video",
+            "minimax_h3_reference", "hailuo_h3_reference_video",
+        ):
+            body_h = int(getattr(self, "_minimax_reference_body_h", 0))
+            node_w = max(self._BASE_W, int(getattr(self, "_minimax_reference_body_w", 560)))
         elif kind in (
             "minimax_h3_api_video",
             "minimax h3 api video",
@@ -3633,6 +3645,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             extra_pad = self._PADDING + 4.0
         elif kind in ("render", "render_sequence", "render node"):
             extra_pad = max(self._PADDING, 10.0)
+        elif kind in ("video_player", "video player", "videoplayer", "sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
+            extra_pad = max(self._PADDING, 10.0)
+        elif kind in ("minimax_h3_reference_video", "minimax h3 reference video", "minimax_h3_reference", "hailuo_h3_reference_video"):
+            extra_pad = max(self._PADDING, 14.0)
         new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + extra_pad)
 
         if kind in ("image_collection", "imagecollection"):
@@ -4446,6 +4462,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._sync_light_param_visibility()
                 self._recompute_height()
             defer_plugin = kind_lower in (
+                "minimax_h3_reference_video", "minimax h3 reference video",
+                "minimax_h3_reference", "hailuo_h3_reference_video",
                 "qwen_image",
                 "rig_limiter",
                 "animation_correction",
@@ -10246,6 +10264,8 @@ body {
                 "text to video",
                 "image_to_video",
                 "image to video",
+                "minimax_h3_reference_video", "minimax h3 reference video",
+                "minimax_h3_reference", "hailuo_h3_reference_video",
                 "minimax_h3_api_video",
                 "minimax h3 api video",
                 "minimax_h3_api",
@@ -10564,6 +10584,8 @@ body {
                 "text to video",
                 "image_to_video",
                 "image to video",
+                "minimax_h3_reference_video", "minimax h3 reference video",
+                "minimax_h3_reference", "hailuo_h3_reference_video",
                 "minimax_h3_api_video",
                 "minimax h3 api video",
                 "minimax_h3_api",
@@ -10695,6 +10717,8 @@ body {
                     "text to video",
                     "image_to_video",
                     "image to video",
+                    "minimax_h3_reference_video", "minimax h3 reference video",
+                    "minimax_h3_reference", "hailuo_h3_reference_video",
                     "minimax_h3_api_video",
                     "minimax h3 api video",
                     "minimax_h3_api",
@@ -10771,6 +10795,8 @@ body {
                     "text to video",
                     "image_to_video",
                     "image to video",
+                    "minimax_h3_reference_video", "minimax h3 reference video",
+                    "minimax_h3_reference", "hailuo_h3_reference_video",
                     "minimax_h3_api_video",
                     "minimax h3 api video",
                     "minimax_h3_api",

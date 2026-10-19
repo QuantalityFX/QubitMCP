@@ -24,6 +24,7 @@ except Exception:
     from PySide2 import QtCore, QtGui, QtWidgets  # type: ignore
 
 from nodes.core import Spec
+from nodes.util_prompt import connected_prompt
 
 
 MINIMAX_H3_API_VIDEO_NODE_KIND = "minimax_h3_api_video"
@@ -324,6 +325,8 @@ def _connected_value(node_item, ports: set[str], param_names: tuple[str, ...] = 
     if scene is None:
         return ""
     ports = {str(port or "").strip().lower() for port in ports if str(port or "").strip()}
+    if ports == {"prompt"}:
+        return connected_prompt(node_item)[1]
     edges = _ordered_in_edges(node_item)
     named = [edge for edge in edges if _edge_port(edge) in ports]
     if ports and named:
@@ -1110,7 +1113,7 @@ class MiniMaxH3ApiVideoWidget(QtWidgets.QWidget):
         self._thread: MiniMaxH3ApiGenerationThread | None = None
         self._syncing = False
         self._scene_connected = False
-        self._connected_prompt = ""
+        self._connected_prompt = None
         self._connected_first = ""
         self._connected_last = ""
         self._connected_refs = ""
@@ -1346,7 +1349,8 @@ class MiniMaxH3ApiVideoWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._refresh_connected_inputs)
 
     def _refresh_connected_inputs(self) -> None:
-        prompt = _connected_value(self._node_item, {"prompt"}, ())
+        prompt_connected, prompt = connected_prompt(self._node_item)
+        prompt = prompt if prompt_connected else None
         first = _connected_value(
             self._node_item,
             {"first_image", "first frame", "first"},
@@ -1373,15 +1377,17 @@ class MiniMaxH3ApiVideoWidget(QtWidgets.QWidget):
         self._connected_refs = refs
         self._syncing = True
         try:
-            self._prompt_edit.setEnabled(not bool(prompt))
+            self._prompt_edit.setEnabled(not prompt_connected)
             self._first_edit.setEnabled(not bool(first))
             self._first_btn.setEnabled(not bool(first))
             self._last_edit.setEnabled(not bool(last))
             self._last_btn.setEnabled(not bool(last))
             self._refs_edit.setEnabled(not bool(refs))
             self._refs_btn.setEnabled(not bool(refs))
-            if prompt:
+            if prompt_connected:
                 self._prompt_edit.setPlainText(prompt)
+            else:
+                self._prompt_edit.setPlainText(_param_value(self._model(), _PARAM_PROMPT, ""))
             if first:
                 self._first_edit.setText(first)
             if last:
@@ -1440,7 +1446,7 @@ class MiniMaxH3ApiVideoWidget(QtWidgets.QWidget):
     def _commit_controls(self) -> None:
         if self._syncing:
             return
-        if not self._connected_prompt:
+        if self._connected_prompt is None:
             _set_param_value(self._node_item, _PARAM_PROMPT, self._prompt_edit.toPlainText().strip(), notify_scene=False)
         _set_param_value(self._node_item, _PARAM_MODE, str(self._mode_combo.currentData() or "image"), notify_scene=False)
         if not self._connected_first:
@@ -1614,9 +1620,12 @@ class MiniMaxH3ApiVideoWidget(QtWidgets.QWidget):
             pass
 
     def _collect_settings(self) -> MiniMaxH3ApiJobSettings:
+        self._refresh_connected_inputs()
         self._commit_controls()
         mode = _normalize_mode(str(self._mode_combo.currentData() or "image"))
-        prompt = self._connected_prompt or self._prompt_edit.toPlainText().strip()
+        prompt = self._prompt_edit.toPlainText().strip() if self._connected_prompt is None else self._connected_prompt
+        if self._connected_prompt is not None and not prompt.strip():
+            raise ValueError("Connected prompt is empty. Check the Note values you want to use.")
         if mode == "reference":
             first = ""
             last = ""
