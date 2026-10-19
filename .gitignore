@@ -107,6 +107,8 @@ AGENTS.md
 !/tests/ui/test_timeline_header.py
 !/tests/ui/test_timeline_graph_navigation.py
 !/tests/ui/test_shelf_snippet_window.py
+!/tests/ui/test_workflow_close_guard.py
+!/tests/ui/test_gantt_note_editing.py
 !/tests/ui/test_fbx_normal_deformation.py
 !/tests/voice/
 /tests/voice/*

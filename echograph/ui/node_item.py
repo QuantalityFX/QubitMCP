@@ -3085,7 +3085,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
         params = list(self.model.params or [])
         if len(params) <= 1:
             return
-        removed = params.pop()
+        self._remove_param(len(params) - 1)
+
+    def _remove_param(self, idx: int) -> bool:
+        params = list(self.model.params or [])
+        if idx < 0 or idx >= len(params):
+            return False
+        removed = params.pop(idx)
+        if not params and (self.model.kind or "").lower() == "note":
+            # Preserve an intentionally empty Note when its workflow is reloaded.
+            params.append({"name": "__ui_hidden_params", "value": ""})
         self.model.params = params
         pname = (removed.get("name") or "").strip()
         # prune featured markers/heights
@@ -3126,6 +3135,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             QtCore.QTimer.singleShot(0, _apply_to_scene)
         except Exception:
             _apply_to_scene()
+        return True
 
 
     def _normalize_url(self, s: str) -> str:
@@ -5210,6 +5220,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 lambda e=edit, idx=i: self._on_param_changed(idx, e.text(), emit_scene=True)
                             )
                         lay.addWidget(edit, 1)
+                        if is_note and pname in feat_set:
+                            edit.hide()
+                            lay.addStretch(1)
                         if attach_import_browse:
                             edit.editingFinished.connect(lambda e=edit: self._commit_import_path_edit(e))
 

@@ -26,6 +26,7 @@ from echograph.ui.timeline_controller import TimelineController
 from echograph.ui.timeline_menu import build_timeline_panels_menu
 from echograph.ui.profiler_controller import ProfilerController
 from echograph.ui.shelf_bar import ShelfBar
+from echograph.ui.workflow_close_guard import WorkflowCloseGuard
 from echograph.services.profiler import profiled, profile_scope
 from echograph.services import runtime_logging
 from echograph.services.workflow_launcher import (
@@ -3313,6 +3314,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 QtCore.QTimer.singleShot(0, self.showMaximized)
             else:
                 QtCore.QTimer.singleShot(0, self.showMaximized)
+
+        self._workflow_close_guard = WorkflowCloseGuard(self, self.scene, self._save_graph)
+
+    def closeEvent(self, event):
+        if not self._workflow_close_guard.confirm_close():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def _register_bigedit_target(self, edit: QtWidgets.QWidget, node_item, param_name: str):
         if not hasattr(self, "_bigedit_registry"):
@@ -8254,6 +8263,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 )
         except Exception:
             pass
+        self._workflow_close_guard.reset_after_load()
         return True
 
     def _sync_data_nexus_sidecars_for_save(self, path: str) -> None:
@@ -8295,6 +8305,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         tooltip_label: str = "Saved",
     ) -> bool:
         try:
+            self._workflow_close_guard.commit_focused_editor()
             self._sync_data_nexus_sidecars_for_save(path)
             data = self._workflow_data_for_save(include_preview=include_preview)
             with open(path, "w", encoding="utf-8") as f:
@@ -8303,6 +8314,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             if clone_sidecars:
                 self._clone_timeline_sidecars_for_save_as(previous_path, path)
 
+            self._workflow_close_guard.mark_saved(data)
             self._current_path = path
             try:
                 self._current_project_dir = str(Path(path).expanduser().resolve().parent)
@@ -8341,7 +8353,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
         self._load_graph_file(path)
 
-    def _save_graph(self):
+    def _save_graph(self) -> bool:
         pending_raw = str(getattr(self, "_pending_project_save_dir", "") or "").strip()
         if pending_raw:
             project_dir = self._project_dir_from_state("_pending_project_save_dir")
@@ -8352,29 +8364,28 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     APP_TITLE,
                     f"Project folder is no longer available:\n{pending_raw}",
                 )
-                return
+                return False
             path = self._prompt_project_workflow_path(project_dir)
             if not path:
-                return
-            self._save_workflow_file(
+                return False
+            return self._save_workflow_file(
                 path,
                 previous_path=self._current_path,
                 clone_sidecars=True,
                 include_preview=True,
                 tooltip_label="Saved",
             )
-            return
 
         if not self._current_path:
             return self._export_graph()
-        self._save_workflow_file(
+        return self._save_workflow_file(
             self._current_path,
             include_preview=False,
             tooltip_label="Saved",
         )
 
 
-    def _export_graph(self):
+    def _export_graph(self) -> bool:
         project_dir = (
             self._project_dir_from_state("_pending_project_save_dir")
             or self._project_dir_from_state("_current_project_dir")
@@ -8391,54 +8402,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self, "Export Graph (.json)", suggested, "JSON Files (*.json)"
         )
         if not path:
-            return
-        try:
-            previous_path = self._current_path
-            self._sync_data_nexus_sidecars_for_save(path)
-            data = self.scene.to_dict()
-            self._inject_panel_layout_into_workflow_data(data)
-            self._inject_scene_restore_into_workflow_data(data)
-            self._inject_timeline_frame_into_workflow_data(data)
-
-            # Optional: Append-aware preview block
-            try:
-                out_name = getattr(self.scene, "_current_output_name", "") or ""
-                if out_name and hasattr(self.scene, "merged_text_for_output"):
-                    pairs = self.scene.merged_text_for_output(out_name)  # [(node_name, text)]
-                    data.setdefault("preview", {})
-                    data["preview"]["output"] = out_name
-                    data["preview"]["ordered_pairs"] = [{"node": n, "text": t} for (n, t) in pairs]
-                    data["preview"]["merged_text"] = "\n\n".join(t for _, t in pairs)
-            except Exception:
-                pass  # don’t block export if preview assembly hiccups
-
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-
-            self._clone_timeline_sidecars_for_save_as(previous_path, path)
-            self._current_path = path
-            try:
-                self._current_project_dir = str(Path(path).expanduser().resolve().parent)
-                self._pending_project_save_dir = ""
-            except Exception:
-                pass
-            self._remember_recent(path)
-            self._update_window_title()
-            try:
-                self._timeline_controller.sync_timeline_context()
-            except Exception:
-                pass
-            try:
-                QtWidgets.QToolTip.showText(
-                    QtGui.QCursor.pos(),
-                    f"Exported:\n{path}",
-                    self, self.rect(), 1500
-                )
-            except Exception:
-                pass
-
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to export:\n{e}")
+            return False
+        return self._save_workflow_file(
+            path,
+            previous_path=self._current_path,
+            clone_sidecars=True,
+            include_preview=True,
+            tooltip_label="Exported",
+        )
 
     def _init_info_dock(self):
         self.infoDock = QtWidgets.QDockWidget("Info", self)

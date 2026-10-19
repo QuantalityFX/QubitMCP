@@ -20,7 +20,6 @@ except Exception:
 
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
-from echograph.ui.dialogs import BigTextEditDialog
 
 _SCHEDULE_PARAM = "schedule_data"
 _PROGRESS_PARAM = "progress_data"
@@ -1079,6 +1078,7 @@ def _gantt_csv_rows_for_output(node_item) -> list[dict[str, object]]:
                 valid_task_ids=valid_task_ids,
                 by_source_task=by_source_task,
                 by_task_name=by_task_name,
+                valid_source_names=used_group_names,
             )
             if canonical is None:
                 changed = True
@@ -1185,6 +1185,7 @@ def _canonical_task_key(
     valid_task_ids: set[str],
     by_source_task: dict[tuple[str, str], str],
     by_task_name: dict[str, list[str]],
+    valid_source_names: set[str],
 ) -> str | None:
     key = str(raw_key or "").strip()
     if not key:
@@ -1199,6 +1200,9 @@ def _canonical_task_key(
         candidate = by_source_task.get((source_name.strip().lower(), task_lookup))
         if candidate:
             return candidate
+        if source_name.strip().lower() in valid_source_names:
+            # Deletion must not transfer a task's data to a namesake in another Note.
+            return None
     candidates = by_task_name.get(task_lookup) or []
     if not candidates:
         return None
@@ -2061,13 +2065,76 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
         painter.end()
 
 
+class _GanttAddNoteDialog(QtWidgets.QDialog):
+    def __init__(self, source_model, parent=None, *, task_name: str | None = None):
+        super().__init__(parent)
+        self._source_model = source_model
+        self._editing_index = next((index for index, entry in enumerate(source_model.params or [])
+                                    if (entry.get("name") or "").strip().lower() == (task_name or "").strip().lower()), -1)
+        self.setWindowTitle(f"Edit Note: {source_model.name} / {task_name}" if task_name is not None
+                            else f"Add Note: {source_model.name}")
+        self.setMinimumSize(560, 360)
+        layout = QtWidgets.QVBoxLayout(self)
+        self.name_edit = QtWidgets.QLineEdit()
+        self.name_edit.setText(task_name or "")
+        self.name_edit.setPlaceholderText("Parameter name")
+        name_label = QtWidgets.QLabel("Parameter name:")
+        name_label.setBuddy(self.name_edit)
+        layout.addWidget(name_label)
+        layout.addWidget(self.name_edit)
+        self.error_label = QtWidgets.QLabel()
+        self.error_label.setStyleSheet("color:#fca5a5;")
+        layout.addWidget(self.error_label)
+        self.body_edit = QtWidgets.QPlainTextEdit()
+        if task_name is not None:
+            self.body_edit.setPlainText(_read_source_task_value(source_model, task_name))
+        self.body_edit.setPlaceholderText("Enter the body of the note.")
+        body_label = QtWidgets.QLabel("Note body:")
+        body_label.setBuddy(self.body_edit)
+        layout.addWidget(body_label)
+        layout.addWidget(self.body_edit, 1)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Apply | QtWidgets.QDialogButtonBox.Cancel
+        )
+        self.apply_button = buttons.button(QtWidgets.QDialogButtonBox.Apply)
+        self.apply_button.setDefault(True)
+        buttons.button(QtWidgets.QDialogButtonBox.Cancel).setAutoDefault(False)
+        self.apply_button.clicked.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.name_edit.textChanged.connect(self._validate_name)
+        self._validate_name()
+        self.name_edit.setFocus()
+
+    def _validate_name(self) -> bool:
+        name = self.name_edit.text().strip().lower()
+        existing = {(entry.get("name") or "").strip().lower()
+                    for index, entry in enumerate(self._source_model.params or [])
+                    if index != self._editing_index}
+        error = ""
+        if name == "__ui_hidden_params":
+            error = "This parameter name is reserved."
+        elif name in existing:
+            error = "A parameter with this name already exists in this Note node."
+        self.error_label.setText(error)
+        valid = bool(name) and not error
+        self.apply_button.setEnabled(valid)
+        return valid
+
+    def accept(self) -> None:
+        if self._validate_name():
+            super().accept()
+
+
 class _GanttTaskHeader(QtWidgets.QHeaderView):
     completionToggled = QtCore.Signal(int, bool)
     progressEditRequested = QtCore.Signal(int, object)
-    renameRequested = QtCore.Signal(int)
+    editRequested = QtCore.Signal(int)
+    taskContextMenuRequested = QtCore.Signal(int, object)
     reorderRequested = QtCore.Signal(int, int)
     selectionRequested = QtCore.Signal(int)
     groupToggleRequested = QtCore.Signal(int)
+    addNoteRequested = QtCore.Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(QtCore.Qt.Vertical, parent)
@@ -2079,6 +2146,7 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         self._expanded_group_sections: set[int] = set()
         self._child_sections: set[int] = set()
         self._notification_icon = _load_icon_pixmap("bell_icon.png")
+        self._add_note_icon = _load_icon_pixmap("AddTool_Icon.png")
         self._dragging_section: int | None = None
         self._drag_start_visual_index: int | None = None
         self._drag_grab_offset: int | None = None
@@ -2088,6 +2156,7 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         self._checkbox_pressed_section: int | None = None
         self._progress_pressed_section: int | None = None
         self._group_pressed_section: int | None = None
+        self._add_note_pressed_section: int | None = None
         self.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
     def set_selected_section(self, section: int | None) -> None:
@@ -2170,8 +2239,28 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         return QtCore.QRect(x, y, size, size)
 
     def _group_toggle_rect_for_section(self, logical_index: int) -> QtCore.QRect:
-        top = int(self.sectionPosition(int(logical_index)))
+        top = int(self.sectionViewportPosition(int(logical_index)))
         return self._group_toggle_rect(QtCore.QRect(0, top, self.viewport().width(), int(self.sectionSize(int(logical_index)))))
+
+    def _group_add_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
+        size = min(22, int(rect.height()) - 4)
+        return QtCore.QRect(int(rect.right()) - size - 6,
+                            int(rect.top()) + (int(rect.height()) - size) // 2, size, size)
+
+    def _group_add_rect_for_section(self, logical_index: int) -> QtCore.QRect:
+        top = int(self.sectionViewportPosition(int(logical_index)))
+        return self._group_add_rect(QtCore.QRect(
+            0, top, self.viewport().width(), int(self.sectionSize(int(logical_index)))
+        ))
+
+    def viewportEvent(self, event):
+        if event.type() == QtCore.QEvent.ToolTip:
+            logical_index = int(self.logicalIndexAt(event.pos()))
+            if (self._is_group_section(logical_index)
+                    and self._group_add_rect_for_section(logical_index).contains(event.pos())):
+                QtWidgets.QToolTip.showText(event.globalPos(), "Add a note to this Note node", self)
+                return True
+        return super().viewportEvent(event)
 
     def _paint_group_triangle(self, painter, rect: QtCore.QRect, expanded: bool, selected: bool) -> None:
         painter.save()
@@ -2218,11 +2307,11 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         return QtCore.QRect(x, y, size, size)
 
     def _checkbox_rect_for_section(self, logical_index: int) -> QtCore.QRect:
-        top = int(self.sectionPosition(int(logical_index)))
+        top = int(self.sectionViewportPosition(int(logical_index)))
         return self._checkbox_rect(QtCore.QRect(0, top, self.viewport().width(), int(self.sectionSize(int(logical_index)))))
 
     def _progress_rect_for_section(self, logical_index: int) -> QtCore.QRect:
-        top = int(self.sectionPosition(int(logical_index)))
+        top = int(self.sectionViewportPosition(int(logical_index)))
         return self._progress_rect(QtCore.QRect(0, top, self.viewport().width(), int(self.sectionSize(int(logical_index)))))
 
     def _set_drop_indicator_y(self, y: int | None) -> None:
@@ -2292,9 +2381,23 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         if is_group:
             toggle_rect = self._group_toggle_rect(rect)
             self._paint_group_triangle(painter, toggle_rect, logical in self._expanded_group_sections, is_selected)
+            add_rect = self._group_add_rect(rect)
             text_left = int(toggle_rect.right() + 8)
-            text_rect = QtCore.QRect(text_left, int(rect.top()) - 2, max(0, int(rect.right()) - text_left - 6), int(rect.height()) + 4)
-            painter.drawText(text_rect, int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), text)
+            text_rect = QtCore.QRect(text_left, int(rect.top()) - 2, max(0, int(add_rect.left()) - text_left - 6), int(rect.height()) + 4)
+            label = painter.fontMetrics().elidedText(text, QtCore.Qt.ElideRight, text_rect.width())
+            painter.drawText(text_rect, int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), label)
+            painter.setPen(QtGui.QColor("#475569"))
+            painter.setBrush(QtGui.QColor("#182332" if logical == self._add_note_pressed_section else "#263548"))
+            painter.drawRoundedRect(add_rect, 3, 3)
+            if self._add_note_icon is not None:
+                icon = self._add_note_icon.scaled(16, 16, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                icon_rect = QtWidgets.QStyle.alignedRect(
+                    QtCore.Qt.LeftToRight, QtCore.Qt.AlignCenter, icon.size(), add_rect
+                )
+                painter.drawPixmap(icon_rect.topLeft(), icon)
+            else:
+                painter.setPen(QtGui.QColor("#f8fafc"))
+                painter.drawText(add_rect, QtCore.Qt.AlignCenter, "+")
             painter.restore()
             return
         checkbox_rect = self._checkbox_rect(rect)
@@ -2370,7 +2473,10 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         if event.button() == QtCore.Qt.LeftButton:
             logical_index = int(self.logicalIndexAt(event.pos()))
             if logical_index >= 0 and self._is_group_section(logical_index):
-                if self._group_toggle_rect_for_section(logical_index).contains(event.pos()):
+                if self._group_add_rect_for_section(logical_index).contains(event.pos()):
+                    self._add_note_pressed_section = logical_index
+                    self.viewport().update()
+                elif self._group_toggle_rect_for_section(logical_index).contains(event.pos()):
                     self._group_pressed_section = logical_index
                 else:
                     self._group_pressed_section = None
@@ -2407,6 +2513,9 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._add_note_pressed_section is not None:
+            event.accept()
+            return
         if self._group_pressed_section is not None:
             event.accept()
             return
@@ -2430,6 +2539,18 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._add_note_pressed_section is not None:
+            logical_index = int(self._add_note_pressed_section)
+            pressed = (
+                event.button() == QtCore.Qt.LeftButton
+                and self._group_add_rect_for_section(logical_index).contains(event.pos())
+            )
+            self._add_note_pressed_section = None
+            self.viewport().update()
+            if pressed:
+                self.addNoteRequested.emit(logical_index)
+            event.accept()
+            return
         if self._group_pressed_section is not None:
             logical_index = int(self._group_pressed_section)
             pressed = (
@@ -2498,13 +2619,20 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
                 if self._checkbox_rect_for_section(logical_index).contains(event.pos()):
                     event.accept()
                     return
-                self.renameRequested.emit(logical_index)
+                self.editRequested.emit(logical_index)
                 event.accept()
                 return
         super().mouseDoubleClickEvent(event)
 
+    def contextMenuEvent(self, event):
+        logical_index = int(self.logicalIndexAt(event.pos()))
+        if logical_index >= 0 and not self._is_group_section(logical_index):
+            self.taskContextMenuRequested.emit(logical_index, event.globalPos())
+        event.accept()
+
     def leaveEvent(self, event):
         super().leaveEvent(event)
+        self._add_note_pressed_section = None
         self._group_pressed_section = None
         self._progress_pressed_section = None
         self._checkbox_pressed_section = None
@@ -2835,6 +2963,7 @@ class GanttChartWidget(QtWidgets.QFrame):
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
         self._node_item = node_item
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self._scene = None
         self._scene_connected = False
         self._sync_pending = False
@@ -2960,7 +3089,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         except Exception:
             pass
         try:
-            self._table.verticalHeader().renameRequested.connect(self._on_task_header_rename_requested)
+            self._table.verticalHeader().editRequested.connect(self._on_task_header_edit_requested)
         except Exception:
             pass
         try:
@@ -2975,6 +3104,8 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._table.verticalHeader().groupToggleRequested.connect(self._on_group_toggle_requested)
         except Exception:
             pass
+        self._table.verticalHeader().addNoteRequested.connect(self._on_add_note_requested)
+        self._table.verticalHeader().taskContextMenuRequested.connect(self._on_task_context_menu_requested)
 
         try:
             fixed_mode = QtWidgets.QHeaderView.ResizeMode.Fixed
@@ -3299,6 +3430,27 @@ class GanttChartWidget(QtWidgets.QFrame):
         if not entry or entry.get("kind") != "group":
             return
         self._toggle_group(str(entry.get("group") or ""))
+
+    def _on_add_note_requested(self, section: int) -> None:
+        entry = self._row_entry(int(section))
+        if not entry or entry.get("kind") != "group":
+            return
+        group_name = str(entry.get("group") or "")
+        source_info = self._source_info_by_name.get(group_name) or {}
+        src_item = source_info.get("item")
+        src_model = source_info.get("model")
+        append_param = getattr(src_item, "_append_param", None)
+        if src_model is None or not callable(append_param):
+            return
+        dialog = _GanttAddNoteDialog(src_model, _dialog_parent_for_node(self._node_item))
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return
+        name = dialog.name_edit.text().strip()
+        append_param(name, dialog.body_edit.toPlainText())
+        self._group_expanded[group_name] = True
+        _write_group_state(self._node_item, self._group_expanded, notify_scene=False)
+        self._selected_task = _task_storage_key(group_name, name)
+        self._schedule_sync()
 
     def _sync_view_start_from_params(self, *, force: bool = False):
         model = getattr(self._node_item, "model", None)
@@ -4038,6 +4190,7 @@ class GanttChartWidget(QtWidgets.QFrame):
                     valid_task_ids=valid_task_ids,
                     by_source_task=by_source_task,
                     by_task_name=by_task_name,
+                    valid_source_names=used_group_names,
                 )
                 if canonical is None:
                     changed = True
@@ -4372,48 +4525,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._set_task_day(task, col + 1)
 
     def _on_cell_double_clicked(self, row: int, _col: int):
-        task = self._task_for_row(row)
-        if not task:
-            return
-        self._selected_task = task
-        self._apply_table_styles()
-        self._update_labels()
-        task_name = self._task_name_for_id(task)
-        src_item, src_model = self._source_ref_for_task(task)
-        if src_model is None or not task_name:
-            QtWidgets.QMessageBox.information(
-                _dialog_parent_for_node(self._node_item),
-                "Edit Task Value",
-                "Connect a Note node to edit task values from the Gantt chart.",
-            )
-            return
-        initial_text = _read_source_task_value(src_model, task_name)
-        dlg = BigTextEditDialog(
-            _dialog_parent_for_node(self._node_item),
-            title=f"Edit Task Value: {self._task_display_label(task)}",
-            initial=initial_text,
-        )
-        try:
-            dlg.edit.setPlaceholderText("Enter the note value for this task.")
-        except Exception:
-            pass
-        try:
-            result = dlg.exec()
-        except Exception:
-            result = dlg.exec_()
-        if result != QtWidgets.QDialog.Accepted:
-            return
-        new_text = dlg.text()
-        if new_text == initial_text:
-            return
-        _write_source_task_value(
-            self._node_item,
-            src_item,
-            src_model,
-            task_name,
-            new_text,
-            notify_scene=True,
-        )
+        self._edit_task(self._task_for_row(row))
 
     def _on_header_clicked(self, section: int):
         if section < 0 or section >= self._visible_day_count():
@@ -4428,21 +4540,35 @@ class GanttChartWidget(QtWidgets.QFrame):
         if not task:
             return
         self._selected_task = task
+        self.setFocus(QtCore.Qt.MouseFocusReason)
         self._apply_table_styles()
         self._update_labels()
 
-    def _on_task_header_rename_requested(self, section: int):
-        task_id = self._task_for_row(section)
+    def keyPressEvent(self, event):
+        if (event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter)
+                and event.modifiers() == QtCore.Qt.NoModifier and self._selected_task):
+            self._edit_task(self._selected_task)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _on_task_header_edit_requested(self, section: int):
+        self._edit_task(self._task_for_row(section))
+
+    def _edit_task(self, task_id: str | None):
         if not task_id:
             return
+        self._selected_task = task_id
+        self._apply_table_styles()
+        self._update_labels()
         old_name = self._task_name_for_id(task_id)
         source_name = self._task_group_name(task_id)
         src_item, src_model = self._source_ref_for_task(task_id)
         if src_item is None or src_model is None:
             QtWidgets.QMessageBox.information(
                 _dialog_parent_for_node(self._node_item),
-                "Rename Task",
-                "Connect a Note node to rename tasks from the Gantt chart.",
+                "Edit Note",
+                "Connect a Note node to edit tasks from the Gantt chart.",
             )
             return
         rename_fn = getattr(src_item, "_apply_param_rename", None)
@@ -4456,14 +4582,13 @@ class GanttChartWidget(QtWidgets.QFrame):
                 break
         if param_index < 0:
             return
-        parent = _dialog_parent_for_node(self._node_item)
-        text, ok = QtWidgets.QInputDialog.getText(
-            parent, "Rename Parameter", "New name:", QtWidgets.QLineEdit.Normal, old_name
-        )
-        if not ok:
+        initial_text = _read_source_task_value(src_model, old_name)
+        dialog = _GanttAddNoteDialog(src_model, _dialog_parent_for_node(self._node_item), task_name=old_name)
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
-        desired_name = (text or "").strip()
-        if not desired_name:
+        desired_name = dialog.name_edit.text().strip()
+        new_text = dialog.body_edit.toPlainText()
+        if desired_name == old_name and new_text == initial_text:
             return
         final_name = str(rename_fn(param_index, desired_name) or "").strip()
         if not final_name:
@@ -4492,6 +4617,43 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._completed_tasks = completed
         if self._selected_task == old_task_id:
             self._selected_task = new_task_id
+        if new_text != initial_text:
+            _write_source_task_value(self._node_item, src_item, src_model, final_name, new_text, notify_scene=True)
+        self._schedule_sync()
+
+    def _on_task_context_menu_requested(self, section: int, global_pos):
+        task_id = self._task_for_row(section)
+        if not task_id:
+            return
+        self._on_task_header_clicked(section)
+        menu = QtWidgets.QMenu(self)
+        delete_action = menu.addAction("Delete Task")
+        selected = menu.exec(global_pos)
+        menu.deleteLater()
+        if selected == delete_action:
+            self._delete_task(task_id)
+
+    def _delete_task(self, task_id: str):
+        src_item, src_model = self._source_ref_for_task(task_id)
+        remove_param = getattr(src_item, "_remove_param", None)
+        if src_model is None or not callable(remove_param):
+            return
+        name = self._task_name_for_id(task_id).strip().lower()
+        index = next((index for index, entry in enumerate(src_model.params or [])
+                      if (entry.get("name") or "").strip().lower() == name), -1)
+        if index < 0:
+            return
+        if not remove_param(index):
+            return
+        self._assignments.pop(task_id, None)
+        self._task_progress.pop(task_id, None)
+        self._task_notifications.pop(task_id, None)
+        self._completed_tasks.discard(task_id)
+        _write_assignments(self._node_item, self._assignments, notify_scene=False)
+        _write_progress_map(self._node_item, self._task_progress, notify_scene=False)
+        _write_notifications(self._node_item, self._task_notifications, notify_scene=False)
+        if self._selected_task == task_id:
+            self._selected_task = None
         self._schedule_sync()
 
     def _on_task_completion_toggled(self, section: int, checked: bool):
@@ -4650,18 +4812,16 @@ class GanttChartWidget(QtWidgets.QFrame):
 
     def _handle_graph_view_short_right_click(self, global_pos) -> bool:
         try:
-            viewport_pos = self._table.viewport().mapFromGlobal(global_pos)
+            widget_pos = self.mapFromGlobal(global_pos)
         except Exception:
             return False
-        if not self._table.viewport().rect().contains(viewport_pos):
-            return False
-        try:
-            index = self._table.indexAt(viewport_pos)
-        except Exception:
-            index = QtCore.QModelIndex()
-        if not index.isValid():
-            return False
-        return self._remove_task_day_at(int(index.row()), int(index.column()))
+        return self._handle_graph_view_short_right_click_local(widget_pos)
+
+    def _wants_graph_view_short_right_click_local(self, local_pos) -> bool:
+        header = self._table.verticalHeader()
+        pos = header.viewport().mapFrom(self, QtCore.QPoint(local_pos))
+        return (header.viewport().rect().contains(pos)
+                and self._task_for_row(int(header.logicalIndexAt(pos))) is not None)
 
     def _handle_graph_view_short_right_click_local(self, local_pos) -> bool:
         try:
@@ -4671,6 +4831,14 @@ class GanttChartWidget(QtWidgets.QFrame):
                 widget_pos = QtCore.QPoint(int(local_pos.x()), int(local_pos.y()))
             except Exception:
                 return False
+        header = self._table.verticalHeader()
+        header_pos = header.viewport().mapFrom(self, widget_pos)
+        if header.viewport().rect().contains(header_pos):
+            row = int(header.logicalIndexAt(header_pos))
+            if self._task_for_row(row):
+                self._on_task_context_menu_requested(row, header.viewport().mapToGlobal(header_pos))
+                return True
+            return False
         try:
             viewport_pos = self._table.viewport().mapFrom(self, widget_pos)
         except Exception:
