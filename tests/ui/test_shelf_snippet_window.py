@@ -6,6 +6,8 @@ import math
 import os
 from pathlib import Path
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -81,9 +83,10 @@ class ShelfSnippetTests(unittest.TestCase):
         self.parent.deleteLater()
         self.app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
 
-    def popup(self):
-        window = ShelfSnippetWindow(self.parent, scene_factory=self.Scene, store=self.store,
-                                    tool=self.store.tool_by_id(self.tool["id"]))
+    def popup(self, store=None):
+        store = store or self.store
+        window = ShelfSnippetWindow(self.parent, scene_factory=self.Scene, store=store,
+                                    tool=store.tool_by_id(self.tool["id"]))
         # Keep C++ objects alive until cleanup so tests can inspect accepted closes.
         window.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
         self.windows.append(window)
@@ -377,6 +380,155 @@ class ShelfSnippetTests(unittest.TestCase):
         self.assertTrue(window.save_snippet())
         saved = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(saved["custom_workflow_metadata"], {"preserved": True})
+
+    def test_other_instance_save_notifies_and_update_loads_entire_network(self):
+        first = self.popup()
+        other_store = ShelfToolsStore(self.store.path)
+        other_store.load()
+        second = self.popup(other_store)
+        main_before = deepcopy(self.parent.scene.to_dict())
+        self.edit(first)
+        first.scene._nodes_by_name["Source"].code = "saved in the other instance"
+        first.scene._node_items["Source"].setPos(70, 90)
+        first.scene._comment_groups[0]._body = "updated comment"
+        first.scene.add_node(GraphNode("Added", kind="node"), (900, 600))
+        first.scene.add_edge("Target", "Added")
+        expected = first._network_state()
+        self.assertTrue(first.save_snippet())
+        second._external_update_timer.setInterval(10)
+        QtTest.QTest.qWait(40)
+        self.assertTrue(second.update_banner.isVisible())
+        self.assertIn("This snippet has changed", second.update_label.text())
+        self.assertEqual(second.update_button.text(), "Update")
+        self.assertEqual(second.scene._nodes_by_name["Source"].code, "original")
+        with patch.object(QtWidgets.QMessageBox, "question") as question:
+            second.update_button.click()
+            QtTest.QTest.qWait(20)
+        question.assert_not_called()
+        self.assertEqual(second._network_state(), expected)
+        self.assertFalse(second.update_banner.isVisible())
+        self.assertFalse(second._refresh_dirty())
+        self.assertEqual(self.parent.scene.to_dict(), main_before)
+        # The updated window can edit and save using the new version as its baseline.
+        second.scene._nodes_by_name["Source"].code = "saved after updating"
+        self.assertTrue(second.save_snippet())
+
+    def test_separate_process_atomic_save_is_detected(self):
+        window = self.popup()
+        program = (
+            "import sys\n"
+            "from echograph.services.shelf_tools_store import ShelfToolsStore\n"
+            "store = ShelfToolsStore(sys.argv[1])\n"
+            "store.load()\n"
+            "tool = store.tool_by_id(sys.argv[2])\n"
+            "workflow = store.load_snippet_workflow(tool)\n"
+            "workflow['nodes'][0]['code'] = 'saved by another process'\n"
+            "store.save_snippet_workflow(tool['id'], workflow)\n"
+        )
+        subprocess.run([sys.executable, "-c", program, str(self.store.path), self.tool["id"]],
+                       check=True, capture_output=True, text=True, timeout=20)
+        window._external_update_timer.setInterval(10)
+        QtTest.QTest.qWait(40)
+        self.assertTrue(window.update_banner.isVisible())
+        window.update_button.click()
+        self.assertEqual(window.scene._nodes_by_name["Source"].code, "saved by another process")
+
+    def test_update_can_be_cancelled_and_reads_latest_save_after_confirmation(self):
+        window = self.popup()
+        self.edit(window)
+        local = window._network_state()
+        workflow = self.store.load_snippet_workflow(self.tool)
+        workflow["nodes"][0]["code"] = "first external save"
+        self.store.save_snippet_workflow(self.tool["id"], workflow)
+        window._check_external_update()
+        with patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.Cancel):
+            self.assertFalse(window.reload_snippet())
+        self.assertEqual(window._network_state(), local)
+        self.assertTrue(window.update_banner.isVisible())
+        self.assertTrue(window._refresh_dirty())
+        self.assertFalse(window.save_button.isEnabled())
+
+        def save_during_prompt(*args):
+            workflow["nodes"][0]["code"] = "latest external save"
+            self.store.save_snippet_workflow(self.tool["id"], workflow)
+            return QtWidgets.QMessageBox.Discard
+
+        with patch.object(QtWidgets.QMessageBox, "question", side_effect=save_during_prompt):
+            self.assertTrue(window.reload_snippet())
+        QtTest.QTest.qWait(20)
+        self.assertEqual(window.scene._nodes_by_name["Source"].code, "latest external save")
+        self.assertFalse(window._refresh_dirty())
+        self.assertFalse(window.update_banner.isVisible())
+
+    def test_stale_save_is_blocked_even_before_notification_timer_runs(self):
+        window = self.popup()
+        window._external_update_timer.stop()
+        self.edit(window)
+        workflow = self.store.load_snippet_workflow(self.tool)
+        workflow["nodes"][0]["code"] = "keep newer version"
+        self.store.save_snippet_workflow(self.tool["id"], workflow)
+        path = self.store.snippet_workflow_path(self.tool)
+        saved = path.read_bytes()
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            self.assertFalse(window.save_snippet())
+        warning.assert_called_once()
+        self.assertEqual(path.read_bytes(), saved)
+        self.assertTrue(window._refresh_dirty())
+        self.assertTrue(window.update_banner.isVisible())
+        self.assertEqual(window.scene._nodes_by_name["Source"].params[0]["value"], "after")
+
+    def test_own_save_and_formatting_changes_do_not_notify(self):
+        window = self.popup()
+        self.edit(window)
+        self.assertTrue(window.save_snippet())
+        self.assertFalse(window._check_external_update())
+        path = self.store.snippet_workflow_path(self.tool)
+        workflow = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps(workflow, separators=(",", ":")), encoding="utf-8")
+        self.assertFalse(window._check_external_update())
+        self.assertFalse(window.update_banner.isVisible())
+
+    def test_unreadable_or_missing_file_preserves_edits_and_recovers(self):
+        window = self.popup()
+        self.edit(window)
+        local = window._network_state()
+        path = self.store.snippet_workflow_path(self.tool)
+        workflow = self.store.load_snippet_workflow(self.tool)
+        for invalid in ("{", '{"nodes": {}}', None):
+            with self.subTest(invalid=invalid):
+                if invalid is None:
+                    path.unlink()
+                else:
+                    path.write_text(invalid, encoding="utf-8")
+                self.assertTrue(window._check_external_update())
+                self.assertFalse(window.save_button.isEnabled())
+                with patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.Discard), \
+                        patch.object(QtWidgets.QMessageBox, "warning"):
+                    self.assertFalse(window.reload_snippet())
+                    self.assertFalse(window.save_snippet())
+                self.assertEqual(window._network_state(), local)
+        workflow["nodes"][0]["code"] = "recovered saved version"
+        self.store.save_snippet_workflow(self.tool["id"], workflow)
+        self.assertTrue(window._check_external_update())
+        with patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.Discard):
+            self.assertTrue(window.reload_snippet())
+        self.assertEqual(window.scene._nodes_by_name["Source"].code, "recovered saved version")
+
+    def test_failed_node_reload_restores_open_edits(self):
+        window = self.popup()
+        self.edit(window)
+        local = window._network_state()
+        workflow = self.store.load_snippet_workflow(self.tool)
+        workflow["nodes"].append(None)
+        self.store.snippet_workflow_path(self.tool).write_text(json.dumps(workflow), encoding="utf-8")
+        window._check_external_update()
+        with patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.Discard), \
+                patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            self.assertFalse(window.reload_snippet())
+        warning.assert_called_once()
+        self.assertEqual(window._network_state(), local)
+        self.assertTrue(window._refresh_dirty())
+        self.assertTrue(window.update_banner.isVisible())
 
     def test_missing_link_reports_error_and_does_not_paste_an_empty_network(self):
         self.store.snippet_workflow_path(self.tool).unlink()

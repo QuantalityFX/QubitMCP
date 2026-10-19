@@ -23,11 +23,15 @@ class ShelfSnippetWindow(QtWidgets.QMainWindow):
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         self.resize(1100, 720)
         self._store = store
+        self._tool = deepcopy(tool)
         self._tool_id = str(tool["id"])
         self._label = str(tool.get("label") or "Node Snippet")
         self.setWindowTitle(f"{self._label}[*] - Shelf Node Snippet")
         self._workflow_path = store.snippet_workflow_path(tool)
+        self._observed_file_version = self._file_version()
         self._workflow = store.load_snippet_workflow(tool)
+        self._external_update = False
+        self._loading_workflow = False
         self._current_path = str(self._workflow_path)
         self._current_project_dir = str(self._workflow_path.parent)
         self._info_card = None
@@ -57,6 +61,19 @@ class ShelfSnippetWindow(QtWidgets.QMainWindow):
         close_button.clicked.connect(self.close)
         controls.addWidget(close_button)
         layout.addLayout(controls)
+        self.update_banner = QtWidgets.QFrame(central)
+        self.update_banner.setStyleSheet("QFrame{background:#493a1e;border-radius:4px;}")
+        update_layout = QtWidgets.QHBoxLayout(self.update_banner)
+        self.update_label = QtWidgets.QLabel(self.update_banner)
+        self.update_label.setWordWrap(True)
+        self.update_label.setTextFormat(QtCore.Qt.PlainText)
+        update_layout.addWidget(self.update_label, 1)
+        self.update_button = QtWidgets.QPushButton("Update", self.update_banner)
+        self.update_button.setToolTip("Load the latest changes saved in the other instance.")
+        self.update_button.clicked.connect(self.reload_snippet)
+        update_layout.addWidget(self.update_button)
+        self.update_banner.hide()
+        layout.addWidget(self.update_banner)
         layout.addWidget(self.view, 1)
         self.setCentralWidget(central)
 
@@ -103,9 +120,15 @@ class ShelfSnippetWindow(QtWidgets.QMainWindow):
                 shortcut.setAutoRepeat(False)
             self._shortcuts.append(shortcut)
             self._hotkey_shortcuts[action_id] = shortcut
-        QtCore.QTimer.singleShot(0, self.frame_all)
+        QtCore.QTimer.singleShot(0, self, self.frame_all)
         QtWidgets.QApplication.instance().installEventFilter(self)
         self._initial_load_timer.start(0)
+        # Poll the path, rather than watching a file handle: saves replace the
+        # workflow atomically, and may come from a separate app process.
+        self._external_update_timer = QtCore.QTimer(self)
+        self._external_update_timer.setInterval(1000)
+        self._external_update_timer.timeout.connect(self._check_external_update)
+        self._external_update_timer.start()
 
     def apply_hotkey_map(self, mapping):
         for action_id, shortcut in self._hotkey_shortcuts.items():
@@ -136,6 +159,8 @@ class ShelfSnippetWindow(QtWidgets.QMainWindow):
         self._refresh_dirty()
 
     def _on_network_edited(self, *_args):
+        if self._loading_workflow:
+            return
         # Explicit model edits must remain dirty even before the first event-loop tick.
         self._finish_initial_load(preserve_baseline=True)
         self._schedule_dirty_check()
@@ -199,20 +224,117 @@ class ShelfSnippetWindow(QtWidgets.QMainWindow):
         return deepcopy({key: data.get(key, []) for key in ("nodes", "edges", "comments")})
 
     def _schedule_dirty_check(self, *_args):
-        if not self._dirty_timer.isActive():
+        if not self._loading_workflow and not self._dirty_timer.isActive():
             self._dirty_timer.start()
 
     def _refresh_dirty(self):
         dirty = not self._initializing and self._network_state() != self._saved_state
         if self.isWindowModified() != dirty:
             self.setWindowModified(dirty)
-        if self.save_button.isEnabled() != dirty:
-            self.save_button.setEnabled(dirty)
+        can_save = dirty and not self._external_update
+        if self.save_button.isEnabled() != can_save:
+            self.save_button.setEnabled(can_save)
         return dirty
+
+    def _file_version(self):
+        info = self._workflow_path.stat()
+        return info.st_mtime_ns, info.st_ctime_ns, info.st_size, info.st_ino
+
+    def _set_external_update(self, message=None):
+        self._external_update = message is not None
+        self.update_label.setText(message or "")
+        self.update_banner.setVisible(self._external_update)
+        self._refresh_dirty()
+
+    def _check_external_update(self, *, force=False):
+        try:
+            version = self._file_version()
+            if not force and version == self._observed_file_version:
+                return self._external_update
+            workflow = self._store.load_snippet_workflow(self._tool)
+        except Exception as exc:
+            # A missing or partially written file must never allow a stale save.
+            # Retry on the next tick, including when its timestamp is unchanged.
+            self._observed_file_version = None
+            self._set_external_update(
+                f"The saved snippet cannot be read. Your open changes are kept; saving is paused.\n{exc}"
+            )
+            return True
+        self._observed_file_version = version
+        self._set_external_update(
+            "This snippet has changed in another instance. Click Update to load the saved changes."
+            if workflow != self._workflow else None
+        )
+        return self._external_update
+
+    def reload_snippet(self):
+        self._finish_initial_load()
+        self._commit_focused_editor()
+        if self._refresh_dirty():
+            answer = QtWidgets.QMessageBox.question(
+                self, "Update Node Snippet",
+                "Updating will replace your unsaved edits in this window with the latest saved changes.\n\n"
+                "Discard your unsaved edits and update?",
+                QtWidgets.QMessageBox.Discard | QtWidgets.QMessageBox.Cancel,
+                QtWidgets.QMessageBox.Cancel,
+            )
+            if answer != QtWidgets.QMessageBox.Discard:
+                return False
+        try:
+            # Read after confirmation so another save during the prompt is included.
+            version = self._file_version()
+            workflow = self._store.load_snippet_workflow(self._tool)
+            previous = deepcopy(self.scene.to_dict())
+        except Exception as exc:
+            self._check_external_update(force=True)
+            QtWidgets.QMessageBox.warning(self, "Update Node Snippet", f"Could not update the node snippet:\n{exc}")
+            return False
+
+        self._dirty_timer.stop()
+        old_info = self._info_scroll.takeWidget()
+        if old_info is not None:
+            old_info.deleteLater()
+        self._info_card = None
+        self._info_dock.hide()
+        self._loading_workflow = True
+        try:
+            try:
+                self.scene.from_dict(deepcopy(workflow))
+            except Exception:
+                # Deserialization clears the scene before constructing nodes.
+                # Restore the open copy if a node cannot be loaded.
+                self.scene.from_dict(previous)
+                raise
+        except Exception as exc:
+            self._refresh_dirty()
+            QtWidgets.QMessageBox.warning(self, "Update Node Snippet", f"Could not update the node snippet:\n{exc}")
+            return False
+        finally:
+            self._loading_workflow = False
+
+        self._workflow = workflow
+        self._observed_file_version = version
+        self._saved_state = self._network_state()
+        # Reuse startup settling for nodes that queue widget updates on load.
+        self._initializing = True
+        self._initial_load_pass = 0
+        QtWidgets.QApplication.instance().installEventFilter(self)
+        self._initial_load_timer.start(0)
+        self._set_external_update()
+        QtCore.QTimer.singleShot(0, self, self.frame_all)
+        return True
 
     def save_snippet(self):
         self._finish_initial_load()
         self._commit_focused_editor()
+        # Check synchronously as well: Ctrl+S can arrive before the polling tick.
+        if self._check_external_update(force=True):
+            QtWidgets.QMessageBox.warning(
+                self, "Save Node Snippet",
+                "The saved snippet has changed or cannot be read. Click Update before saving.\n\n"
+                "Your edits in this window have been kept.",
+            )
+            return False
         try:
             current = self._store.tool_by_id(self._tool_id)
             if current is None or current.get("type") != "graph_snippet":
@@ -229,6 +351,9 @@ class ShelfSnippetWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Save Node Snippet", f"Could not save the node snippet:\n{exc}")
             return False
         self._workflow = workflow
+        # Re-read on the next tick; a different instance may save immediately
+        # after this one, before we could capture a post-save timestamp.
+        self._observed_file_version = None
         self._saved_state = deepcopy(state)
         self._refresh_dirty()
         self.saved.emit()
@@ -263,5 +388,6 @@ class ShelfSnippetWindow(QtWidgets.QMainWindow):
                 event.ignore()
                 return
         self._dirty_timer.stop()
+        self._external_update_timer.stop()
         self.closed.emit(self._tool_id)
         event.accept()
